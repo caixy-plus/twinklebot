@@ -1,0 +1,1026 @@
+import {
+  Fragment,
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
+import { parsePromptToAvatar } from "../../avatars.js";
+import { useChatScrollPin } from "../../hooks/useChatScrollPin.js";
+import {
+  isMobileViewport,
+  syncMobileChatBottomMetrics,
+} from "../../mobile-ui.js";
+import {
+  clearSessionHistory,
+  closeAllPopovers,
+  closeNewChatBar,
+  deleteSessionWithConfirm,
+  openSettingsModal,
+  refreshLibrary,
+  refreshSchedules,
+  selectSession,
+  showToast,
+  uploadAndStageFiles,
+  upsertLocalSession,
+} from "../../services/actions.js";
+import { apiJson } from "../../services/api-client.js";
+import { STATUS_LABELS } from "../../state/constants.js";
+import {
+  computeClientSessionSummary,
+  formatClockTime,
+  formatCny,
+  isSessionCurrentlyBusy,
+} from "../../state/helpers.js";
+import {
+  getActiveSessionFromState,
+  setState,
+  useStore,
+  type StreamItem,
+} from "../../state/store.js";
+import { AvatarNode, MascotSvg, SessionAvatar } from "../common/AvatarView.js";
+import { UiIcon } from "../common/Icon.js";
+import { TraceEventsList } from "../common/SharedPanels.js";
+import { Composer } from "./Composer.js";
+import {
+  ApprovalCard,
+  BotExchangePill,
+  ChoiceCard,
+  CredentialCard,
+  DraftCard,
+} from "./InteractiveCards.js";
+import { MarkdownRenderer } from "./MarkdownRenderer.js";
+import { MessageGroup } from "./MessageGroup.js";
+
+export function ChatStage({
+  chatStageRef,
+  onToggleInspector,
+}: {
+  chatStageRef: RefObject<HTMLElement | null>;
+  onToggleInspector: () => void;
+}) {
+  const sessions = useStore((s) => s.sessions);
+  const activeSession = useStore((s) => getActiveSessionFromState(s));
+  const activeSessionId = useStore((s) => s.activeSessionId);
+  const primarySessionId = useStore((s) => s.primarySessionId);
+  const sessionStatus = useStore((s) => s.sessionStatus);
+  const streamItems = useStore((s) => s.streamItems);
+  const isReplaying = useStore((s) => s.isReplaying);
+  const autoScrollPinned = useStore((s) => s.autoScrollPinned);
+  const openPopover = useStore((s) => s.openPopover);
+  const selectionToolbar = useStore((s) => s.selectionToolbar);
+  const newChatBarOpen = useStore((s) => s.newChatBarOpen);
+  const newChatGroupMode = useStore((s) => s.newChatGroupMode);
+  const newChatRecipients = useStore((s) => s.newChatRecipients);
+  const newChatQuery = useStore((s) => s.newChatQuery);
+  const botExchangeSheet = useStore((s) => s.botExchangeSheet);
+  const traceDrawerOpen = useStore((s) => s.traceDrawerOpen);
+  const stepCount = useStore((s) => s.stepCount);
+  const settings = useStore((s) => s.settings);
+  const usage = useStore((s) => s.usage);
+  const sessionUsageByModel = useStore((s) => s.sessionUsageByModel);
+  const sessionUsageByProviderModel = useStore((s) => s.sessionUsageByProviderModel);
+  const lastObservedModel = useStore((s) => s.lastObservedModel);
+
+  const [isDragOver, setIsDragOver] = useState(false);
+  const eventStreamRef = useRef<HTMLDivElement | null>(null);
+  const composerWrapRef = useRef<HTMLDivElement | null>(null);
+  const newChatInputRef = useRef<HTMLInputElement | null>(null);
+
+  useChatScrollPin(eventStreamRef, composerWrapRef);
+
+  const displayName =
+    activeSession?.title && activeSession.title !== "New Session"
+      ? activeSession.title
+      : "Twinkle";
+  const statusKey = sessionStatus || "idle";
+  const statusLabel = STATUS_LABELS[statusKey] || statusKey;
+  const busy = isSessionCurrentlyBusy(statusKey);
+
+  const costSummary = computeClientSessionSummary({
+    providers: settings?.providers || [],
+    sessionUsageByProviderModel,
+    sessionUsageByModel,
+    usage,
+    lastObservedModel,
+  });
+
+  // New Chat Bar calculations
+  const isMulti = newChatGroupMode || newChatRecipients.length > 0;
+  const qTrim = newChatQuery.trim();
+  const qLower = qTrim.toLowerCase();
+  const dmBots = sessions
+    .filter(
+      (s: any) =>
+        s.type !== "group" &&
+        !newChatRecipients.some((r: any) => r.id === s.id) &&
+        (!qLower || String(s.title || "").toLowerCase().includes(qLower))
+    )
+    .slice(0, 9);
+
+  const handleCreateSingleBot = async () => {
+    const title = qTrim || `新 Bot ${sessions.length}`;
+    const av = parsePromptToAvatar(title);
+    const created = await apiJson("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ title, avatar: av }),
+    });
+    closeNewChatBar();
+    upsertLocalSession(created);
+    await selectSession(created.id);
+    (document.getElementById("inspector-bot-name-input") as HTMLInputElement | null)?.focus();
+  };
+
+  const handleCommitGroup = async () => {
+    if (newChatRecipients.length < 2) return;
+    const names = newChatRecipients.map((b: any) => b.title).join("、");
+    const group = await apiJson("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        title: `${names.slice(0, 22)} 协作群`,
+        type: "group",
+        memberBotIds: newChatRecipients.map((b: any) => b.id),
+      }),
+    });
+    closeNewChatBar();
+    upsertLocalSession(group);
+    await selectSession(group.id);
+    (document.getElementById("message-input") as HTMLTextAreaElement | null)?.focus();
+  };
+
+  const handleNewChatKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Backspace" && !newChatQuery && newChatRecipients.length > 0) {
+      setState((prev) => ({
+        newChatRecipients: prev.newChatRecipients.slice(0, -1),
+      }));
+    } else if (e.key === "Escape") {
+      closeNewChatBar();
+    } else if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "9") {
+      const idx = Number(e.key) - 1;
+      const targetBot = dmBots[idx];
+      if (targetBot) {
+        e.preventDefault();
+        if (isMulti) {
+          setState((prev) => ({
+            newChatRecipients: [...prev.newChatRecipients, targetBot],
+            newChatQuery: "",
+          }));
+          newChatInputRef.current?.focus();
+        } else {
+          closeNewChatBar();
+          selectSession(targetBot.id);
+        }
+      }
+    }
+  };
+
+  const handleStreamMouseUp = () => {
+    setTimeout(() => {
+      if (typeof window === "undefined") return;
+      const sel = window.getSelection();
+      const raw = sel ? sel.toString().trim() : "";
+      const streamEl = eventStreamRef.current;
+      if (!raw || !sel || !sel.rangeCount || !streamEl || !streamEl.contains(sel.anchorNode)) {
+        return;
+      }
+      const anchorEl: any =
+        sel.anchorNode?.nodeType === 1 ? sel.anchorNode : sel.anchorNode?.parentElement;
+      if (anchorEl?.closest?.("input, textarea")) return;
+
+      const snippet = raw.slice(0, 280);
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      const top = Math.max(12, rect.top - 42);
+      const left = Math.min(
+        window.innerWidth - 150,
+        Math.max(12, rect.left + rect.width / 2 - 64)
+      );
+      setState({
+        selectionToolbar: { open: true, x: left, y: top, snippet },
+      });
+    }, 10);
+  };
+
+  const handleDragOver = (e: DragEvent<HTMLElement>) => {
+    if (e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault();
+      if (!isDragOver) setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: DragEvent<HTMLElement>) => {
+    setIsDragOver(false);
+    const files = [...(e.dataTransfer?.files || [])];
+    if (files.length > 0) {
+      e.preventDefault();
+      await uploadAndStageFiles(files);
+    }
+  };
+
+  const stageCls = [
+    "chat-stage",
+    busy ? "has-live-bubble" : "",
+    isDragOver ? "is-dragover" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <main
+      ref={chatStageRef}
+      className={stageCls}
+      aria-label="对话窗口"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Standard Stage Header */}
+      <header className="stage-header" id="stage-header">
+        <button
+          id="mobile-back-btn"
+          type="button"
+          className="mobile-circle-btn mobile-only"
+          title="返回列表"
+          aria-label="返回列表"
+          onClick={() => setState({ mobileView: "list" })}
+        >
+          <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path
+              d="M12.5 4.8L7.3 10L12.5 15.2"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+        <div className="stage-header-spacer" />
+
+        <button
+          id="header-bot-pill"
+          type="button"
+          className="stage-bot-pill"
+          title="查看对话详情"
+          aria-label="查看对话详情"
+          onClick={() => {
+            if (isMobileViewport()) {
+              refreshSchedules();
+              refreshLibrary();
+              setState((prev) => ({
+                mobileSheets: {
+                  ...prev.mobileSheets,
+                  inspectorOpen: true,
+                  inspectorTab: "activity",
+                },
+              }));
+            } else {
+              onToggleInspector();
+            }
+          }}
+        >
+          <span className="header-bot-avatar" id="header-bot-avatar">
+            {activeSession ? (
+              <SessionAvatar
+                session={activeSession}
+                allSessions={sessions}
+                primaryId={primarySessionId}
+                sizeVariant="sm"
+              />
+            ) : (
+              <MascotSvg shapeKey="blob" colorKey="black" />
+            )}
+          </span>
+          <span className="stage-bot-name" id="header-bot-name">
+            {displayName}
+          </span>
+          <span
+            id="status-badge"
+            className="inline-status-chip"
+            data-status={statusKey}
+            aria-live="polite"
+          >
+            <span className="status-dot" aria-hidden="true" />
+            <span id="status-text" className="status-state">
+              {statusLabel}
+            </span>
+          </span>
+        </button>
+
+        <div className="stage-header-actions">
+          <button
+            id="mobile-inspector-btn"
+            type="button"
+            className="mobile-circle-btn mobile-only"
+            title="更多操作"
+            aria-label="更多操作"
+            aria-expanded={openPopover === "mobile-more" ? "true" : "false"}
+            onClick={(e) => {
+              e.stopPropagation();
+              const nextOpen = openPopover !== "mobile-more";
+              closeAllPopovers();
+              if (nextOpen) setState({ openPopover: "mobile-more" });
+            }}
+          >
+            <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <circle cx="5" cy="10" r="1.4" fill="currentColor" />
+              <circle cx="10" cy="10" r="1.4" fill="currentColor" />
+              <circle cx="15" cy="10" r="1.4" fill="currentColor" />
+            </svg>
+          </button>
+
+          <div
+            id="mobile-more-popover"
+            className="floating-menu mobile-more-popover"
+            aria-label="更多操作"
+            hidden={openPopover !== "mobile-more"}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="menu-item-row"
+              data-mobile-more-action="inspector"
+              onClick={() => {
+                setState((prev) => ({
+                  openPopover: null,
+                  mobileSheets: {
+                    ...prev.mobileSheets,
+                    inspectorOpen: true,
+                    inspectorTab: "activity",
+                  },
+                }));
+                refreshSchedules();
+                refreshLibrary();
+              }}
+            >
+              <span className="menu-item-leading">能力与电脑面板</span>
+            </button>
+            <button
+              type="button"
+              className="menu-item-row"
+              data-mobile-more-action="clear"
+              onClick={() => {
+                setState({ openPopover: null });
+                if (activeSessionId) clearSessionHistory(activeSessionId);
+              }}
+            >
+              <span className="menu-item-leading">清空会话</span>
+            </button>
+            <div className="menu-divider" hidden={Boolean(activeSession?.isAdmin)} />
+            <button
+              type="button"
+              className="menu-item-row danger-text"
+              data-mobile-more-action="delete"
+              hidden={Boolean(activeSession?.isAdmin)}
+              onClick={async () => {
+                setState({ openPopover: null });
+                if (activeSessionId) {
+                  await deleteSessionWithConfirm(activeSessionId);
+                  if (isMobileViewport()) {
+                    setState({ mobileView: "list" });
+                  }
+                }
+              }}
+            >
+              <span className="menu-item-leading">删除 Bot</span>
+            </button>
+          </div>
+
+          <button
+            id="clear-session-btn"
+            type="button"
+            className="share-pill-btn clear-session-btn"
+            title="清空当前会话对话记录"
+            aria-label="清空当前会话对话记录"
+            onClick={() => {
+              if (activeSessionId) clearSessionHistory(activeSessionId);
+            }}
+          >
+            <svg
+              className="icon-svg clear-session-icon"
+              viewBox="0 0 20 20"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M4.5 6.2h11M8 6.2V4.7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M6.3 6.2l.65 9.1a1.5 1.5 0 0 0 1.5 1.4h3.1a1.5 1.5 0 0 0 1.5-1.4l.65-9.1"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="clear-session-label">清空</span>
+          </button>
+
+          <button
+            id="share-btn"
+            type="button"
+            className="share-pill-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              const nextOpen = openPopover !== "share";
+              closeAllPopovers();
+              if (nextOpen) setState({ openPopover: "share" });
+            }}
+          >
+            分享
+          </button>
+
+          <div
+            id="share-popover"
+            className="floating-menu share-popover"
+            aria-label="分享"
+            hidden={openPopover !== "share"}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              id="share-template-item"
+              type="button"
+              className="share-menu-card"
+              onClick={async () => {
+                setState({ openPopover: null });
+                if (!activeSessionId) return;
+                const cloned = await apiJson(`/api/sessions/${activeSessionId}/clone`, {
+                  method: "POST",
+                });
+                upsertLocalSession(cloned);
+                await selectSession(cloned.id);
+                showToast(`已克隆并打开「${cloned.title}」`);
+              }}
+            >
+              <div className="share-card-icon" aria-hidden="true">
+                <svg viewBox="0 0 36 36" fill="none">
+                  <rect
+                    x="13"
+                    y="6"
+                    width="15"
+                    height="15"
+                    rx="5"
+                    stroke="currentColor"
+                    strokeOpacity="0.45"
+                    strokeWidth="1.6"
+                    strokeDasharray="2.2 2.2"
+                  />
+                  <rect x="6" y="12.5" width="16" height="15.5" rx="5.5" fill="currentColor" />
+                  <rect
+                    x="8.8"
+                    y="17.2"
+                    width="10.4"
+                    height="5.6"
+                    rx="2.8"
+                    fill="var(--bg-stage)"
+                    fillOpacity="0.26"
+                  />
+                  <rect
+                    x="10.8"
+                    y="18.4"
+                    width="2"
+                    height="3.4"
+                    rx="1"
+                    fill="var(--bg-stage)"
+                  />
+                  <rect
+                    x="15.2"
+                    y="18.4"
+                    width="2"
+                    height="3.4"
+                    rx="1"
+                    fill="var(--bg-stage)"
+                  />
+                </svg>
+              </div>
+              <div className="share-card-copy">
+                <div className="share-card-title">创建副本</div>
+                <div className="share-card-sub" id="share-card-sub">
+                  克隆当前 Bot 并生成新实例
+                </div>
+              </div>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* iMessage-Style New Chat / Group Compose Bar (`收件人:`) */}
+      <div id="new-chat-bar" className="new-chat-bar" hidden={!newChatBarOpen}>
+        <div className="new-chat-bar-row">
+          <span className="new-chat-to-label">收件人：</span>
+          <div id="new-chat-chips" className="new-chat-chips">
+            {newChatRecipients.map((r: any, idx: number) => (
+              <span key={r.id || idx} className="new-chat-chip">
+                <span>{r.title || "Bot"}</span>
+                <button
+                  type="button"
+                  aria-label="移除收件人"
+                  onClick={() =>
+                    setState((prev) => ({
+                      newChatRecipients: prev.newChatRecipients.filter(
+                        (_: any, i: number) => i !== idx
+                      ),
+                    }))
+                  }
+                >
+                  <UiIcon name="x" size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+          <input
+            ref={newChatInputRef}
+            id="new-chat-input"
+            type="text"
+            className="new-chat-input"
+            placeholder="搜索已有 Bot，或输入名称新建 Bot / 拉群..."
+            autoComplete="off"
+            value={newChatQuery}
+            onChange={(e) => setState({ newChatQuery: e.target.value })}
+            onKeyDown={handleNewChatKeyDown}
+          />
+          <button
+            id="new-chat-commit-group-btn"
+            type="button"
+            className="new-chat-commit-btn"
+            hidden={newChatRecipients.length < 2}
+            onClick={handleCommitGroup}
+          >
+            创建群聊
+          </button>
+          <button
+            id="new-chat-close-btn"
+            type="button"
+            className="new-chat-close-btn"
+            aria-label="关闭新建栏"
+            onClick={closeNewChatBar}
+          >
+            <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path
+                d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <div id="new-chat-group-note" className="new-chat-group-note" hidden={!isMulti}>
+          群聊会消耗你更多的附带用量，因为每条消息都会由多个 Bot 分别处理
+        </div>
+        <div id="new-chat-dropdown" className="new-chat-dropdown" role="listbox">
+          <button type="button" className="new-chat-row" onClick={handleCreateSingleBot}>
+            <span className="new-chat-row-icon" aria-hidden="true">
+              <UiIcon name="plus" size={16} />
+            </span>
+            <span className="new-chat-row-title">
+              {qTrim ? `创建新 Bot “${qTrim}”` : "创建新 Bot"}
+            </span>
+            <span className="new-chat-row-sub">独立角色与专属职责</span>
+          </button>
+
+          {!newChatGroupMode && newChatRecipients.length === 0 && (
+            <button
+              type="button"
+              className="new-chat-row"
+              onClick={() => {
+                setState({ newChatGroupMode: true });
+                newChatInputRef.current?.focus();
+              }}
+            >
+              <span className="new-chat-row-icon" aria-hidden="true">
+                <UiIcon name="users" size={16} />
+              </span>
+              <span className="new-chat-row-title">创建 Bot 群聊</span>
+              <span className="new-chat-row-sub">拉多位专职 Bot 协同讨论</span>
+            </button>
+          )}
+
+          {dmBots.map((bot: any, idx: number) => (
+            <button
+              key={bot.id}
+              type="button"
+              className="new-chat-row"
+              onClick={() => {
+                if (isMulti) {
+                  setState((prev) => ({
+                    newChatRecipients: [...prev.newChatRecipients, bot],
+                    newChatQuery: "",
+                  }));
+                  newChatInputRef.current?.focus();
+                } else {
+                  closeNewChatBar();
+                  selectSession(bot.id);
+                }
+              }}
+            >
+              <span className="new-chat-row-icon">
+                <SessionAvatar
+                  session={bot}
+                  allSessions={sessions}
+                  primaryId={primarySessionId}
+                />
+              </span>
+              <span className="new-chat-row-title">{bot.title || "Bot"}</span>
+              <span className="new-chat-row-sub">
+                {isMulti ? "点击加入群聊" : bot.rolePrompt || "跳转对话"}
+              </span>
+              <span className="kbd-hint">⌘{idx + 1}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Chat Event Stream */}
+      <div
+        ref={eventStreamRef}
+        id="event-stream"
+        className={`event-stream${isReplaying ? " is-replaying" : ""}`}
+        role="log"
+        aria-live="polite"
+        onMouseUp={handleStreamMouseUp}
+      >
+        {streamItems.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-state-mascot">
+              {activeSession ? (
+                <SessionAvatar
+                  session={activeSession}
+                  allSessions={sessions}
+                  primaryId={primarySessionId}
+                  sizeVariant="lg"
+                />
+              ) : (
+                <MascotSvg shapeKey="blob" colorKey="black" />
+              )}
+            </div>
+            <div className="empty-state-title">{displayName}</div>
+            <div className="empty-state-sub">
+              {activeSession?.type === "group"
+                ? "群内多位 Bot 已就绪，直接发消息、引用回复或输入 @ 点名协同讨论。"
+                : activeSession?.rolePrompt ||
+                  "像和同事发消息一样交谈，支持引用回复、划词引用与操控电脑。"}
+            </div>
+          </div>
+        ) : (
+          streamItems.map((item: StreamItem) => {
+            switch (item.kind) {
+              case "unread_divider":
+                return (
+                  <div key={item.id} className="unread-divider">
+                    新消息
+                  </div>
+                );
+              case "date_divider":
+                return (
+                  <div key={item.id} className="date-divider">
+                    {item.label}
+                  </div>
+                );
+              case "message":
+                return <MessageGroup key={item.id} item={item} />;
+              case "bot_exchange":
+                return <BotExchangePill key={item.id} item={item} />;
+              case "choice":
+                return <ChoiceCard key={item.id} item={item} />;
+              case "approval":
+                return <ApprovalCard key={item.id} item={item} />;
+              case "draft":
+                return <DraftCard key={item.id} item={item} />;
+              case "credential":
+                return <CredentialCard key={item.id} item={item} />;
+              case "route_notice":
+                return (
+                  <div key={item.id} className="route-notice-pill" role="status">
+                    <UiIcon name="lightbulb" className="inline-ui-icon" size={14} />
+                    {item.text || "本轮费用已接近预算上限"}
+                  </div>
+                );
+              case "error":
+                return (
+                  <div key={item.id} className="error-card">
+                    <div className="confirm-header">提示</div>
+                    <div>{item.message || "任务中断或遇到异常"}</div>
+                  </div>
+                );
+              default:
+                return null;
+            }
+          })
+        )}
+      </div>
+
+      {/* Floating Scroll-to-Bottom Pill */}
+      <button
+        id="scroll-bottom-btn"
+        type="button"
+        className="scroll-bottom-btn"
+        aria-label="回到底部"
+        hidden={autoScrollPinned}
+        onClick={() => {
+          if (isMobileViewport()) {
+            syncMobileChatBottomMetrics();
+          }
+          setState({ autoScrollPinned: true, scrollPinGuardUntil: Date.now() + 600 });
+          const streamEl = eventStreamRef.current;
+          if (streamEl) {
+            const targetTop = Math.max(0, streamEl.scrollHeight - streamEl.clientHeight);
+            streamEl.scrollTo({ top: targetTop, behavior: "smooth" });
+          }
+        }}
+      >
+        <svg
+          className="icon-svg inline-ui-icon"
+          viewBox="0 0 20 20"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M10 4.8V15.2M10 15.2L5.7 10.9M10 15.2L14.3 10.9"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span id="scroll-bottom-label">回到底部</span>
+      </button>
+
+      {/* Highlight-to-Quote Floating Selection Toolbar */}
+      <div
+        id="selection-quote-toolbar"
+        className="selection-quote-toolbar"
+        role="toolbar"
+        aria-label="选中文本操作"
+        hidden={!selectionToolbar.open}
+        style={
+          selectionToolbar.open
+            ? { left: `${selectionToolbar.x}px`, top: `${selectionToolbar.y}px` }
+            : undefined
+        }
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          id="selection-quote-btn"
+          type="button"
+          className="selection-tool-btn"
+          onClick={() => {
+            if (selectionToolbar.snippet) {
+              setState((prev) => ({
+                pendingQuotes: [...prev.pendingQuotes, selectionToolbar.snippet],
+                selectionToolbar: { open: false, x: 0, y: 0, snippet: "" },
+              }));
+              window.getSelection()?.removeAllRanges();
+              (document.getElementById("message-input") as HTMLTextAreaElement | null)?.focus();
+            }
+          }}
+        >
+          <svg
+            className="icon-svg inline-ui-icon"
+            viewBox="0 0 20 20"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M5.2 13.6V9.8C5.2 7.9 6.3 6.5 8.1 6.1M11.6 13.6V9.8C11.6 7.9 12.7 6.5 14.5 6.1"
+              stroke="currentColor"
+              strokeWidth="1.65"
+              strokeLinecap="round"
+            />
+            <rect x="5" y="10.4" width="3.1" height="3.2" rx="0.8" stroke="currentColor" strokeWidth="1.45" />
+            <rect x="11.4" y="10.4" width="3.1" height="3.2" rx="0.8" stroke="currentColor" strokeWidth="1.45" />
+          </svg>
+          <span>引用</span>
+        </button>
+        <span className="selection-tool-sep" aria-hidden="true" />
+        <button
+          id="selection-copy-btn"
+          type="button"
+          className="selection-tool-btn"
+          onClick={() => {
+            if (selectionToolbar.snippet) {
+              navigator.clipboard?.writeText(selectionToolbar.snippet);
+              window.getSelection()?.removeAllRanges();
+              setState({ selectionToolbar: { open: false, x: 0, y: 0, snippet: "" } });
+              showToast("已复制选中内容");
+            }
+          }}
+        >
+          <svg
+            className="icon-svg inline-ui-icon"
+            viewBox="0 0 20 20"
+            fill="none"
+            aria-hidden="true"
+          >
+            <rect x="7.4" y="6.8" width="8.6" height="9.6" rx="1.8" stroke="currentColor" strokeWidth="1.55" />
+            <path
+              d="M12.6 6.8V5.2A1.6 1.6 0 0 0 11 3.6H5.6A1.6 1.6 0 0 0 4 5.2V11.6A1.6 1.6 0 0 0 5.6 13.2H7.4"
+              stroke="currentColor"
+              strokeWidth="1.55"
+              strokeLinecap="round"
+            />
+          </svg>
+          <span>复制</span>
+        </button>
+      </div>
+
+      {/* Typing / Working Indicator above Composer (kept hidden; inline live row used instead) */}
+      <div id="typing-indicator-bar" className="typing-indicator-bar" hidden>
+        <span className="typing-dots" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
+        <span id="typing-indicator-text">{displayName} 正在输入…</span>
+      </div>
+
+      {/* Bottom Unified Composer Pill */}
+      <Composer composerWrapRef={composerWrapRef} />
+
+      {/* Bot-to-Bot Exchange Slide-up Drawer (`Bot 交流记录`) */}
+      <div
+        id="bot-exchange-sheet"
+        className="bot-exchange-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Bot 交流记录"
+        hidden={!botExchangeSheet.open}
+      >
+        <div
+          className="exchange-sheet-backdrop"
+          id="exchange-sheet-backdrop"
+          onClick={() =>
+            setState((prev) => ({
+              botExchangeSheet: { ...prev.botExchangeSheet, open: false },
+            }))
+          }
+        />
+        <div className="exchange-sheet-panel">
+          <div className="exchange-sheet-header">
+            <div className="exchange-participants-bar" id="exchange-participants-bar">
+              {botExchangeSheet.participants.map((p: any, i: number) => (
+                <Fragment key={p.id || p.title || i}>
+                  <span className="exchange-peer-chip">
+                    <AvatarNode avatar={p.avatar || { shape: "blob", color: "black" }} />
+                    <span>{p.title || "Bot"}</span>
+                  </span>
+                  {i < botExchangeSheet.participants.length - 1 && (
+                    <span
+                      style={{
+                        color: "var(--text-secondary)",
+                        display: "inline-flex",
+                        alignItems: "center",
+                      }}
+                    >
+                      <UiIcon name="arrows-exchange" size={14} />
+                    </span>
+                  )}
+                </Fragment>
+              ))}
+            </div>
+            <button
+              id="close-exchange-sheet-btn"
+              type="button"
+              className="modal-close-btn"
+              style={{ position: "static" }}
+              aria-label="关闭"
+              onClick={() =>
+                setState((prev) => ({
+                  botExchangeSheet: { ...prev.botExchangeSheet, open: false },
+                }))
+              }
+            >
+              <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path
+                  d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          </div>
+          <div id="exchange-messages-list" className="exchange-messages-list">
+            {botExchangeSheet.messages.map((m: any, idx: number) => (
+              <div key={idx} className="msg-group is-bot" style={{ maxWidth: "92%" }}>
+                <div className="msg-speaker-header">
+                  <AvatarNode avatar={m.fromAvatar || { shape: "blob", color: "black" }} />
+                  <span>
+                    {m.fromBotName} → {m.toBotName} · {formatClockTime(m.at)}
+                  </span>
+                </div>
+                <div className="msg-bubble bot-bubble">
+                  <MarkdownRenderer text={m.text || ""} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Technical Execution Trace Drawer (`执行轨迹与当前会话模型消耗`) */}
+      <div
+        id="trace-drawer-sheet"
+        className="bot-exchange-sheet trace-drawer-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="执行轨迹与工具日志"
+        hidden={!traceDrawerOpen}
+      >
+        <div
+          className="exchange-sheet-backdrop"
+          id="trace-drawer-backdrop"
+          onClick={() => setState({ traceDrawerOpen: false })}
+        />
+        <div className="exchange-sheet-panel trace-drawer-panel">
+          <div className="exchange-sheet-header">
+            <div className="exchange-participants-bar">
+              <span>执行轨迹与模型消耗</span>
+              <span className="route-mini-tag" id="trace-drawer-count-badge">
+                {stepCount} 步
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <button
+                id="open-full-billing-btn"
+                type="button"
+                className="settings-pill-btn"
+                style={{ fontSize: "12px", padding: "4px 10px" }}
+                onClick={() => {
+                  setState({ traceDrawerOpen: false });
+                  openSettingsModal("usage");
+                }}
+              >
+                <span>全局用量与账单</span>
+                <svg
+                  className="icon-svg inline-ui-icon"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M7.8 5.2L12.6 10L7.8 14.8"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <button
+                id="close-trace-drawer-btn"
+                type="button"
+                className="modal-close-btn"
+                style={{ position: "static" }}
+                aria-label="关闭"
+                onClick={() => setState({ traceDrawerOpen: false })}
+              >
+                <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path
+                    d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div
+            id="session-model-usage-bar"
+            className="session-model-usage-bar"
+            hidden={costSummary.byModel.length === 0}
+          >
+            {costSummary.byModel.map((m: any) => (
+              <div
+                key={m.model}
+                className="session-model-chip"
+                title={`${m.label}：输入 ${m.inputTokens.toLocaleString()} · 输出 ${m.outputTokens.toLocaleString()}${
+                  m.thoughtTokens > 0 ? `（含思考 ${m.thoughtTokens.toLocaleString()}）` : ""
+                }`}
+              >
+                <span className={`model-accent-dot model-accent-${m.accent}`} />
+                <strong>{m.shortLabel}</strong>
+                <span className="session-model-chip-sub">
+                  {m.totalTokens.toLocaleString()} tok · {formatCny(m.costCny)}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <TraceEventsList
+            id="trace-drawer-list"
+            className="exchange-messages-list trace-drawer-list"
+          />
+        </div>
+      </div>
+    </main>
+  );
+}

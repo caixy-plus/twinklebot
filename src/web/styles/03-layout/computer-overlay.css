@@ -1,0 +1,108 @@
+/* ==================== FULLSCREEN BOT COMPUTER OVERLAY ==================== */
+.bot-screen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(14, 14, 15, 0.95);
+  backdrop-filter: blur(18px);
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 36px 24px;
+  color: #f3f3f4;
+}
+
+.screen-exit-btn {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #252525;
+  color: #f3f3f4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 5;
+}
+
+.screen-stage-outer {
+  flex: 1;
+  width: 100%;
+  max-width: 1320px;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.screen-stage-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  max-height: calc(100vh - 120px);
+  aspect-ratio: 16 / 10;
+  border-radius: 22px;
+  overflow: hidden;
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.75);
+}
+
+.novnc-frame { width: 100%; height: 100%; border: 0; display: block; background: #111; }
+.bot-screen-overlay[data-takeover="false"] .novnc-frame { pointer-events: none; }
+
+.screen-connecting-mask {
+  position: absolute;
+  inset: 0;
+  background: #1b1b1c;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  z-index: 3;
+}
+
+.connecting-mascot-row { display: flex; align-items: center; gap: 16px; }
+.connecting-blob svg { width: 68px; height: 68px; animation: blobPulse 1.4s ease-in-out infinite; }
+.connecting-dot { width: 8px; height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.45); animation: dotBlink 1.2s ease-in-out infinite; }
+.connecting-dot.dot-right { animation-delay: 0.4s; }
+.connecting-label { font-size: 13px; color: #9a9aa1; }
+
+@keyframes blobPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+@keyframes dotBlink { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+
+.screen-bottom-pill-wrap { margin-top: 16px; display: flex; justify-content: center; }
+.screen-control-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 7px 6px 14px;
+  border-radius: 999px;
+  background: #232323;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.screen-control-status { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: #9a9aa1; }
+.screen-control-pill[data-controlling="true"] .screen-control-status { color: #ffffff; }
+.screen-takeover-btn, .screen-release-btn, .screen-abort-btn {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.screen-takeover-btn { background: #333333; color: #ffffff; }
+.screen-release-btn { background: var(--accent-red); color: #ffffff; }
+.screen-abort-btn { background: rgba(251, 43, 62, 0.22); color: #ff808b; }
+
+
+/* Ensure system native cursor is always shown inside Bot's computer */
+.novnc-frame {
+  cursor: default !important;
+}

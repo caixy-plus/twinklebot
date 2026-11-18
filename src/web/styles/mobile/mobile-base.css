@@ -1,0 +1,13 @@
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-left,
+  .chat-stage,
+  .mobile-sheet,
+  .mobile-sheet-panel,
+  .app-confirm-dialog[open],
+  .event-stream > *,
+  .mobile-node-dot,
+  .inline-status-chip .status-dot {
+    animation: none !important;
+    transition: none !important;
+  }
+}

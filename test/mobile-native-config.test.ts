@@ -1,0 +1,53 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const _UP_ONE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = path.basename(_UP_ONE) === "dist-server" ? path.dirname(_UP_ONE) : _UP_ONE;
+
+test("Android manifest and network security config allow LAN cleartext & multicast discovery", () => {
+  const manifest = fs.readFileSync(
+    path.join(ROOT, "android/app/src/main/AndroidManifest.xml"),
+    "utf8"
+  );
+  for (const perm of [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.ACCESS_WIFI_STATE",
+    "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+  ]) {
+    assert.ok(manifest.includes(perm), `missing ${perm}`);
+  }
+  assert.ok(manifest.includes('android:usesCleartextTraffic="true"'));
+  assert.ok(manifest.includes('android:screenOrientation="portrait"'));
+  assert.ok(manifest.includes("network_security_config"));
+
+  const netSec = fs.readFileSync(
+    path.join(ROOT, "android/app/src/main/res/xml/network_security_config.xml"),
+    "utf8"
+  );
+  assert.ok(netSec.includes('cleartextTrafficPermitted="true"'));
+
+  const pluginJava = fs.readFileSync(
+    path.join(ROOT, "android/app/src/main/java/com/twinklebot/mobile/LanDiscoveryPlugin.java"),
+    "utf8"
+  );
+  assert.ok(pluginJava.includes('@CapacitorPlugin(name = "LanDiscovery")'));
+  assert.ok(pluginJava.includes("TWINKLEBOT_DISCOVER_V1"));
+  assert.ok(pluginJava.includes("setScreenOrientation"));
+});
+
+test("iOS Info.plist configures Local Network, Bonjour, and ATS local networking", () => {
+  const plist = fs.readFileSync(path.join(ROOT, "ios/App/App/Info.plist"), "utf8");
+  assert.ok(plist.includes("NSLocalNetworkUsageDescription"));
+  assert.ok(plist.includes("_twinklebot._tcp"));
+  assert.ok(plist.includes("NSAllowsLocalNetworking"));
+
+  const swiftPath = fs.existsSync(path.join(ROOT, "ios/App/App/LanDiscoveryPlugin.swift"))
+    ? path.join(ROOT, "ios/App/App/LanDiscoveryPlugin.swift")
+    : path.join(ROOT, "ios/App/App/SceneDelegate.swift");
+  const swift = fs.readFileSync(swiftPath, "utf8");
+  assert.ok(swift.includes("LanDiscoveryPlugin"));
+});

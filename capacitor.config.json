@@ -1,0 +1,14 @@
+{
+  "appId": "com.twinklebot.mobile",
+  "appName": "TwinkleBot",
+  "webDir": "dist-web",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": false
+    }
+  }
+}

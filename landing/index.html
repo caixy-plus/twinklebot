@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#111113" />
+  <title>TwinkleBot — 全端多 Bot 桌面智能体工作台</title>
+  <meta
+    name="description"
+    content="TwinkleBot 是一款跨 macOS、Windows、Linux 与 Android 的多 Bot AI 桌面智能体工作台：内置 Ubuntu 实时桌面、支持本地电脑安全桥接、三档模型智能路由与局域网手机遥控。"
+  />
+  <link rel="icon" type="image/png" href="./icon.png" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="ambient-prism" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="#top">
+        <img src="./icon.png" alt="TwinkleBot" class="brand-icon" width="28" height="28" />
+        <span class="brand-name">TwinkleBot</span>
+        <span class="version-pill" id="nav-version-pill">v1.0.0</span>
+      </a>
+      <nav class="nav-links" aria-label="主导航">
+        <a href="#workbench">交互演示</a>
+        <a href="#capabilities">核心能力</a>
+        <a href="#security">安全边界</a>
+        <a href="#downloads">下载</a>
+        <a href="#cloud-deploy">云端部署</a>
+      </nav>
+      <div class="topbar-actions">
+        <a
+          class="ghost-btn"
+          href="https://github.com/caixy-plus/twinklebot"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          GitHub
+        </a>
+        <a class="primary-sm-btn" href="#downloads">获取客户端</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-inner">
+        <div class="hero-badge">
+          <span class="pulse-dot" aria-hidden="true"></span>
+          <span id="hero-release-label">TwinkleBot v1.0.0 正式发布 · 桌面端 &amp; Android 同步上线</span>
+        </div>
+
+        <h1 class="hero-title">
+          一支会用电脑的<br />
+          <span class="prism-text">多 Bot 智能体团队</span>
+        </h1>
+
+        <p class="hero-subtitle">
+          像在即时通讯软件里和同事协作一样指挥多个专职 Bot。它们拥有各自独立的记忆与
+          Ubuntu 实时桌面，也能经你授权桥接操作本机、配合手机随身遥控。
+        </p>
+
+        <div class="hero-cta-row">
+          <a id="primary-download-btn" class="cta-primary" href="#downloads">
+            <span id="primary-download-label">下载桌面客户端</span>
+            <span class="cta-arrow" aria-hidden="true">↓</span>
+          </a>
+          <a class="cta-secondary" href="#workbench">查看工作台演示</a>
+        </div>
+
+        <div class="platform-strip" aria-label="支持平台">
+          <button type="button" class="platform-chip" data-jump-platform="macos">macOS (Apple Silicon / Intel)</button>
+          <button type="button" class="platform-chip" data-jump-platform="windows">Windows (.exe)</button>
+          <button type="button" class="platform-chip" data-jump-platform="linux">Linux (AppImage)</button>
+          <button type="button" class="platform-chip" data-jump-platform="android">Android (.apk)</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="workbench-section" id="workbench">
+      <div class="container">
+        <div class="section-head">
+          <div class="section-eyebrow">INTERACTIVE WORKBENCH</div>
+          <h2>在一个工作台里完成对话、看屏与接管</h2>
+          <p>切换下方真实场景，预览 TwinkleBot 在桌面端与手机端的交互细节。</p>
+        </div>
+
+        <div class="scene-tabs" role="tablist" aria-label="场景切换">
+          <button type="button" class="scene-tab is-active" role="tab" aria-selected="true" data-scene="collab">
+            多 Bot 群聊协同
+          </button>
+          <button type="button" class="scene-tab" role="tab" aria-selected="false" data-scene="desktop">
+            双电脑与人工接管
+          </button>
+          <button type="button" class="scene-tab" role="tab" aria-selected="false" data-scene="mobile">
+            手机局域网 &amp; 横屏桌面
+          </button>
+          <button type="button" class="scene-tab" role="tab" aria-selected="false" data-scene="routing">
+            三档模型智能调度
+          </button>
+        </div>
+
+        <div class="stage-frame" id="stage-frame">
+          <div class="stage-chrome">
+            <div class="chrome-dots" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+            <div class="chrome-title" id="stage-chrome-title">TwinkleBot · 主控工作台</div>
+            <div class="chrome-meta" id="stage-chrome-meta">1440×900 · Hydrogen / Argon / Carbon</div>
+          </div>
+          <div class="stage-body" id="stage-body"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="capabilities-section" id="capabilities">
+      <div class="container">
+        <div class="section-head">
+          <div class="section-eyebrow">CORE ARCHITECTURE</div>
+          <h2>为真实生产环境设计的双机架构</h2>
+          <p>不仅能聊，更能看得见画面、写得成代码、稳得住权限。</p>
+        </div>
+
+        <div class="bento-grid">
+          <article class="bento-card bento-wide">
+            <div class="card-tag">DUAL COMPUTER</div>
+            <h3>Ubuntu 沙箱桌面 + 本机安全桥接</h3>
+            <p>
+              每个工作台都配有一台独立的 Ubuntu XFCE 桌面（通过内嵌 noVNC 实时查看，已移除冗杂原生侧边栏），
+              需要操作本机文件、终端或应用时，再通过带审批机制的
+              <code>host_executor</code> 桥接执行，云端与本地桌面无缝衔接。
+            </p>
+            <div class="mini-pills">
+              <span>noVNC 实时监看</span>
+              <span>点击即接管控制</span>
+              <span>多主机在线切换</span>
+              <span>图片/文件直接入模</span>
+            </div>
+          </article>
+
+          <article class="bento-card">
+            <div class="card-tag">MULTI-BOT TEAM</div>
+            <h3>13 种外形 × 11 种配色 Bot 团队</h3>
+            <p>
+              主控 Bot Twinkle 可按需创建专职子 Bot、组建协作群聊，各自维护独立记忆、定时日程与邮箱技能，
+              支持 <code>@</code> 点名与引用回复。
+            </p>
+          </article>
+
+          <article class="bento-card">
+            <div class="card-tag">SMART ROUTING</div>
+            <h3>Hydrogen · Argon · Carbon 三档路由</h3>
+            <p>
+              内置任务规划与动态升档：日常轻量对话与常规看图由 Hydrogen 高效处理，复杂编码与深度推理自动切换 Argon / Carbon，
+              同时支持 OpenAI、DeepSeek 与自定义兼容接口（GCP 服务器支持 Vertex AI 无密钥认证）。
+            </p>
+          </article>
+
+          <article class="bento-card">
+            <div class="card-tag">MOBILE CLIENT</div>
+            <h3>纯客户端 Android App</h3>
+            <p>
+              安装包物理剥离服务端代码与本地密钥。同一 Wi-Fi 下自动 UDP 发现电脑并通过 6 位配对码安全连接，
+              日常锁定竖屏防误触，查看 Bot 电脑时横屏自动切换大屏桌面模式。
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="security-section" id="security">
+      <div class="container">
+        <div class="security-panel">
+          <div>
+            <div class="section-eyebrow">SECURITY GUARDRAILS</div>
+            <h2>把能力交给 AI，把边界留给自己</h2>
+            <p>
+              所有高风险操作、跨工作区写入与敏感路径访问均有硬性策略拦截，绝不越权执行。
+            </p>
+          </div>
+          <ul class="security-list">
+            <li>
+              <strong>敏感文件硬隔离</strong>
+              <span><code>.env</code>、<code>.ssh</code>、Keychain、<code>vault.json</code> 等路径在策略层永久拒绝读取与修改。</span>
+            </li>
+            <li>
+              <strong>交互式审批与凭证掩码</strong>
+              <span>危险命令弹出审批卡片并支持「仅一次 / 总是允许」；密码与授权码通过遮罩卡片注入，不进入模型上下文。</span>
+            </li>
+            <li>
+              <strong>无界面服务器纯接口模式</strong>
+              <span>当以 <code>DEPLOY_ENV=cloud</code> 部署在云端服务器时，域名首页仅返回 <code>ok</code>，不暴露 Web 控制台，全靠加密 Token 与客户端对接。</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="downloads-section" id="downloads">
+      <div class="container">
+        <div class="section-head">
+          <div class="section-eyebrow">DOWNLOADS · <span id="release-version-tag">v1.0.0</span></div>
+          <h2>下载 TwinkleBot 客户端</h2>
+          <p id="release-sync-hint">自动同步 GitHub Releases 最新稳定版本产物。</p>
+        </div>
+
+        <div class="download-grid">
+          <article class="dl-card" data-platform-card="macos">
+            <div class="dl-head">
+              <span class="dl-os">macOS</span>
+              <span class="dl-arch">Apple Silicon / Intel</span>
+            </div>
+            <p class="dl-desc">Electron 原生桌面应用，内置本地服务端与本机桥接能力。</p>
+            <div class="dl-actions">
+              <a
+                id="dl-mac-arm64"
+                class="dl-btn"
+                href="https://github.com/caixy-plus/twinklebot-releases/releases/latest"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                下载 DMG (arm64)
+              </a>
+              <a
+                id="dl-mac-x64"
+                class="dl-btn-sub"
+                href="https://github.com/caixy-plus/twinklebot-releases/releases"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                全部 macOS 包
+              </a>
+            </div>
+          </article>
+
+          <article class="dl-card" data-platform-card="windows">
+            <div class="dl-head">
+              <span class="dl-os">Windows</span>
+              <span class="dl-arch">x64 Installer</span>
+            </div>
+            <p class="dl-desc">NSIS 安装包与便携压缩包，适配 WSL / 云端主机双模式。</p>
+            <div class="dl-actions">
+              <a
+                id="dl-win-exe"
+                class="dl-btn"
+                href="https://github.com/caixy-plus/twinklebot-releases/releases/latest"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                下载 Setup (.exe)
+              </a>
+              <a
+                id="dl-win-zip"
+                class="dl-btn-sub"
+                href="https://github.com/caixy-plus/twinklebot-releases/releases/latest"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                下载绿色版 (.zip)
+              </a>
+            </div>
+          </article>
+
+          <article class="dl-card" data-platform-card="linux">
+            <div class="dl-head">
+              <span class="dl-os">Linux</span>
+              <span class="dl-arch">x64 AppImage</span>
+            </div>
+            <p class="dl-desc">开箱即用的 AppImage 与 tar.gz 归档包。</p>
+            <div class="dl-actions">
+              <a
+                id="dl-linux-appimage"
+                class="dl-btn"
+                href="https://github.com/caixy-plus/twinklebot-releases/releases/latest"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                下载 AppImage
+              </a>
+              <a
+                id="dl-linux-tar"
+                class="dl-btn-sub"
+                href="https://github.com/caixy-plus/twinklebot-releases/releases/latest"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                下载 .tar.gz
+              </a>
+            </div>
+          </article>
+
+          <article class="dl-card" data-platform-card="android">
+            <div class="dl-head">
+              <span class="dl-os">Android</span>
+              <span class="dl-arch">APK 纯客户端</span>
+            </div>
+            <p class="dl-desc">支持局域网 6 位配对直连电脑与远程连接云端服务器。</p>
+            <div class="dl-actions">
+              <a
+                id="dl-android-apk"
+                class="dl-btn"
+                href="https://github.com/caixy-plus/twinklebot-releases/releases/latest"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                下载 Android APK
+              </a>
+              <a
+                id="dl-all-releases"
+                class="dl-btn-sub"
+                href="https://github.com/caixy-plus/twinklebot-releases/releases"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                查看所有版本
+              </a>
+            </div>
+          </article>
+        </div>
+
+        <div class="quickstart-box">
+          <div class="quickstart-head">
+            <span>开发者源码启动（本地模式）</span>
+            <button type="button" class="copy-cmd-btn" data-copy-target="quickstart-code" data-copy-label="复制命令">复制命令</button>
+          </div>
+          <pre><code id="quickstart-code">git clone https://github.com/caixy-plus/twinklebot.git
+cd twinklebot &amp;&amp; npm install
+npm start</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="cloud-deploy-section" id="cloud-deploy">
+      <div class="container">
+        <div class="section-head">
+          <div class="section-eyebrow">CLOUD DEPLOYMENT · AI &amp; HUMAN READY</div>
+          <h2>云端主控模式部署指南（DEPLOY_ENV=cloud）</h2>
+          <p>
+            云端模式会在服务器以「纯接口无界面模式」运行，首页仅返回 <code>ok</code>。你可以直接把右侧提示词贴给 AI 自动完成部署，或按左侧步骤手动配置。
+          </p>
+        </div>
+
+        <div class="cloud-deploy-grid">
+          <div class="cloud-human-col">
+            <div class="cloud-step-card">
+              <div class="cloud-step-num">STEP 1 · 准备环境</div>
+              <h3>拉取代码与安装依赖</h3>
+              <p>准备一台 Ubuntu 22.04 / 24.04 云服务器，安装 <strong>Node.js 22.13+</strong>、<strong>Python 3</strong>，以及桌面沙箱组件（<code>xfce4</code>、<code>xvfb</code>、<code>x11vnc</code>、<code>novnc</code>）：</p>
+              <pre><code>git clone https://github.com/caixy-plus/twinklebot.git
+cd twinklebot &amp;&amp; npm install</code></pre>
+            </div>
+
+            <div class="cloud-step-card">
+              <div class="cloud-step-num">STEP 2 · 写入 .env 配置</div>
+              <h3>启用纯接口云端模式与鉴权 Token</h3>
+              <p>云端模式不要求预先填写模型 Key（可在客户端连上后再配 DeepSeek / OpenAI / Gemini），但必须设置两个强随机 Token：</p>
+              <div class="quickstart-box cloud-sub-code">
+                <div class="quickstart-head">
+                  <span>.env（云端最小可用配置）</span>
+                  <button type="button" class="copy-cmd-btn" data-copy-target="cloud-env-code" data-copy-label="复制 .env">复制 .env</button>
+                </div>
+                <pre><code id="cloud-env-code">DEPLOY_ENV=cloud
+HOST=127.0.0.1
+PORT=3230
+TWINKLEBOT_CLOUD_TOKEN=请替换为你的强随机访问Token
+TWINKLEBOT_EXECUTOR_TOKEN=请替换为你的强随机执行器Token
+TWINKLEBOT_EXECUTOR_URL=http://127.0.0.1:7300
+TWINKLEBOT_NOVNC_PROXY_TARGET=http://127.0.0.1:6080</code></pre>
+              </div>
+            </div>
+
+            <div class="cloud-step-card">
+              <div class="cloud-step-num">STEP 3 · 启动服务与反代</div>
+              <h3>守护桌面执行器 + 主服务 + HTTPS/WSS</h3>
+              <p>
+                启动虚拟桌面（<code>:1</code>, 1440×900）与 noVNC（<code>6080</code>），运行 <code>python3 executor/executor.py</code>（监听 <code>7300</code>）与 <code>npm start</code>（监听 <code>3230</code>）。
+                对外通过 Nginx / Caddy 配置 HTTPS 反向代理，并放行 WebSocket（<code>/ws</code> 与 <code>/novnc/websockify</code>）。
+              </p>
+            </div>
+
+            <div class="cloud-step-card">
+              <div class="cloud-step-num">STEP 4 · 客户端连接</div>
+              <h3>在桌面端或手机端接入云端节点</h3>
+              <p>
+                直接用浏览器打开域名只会看到 <code>ok</code>（安全隔离）。请打开 <strong>TwinkleBot 桌面端或 Android App</strong> → 点击「切换账号 → 添加云端节点」→ 填入你的服务器域名（如 <code>https://bot.example.com</code>）与 <code>TWINKLEBOT_CLOUD_TOKEN</code> 即可开始使用。
+              </p>
+            </div>
+          </div>
+
+          <div class="cloud-ai-col">
+            <div class="ai-prompt-box">
+              <div class="ai-prompt-head">
+                <div>
+                  <div class="ai-prompt-badge">推荐 · 一键交给 AI 部署</div>
+                  <h3>把下面整段提示词贴给你的 AI 助手</h3>
+                  <p>支持 Cursor、Claude Code、Codex、OpenClaw 或任意具备终端/SSH 权限的 AI Agent。</p>
+                </div>
+                <button type="button" class="copy-prompt-btn" data-copy-target="cloud-ai-prompt" data-copy-label="复制 AI 部署提示词">
+                  复制 AI 部署提示词
+                </button>
+              </div>
+              <pre class="ai-prompt-pre"><code id="cloud-ai-prompt">请帮我在这台 Linux（Ubuntu）云服务器上部署 TwinkleBot 的云端主控模式（DEPLOY_ENV=cloud），要求全程自动化完成并做连通性自检：
+
+1. 环境检查与安装：
+   - 确认 Node.js &gt;= 22.13 和 Python 3 已安装（若不足请升级）。
+   - 拉取仓库：git clone https://github.com/caixy-plus/twinklebot.git（若目录已存在则 git pull），执行 npm install。
+   - 安装并启动虚拟桌面沙箱与远程看屏服务（Xvfb + XFCE :1 1440x900、x11vnc、websockify/noVNC 监听 127.0.0.1:6080）。
+
+2. 生成强随机密钥并写入 .env：
+   - 生成两个独立的 32 字节随机十六进制 Token：TWINKLEBOT_CLOUD_TOKEN 和 TWINKLEBOT_EXECUTOR_TOKEN。
+   - 在项目根目录写入 .env：
+     DEPLOY_ENV=cloud
+     HOST=127.0.0.1
+     PORT=3230
+     TWINKLEBOT_CLOUD_TOKEN=&lt;随机Token1&gt;
+     TWINKLEBOT_EXECUTOR_TOKEN=&lt;随机Token2&gt;
+     TWINKLEBOT_EXECUTOR_URL=http://127.0.0.1:7300
+     TWINKLEBOT_NOVNC_PROXY_TARGET=http://127.0.0.1:6080
+
+3. 配置系统守护进程（systemd）：
+   - 创建并启动 twinklebot-executor.service：加载 .env 中的 TWINKLEBOT_EXECUTOR_TOKEN，在 DISPLAY=:1 下运行 python3 executor/executor.py（监听 127.0.0.1:7300）。
+   - 创建并启动 twinklebot-server.service：加载 .env 并运行 node server.js（监听 127.0.0.1:3230）。
+
+4. 配置反向代理与 HTTPS：
+   - 若服务器已绑定域名，用 Caddy 或 Nginx 反代到 127.0.0.1:3230，务必正确透传 WebSocket Upgrade 头（支持 /ws 与 /novnc/websockify）。
+   - 若暂无域名，请提示我服务器公网 IP:3230 的安全组放行方式（此时需将 HOST 设为 0.0.0.0）。
+
+5. 部署后自检并把连接信息输出给我：
+   - 验证 curl -s http://127.0.0.1:3230/ 返回 ok。
+   - 验证带上 Authorization: Bearer &lt;TWINKLEBOT_CLOUD_TOKEN&gt; 请求 /api/system/diagnostics 返回 200 且 executorOnline 为 true。
+   - 最后清晰输出：客户端接入地址、TWINKLEBOT_CLOUD_TOKEN，并提醒我在 TwinkleBot 桌面端或 Android App 的「切换账号 → 添加云端节点」中填入以上两项，连接后再在设置里配置 DeepSeek / OpenAI / Gemini 等模型供应商。</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div class="footer-left">
+        <img src="./icon.png" alt="" width="20" height="20" class="footer-icon" />
+        <span>TwinkleBot · Multi-Bot AI Desktop Agent</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/caixy-plus/twinklebot" target="_blank" rel="noopener noreferrer">源码仓库</a>
+        <a href="https://github.com/caixy-plus/twinklebot-releases/releases" target="_blank" rel="noopener noreferrer">版本发布</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="./dist/app.js" defer></script>
+</body>
+</html>

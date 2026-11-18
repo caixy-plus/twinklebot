@@ -1,0 +1,63 @@
+:root {
+  color-scheme: light dark;
+
+  /* Theme surface & ink tokens (light-dark() adapts live with <meta name="color-scheme">) */
+  --bg-sidebar: light-dark(#f6f6f7, #121212);
+  --bg-stage: light-dark(#ffffff, #161616);
+  --bg-inspector: light-dark(#fafafa, #161616);
+  --bg-elevated: light-dark(#f1f1f3, #212121);
+  --bg-card: light-dark(#f2f2f4, #222222);
+  --bg-card-hover: light-dark(#e8e8ec, #2a2a2a);
+  --bg-popover: light-dark(#ffffff, #222222);
+  --bg-modal: light-dark(#ffffff, #1c1c1c);
+  --bg-modal-card: light-dark(#f4f4f6, #252525);
+  --bg-bubble-bot: light-dark(#f2f2f3, #222222);
+
+  --text-primary: light-dark(#161618, #f3f3f4);
+  --text-secondary: light-dark(#6e6e77, #9a9aa1);
+  --text-muted: light-dark(#9898a2, #6c6c73);
+
+  --border-hairline: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.07));
+  --border-card: light-dark(rgba(0, 0, 0, 0.09), rgba(255, 255, 255, 0.09));
+  --border-strong: light-dark(rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.15));
+  --bg-bar-glass: light-dark(rgba(255, 255, 255, 0.62), rgba(22, 22, 22, 0.62));
+  --border-bar-glass: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08));
+
+  &:has(> head > meta[name="color-scheme"][content="dark"]) {
+    color-scheme: dark;
+  }
+
+  &:has(> head > meta[name="color-scheme"][content="light"]) {
+    color-scheme: light;
+  }
+
+  --bot-bright-bg: #18181b;
+  --bot-bright-fg: #ffffff;
+  --bot-bubble-bg: #27272a;
+  --bot-bubble-fg: #ffffff;
+
+  --accent-blue: #1e86fc;
+  --accent-orange: #f59e0b;
+  --accent-green: #14c16f;
+  --accent-red: #fb2b3e;
+
+  /* Unified layout & geometry tokens */
+  --left-sidebar-w: 270px;
+  --compact-sidebar-w: 92px;
+  --right-inspector-w: 316px;
+
+  --radius-xs: 8px;
+  --radius-sm: 11px;
+  --radius-card: 14px;
+  --radius-dialog: 18px;
+  --radius-modal: 22px;
+  --radius-pill: 999px;
+
+  --pad-card-row: 12px 15px;
+  --pad-card-compact: 10px 12px;
+  --pad-dialog: 20px;
+  --pad-modal-pane: 24px 28px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Inter", system-ui, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "baselineVersion": "1.0.0",
+  "githubRepo": "caixy-plus/twinklebot-releases",
+  "otaChannelTag": "ota-channel",
+  "shells": {
+    "desktop": {
+      "version": "1.0.0",
+      "minVersionForOta": "1.0.0"
+    },
+    "android": {
+      "version": "1.0.0",
+      "buildCode": 1,
+      "minVersionForOta": "1.0.0",
+      "minBuildCodeForOta": 1
+    },
+    "ios": {
+      "version": "1.0.0",
+      "buildCode": 1,
+      "minVersionForOta": "1.0.0",
+      "minBuildCodeForOta": 1
+    }
+  },
+  "backend": {
+    "version": "1.0.0",
+    "minCompatibleVersion": "1.0.0",
+    "apiCapabilities": [
+      "core-v1",
+      "vault-patch-v1",
+      "gemini-vertex-gate-v1",
+      "ota-v1",
+      "multi-display-v1"
+    ]
+  }
+}

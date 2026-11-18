@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        document.querySelector('meta[name="color-scheme"]').content =
+          localStorage.getItem("color-scheme") ?? "light dark";
+      } catch {}
+    </script>
+    <title>TwinkleBot</title>
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <link rel="stylesheet" href="/style.css?v=20261116a" />
+    <link id="mobile-stylesheet" rel="stylesheet" href="/mobile.css?v=20261114d" />
+    <script>
+      if (window.twinklebotDesktop && window.twinklebotDesktop.isElectron) {
+        document.documentElement.dataset.electron = "true";
+        document.documentElement.dataset.platform = window.twinklebotDesktop.platform || "";
+        var mLink = document.getElementById("mobile-stylesheet");
+        if (mLink) mLink.media = "not all";
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/dist/app.js"></script>
+  </body>
+</html>

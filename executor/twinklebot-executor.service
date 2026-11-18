@@ -1,0 +1,15 @@
+[Unit]
+Description=TwinkleBot Desktop Executor
+After=ubuntu-desktop-vnc.service
+
+[Service]
+Type=simple
+# Replaced dynamically with the active user by scripts/deploy-executor.sh
+User=YOUR_USERNAME
+Environment=DISPLAY=:1
+EnvironmentFile=/etc/twinklebot/executor.env
+ExecStart=/usr/bin/python3 /opt/twinklebot/executor.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

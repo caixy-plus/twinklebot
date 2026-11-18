@@ -1,0 +1,15 @@
+example.com {
+    encode gzip zstd
+
+    @twinklebot_no_slash path /twinklebot
+    redir @twinklebot_no_slash /twinklebot/ 308
+
+    handle_path /twinklebot/* {
+        root * /var/www/twinklebot-landing
+        file_server
+    }
+
+    handle {
+        respond 404
+    }
+}

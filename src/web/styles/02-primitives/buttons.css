@@ -1,0 +1,86 @@
+.settings-pill-btn,
+.settings-danger-pill,
+.settings-red-btn,
+.settings-blue-pill,
+.vault-new-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: filter 0.14s ease, background 0.14s ease, opacity 0.14s ease;
+}
+
+.settings-pill-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.settings-pill-btn:hover:not(:disabled) {
+  background: var(--bg-card-hover);
+}
+
+.settings-danger-pill,
+.settings-red-btn {
+  padding: 5px 12px;
+  border: none;
+  background: rgba(251, 43, 62, 0.16);
+  color: var(--accent-red);
+}
+
+.settings-red-btn {
+  background: var(--accent-red);
+  color: #ffffff;
+}
+
+.settings-blue-pill {
+  padding: 6px 14px;
+  border: none;
+  background: var(--accent-blue);
+  color: #ffffff;
+}
+
+.vault-new-btn {
+  padding: 6px 14px;
+  border: none;
+  background: var(--text-primary);
+  color: var(--bg-stage);
+  font-size: 12.5px;
+}
+
+.settings-pill-btn:disabled,
+.settings-blue-pill:disabled,
+.settings-danger-pill:disabled,
+.settings-red-btn:disabled,
+.vault-new-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-select {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.settings-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.vault-toolbar-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.vault-tabs { display: flex; gap: 4px; }
+.vault-tab { padding: 5px 10px; border-radius: var(--radius-pill); border: none; background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 600; cursor: pointer; }
+.vault-tab.is-active { background: var(--bg-card); color: var(--text-primary); }

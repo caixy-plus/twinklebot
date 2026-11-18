@@ -1,0 +1,415 @@
+name: Publish GitHub Release & OTA Channel
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "ota-*"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Release mode: ota-only (fast pure-frontend hot update) or full (all platform installers + OTA)"
+        required: true
+        default: "ota-only"
+        type: choice
+        options:
+          - ota-only
+          - full
+      release_tag:
+        description: "Optional explicit tag (e.g. ota-20261118.1 or v1.0.0; auto-generated for ota-only if empty)"
+        required: false
+        default: ""
+        type: string
+      release_notes:
+        description: "Optional short release summary shown in update card"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: twinklebot-release-channel
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve Release Mode & Prepare Draft
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.meta.outputs.mode }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_notes: ${{ steps.meta.outputs.release_notes }}
+      web_build_id: ${{ steps.meta.outputs.web_build_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release parameters
+        id: meta
+        run: |
+          PKG_VER=$(node -p "require('./package.json').version")
+          STAMP=$(date -u +"%Y%m%d.%H%M")
+          WEB_STAMP=$(date -u +"%Y%m%d.%H%M%S")
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            REF_TAG="${{ github.ref_name }}"
+            if [[ "$REF_TAG" == v* ]]; then
+              MODE="full"
+            else
+              MODE="ota-only"
+            fi
+            TAG="$REF_TAG"
+            NOTES=""
+          else
+            MODE="${{ inputs.mode }}"
+            INPUT_TAG="${{ inputs.release_tag }}"
+            NOTES="${{ inputs.release_notes }}"
+            if [[ -n "$INPUT_TAG" ]]; then
+              TAG="$INPUT_TAG"
+            elif [[ "$MODE" == "full" ]]; then
+              TAG="v${PKG_VER}"
+            else
+              TAG="ota-${STAMP}.${GITHUB_RUN_NUMBER}"
+            fi
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_notes=$NOTES" >> "$GITHUB_OUTPUT"
+          echo "web_build_id=$WEB_STAMP" >> "$GITHUB_OUTPUT"
+          echo "Resolved mode=$MODE release_tag=$TAG web_build_id=$WEB_STAMP"
+
+      - name: Prepare Draft Release in distribution repo (full mode)
+        if: steps.meta.outputs.mode == 'full'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          TARGET_REF: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          RELEASE_NOTES: ${{ steps.meta.outputs.release_notes }}
+        run: |
+          gh release delete "$RELEASE_TAG" --repo "$TARGET_REPO" --cleanup-tag --yes || true
+          NOTES_TEXT="${RELEASE_NOTES:-TwinkleBot ${RELEASE_TAG} 全平台正式发布}"
+          gh release create "$RELEASE_TAG" \
+            --repo "$TARGET_REPO" \
+            --target "$TARGET_REF" \
+            --draft \
+            --title "TwinkleBot ${RELEASE_TAG}" \
+            --notes "$NOTES_TEXT"
+
+  publish-ota-only:
+    name: Fast Pure-Frontend OTA Release
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'ota-only'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system SVG tools for image tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends librsvg2-bin imagemagick
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies & verify tests
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Fetch previous authoritative version-manifest.json (inherit shell installer links)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+        run: |
+          gh release download ota-channel --repo "$TARGET_REPO" -p "version-manifest.json" -O prev-manifest.json || \
+          gh release download --repo "$TARGET_REPO" -p "version-manifest.json" -O prev-manifest.json || true
+
+      - name: Build OTA bundles & manifest
+        env:
+          WEB_BUILD_ID: "${{ needs.prepare.outputs.web_build_id }}"
+          RELEASE_TAG: "${{ needs.prepare.outputs.release_tag }}"
+          RELEASE_NOTES: "${{ needs.prepare.outputs.release_notes }}"
+          TWINKLEBOT_GITHUB_REPO: "${{ vars.RELEASE_REPO || github.repository }}"
+        run: |
+          node scripts/build-ota-packages.mjs \
+            --mode=ota-only \
+            --release-tag="$RELEASE_TAG" \
+            --base-manifest=prev-manifest.json
+          cat dist-ota/version-manifest.json
+
+      - name: Publish OTA Tag Release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ vars.RELEASE_REPO || github.repository }}
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          name: "TwinkleBot Frontend OTA (${{ needs.prepare.outputs.release_tag }})"
+          target_commitish: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
+          files: |
+            dist-ota/version-manifest.json
+            dist-ota/twinklebot-web-desktop.tar.gz
+            dist-ota/twinklebot-web-mobile.tar.gz
+
+      - name: Refresh rolling ota-channel pointer asset
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          TARGET_REF: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
+        run: |
+          gh release delete ota-channel --repo "$TARGET_REPO" --cleanup-tag --yes || true
+          gh release create ota-channel dist-ota/version-manifest.json \
+            --repo "$TARGET_REPO" \
+            --target "$TARGET_REF" \
+            --prerelease \
+            --title "TwinkleBot Authoritative Update Channel" \
+            --notes "Active version-manifest.json pointer (${{ needs.prepare.outputs.release_tag }})."
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.platform }})
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'full'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            os: macos-latest
+            script: electron:dist:mac
+          - platform: windows
+            os: windows-latest
+            script: electron:dist:win
+          - platform: linux
+            os: ubuntu-latest
+            script: electron:dist:linux
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install system SVG tools (Linux)
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends librsvg2-bin imagemagick
+
+      - name: Install dependencies & verify
+        run: |
+          npm ci
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            npm run typecheck
+          else
+            npm run typecheck
+            npm test
+          fi
+        shell: bash
+
+      - name: Package Electron desktop application (${{ matrix.platform }})
+        run: npm run ${{ matrix.script }}
+
+      - name: Upload desktop installers & SHA-256 metadata directly to Draft Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: |
+          mkdir -p release-meta
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const crypto = require("crypto");
+            const { execFileSync } = require("child_process");
+            const exts = /\.(dmg|zip|exe|AppImage|tar\.gz)$/i;
+            const files = fs.readdirSync("dist")
+              .filter((f) => exts.test(f) && !f.endsWith(".blockmap"))
+              .sort();
+            if (files.length === 0) throw new Error("No packaged desktop files found in dist/");
+            const meta = files.map((fileName) => {
+              const buf = fs.readFileSync(path.join("dist", fileName));
+              return {
+                fileName,
+                sha256: crypto.createHash("sha256").update(buf).digest("hex"),
+                sizeBytes: buf.length,
+              };
+            });
+            const metaPath = `release-meta/_asset-meta-${process.env.MATRIX_PLATFORM}.json`;
+            fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+            const filePaths = [...meta.map((m) => path.join("dist", m.fileName)), metaPath];
+            console.log("Uploading to", process.env.TARGET_REPO, process.env.RELEASE_TAG, filePaths);
+            execFileSync(
+              "gh",
+              ["release", "upload", process.env.RELEASE_TAG, ...filePaths, "--repo", process.env.TARGET_REPO, "--clobber"],
+              { stdio: "inherit" }
+            );
+          '
+
+  build-android:
+    name: Build Android APK
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "gradle"
+
+      - name: Prepare Android SDK (API 36)
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0" >/dev/null
+
+      - name: Install dependencies, sync Capacitor Android & assemble APKs
+        run: |
+          npm ci
+          APP_TARGET=mobile npm run mobile:build:web
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug assembleRelease --no-daemon
+
+      - name: Sign, upload APKs & SHA-256 metadata to Draft Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          mkdir -p apk-output release-meta
+          cp android/app/build/outputs/apk/debug/app-debug.apk apk-output/TwinkleBot-mobile-debug.apk
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEY_ALIAS" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore
+            APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner | sort -V | tail -n 1)"
+            "$APKSIGNER" sign \
+              --ks /tmp/release.keystore \
+              --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
+              --ks-key-alias "${ANDROID_KEY_ALIAS}" \
+              --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
+              --out apk-output/TwinkleBot-mobile-release.apk \
+              android/app/build/outputs/apk/release/app-release-unsigned.apk
+            rm -f /tmp/release.keystore
+          else
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk apk-output/TwinkleBot-mobile-release-unsigned.apk
+          fi
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const crypto = require("crypto");
+            const files = fs.readdirSync("apk-output").filter((f) => /\.apk$/i.test(f)).sort();
+            const meta = files.map((fileName) => {
+              const buf = fs.readFileSync(path.join("apk-output", fileName));
+              return {
+                fileName,
+                sha256: crypto.createHash("sha256").update(buf).digest("hex"),
+                sizeBytes: buf.length,
+              };
+            });
+            fs.writeFileSync("release-meta/_asset-meta-android.json", JSON.stringify(meta, null, 2));
+          '
+          gh release upload "$RELEASE_TAG" apk-output/*.apk release-meta/_asset-meta-android.json --repo "$TARGET_REPO" --clobber
+
+  publish-full:
+    name: Assemble Manifest & Publish Full Release
+    needs: [prepare, build-desktop, build-android]
+    if: needs.prepare.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Download SHA-256 metadata files directly from Draft Release (0 Actions artifact storage)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          RELEASE_TAG: "${{ needs.prepare.outputs.release_tag }}"
+        run: |
+          mkdir -p release-meta
+          gh release download "$RELEASE_TAG" \
+            --repo "$TARGET_REPO" \
+            --pattern "_asset-meta-*.json" \
+            --dir release-meta
+          ls -lh release-meta/
+
+      - name: Build OTA bundles & generate unified SHA-256 version-manifest.json
+        env:
+          WEB_BUILD_ID: "${{ needs.prepare.outputs.web_build_id }}"
+          RELEASE_TAG: "${{ needs.prepare.outputs.release_tag }}"
+          RELEASE_NOTES: "${{ needs.prepare.outputs.release_notes }}"
+          TWINKLEBOT_GITHUB_REPO: "${{ vars.RELEASE_REPO || github.repository }}"
+        run: |
+          npm ci
+          npm run build:ts
+          node scripts/build-ota-packages.mjs \
+            --mode=full \
+            --assets-meta=release-meta \
+            --release-tag="$RELEASE_TAG"
+          ls -lh dist-ota/
+          cat dist-ota/version-manifest.json
+
+      - name: Upload OTA assets, clean temp metadata & publish Official GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          TARGET_REF: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
+          RELEASE_TAG: "${{ needs.prepare.outputs.release_tag }}"
+          RELEASE_NOTES: "${{ needs.prepare.outputs.release_notes }}"
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            dist-ota/version-manifest.json \
+            dist-ota/twinklebot-web-desktop.tar.gz \
+            dist-ota/twinklebot-web-mobile.tar.gz \
+            --repo "$TARGET_REPO" \
+            --clobber
+          for f in release-meta/_asset-meta-*.json; do
+            ASSET_NAME=$(basename "$f")
+            gh release delete-asset "$RELEASE_TAG" "$ASSET_NAME" --repo "$TARGET_REPO" --yes || true
+          done
+          gh release edit "$RELEASE_TAG" \
+            --repo "$TARGET_REPO" \
+            --draft=false \
+            --latest
+          gh release delete ota-channel --repo "$TARGET_REPO" --cleanup-tag --yes || true
+          gh release create ota-channel dist-ota/version-manifest.json \
+            --repo "$TARGET_REPO" \
+            --target "$TARGET_REF" \
+            --prerelease \
+            --title "TwinkleBot Authoritative Update Channel" \
+            --notes "Active version-manifest.json pointer (${RELEASE_TAG})."

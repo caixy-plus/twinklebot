@@ -1,0 +1,155 @@
+{
+  "name": "twinklebot",
+  "version": "1.0.0",
+  "description": "TwinkleBot — Multi-Bot AI Desktop Agent",
+  "author": "TwinkleBot",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "dist-server/src/electron/main.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build:icons": "python3 scripts/generate-icons.py",
+    "build:css": "node scripts/build-styles.mjs",
+    "build:web": "npm run build:css && vite build && vite build --config vite.ssr.config.ts && node scripts/build-web.mjs --public-meta",
+    "build:ota": "npm run build:ts && node scripts/build-ota-packages.mjs",
+    "typecheck": "tsc -p tsconfig.shared.json && npm run build:web && tsc -p tsconfig.web.json && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.landing.json --noEmit",
+    "build:ts": "tsc -p tsconfig.shared.json && npm run build:web && tsc -p tsconfig.json && tsc -p tsconfig.landing.json",
+    "prestart": "npm run build:ts",
+    "start": "node --env-file=.env dist-server/src/server/index.js",
+    "cli": "node --env-file=.env dist-server/src/cli/index.js",
+    "electron:dev": "npm run build:ts && electron .",
+    "electron:pack": "npm run build:ts && electron-builder --dir",
+    "electron:pack:mac": "npm run build:ts && electron-builder --mac --dir",
+    "electron:pack:win": "npm run build:ts && electron-builder --win --dir --x64",
+    "electron:pack:linux": "npm run build:ts && electron-builder --linux --dir --x64",
+    "electron:dist": "npm run build:ts && electron-builder --mac dmg zip --publish never",
+    "electron:dist:mac": "npm run build:ts && electron-builder --mac dmg zip --publish never",
+    "electron:dist:win": "npm run build:ts && electron-builder --win nsis zip --x64 --publish never",
+    "electron:dist:linux": "npm run build:ts && electron-builder --linux AppImage tar.gz --x64 --publish never",
+    "mobile:build:web": "npm run build:ts && APP_TARGET=mobile node scripts/build-web.mjs",
+    "mobile:sync": "npm run build:ts && APP_TARGET=mobile node scripts/build-web.mjs && npx cap sync",
+    "mobile:sync:android": "npm run build:ts && APP_TARGET=mobile node scripts/build-web.mjs && npx cap sync android",
+    "mobile:apk:debug": "npm run build:ts && APP_TARGET=mobile node scripts/build-web.mjs && npx cap sync android && (cd android && ./gradlew assembleDebug)",
+    "mobile:apk:release": "npm run build:ts && APP_TARGET=mobile node scripts/build-web.mjs && npx cap sync android && (cd android && ./gradlew assembleRelease)",
+    "pretest": "npm run build:ts",
+    "test": "node --test dist-server/test/**/*.test.js",
+    "test:py": "python3 -m unittest discover -s executor -p 'test_*.py' -v",
+    "test:e2e:chrome": "npm run build:ts && node scripts/run-e2e.mjs",
+    "test:integration": "npm run test:py && npm test && npm run test:e2e:chrome"
+  },
+  "build": {
+    "appId": "com.twinklebot.desktop",
+    "productName": "TwinkleBot",
+    "icon": "build/icon.png",
+    "files": [
+      "dist-server/**/*",
+      "electron/**/*",
+      "public/**/*",
+      "version-policy.json",
+      "executor/executor.py",
+      "!dist-server/test/**/*",
+      "!dist-server/web-ssr/**/*",
+      "!**/*.tsbuildinfo",
+      "build/icon.png",
+      "build/icon.icns",
+      "build/icon.ico",
+      "build/tray*.png",
+      "package.json",
+      "!**/.env*",
+      "!data/**/*"
+    ],
+    "asarUnpack": [
+      "executor/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "darkModeSupport": true
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TwinkleBot",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "linux": {
+      "category": "Utility",
+      "executableName": "twinklebot",
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@google/genai": "^2.29.1"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/cli": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/ios": "^8.6.2",
+    "@capacitor/preferences": "^8.0.1",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^6.4.6"
+  }
+}

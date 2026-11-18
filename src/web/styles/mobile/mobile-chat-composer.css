@@ -1,0 +1,342 @@
+/* Note: .chat-stage uses transform/will-change: transform for slide navigation,
+   which can disable backdrop-filter in some Android WebViews; @supports not
+   and fallback values below ensure readability if compositing flattens blur. */
+.stage-header {
+  padding: calc(8px + max(8px, env(safe-area-inset-top))) 12px 8px;
+  min-height: var(--stage-header-height);
+  gap: 8px;
+  background: transparent;
+  border-bottom: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  will-change: auto;
+  isolation: isolate;
+}
+
+.stage-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  background: linear-gradient(to bottom, var(--glass-tint-strong) 0%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 50%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 50%, transparent 100%);
+}
+
+.new-chat-bar {
+  margin: 0 12px 8px;
+}
+
+.stage-header-spacer {
+  display: none;
+}
+
+#mobile-back-btn,
+#mobile-inspector-btn,
+.share-pill-btn,
+.stage-bot-pill {
+  background: var(--glass-pill-bg);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 0.5px solid var(--glass-pill-border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+.share-pill-btn:hover,
+.stage-bot-pill:hover {
+  background: var(--glass-pill-bg);
+}
+
+.stage-bot-pill {
+  margin: 0 auto;
+  max-width: calc(100vw - 84px);
+  padding: 4px 10px;
+  gap: 6px;
+}
+
+.header-bot-avatar {
+  flex-shrink: 0;
+}
+
+.stage-bot-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inline-status-chip,
+.status-state {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.mobile-more-popover {
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 176px;
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 6px;
+  z-index: 120;
+}
+
+.mobile-more-popover .menu-item-row {
+  padding: 10px 12px;
+  font-size: 14px;
+  min-height: 40px;
+}
+
+.event-stream {
+  padding: calc(var(--stage-header-height) + 10px) 14px calc(var(--mobile-composer-bottom) + 12px) !important;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  scroll-padding-top: calc(var(--stage-header-height) + 10px);
+  scroll-padding-bottom: calc(var(--mobile-composer-bottom) + 12px);
+  gap: 10px;
+}
+
+.event-stream::after {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 18px;
+  flex: 0 0 18px;
+  pointer-events: none;
+}
+
+.scroll-bottom-btn,
+.chat-stage.has-live-bubble .scroll-bottom-btn,
+.chat-stage:has(#live-working-bubble) .scroll-bottom-btn {
+  right: 14px;
+  bottom: calc(var(--mobile-composer-bottom) + 12px);
+}
+
+.msg-file-card {
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.msg-file-badge {
+  width: 34px;
+  height: 38px;
+  font-size: 9.5px;
+  border-radius: 8px;
+}
+
+.msg-file-btn {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.msg-group {
+  max-width: 86%;
+}
+
+.msg-bubble-row {
+  flex-direction: column !important;
+  gap: 4px;
+}
+
+.msg-group.is-user .msg-bubble-row {
+  align-items: flex-end;
+}
+
+.msg-group.is-bot .msg-bubble-row {
+  align-items: flex-start;
+  flex-direction: column !important;
+}
+
+.msg-group.is-user .msg-bubble-row {
+  align-items: flex-end;
+  flex-direction: column !important;
+}
+
+.msg-bubble {
+  max-width: 100% !important;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.msg-hover-actions {
+  display: none !important;
+  order: 2;
+  opacity: 0;
+}
+
+.msg-group.is-actions-open .msg-hover-actions {
+  display: inline-flex;
+  opacity: 1;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-card, rgba(128, 128, 138, 0.14));
+  border: 1px solid var(--border-hairline);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+}
+
+.msg-group.is-actions-open .msg-action-icon {
+  width: 30px;
+  height: 30px;
+  font-size: 14px;
+}
+
+.composer-wrap {
+  padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+  background: transparent;
+  border-top: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  will-change: auto;
+  isolation: isolate;
+}
+
+.app-shell.is-keyboard-open .composer-wrap {
+  padding-bottom: 8px;
+}
+
+.app-shell.is-keyboard-open .mobile-list-bottombar {
+  padding-bottom: 8px;
+}
+
+.mention-popover {
+  left: 12px;
+  right: 12px;
+  width: auto;
+  max-width: calc(100vw - 24px);
+  bottom: calc(100% + 6px);
+  max-height: min(220px, calc(var(--mobile-vv-height, 100dvh) - var(--stage-header-height, 74px) - 82px));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.composer-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  background: linear-gradient(to top, var(--glass-tint-strong) 0%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to top, #000 55%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 55%, transparent 100%);
+}
+
+.composer-wrap > .live-activity-row {
+  position: absolute;
+  left: 14px;
+  bottom: calc(100% + 8px);
+  max-width: calc(100% - 28px);
+  margin: 0;
+  z-index: 29;
+}
+
+.composer-pill {
+  border-radius: 28px;
+  background: var(--glass-pill-bg);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 0.5px solid var(--glass-pill-border);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.10);
+}
+
+.composer-pill:focus-within {
+  border-color: var(--glass-pill-border);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.10);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --glass-tint-strong: rgba(255, 255, 255, 0.92);
+    --glass-pill-bg: rgba(255, 255, 255, 0.92);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --glass-tint-strong: rgba(28, 28, 30, 0.92);
+      --glass-pill-bg: rgba(28, 28, 30, 0.92);
+    }
+  }
+
+  @supports (color: light-dark(white, black)) {
+    :root {
+      --glass-tint-strong: light-dark(rgba(255, 255, 255, 0.92), rgba(28, 28, 30, 0.92));
+      --glass-pill-bg: light-dark(rgba(255, 255, 255, 0.92), rgba(28, 28, 30, 0.92));
+    }
+  }
+
+  :root:has(> head > meta[name="color-scheme"][content="dark"]) {
+    --glass-tint-strong: rgba(28, 28, 30, 0.92);
+    --glass-pill-bg: rgba(28, 28, 30, 0.92);
+  }
+
+  :root:has(> head > meta[name="color-scheme"][content="light"]) {
+    --glass-tint-strong: rgba(255, 255, 255, 0.92);
+    --glass-pill-bg: rgba(255, 255, 255, 0.92);
+  }
+
+  :root[data-theme="dark"],
+  [data-theme="dark"] {
+    --glass-tint-strong: rgba(28, 28, 30, 0.92);
+    --glass-pill-bg: rgba(28, 28, 30, 0.92);
+  }
+
+  .stage-header,
+  .composer-wrap {
+    background: var(--glass-tint-strong);
+  }
+
+  .stage-header::before,
+  .composer-wrap::before {
+    display: none;
+  }
+
+  #mobile-back-btn,
+  #mobile-inspector-btn,
+  .share-pill-btn,
+  .stage-bot-pill,
+  .composer-pill {
+    background: var(--glass-pill-bg);
+  }
+}
+
+
+/* Prevent iOS WKWebView automatic focus zoom on inputs/selects/textareas smaller than 16px */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not(.sr-only),
+textarea:not(.sr-only),
+select:not(.sr-only) {
+  font-size: 16px !important;
+}
+
+.composer-input {
+  line-height: 1.38;
+  padding: 3px 2px;
+}
+
+/* Constrain reply anchor pill on narrow 375px screens so left text never clips past viewport */
+.msg-group {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.msg-reply-anchor {
+  max-width: min(320px, calc(100vw - 44px));
+  min-width: 0;
+}
+
+.msg-group.is-user .msg-reply-anchor {
+  margin-right: 10px;
+}
+
+.msg-reply-snippet {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

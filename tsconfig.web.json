@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "rootDir": "src/web",
+    "outDir": "public/dist",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "paths": {
+      "/skills-catalog.js": ["./dist-server/src/shared/skills-catalog.d.ts"],
+      "/accounts-store.js": ["./dist-server/src/shared/accounts-store.d.ts"],
+      "/shared/*": ["./dist-server/src/shared/*"]
+    }
+  },
+  "include": [
+    "src/web/**/*.ts",
+    "src/web/**/*.tsx",
+    "src/web/**/*.d.ts"
+  ]
+}

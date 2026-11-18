@@ -1,0 +1,207 @@
+/* ==================== MODALS (Search, Apps, Settings, Compact Dialog) ==================== */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.58);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 150;
+  padding: 24px;
+  overscroll-behavior: contain;
+}
+
+.app-shell:has(.modal-backdrop:not([hidden])) .stage-header,
+.app-shell:has(.modal-backdrop:not([hidden])) .composer-wrap,
+.app-shell:has(.mobile-sheet:not([hidden])) .stage-header,
+.app-shell:has(.mobile-sheet:not([hidden])) .composer-wrap {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  will-change: auto;
+  background: var(--bg-stage);
+}
+
+.modal-close-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: none;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 4;
+}
+
+.compact-dialog {
+  width: 100%;
+  max-width: 440px;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-dialog);
+  padding: var(--pad-dialog);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+}
+
+.compact-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.compact-dialog-header .compact-dialog-title { margin: 0; }
+
+.compact-dialog-header .modal-close-btn {
+  position: static;
+  flex-shrink: 0;
+}
+
+.compact-dialog-title { margin: 0 0 4px; font-size: 16px; font-weight: 700; }
+
+
+.modal-back-btn {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 5px;
+  border: none; background: transparent; color: var(--text-secondary); font-size: 13px; padding: 0; cursor: pointer;
+}
+
+/* Prevent background page scrolling while any modal <dialog> is open */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* Native `<dialog>` Branded Confirmation Modal */
+.app-confirm-dialog {
+  width: min(400px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-dialog);
+  background: var(--bg-modal);
+  color: var(--text-primary);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.36);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.app-confirm-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(5px);
+}
+
+.app-confirm-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 20px 18px;
+  margin: 0;
+}
+
+.app-confirm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.app-confirm-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.app-confirm-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.app-confirm-icon.is-danger {
+  background: rgba(251, 43, 62, 0.14);
+  color: var(--accent-red);
+}
+
+.app-confirm-icon.is-primary {
+  background: rgba(30, 134, 252, 0.14);
+  color: var(--accent-blue);
+}
+
+.app-confirm-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-confirm-title {
+  margin: 1px 0 4px;
+  font-size: 16.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+
+.app-confirm-message {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.app-confirm-detail {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg-modal-card);
+  border: 1px solid var(--border-hairline);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.app-confirm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.app-confirm-btn {
+  min-height: 36px;
+  padding: 7px 16px;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-confirm-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+
+.cloud-account-dialog {
+  width: min(440px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

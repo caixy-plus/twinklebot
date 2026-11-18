@@ -1,0 +1,59 @@
+.settings-card,
+.private-skills-list,
+.provider-card,
+.custom-skill-card,
+.mail-account-card,
+.mcp-status-card,
+.onboarding-tiers-box {
+  border-radius: var(--radius-card);
+  background: var(--bg-modal-card);
+  border: 1px solid var(--border-hairline);
+}
+
+.settings-card,
+.private-skills-list {
+  overflow: hidden;
+}
+
+.private-skills-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.private-skill-row,
+.settings-account-row,
+.settings-item-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: var(--pad-card-row);
+}
+
+.settings-account-row,
+.settings-item-row {
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.private-skill-row:not(:last-child) {
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.private-skills-list > .skills-empty { padding: 12px 15px; }
+
+.settings-group-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 16px 0 8px;
+}
+
+.settings-account-left {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.settings-row-title { font-size: 13.5px; font-weight: 600; }
+.settings-row-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.settings-divider { height: 1px; background: var(--border-hairline); margin: 0 15px; }

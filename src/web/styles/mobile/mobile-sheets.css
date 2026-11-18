@@ -1,0 +1,549 @@
+.mobile-sheet {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--mobile-vv-height, 100dvh);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0);
+  opacity: 0;
+  transition: opacity 0.22s ease, background 0.22s ease;
+}
+
+.mobile-sheet.is-open {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.56);
+}
+
+.mobile-sheet.settings-mobile-editor-sheet {
+  z-index: 430;
+}
+
+.mobile-sheet.settings-mobile-editor-sheet .custom-skill-editor {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.mobile-sheet.settings-mobile-editor-sheet .custom-skill-editor-top {
+  display: none;
+}
+
+.mobile-sheet.is-closing {
+  opacity: 0;
+  background: rgba(0, 0, 0, 0);
+}
+
+.mobile-sheet.is-fullscreen {
+  justify-content: flex-start;
+  background: var(--bg-stage, #141416);
+  padding-top: env(safe-area-inset-top);
+}
+
+.mobile-sheet-panel {
+  width: 100%;
+  max-height: 86dvh;
+  background: var(--bg-elevated, #1c1c1e);
+  border-radius: 24px 24px 0 0;
+  padding: 12px 16px calc(18px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  transform: translateY(100%);
+  will-change: transform;
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease;
+}
+
+/* Prevent flexbox from squishing sheet cards/headers/forms when panel scrolls on small screens (e.g. iPhone SE3 667px) */
+.mobile-sheet-panel > *:not(.mobile-inspector-scroll) {
+  flex-shrink: 0;
+}
+
+.mobile-sheet.is-open .mobile-sheet-panel {
+  transform: translateY(0);
+  will-change: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-sheet.is-closing .mobile-sheet-panel {
+  transform: translateY(100%);
+  will-change: transform;
+}
+
+.mobile-sheet.is-fullscreen {
+  padding-top: env(safe-area-inset-top);
+}
+
+.mobile-sheet.is-fullscreen.is-open::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top);
+  background: var(--bg-stage, #141416);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.mobile-sheet.is-fullscreen .mobile-sheet-panel {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  border-radius: 0;
+  background: var(--bg-stage, #141416);
+  padding: 12px 16px calc(20px + env(safe-area-inset-bottom));
+  transform: translateY(28px) scale(0.985);
+  opacity: 0;
+}
+
+.mobile-sheet.is-fullscreen.is-open .mobile-sheet-panel {
+  transform: none;
+  opacity: 1;
+  will-change: auto;
+}
+
+.mobile-sheet.is-fullscreen.is-closing .mobile-sheet-panel {
+  transform: translateY(28px) scale(0.985);
+  opacity: 0;
+}
+
+.mobile-sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(160, 160, 170, 0.45);
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.mobile-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* Keep Bot Editor title dead-center even when #mobile-bot-done-btn is hidden in create mode */
+#mobile-bot-editor-sheet .mobile-sheet-header {
+  display: grid;
+  grid-template-columns: minmax(42px, 1fr) auto minmax(42px, 1fr);
+  align-items: center;
+}
+#mobile-bot-editor-close-btn {
+  grid-column: 1;
+  justify-self: start;
+}
+#mobile-bot-editor-title {
+  grid-column: 2;
+  justify-self: center;
+  text-align: center;
+}
+#mobile-bot-done-btn {
+  grid-column: 3;
+  justify-self: end;
+}
+
+.mobile-sheet-title {
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.mobile-sheet-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  background: rgba(128, 128, 136, 0.14);
+  padding: 4px;
+  border-radius: 14px;
+  flex-shrink: 0;
+}
+
+.mobile-sheet.is-tall .mobile-sheet-panel {
+  height: calc(100dvh - max(12px, env(safe-area-inset-top)));
+  max-height: none;
+  overflow: hidden;
+}
+
+.mobile-inspector-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 16px;
+}
+
+.mobile-inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mobile-node-card-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mobile-node-card-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+#mobile-active-node-name,
+#mobile-active-node-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#image-lightbox-modal {
+  z-index: 450;
+}
+
+.mobile-sheet-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px 4px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.mobile-sheet-tab.is-active {
+  background: var(--bg-card, #2c2c2e);
+  color: var(--text-primary);
+}
+
+.mobile-grouped-card {
+  background: var(--bg-modal-card, #222225);
+  border: 1px solid var(--border-hairline);
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.mobile-card-row {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mobile-card-row + .mobile-card-row {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.mobile-card-row-title {
+  font-size: 15.5px;
+  font-weight: 500;
+}
+
+.mobile-card-row-sub {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.mobile-section-caption {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 4px 4px 0;
+}
+
+.mobile-bot-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0 8px;
+  position: relative;
+}
+
+.mobile-bot-preview-slot {
+  width: 112px;
+  height: 112px;
+}
+
+.mobile-bot-name-pill {
+  width: 100%;
+  height: 48px;
+  border-radius: 16px;
+  border: 1px solid var(--border-hairline);
+  background: var(--bg-modal-card, #222225);
+  color: var(--text-primary);
+  font-size: 16px;
+  text-align: center;
+  padding: 0 16px;
+  outline: none;
+}
+
+.mobile-shapes-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  justify-items: center;
+  padding: 8px 6px;
+}
+
+.mobile-shape-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: transparent;
+  padding: 5px;
+  cursor: pointer;
+}
+
+.mobile-shape-btn.is-active {
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.mobile-colors-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 14px;
+  justify-items: center;
+  padding: 6px 12px;
+}
+
+.mobile-color-dot {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.mobile-color-dot.is-active {
+  box-shadow: 0 0 0 3px var(--bg-stage, #141416), 0 0 0 5px rgba(255, 255, 255, 0.7);
+}
+
+.mobile-primary-cta {
+  width: 100%;
+  height: 48px;
+  border-radius: 999px;
+  border: none;
+  background: var(--accent-blue, #1e86fc);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: auto;
+}
+
+
+/* Keep dialog header close buttons inline inside compact dialogs & sheets */
+.compact-dialog .modal-close-btn,
+.mobile-sheet .modal-close-btn {
+  position: static;
+  flex-shrink: 0;
+}
+
+/* Compact vertical tuning for short iPhone screens (SE2/SE3 667px height) */
+@media (max-height: 700px) {
+  #mobile-bot-editor-sheet .mobile-sheet-panel {
+    gap: 10px;
+  }
+
+  #mobile-bot-editor-sheet .mobile-bot-preview-wrap {
+    padding: 4px 0 2px;
+  }
+
+  #mobile-bot-editor-sheet .mobile-bot-preview-slot {
+    width: 88px;
+    height: 88px;
+  }
+
+  #mobile-bot-editor-sheet .mobile-shapes-grid {
+    gap: 8px;
+    padding: 4px 2px;
+  }
+}
+
+.mobile-host-card.is-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+
+.skills-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.skills-header-row {
+  padding-right: 48px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.skills-added-pill {
+  max-width: 100%;
+  font-size: 12px;
+}
+
+.skills-subheader {
+  padding-right: 48px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.skill-detail-header {
+  margin: 8px 0 12px 0;
+  flex-wrap: wrap;
+}
+
+.apps-sections-scroll,
+.skills-sections {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100% !important;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.skills-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.skill-row {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden;
+  gap: 10px;
+}
+
+.skill-row-info {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.skill-row-desc {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100% !important;
+}
+
+.skill-row-actions {
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.skill-pill-btn {
+  min-width: 52px;
+  padding: 6px 12px;
+}
+
+.custom-skills-section-header {
+  flex-direction: column !important;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.custom-skills-title-group {
+  width: 100% !important;
+  flex-wrap: wrap;
+}
+
+.custom-skill-search-wrap,
+.custom-skill-search-input {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.custom-skill-card-main {
+  flex-direction: column !important;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.custom-skill-card-left {
+  width: 100% !important;
+}
+
+.custom-skill-card-left .skill-row-info {
+  overflow: visible;
+}
+
+.custom-skill-card-actions {
+  width: 100% !important;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.custom-skill-card-actions .ios-switch {
+  margin-right: auto;
+}
+
+.perm-rule-chip .section-action-link {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.skills-store-footer-note {
+  order: 3;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0 4px;
+  font-size: 12px;
+}
+
+.skills-search-row {
+  order: 4;
+  margin-bottom: 0;
+  padding-top: 8px;
+  flex-shrink: 0;
+}
+
+.bot-templates-pill {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.mobile-card-row-title {
+  font-size: 15.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-card-row > div:first-child {
+  min-width: 0;
+  flex: 1;
+}

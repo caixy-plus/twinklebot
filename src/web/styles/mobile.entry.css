@@ -1,0 +1,38 @@
+@layer reset, tokens, base, primitives, layout, features, utilities, mobile;
+
+/* Unlayered global mobile hidden guards (before @media mobile-only override) */
+.mobile-only {
+  display: none !important;
+}
+
+.mobile-sheet-backdrop[hidden],
+.mobile-sheet[hidden] {
+  display: none !important;
+}
+
+@import "./mobile/mobile-base.css" layer(mobile);
+
+@media (max-width: 768px) and (hover: none) and (pointer: coarse), (hover: none) and (pointer: coarse) and (max-width: 1024px) {
+  @import "./mobile/mobile-shell-nav.css" layer(mobile);
+  @import "./mobile/mobile-chat-composer.css" layer(mobile);
+  @import "./mobile/mobile-sheets.css" layer(mobile);
+  @import "./mobile/mobile-dialogs-landscape.css" layer(mobile);
+
+  /* Unlayered mobile-only visibility override matching desktop unlayered guard */
+  .mobile-only {
+    display: block !important;
+  }
+
+  .mobile-list-topbar.mobile-only,
+  .mobile-list-bottombar.mobile-only {
+    display: flex !important;
+  }
+
+  .mobile-circle-btn.mobile-only {
+    display: inline-flex !important;
+  }
+}
+
+@layer mobile {
+  @import "./mobile/mobile-compact-height.css";
+}
