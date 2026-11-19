@@ -607,15 +607,23 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       const dbgPort = (dbgPortSrv.address() as net.AddressInfo).port;
       dbgPortSrv.close();
 
-      const elecProc: ChildProcess = spawn(
-        electronBin,
-        [".", `--user-data-dir=${path.join(elecTmp, "userdata")}`, `--remote-debugging-port=${dbgPort}`],
-        {
-          cwd: PROJECT_ROOT,
-          env: { ...process.env, TWINKLEBOT_ENV_FILE: envFile },
-          stdio: ["ignore", "pipe", "pipe"],
-        }
-      );
+      const elecArgs = [
+        ".",
+        ...(process.platform === "linux"
+          ? ["--no-sandbox", "--disable-dev-shm-usage", "--use-gl=angle", "--use-angle=swiftshader"]
+          : []),
+        `--user-data-dir=${path.join(elecTmp, "userdata")}`,
+        `--remote-debugging-port=${dbgPort}`,
+      ];
+      const elecProc: ChildProcess = spawn(electronBin, elecArgs, {
+        cwd: PROJECT_ROOT,
+        env: { ...process.env, TWINKLEBOT_ENV_FILE: envFile },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let elecStderr = "";
+      elecProc.stderr?.on("data", (d) => {
+        elecStderr += d.toString("utf8");
+      });
       t.after(() => {
         try {
           elecProc.kill("SIGKILL");
@@ -626,6 +634,9 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       let pageWs = "";
       const deadline = Date.now() + 18_000;
       while (Date.now() < deadline) {
+        if (elecProc.exitCode !== null) {
+          throw new Error(`Electron exited early (${elecProc.exitCode}): ${elecStderr}`);
+        }
         try {
           const targets: any[] = await (await fetch(`http://127.0.0.1:${dbgPort}/json/list`)).json();
           const p = targets.find((x) => x.type === "page" && x.webSocketDebuggerUrl && String(x.url || "").startsWith("http://127.0.0.1:"));
@@ -636,7 +647,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         } catch {}
         await new Promise((r) => setTimeout(r, 150));
       }
-      assert.ok(pageWs, "Electron mainWindow CDP target must become ready");
+      assert.ok(pageWs, `Electron mainWindow CDP target must become ready: ${elecStderr}`);
 
       const wsSock = new WebSocket(pageWs);
       await new Promise<void>((resolve, reject) => {

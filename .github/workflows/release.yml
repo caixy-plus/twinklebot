@@ -154,7 +154,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            librsvg2-bin imagemagick xvfb xdotool wmctrl xclip x11-utils curl ca-certificates
+            librsvg2-bin imagemagick xvfb xauth openbox xdotool wmctrl xclip x11-utils curl ca-certificates
           if ! command -v google-chrome-stable >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
             curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb
             sudo apt-get install -y /tmp/chrome.deb
@@ -173,7 +173,7 @@ jobs:
           TWINKLEBOT_E2E_HEADLESS: "1"
           E2E_LEVEL: ${{ needs.prepare.outputs.e2e_level }}
         run: |
-          node scripts/run-e2e.mjs --tier="$E2E_LEVEL" --since-last-tag
+          xvfb-run -a -s "-screen 0 1440x900x24" node scripts/run-e2e.mjs --tier="$E2E_LEVEL" --since-last-tag
 
       - name: Publish E2E report to Job Summary
         if: always() && needs.prepare.outputs.e2e_level != 'skip'

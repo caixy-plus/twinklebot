@@ -198,6 +198,18 @@ class TestPhysicalX11DesktopE2E(unittest.TestCase):
         threading.Thread(target=cls.exec_srv.serve_forever, daemon=True).start()
         cls.exec_base = f"http://127.0.0.1:{cls.exec_srv.server_address[1]}"
 
+        # Wait up to 8s for the window manager + both Chrome windows to register titles
+        if wm_bin:
+            for _ in range(40):
+                try:
+                    wins = cls.actions.windows().get("windows") or []
+                    titles = [w.get("title", "") for w in wins]
+                    if any("X11TargetOne" in t for t in titles) and any("X11TargetTwo" in t for t in titles):
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.2)
+
     @classmethod
     def tearDownClass(cls):
         try:
