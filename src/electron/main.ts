@@ -644,6 +644,25 @@ function createMainWindow() {
     }
   });
 
+  const emitScrollTouch = (phase: "begin" | "fling" | "end") => {
+    if (!win.isDestroyed()) {
+      win.webContents.send("twinklebot:scroll-touch", {
+        phase,
+        active: phase === "begin",
+      });
+    }
+  };
+  win.webContents.on("input-event", (_event, inputEvent) => {
+    if (inputEvent.type === "gestureScrollBegin") {
+      emitScrollTouch("begin");
+    } else if (inputEvent.type === "gestureFlingStart") {
+      emitScrollTouch("fling");
+    } else if (inputEvent.type === "gestureScrollEnd") {
+      emitScrollTouch("end");
+    }
+  });
+  win.on("blur", () => emitScrollTouch("end"));
+
   // Handle target="_blank" / window.open safely
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (backendUrl && url.startsWith(backendUrl)) {

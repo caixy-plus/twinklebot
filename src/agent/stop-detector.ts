@@ -77,11 +77,11 @@ export async function detectSemanticStopIntent(
             {
               type: "text",
               text: [
-                "用户向正在执行任务的助手发送了以下消息。判断用户是否在明确要求助手立刻停止/中止当前正在进行的工作。",
-                "规则：",
-                "- 如果用户要求停止某个软件/服务/进程、或在提问（如“什么是 stop words”）、或在补充新指令，输出 NO。",
-                "- 只有明确叫助手本人停下来、别做了、中止当前任务时，输出 YES。",
-                `消息：${normalized}`,
+                "The user sent the following message to an AI assistant that is currently executing a task. Determine whether the user is explicitly telling the assistant to immediately stop or abort its current task.",
+                "Rules:",
+                "- Output NO if the user is asking to stop a software/service/process, asking a question (e.g., 'what are stop words'), or providing additional/modified instructions.",
+                "- Output YES ONLY if the user is clearly instructing the assistant itself to stop working, quit, or abort the current task.",
+                `Message: ${normalized}`,
               ].join("\n"),
             },
           ],

@@ -25,6 +25,18 @@ on:
         required: false
         default: ""
         type: string
+      e2e_level:
+        description: "Pre-release automated E2E level (default: affected+p0 = changed suites + P0 core)"
+        required: true
+        default: "affected+p0"
+        type: choice
+        options:
+          - affected+p0
+          - all
+          - p0+p1
+          - p0
+          - affected
+          - skip
 
 permissions:
   contents: write
@@ -42,6 +54,7 @@ jobs:
       release_tag: ${{ steps.meta.outputs.release_tag }}
       release_notes: ${{ steps.meta.outputs.release_notes }}
       web_build_id: ${{ steps.meta.outputs.web_build_id }}
+      e2e_level: ${{ steps.meta.outputs.e2e_level }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -61,10 +74,12 @@ jobs:
             fi
             TAG="$REF_TAG"
             NOTES=""
+            E2E_LEVEL="affected+p0"
           else
             MODE="${{ inputs.mode }}"
             INPUT_TAG="${{ inputs.release_tag }}"
             NOTES="${{ inputs.release_notes }}"
+            E2E_LEVEL="${{ inputs.e2e_level || 'affected+p0' }}"
             if [[ -n "$INPUT_TAG" ]]; then
               TAG="$INPUT_TAG"
             elif [[ "$MODE" == "full" ]]; then
@@ -73,11 +88,26 @@ jobs:
               TAG="ota-${STAMP}.${GITHUB_RUN_NUMBER}"
             fi
           fi
+          if [[ "$MODE" == "full" ]]; then
+            if [[ "$TAG" != "v${PKG_VER}" ]]; then
+              echo "::error::Full release tag ($TAG) must match package.json version (v${PKG_VER}). Run 'npm run version:bump' before tagging."
+              exit 1
+            fi
+            node -e '
+              const v = process.argv[1];
+              const m = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(v);
+              if (!m || Number(m[2]) > 19 || Number(m[3]) > 9) {
+                console.error(`Version "${v}" violates TwinkleBot convention (MINOR 0-19, PATCH 0-9).`);
+                process.exit(1);
+              }
+            ' "$PKG_VER"
+          fi
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "release_notes=$NOTES" >> "$GITHUB_OUTPUT"
           echo "web_build_id=$WEB_STAMP" >> "$GITHUB_OUTPUT"
-          echo "Resolved mode=$MODE release_tag=$TAG web_build_id=$WEB_STAMP"
+          echo "e2e_level=$E2E_LEVEL" >> "$GITHUB_OUTPUT"
+          echo "Resolved mode=$MODE release_tag=$TAG web_build_id=$WEB_STAMP e2e_level=$E2E_LEVEL"
 
       - name: Prepare Draft Release in distribution repo (full mode)
         if: steps.meta.outputs.mode == 'full'
@@ -97,9 +127,64 @@ jobs:
             --title "TwinkleBot ${RELEASE_TAG}" \
             --notes "$NOTES_TEXT"
 
+  release-e2e:
+    name: Pre-Release Automated E2E (${{ needs.prepare.outputs.e2e_level }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip E2E when explicitly requested
+        if: needs.prepare.outputs.e2e_level == 'skip'
+        run: echo "e2e_level=skip — skipping automated E2E gate as requested."
+
+      - name: Checkout repository (with tags for release diff)
+        if: needs.prepare.outputs.e2e_level != 'skip'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        if: needs.prepare.outputs.e2e_level != 'skip'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install system X11, SVG tools & official Google Chrome
+        if: needs.prepare.outputs.e2e_level != 'skip'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            librsvg2-bin imagemagick xvfb xdotool wmctrl xclip x11-utils curl ca-certificates
+          if ! command -v google-chrome-stable >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
+            curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb
+            sudo apt-get install -y /tmp/chrome.deb
+            rm -f /tmp/chrome.deb
+          fi
+
+      - name: Install dependencies & build
+        if: needs.prepare.outputs.e2e_level != 'skip'
+        run: |
+          npm ci
+          npm run build:ts
+
+      - name: Run configured pre-release E2E level
+        if: needs.prepare.outputs.e2e_level != 'skip'
+        env:
+          TWINKLEBOT_E2E_HEADLESS: "1"
+          E2E_LEVEL: ${{ needs.prepare.outputs.e2e_level }}
+        run: |
+          node scripts/run-e2e.mjs --tier="$E2E_LEVEL" --since-last-tag
+
+      - name: Publish E2E report to Job Summary
+        if: always() && needs.prepare.outputs.e2e_level != 'skip'
+        run: |
+          if [ -f test-results/reports/latest.md ]; then
+            cat test-results/reports/latest.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   publish-ota-only:
     name: Fast Pure-Frontend OTA Release
-    needs: prepare
+    needs: [prepare, release-e2e]
     if: needs.prepare.outputs.mode == 'ota-only'
     runs-on: ubuntu-latest
     steps:
@@ -174,7 +259,7 @@ jobs:
 
   build-desktop:
     name: Build Desktop (${{ matrix.platform }})
-    needs: prepare
+    needs: [prepare, release-e2e]
     if: needs.prepare.outputs.mode == 'full'
     runs-on: ${{ matrix.os }}
     strategy:
@@ -260,7 +345,7 @@ jobs:
 
   build-android:
     name: Build Android APK
-    needs: prepare
+    needs: [prepare, release-e2e]
     if: needs.prepare.outputs.mode == 'full'
     runs-on: ubuntu-latest
     steps:

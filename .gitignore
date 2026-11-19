@@ -16,3 +16,4 @@ android/app/build/
 android/build/
 ios/App/Pods/
 .omo/
+test-results/

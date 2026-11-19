@@ -258,14 +258,6 @@ export async function handleMailRoutes(
           }
 
           if (method === "DELETE" && !isTestSub) {
-            const provider = resolveTargetMailProvider({ explicitId: accountId });
-            const { accounts } = normalizeMailAuthStore(ctx.store?.readMailAuth?.() || {});
-            if (
-              accounts.some((a) => a.id === accountId) &&
-              !ctx.getInstalledSkills().includes(provider)
-            ) {
-              return sendJson(res, 400, { error: MAIL_SKILL_NOT_INSTALLED });
-            }
             const removed = removeMailAccount(ctx.store, accountId);
             if (!removed.ok) {
               return sendJson(res, removed.status, { error: removed.error });

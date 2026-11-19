@@ -589,8 +589,31 @@ function syncUsageStateFromSessionData(session: any, data: any, fallbackObserved
   };
 }
 
+function activeSessionStorageKey(accountId?: string | null): string {
+  return `tb_active_session:${String(accountId || LOCAL_ACCOUNT_ID)}`;
+}
+
+function saveLastActiveSessionId(sessionId: string) {
+  if (!sessionId || typeof sessionStorage === "undefined") return;
+  try {
+    const accountId = getState().accountsState?.activeAccountId || LOCAL_ACCOUNT_ID;
+    sessionStorage.setItem(activeSessionStorageKey(accountId), sessionId);
+  } catch {}
+}
+
+function readLastActiveSessionId(): string {
+  if (typeof sessionStorage === "undefined") return "";
+  try {
+    const accountId = getState().accountsState?.activeAccountId || LOCAL_ACCOUNT_ID;
+    return String(sessionStorage.getItem(activeSessionStorageKey(accountId)) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function selectSession(sessionId: string) {
   if (!sessionId) return;
+  saveLastActiveSessionId(sessionId);
   const selectSeq = ++runtimeRefs.selectSessionSeq;
   const opts = runtimeRefs.nextSelectOpts || {};
   runtimeRefs.nextSelectOpts = null;
@@ -1684,7 +1707,14 @@ export async function reloadWorkspaceForActiveAccount(epoch = getState().account
     const primary = getPrimarySessionFromState(getState());
     if (primary) {
       setState({ primarySessionId: primary.id });
-      await selectSession(primary.id);
+    }
+    const savedSessionId = readLastActiveSessionId();
+    const restored = savedSessionId
+      ? sessions.find((s: any) => s.id === savedSessionId)
+      : null;
+    const initialSession = restored || primary || sessions[0] || null;
+    if (initialSession) {
+      await selectSession(initialSession.id);
     } else {
       renderEmptyState();
     }

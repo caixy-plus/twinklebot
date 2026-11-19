@@ -422,7 +422,7 @@ function buildRecentRouteContext(store: any, sessionId: string): string {
     return picked
       .map(
         (e: any) =>
-          `${e.type === "user" ? "用户" : "Bot"}：${String(e.text || "").replace(/\s+/g, " ").slice(0, 200)}`
+          `${e.type === "user" ? "User" : "Bot"}: ${String(e.text || "").replace(/\s+/g, " ").slice(0, 200)}`
       )
       .join("\n");
   } catch {
@@ -713,7 +713,7 @@ async function runTaskInner({
       const prefixParts: string[] = [];
       if (meta.replyTo?.snippet) {
         prefixParts.push(
-          `[回复消息 (${meta.replyTo.author || "对话"}): "${meta.replyTo.snippet}"]`
+          `[Replying to (${meta.replyTo.author || "message"}): "${meta.replyTo.snippet}"]`
         );
       }
       if (Array.isArray(meta.quotes) && meta.quotes.length > 0) {
@@ -723,9 +723,9 @@ async function runTaskInner({
         const attDesc = meta.attachments
           .map((a: any) => {
             if (!a) return "";
-            const label = a.name || a.filename || a.path || "附件";
+            const label = a.name || a.filename || a.path || "attachment";
             const loc = a.path || a.url || "";
-            return loc ? `[附件: ${label} (${loc})]` : `[附件: ${label}]`;
+            return loc ? `[Attachment: ${label} (${loc})]` : `[Attachment: ${label}]`;
           })
           .filter(Boolean);
         if (attDesc.length > 0) {
@@ -920,7 +920,12 @@ async function runTaskInner({
       // Seal dangling unanswered user_input from a prior crashed/timed-out run so new turns don't re-trigger it
       history.push({
         type: "model_output",
-        content: [{ type: "text", text: "[系统提示：更早一轮请求未完成即中断，请专注响应用户最新消息]" }],
+        content: [
+          {
+            type: "text",
+            text: "[System Notice: The previous turn was interrupted before completion. Focus on responding to the user's latest message.]",
+          },
+        ],
       });
     }
     if (userAttachmentImages.length > 0) {
@@ -983,7 +988,7 @@ async function runTaskInner({
       effectiveInputText = `${effectiveInputText}\n\n${joined}`.trim();
       history.push(
         userStep(
-          `[用户在你当前处理过程中发来了新的补充/指令，请结合以上已完成进度与新要求立即调整并继续处理]\n${joined}`,
+          `[The user sent new follow-up instructions while you were working. Immediately adjust based on completed progress and the new instructions below, then continue.]\n${joined}`,
           steeredImages.length > 0 ? steeredImages : null
         )
       );
@@ -1055,11 +1060,11 @@ async function runTaskInner({
                     ? 1200
                     : 800;
               const ruleHint = compressionRules.customInstruction
-                ? `\n额外保留规则：${compressionRules.customInstruction}`
+                ? `\nAdditional retention rule: ${compressionRules.customInstruction}`
                 : "";
               const userPrompt = meta?.priorSummary
-                ? `请将「已有摘要」与「新增待归档对话」合并更新为一版完整的结构化中文记忆摘要：\n\n[已有摘要]\n${meta.priorSummary}\n\n[新增待归档对话]\n${meta.deltaTranscript || transcript}`
-                : `请将以下较早历史记录压缩为结构化中文摘要：\n\n${transcript}`;
+                ? `Merge and update the "Prior Summary" and "New Turns to Archive" into a single complete structured memory summary:\n\n[Prior Summary]\n${meta.priorSummary}\n\n[New Turns to Archive]\n${meta.deltaTranscript || transcript}`
+                : `Compress the following earlier conversation history into a structured memory summary:\n\n${transcript}`;
 
               const timeoutCtrl = new AbortController();
               const timer = setTimeout(() => timeoutCtrl.abort(), 12_000);
@@ -1075,7 +1080,7 @@ async function runTaskInner({
                   thinkingLevel: "low",
                   timeoutMs: 12_000,
                   systemInstruction:
-                    `你是上下文压缩助手。请将较早的对话与工具调用记录压缩为四栏结构化中文记忆摘要：【核心目标与约束】【已完成结论】【关键文件与环境】【待办与当前衔接】。若提供了已有摘要，请在其基础上做增量状态合并与刷新，保留仍然有效的文件路径、端口、命令结果与用户约束，剔除已废弃信息。总字数控制在 ${summaryWordCap} 字以内，严禁编造信息。` +
+                    `You are a context compression assistant. Compress earlier conversation turns and tool calls into a structured 4-section memory summary using these exact section headers: [Core Goals & Constraints], [Completed Decisions], [Key Files & Environment], and [Pending Tasks & Next Steps]. Write the summary body in the primary language of the conversation while preserving exact file paths, ports, command outputs, proper nouns, and user constraints verbatim. If a Prior Summary is provided, perform an incremental state merge and refresh — keep still-valid facts and drop obsolete details. Keep the total length concise (under ~${summaryWordCap} characters/words) and NEVER fabricate information.` +
                     ruleHint,
                   input: [userStep(userPrompt, null)],
                   tools: [],
@@ -1198,7 +1203,7 @@ async function runTaskInner({
           smart.baseTier = smartEsc.tier;
         }
         if (smartEsc?.nudge) {
-          history.push(userStep(`[系统提示] ${smartEsc.nudge}`, null));
+          history.push(userStep(`[System Notice] ${smartEsc.nudge}`, null));
         }
         beginStep(smart.runtime);
       }
@@ -1487,7 +1492,7 @@ async function runTaskInner({
             content: [
               {
                 type: "text",
-                text: `[系统提示：本轮请求执行中断或超时（${err?.message || "unknown error"}），未生成有效回复]`,
+                text: `[System Notice: This turn was interrupted or timed out (${err?.message || "unknown error"}) without producing a valid reply.]`,
               },
             ],
           });
@@ -1607,7 +1612,7 @@ async function runTaskInner({
           consecutiveErrors += 1;
           history.push(
             userStep(
-              "[系统提示：上一轮输出因达到长度上限被截断且未生成可见正文或工具调用，请直接给出精简结论或分步调用工具]",
+              "[System Notice: The previous output hit the length limit and was truncated before producing visible text or tool calls. Provide a concise answer directly or issue tool calls in smaller steps.]",
               null
             )
           );

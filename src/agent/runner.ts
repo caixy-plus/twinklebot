@@ -189,9 +189,9 @@ export function createRunner({
     hopDepth?: number;
   }): void {
     const promptForTarget =
-      `[跨 Bot 内部交接 · 来自 "${fromBot?.title || "Bot"}"]\n` +
+      `[Inter-Bot Handoff · From "${fromBot?.title || "Bot"}"]\n` +
       `${message}\n\n` +
-      `请根据你的职责处理该交接事项，并在完成后给出一句简短明确的状态结论。如需进一步转交其他 Bot，可调用 send_bot_message。`;
+      `Please handle this handoff according to your role and conclude with a concise, clear status update. If another Bot needs to take over next, you may call send_bot_message.`;
 
     const job = {
       text: promptForTarget,
@@ -377,7 +377,7 @@ export function createRunner({
       const eventsSoFar = store?.readEvents?.(groupSession.id) || [];
       let enrichedUserText = userText;
       if (userMeta?.replyTo?.snippet) {
-        enrichedUserText = `[回复 ${userMeta.replyTo.author || "消息"}: "${userMeta.replyTo.snippet}"]\n${enrichedUserText}`;
+        enrichedUserText = `[Replying to ${userMeta.replyTo.author || "message"}: "${userMeta.replyTo.snippet}"]\n${enrichedUserText}`;
       }
       const groupPrompt = buildGroupPromptContext(eventsSoFar, enrichedUserText);
 

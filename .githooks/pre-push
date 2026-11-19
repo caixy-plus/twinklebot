@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+# TwinkleBot non-blocking pre-push reminder for GitHub Release tags (v* / ota-*).
+# Silent on normal branch pushes and local edits; ONLY reminds when pushing release tags.
+
+RELEASE_TAGS=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/tags/v*|refs/tags/ota-*)
+      RELEASE_TAGS="$RELEASE_TAGS ${remote_ref#refs/tags/}"
+      ;;
+  esac
+done
+
+if [ -n "$RELEASE_TAGS" ] && command -v node >/dev/null 2>&1 && [ -f ".agents/skills/twinklebot-e2e/scripts/check-e2e-sync.mjs" ]; then
+  echo ""
+  echo "[twinklebot-e2e] Pushing GitHub Release tag(s):$RELEASE_TAGS"
+  echo "[twinklebot-e2e] Default GitHub Release E2E gate: affected+p0 (changed areas + P0 core)."
+  echo "[twinklebot-e2e] Supported levels: affected+p0 (default) | all | p0+p1 | p0 | affected | skip"
+  node .agents/skills/twinklebot-e2e/scripts/check-e2e-sync.mjs --since-last-tag || true
+  echo ""
+fi
+
+exit 0

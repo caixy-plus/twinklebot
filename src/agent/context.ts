@@ -1,7 +1,16 @@
 import type { ContextCompressionSettings } from "../shared/entities.js";
 import { DEFAULT_MODEL_CONTEXT_WINDOW } from "../shared/context-compression.js";
 
-export const CONTEXT_SUMMARY_PREFIX = "[自动上下文压缩摘要]";
+export const CONTEXT_SUMMARY_PREFIX = "[Auto Context Summary]";
+export const LEGACY_CONTEXT_SUMMARY_PREFIX = "[自动上下文压缩摘要]";
+
+export function isContextSummaryText(text: string): boolean {
+  return (
+    typeof text === "string" &&
+    (text.startsWith(CONTEXT_SUMMARY_PREFIX) ||
+      text.startsWith(LEGACY_CONTEXT_SUMMARY_PREFIX))
+  );
+}
 export const DEFAULT_KEEP_SCREENSHOTS = 3;
 export const DEFAULT_COMPACT_TOOL_OUTPUT_CHARS = 1200;
 export const RECENT_BUDGET_RATIO = 0.4;
@@ -99,15 +108,15 @@ export function extractFileOperationsFromSteps(steps: any[]): ExtractedFileOpera
     if (step.type === "user_input" && Array.isArray(step.content)) {
       for (const part of step.content) {
         if (part?.type !== "text" || typeof part.text !== "string") continue;
-        if (!part.text.startsWith(CONTEXT_SUMMARY_PREFIX)) continue;
-        const modMatch = part.text.match(/已修改文件[：:]\s*([^\n]+)/);
+        if (!isContextSummaryText(part.text)) continue;
+        const modMatch = part.text.match(/(?:Modified files|已修改文件)[：:]\s*([^\n]+)/i);
         if (modMatch) {
           for (const item of modMatch[1].split(/[,，]/)) {
             const p = item.trim();
             if (p) modifiedSet.add(p);
           }
         }
-        const readMatch = part.text.match(/已读取文件[：:]\s*([^\n]+)/);
+        const readMatch = part.text.match(/(?:Read files|已读取文件)[：:]\s*([^\n]+)/i);
         if (readMatch) {
           for (const item of readMatch[1].split(/[,，]/)) {
             const p = item.trim();
@@ -132,14 +141,14 @@ function appendFileOpsToSummary(summaryText: string, olderSteps: any[]): string 
     return clean;
   }
   const lines: string[] = [];
-  if (modifiedFiles.length > 0 && !clean.includes("已修改文件")) {
-    lines.push(`已修改文件：${modifiedFiles.join(", ")}`);
+  if (modifiedFiles.length > 0 && !/(?:Modified files|已修改文件)[：:]/i.test(clean)) {
+    lines.push(`Modified files: ${modifiedFiles.join(", ")}`);
   }
-  if (readFiles.length > 0 && !clean.includes("已读取文件")) {
-    lines.push(`已读取文件：${readFiles.join(", ")}`);
+  if (readFiles.length > 0 && !/(?:Read files|已读取文件)[：:]/i.test(clean)) {
+    lines.push(`Read files: ${readFiles.join(", ")}`);
   }
   if (lines.length === 0) return clean;
-  return `${clean}\n\n[文件操作记录]\n${lines.join("\n")}`;
+  return `${clean}\n\n[File Operations]\n${lines.join("\n")}`;
 }
 
 export function sanitizeOrphanedCalls(input: any[]): any[] {
@@ -521,7 +530,7 @@ function truncateMiddleText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const head = Math.floor(maxChars * 0.35);
   const tail = Math.floor(maxChars * 0.6);
-  return `${text.slice(0, head)}\n...[中间略]...\n${text.slice(-tail)}`;
+  return `${text.slice(0, head)}\n...[middle omitted]...\n${text.slice(-tail)}`;
 }
 
 export function prepareIncrementalSummaryInput(
@@ -541,10 +550,13 @@ export function prepareIncrementalSummaryInput(
       if (!joined || joined === "Current screen:" || joined === "Current desktop screen:") {
         continue;
       }
-      if (joined.startsWith(CONTEXT_SUMMARY_PREFIX)) {
+      if (isContextSummaryText(joined)) {
+        const prefixLen = joined.startsWith(CONTEXT_SUMMARY_PREFIX)
+          ? CONTEXT_SUMMARY_PREFIX.length
+          : LEGACY_CONTEXT_SUMMARY_PREFIX.length;
         const cleaned = joined
-          .slice(CONTEXT_SUMMARY_PREFIX.length)
-          .replace(/^\s*以下是较早对话的自动压缩摘要[^：\n]*[：:]?\s*/i, "")
+          .slice(prefixLen)
+          .replace(/^\s*(?:The following is an auto-compressed summary[^\n:]*:|以下是较早对话的自动压缩摘要[^：\n]*[：:]?)\s*/i, "")
           .trim();
         if (cleaned) priorParts.push(cleaned);
       } else {
@@ -603,7 +615,7 @@ export function applyCompressedSummary(
     content: [
       {
         type: "text",
-        text: `${CONTEXT_SUMMARY_PREFIX}\n以下是较早对话的自动压缩摘要，请将其作为背景上下文继续当前任务：\n${cleanSummary}`,
+        text: `${CONTEXT_SUMMARY_PREFIX}\nThe following is an auto-compressed summary of earlier conversation turns. Use it as background context to continue the current task:\n${cleanSummary}`,
       },
     ],
   };
@@ -679,7 +691,7 @@ export function buildExtractiveFallbackSummary(
       const txt = extractStepTexts(step);
       if (
         txt &&
-        !txt.startsWith(CONTEXT_SUMMARY_PREFIX) &&
+        !isContextSummaryText(txt) &&
         txt !== "Current screen:" &&
         txt !== "Current desktop screen:"
       ) {
@@ -712,21 +724,21 @@ export function buildExtractiveFallbackSummary(
 
   const sections: string[] = [];
   if (priorSummary) {
-    sections.push(`【承接前序摘要】\n${priorSummary.slice(0, Math.floor(maxChars * 0.45))}`);
+    sections.push(`[Carried-Over Prior Summary]\n${priorSummary.slice(0, Math.floor(maxChars * 0.45))}`);
   }
   if (userRequests.length > 0) {
     const keptReqs = userRequests.slice(-6).map((r, i) => `${i + 1}. ${r}`).join("\n");
-    sections.push(`【较早用户指令记录】\n${keptReqs}`);
+    sections.push(`[Earlier User Instructions]\n${keptReqs}`);
   }
   if (assistantNotes.length > 0) {
     const keptNotes = assistantNotes.slice(-4).map((n) => `- ${n}`).join("\n");
-    sections.push(`【已回复要点】\n${keptNotes}`);
+    sections.push(`[Key Assistant Replies]\n${keptNotes}`);
   }
   const metaParts: string[] = [];
-  if (fileRefs.size > 0) metaParts.push(`涉及路径：${[...fileRefs].slice(0, 10).join(", ")}`);
-  if (toolNames.size > 0) metaParts.push(`已调用工具：${[...toolNames].slice(0, 8).join(", ")}`);
+  if (fileRefs.size > 0) metaParts.push(`Paths: ${[...fileRefs].slice(0, 10).join(", ")}`);
+  if (toolNames.size > 0) metaParts.push(`Tools called: ${[...toolNames].slice(0, 8).join(", ")}`);
   if (metaParts.length > 0) {
-    sections.push(`【文件与工具线索】\n${metaParts.join("；")}`);
+    sections.push(`[Files & Tools]\n${metaParts.join("; ")}`);
   }
 
   const combined = sections.join("\n\n").trim();

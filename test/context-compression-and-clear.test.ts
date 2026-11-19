@@ -686,7 +686,7 @@ test("runTask invokes model.summarizeTurn (not non-existent runStep) with tier f
 
     assert.equal(out.status, "done");
     const ctxSummarizeCalls = summarizeCalls.filter((c) =>
-      String(c.systemInstruction || "").includes("上下文压缩助手")
+      String(c.systemInstruction || "").includes("context compression assistant")
     );
     assert.equal(ctxSummarizeCalls.length, 1, "expected loop to invoke model.summarizeTurn for context compression");
     assert.equal(ctxSummarizeCalls[0].model, "custom::deepseek-chat");
@@ -753,7 +753,7 @@ test("runTask calibrates compression budget using real API usage.input across tu
   const events: any[] = [];
   const model = {
     async summarizeTurn(opts: any) {
-      if (String(opts?.systemInstruction || "").includes("上下文压缩助手")) {
+      if (String(opts?.systemInstruction || "").includes("context compression assistant")) {
         ctxSummarizeCount += 1;
       }
       return {
@@ -906,9 +906,24 @@ test("extractFileOperationsFromSteps and compressContextHistory preserve read/mo
   );
   assert.equal(compressed.changed, true);
   const summaryText = compressed.history[0]?.content?.[0]?.text || "";
-  assert.match(summaryText, /\[文件操作记录\]/);
-  assert.match(summaryText, /已修改文件：C:\\proj\\src\\index\.ts/);
-  assert.match(summaryText, /已读取文件：C:\\proj\\README\.md/);
+  assert.match(summaryText, /\[File Operations\]/);
+  assert.match(summaryText, /Modified files: C:\\proj\\src\\index\.ts/);
+  assert.match(summaryText, /Read files: C:\\proj\\README\.md/);
+
+  // Verify backward compatibility when extracting file ops from legacy Chinese summaries
+  const legacyOps = extractFileOperationsFromSteps([
+    {
+      type: "user_input",
+      content: [
+        {
+          type: "text",
+          text: "[自动上下文压缩摘要]\n[文件操作记录]\n已修改文件：C:\\proj\\legacy.ts\n已读取文件：C:\\proj\\old.md",
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(legacyOps.modifiedFiles, ["C:\\proj\\legacy.ts"]);
+  assert.deepEqual(legacyOps.readFiles, ["C:\\proj\\old.md"]);
 });
 
 test("sanitizeSurrogates strips unpaired UTF-16 surrogates while keeping valid emoji pairs intact", () => {

@@ -1,0 +1,953 @@
+{
+  "schemaVersion": 1,
+  "skillName": "twinklebot-e2e",
+  "reportConvention": {
+    "summaryJson": "test-results/e2e-summary.json",
+    "evidenceDir": "test-results/evidence",
+    "reportDir": "test-results/reports",
+    "latestReport": "test-results/reports/latest.md",
+    "archiveDir": "docs/e2e-reports"
+  },
+  "watchRoots": [
+    "src/server/routes/",
+    "src/web/components/",
+    "src/agent/bot-tools/",
+    "src/agent/providers/",
+    "src/electron/",
+    "executor/executor.py",
+    "src/cli/",
+    "src/landing/"
+  ],
+  "suites": [
+    {
+      "id": "p0-onboarding-and-chat",
+      "tier": "P0",
+      "name": "Onboarding, Gemini Interactions, Streaming Chat, Steering, Stop & F5 Recovery",
+      "runtime": "node",
+      "file": "test/e2e/p0-onboarding-and-chat.e2e.ts",
+      "compiledFile": "e2e/p0-onboarding-and-chat.e2e.js",
+      "sourceGlobs": [
+        "src/agent/providers/gemini-driver.ts",
+        "src/agent/loop.ts",
+        "src/agent/runner.ts",
+        "src/agent/stop-detector.ts",
+        "src/agent/thinking-summarizer.ts",
+        "src/server/routes/sessions.ts",
+        "src/server/routes/settings-providers.ts",
+        "src/web/components/modals/OnboardingOverlay.tsx",
+        "src/web/components/chat/ChatStage.tsx",
+        "src/web/components/chat/Composer.tsx",
+        "src/web/services/actions.ts",
+        "src/store/index.ts"
+      ],
+      "cases": [
+        {
+          "id": "P0-ONB-01",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "空工作台自动初始化唯一置顶管理员 Bot Twinkle 并弹出首屏引导遮罩",
+          "module": "Onboarding / Session Bootstrap"
+        },
+        {
+          "id": "P0-ONB-02",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D2",
+          "title": "引导页 4 类供应商预设切换、去重联动 3 档、测速(败/胜)与提交脱敏落盘",
+          "module": "Onboarding / Providers"
+        },
+        {
+          "id": "P0-GEM-01",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D2",
+          "title": "原生 Gemini Interactions API 驱动链路：thought_tokens 计费与 invalid thought signature 自动剥离重试",
+          "module": "Gemini Driver"
+        },
+        {
+          "id": "P0-CHAT-01",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D2",
+          "title": "单聊收发(Enter 发送 / Shift+Enter 换行)、自动改名、流式多气泡与状态徽章流转",
+          "module": "Chat / Composer"
+        },
+        {
+          "id": "P0-CHAT-02",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D2",
+          "title": "运行中呼吸工作条浓缩思考摘要(<=9字)及脏工具路径泄漏拦截",
+          "module": "Thinking Summarizer"
+        },
+        {
+          "id": "P0-CHAT-03",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D2",
+          "title": "运行中 Live Steering 非打断插话：并行多 tool_call 中途插话自动补齐配对并续答",
+          "module": "Agent Loop / Live Steering"
+        },
+        {
+          "id": "P0-CHAT-04",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "显式停止按钮 + 自然语言停止词('停下'/'stop')中止 vs 正常指令('stop nginx')区分",
+          "module": "Stop Detector / Control"
+        },
+        {
+          "id": "P0-RELOAD-01",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "F5 整页刷新后挂起审批态(awaiting_approval)无损恢复并继续完成任务",
+          "module": "Session Persistence / Reload Recovery"
+        }
+      ]
+    },
+    {
+      "id": "p0-security-multibot-and-pairing",
+      "tier": "P0",
+      "name": "Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core & Non-Loopback LAN Pairing",
+      "runtime": "node",
+      "file": "test/e2e/p0-security-multibot-and-pairing.e2e.ts",
+      "compiledFile": "e2e/p0-security-multibot-and-pairing.e2e.js",
+      "sourceGlobs": [
+        "src/agent/policy.ts",
+        "src/agent/tools.ts",
+        "src/agent/host-tools.ts",
+        "src/lib/bot-workspace.ts",
+        "src/lib/device-auth.ts",
+        "src/lib/lan-discovery.ts",
+        "src/server/routes/lan-host.ts",
+        "src/server/routes/sessions.ts",
+        "src/web/components/chat/InteractiveCards.tsx",
+        "src/web/components/sidebar/LeftSidebar.tsx"
+      ],
+      "cases": [
+        {
+          "id": "P0-SEC-01",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "硬编码安全禁区强制拦截：.ssh / .env / *auth*.json / devices.json / Keychain dump",
+          "module": "Policy / Static Guard"
+        },
+        {
+          "id": "P0-SEC-02",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "ApprovalCard 审批闭环：单次允许、暂不允许与 Escape 快捷键拒绝",
+          "module": "Interactive Approval"
+        },
+        {
+          "id": "P0-SEC-03",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "ApprovalCard 始终允许持久化 allowRules 与 risk=high 不可绕过保护",
+          "module": "Policy AllowRules"
+        },
+        {
+          "id": "P0-SEC-04",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D2",
+          "title": "CredentialCard 加密凭据零明文泄漏：browser_type 真实输入、禁入 run_shell、Vault 仅存非敏元数据",
+          "module": "Credential Secret Ref"
+        },
+        {
+          "id": "P0-BOT-01",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "新建单聊 Bot(语义头像自动匹配)、右键克隆、清空历史与删除清理私有目录",
+          "module": "Bot Lifecycle"
+        },
+        {
+          "id": "P0-BOT-02",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "管理员 Bot 固顶与禁删双重保护(UI隐藏删除 + API 403/400)",
+          "module": "Admin Bot Guard"
+        },
+        {
+          "id": "P0-BOT-03",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D1",
+          "title": "单 Bot 私有工作区目录隔离：跨 Bot 文件读取 403 与资料库隔离",
+          "module": "Workspace Isolation"
+        },
+        {
+          "id": "P0-BOT-04",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D2",
+          "title": "多选拉群、#mention-popover @Bot 自动补全点名路由与群聊发言者头部渲染",
+          "module": "Group Chat / Mention"
+        },
+        {
+          "id": "P0-PAIR-01",
+          "priority": "P0",
+          "featureTier": "F1",
+          "difficulty": "D2",
+          "title": "真实非回环局域网 IPv4 401 鉴权拦截 + 双标签 6 位配对码握手换取 deviceToken",
+          "module": "LAN Device Auth & Pairing"
+        }
+      ]
+    },
+    {
+      "id": "p1-sandbox-electron-and-bridge",
+      "tier": "P1",
+      "name": "Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog & Cloud↔Host Bridge",
+      "runtime": "node",
+      "file": "test/e2e/p1-sandbox-electron-and-bridge.e2e.ts",
+      "compiledFile": "e2e/p1-sandbox-electron-and-bridge.e2e.js",
+      "sourceGlobs": [
+        "executor/executor.py",
+        "src/agent/executor-client.ts",
+        "src/agent/screen-pool-manager.ts",
+        "src/shared/screen-pool.ts",
+        "src/shared/computer-status.ts",
+        "src/shared/versioning.ts",
+        "src/lib/host-bridge.ts",
+        "src/lib/tar-gzip.ts",
+        "src/lib/bot-computer-provisioner.ts",
+        "src/lib/bot-computer-updater.ts",
+        "src/lib/wsl-ubuntu.ts",
+        "src/electron/main.ts",
+        "src/electron/web-ota.ts",
+        "src/electron/env-loader.ts",
+        "src/electron/desktop-prefs.ts",
+        "electron/preload.cjs",
+        "src/server/routes/lan-host.ts",
+        "src/server/index.ts",
+        "src/web/components/modals/BotComputerOverlay.tsx",
+        "src/web/services/ota-updater.ts"
+      ],
+      "cases": [
+        {
+          "id": "P1-SBOX-01",
+          "priority": "P1",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "全栈真沙盒闭环：Web UI → Node Agent → 真实 Python executor.py → 真实 Chrome 登录 + send_file 投递卡片",
+          "module": "Fullstack Sandbox"
+        },
+        {
+          "id": "P1-SBOX-02",
+          "priority": "P1",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "共享 Chrome Profile 跨 Bot 登录态(Cookie + localStorage)与双标签并发 DOM 操作隔离",
+          "module": "Sandbox Shared Profile"
+        },
+        {
+          "id": "P1-SBOX-03",
+          "priority": "P1",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "屏幕并发池 FIFO 排队、纯 CLI 零阻塞、调大上限实时唤醒与右侧排队状态徽章",
+          "module": "Screen Lease Pool"
+        },
+        {
+          "id": "P1-SBOX-04",
+          "priority": "P1",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "noVNC 顶栏隐藏注入、人工独占接管(#pause-btn -> #resume-btn 补拍截图续跑)与群聊自动跟屏/手动切屏",
+          "module": "BotComputerOverlay / noVNC"
+        },
+        {
+          "id": "P1-ELEC-01",
+          "priority": "P1",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "真实 Electron v45 主进程启动(短暂闪窗 3~5s 自动关闭)、端口冲突回退、IPC 桥与生产态非可信 OTA 拦截",
+          "module": "Electron Desktop Shell"
+        },
+        {
+          "id": "P1-OTA-01",
+          "priority": "P1",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "纯前端 OTA 热更新全周期：SHA-256 校验、Tar-Slip 拦截、热切静态目录固化与看门狗超时自动回滚",
+          "module": "Web OTA Manager"
+        },
+        {
+          "id": "P1-BRIDGE-01",
+          "priority": "P1",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "云端模式 Bearer 鉴权与静态隐藏 + 本地切 host_executor 角色 409 门控与切回 master 恢复",
+          "module": "Cloud Auth / Runtime Role Gate"
+        },
+        {
+          "id": "P1-BRIDGE-02",
+          "priority": "P1",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "云端↔本地 /ws host_rpc_request 跨网宿主机操控(含全 5 工具与环境变量脱敏)及多宿主机切换",
+          "module": "Cloud↔Host WebSocket Bridge"
+        }
+      ]
+    },
+    {
+      "id": "p1-collab-cards-and-messages",
+      "tier": "P1",
+      "name": "Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandboxed Preview, Multi-Tab/SSE & Inspector/Scheduler",
+      "runtime": "node",
+      "file": "test/e2e/p1-collab-cards-and-messages.e2e.ts",
+      "compiledFile": "e2e/p1-collab-cards-and-messages.e2e.js",
+      "sourceGlobs": [
+        "src/agent/group-coordinator.ts",
+        "src/agent/bot-tools/collab-tools.ts",
+        "src/agent/bot-tools/system-tools.ts",
+        "src/agent/scheduler.ts",
+        "src/lib/file-attachments.ts",
+        "src/lib/ws-server.ts",
+        "src/server/routes/media-files.ts",
+        "src/server/routes/schedules-vault.ts",
+        "src/server/routes/sessions.ts",
+        "src/server/index.ts",
+        "src/web/components/chat/InteractiveCards.tsx",
+        "src/web/components/chat/MessageGroup.tsx",
+        "src/web/components/chat/MarkupPreviewCard.tsx",
+        "src/web/components/inspector/RightInspector.tsx",
+        "src/web/services/realtime.ts",
+        "src/web/preview-utils.ts"
+      ],
+      "cases": [
+        {
+          "id": "P1-GRP-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "群聊协调器 4 项规则：最长前缀优先(@谷歌账号管家 vs @谷歌)、回复优先路由、职责打分选人与 MAX_GROUP_TURNS=3",
+          "module": "Group Coordinator"
+        },
+        {
+          "id": "P1-COLLAB-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "Agent 跨 Bot 工具链(create_bot/send_bot_message/4跳防环/create_bot_group) + 交流胶囊与抽屉",
+          "module": "Multi-Bot Collaboration"
+        },
+        {
+          "id": "P1-CARD-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D1",
+          "title": "ChoiceCard 提问卡全模式：单选、多选、多题步进 1/N、自定义输入与插话自动跳过(.is-superseded)",
+          "module": "Interactive ChoiceCard"
+        },
+        {
+          "id": "P1-CARD-02",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D1",
+          "title": "ApprovalCard 自定义规则编辑器(.btn-edit-rule) + DraftCard 内联编辑确认/取消",
+          "module": "Approval Rule Editor / DraftCard"
+        },
+        {
+          "id": "P1-MSG-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D1",
+          "title": "历史用户消息内联「修改并重发」截断回滚 DOM / NDJSON / History 并重跑",
+          "module": "Message Edit & Rewind"
+        },
+        {
+          "id": "P1-MSG-02",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D1",
+          "title": "消息悬停「回复此消息」锚点定位闪烁 + 正文划词浮窗(#selection-quote-toolbar)多条引用筹码",
+          "module": "Reply Anchor & Selection Quote"
+        },
+        {
+          "id": "P1-MSG-03",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "三入口附件上传(选文件/粘贴图片/舞台拖拽) + 筹码移除 + FileAttachmentCard 下载与缺失置灰",
+          "module": "Attachments & File Delivery"
+        },
+        {
+          "id": "P1-MSG-04",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "MarkupPreviewCard HTML/SVG 实时沙盒预览、无 allow-same-origin 隔离与全屏三档视口切换",
+          "module": "HTML/SVG Sandboxed Preview"
+        },
+        {
+          "id": "P1-SYNC-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "双桌面标签页实时同步 & 首连 /ws 失败自动降级 SSE(/api/events) + billing_updated 通道取证",
+          "module": "Realtime Transport / Multi-Tab Sync"
+        },
+        {
+          "id": "P1-INSP-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "右侧人设保存、Bot 专属记忆启停注入 Prompt 与例行定时任务到期自动唤醒执行",
+          "module": "RightInspector / Memories / Scheduler"
+        }
+      ]
+    },
+    {
+      "id": "p1-skills-mail-and-mcp",
+      "tier": "P1",
+      "name": "Skills Store, Custom SKILL.md, Loopback Mail (IMAP/POP3/SMTP), QQ Mail & MCP Desktop Bridge",
+      "runtime": "node",
+      "file": "test/e2e/p1-skills-mail-and-mcp.e2e.ts",
+      "compiledFile": "e2e/p1-skills-mail-and-mcp.e2e.js",
+      "sourceGlobs": [
+        "src/shared/skills-catalog.ts",
+        "src/lib/custom-skills.ts",
+        "src/lib/mail-accounts.ts",
+        "src/lib/mail-client.ts",
+        "src/lib/mcp-client.ts",
+        "src/agent/bot-tools/integrations.ts",
+        "src/agent/bot-tools/declarations.ts",
+        "src/server/routes/skills.ts",
+        "src/server/routes/mail.ts",
+        "src/web/components/modals/SkillsStoreModal.tsx"
+      ],
+      "cases": [
+        {
+          "id": "P1-SKILL-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D1",
+          "title": "技能商店搜索/分类筛选、内置常驻技能禁删(400)与一键创建「邮箱管家」模板 Bot",
+          "module": "Skills Store"
+        },
+        {
+          "id": "P1-SKILL-02",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D1",
+          "title": "自定义 SKILL.md 全生命周期(新建/YAML 预览/Slug 去重/重命名/启停/删除)与渐进式披露读取",
+          "module": "Custom Skills"
+        },
+        {
+          "id": "P1-SKILL-03",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "通用邮箱对接本地回环 IMAP/POP3/SMTP：域名预设推断、测试/发自测信/保存 + Agent 收读与草稿确认发信",
+          "module": "Mail Integration (Custom Mail)"
+        },
+        {
+          "id": "P1-SKILL-04",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "QQ邮箱专项 + 对话式 skill_configure_mail 缺密凭据卡脱敏 + 卸载技能保留/清除凭据边界取证",
+          "module": "QQ Mail & Credential Cleanup"
+        },
+        {
+          "id": "P1-SKILL-05",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "kimi-cu MCP 安装握手、工具芯片展示、截图回传、子进程 env 脱敏与反自控(com.twinklebot.desktop)拒绝",
+          "module": "MCP Client (kimi-cu)"
+        }
+      ]
+    },
+    {
+      "id": "p1-routing-billing-and-mobile",
+      "tier": "P1",
+      "name": "Multi-Provider Routing Failover, Image/SVG Fallback, Context Compression, Billing & Mobile App Bundle",
+      "runtime": "node",
+      "requiresMobileBundle": true,
+      "file": "test/e2e/p1-routing-billing-and-mobile.e2e.ts",
+      "compiledFile": "e2e/p1-routing-billing-and-mobile.e2e.js",
+      "sourceGlobs": [
+        "src/agent/model.ts",
+        "src/agent/router.ts",
+        "src/agent/route-planner.ts",
+        "src/agent/route-signals.ts",
+        "src/agent/route-stats.ts",
+        "src/agent/pricing.ts",
+        "src/agent/context.ts",
+        "src/agent/image-fallback.ts",
+        "src/agent/providers/*.ts",
+        "src/shared/context-compression.ts",
+        "src/shared/accounts-store.ts",
+        "src/lib/provider-billing.ts",
+        "src/lib/gcp-billing.ts",
+        "src/lib/image-convert.ts",
+        "src/server/routes/settings-providers.ts",
+        "src/server/routes/system.ts",
+        "src/server/routes/media-files.ts",
+        "src/web/mobile-bridge.ts",
+        "src/web/mobile-ui.ts",
+        "src/web/components/mobile/MobileSheets.tsx"
+      ],
+      "cases": [
+        {
+          "id": "P1-ROUTE-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "多供应商 CRUD/测速/启停/删除重平衡 + 429(冷却)/404(屏蔽)自动无感故障转移",
+          "module": "Providers & Failover Router"
+        },
+        {
+          "id": "P1-ROUTE-02",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "智能路由 economy/balanced/quality 切换、关闭 smartRouter 退回规则、route_escalate 主动升档与 route-stats 落盘",
+          "module": "Smart Router v2"
+        },
+        {
+          "id": "P1-ROUTE-03",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "AI 生图 + 无生图模型自动降级 LLM 生成 SVG + /api/images/convert 转 PNG/PDF 落入资料库",
+          "module": "Image Generation & SVG Fallback"
+        },
+        {
+          "id": "P1-ROUTE-04",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "3 阶段上下文自动压缩与 413 context_length_exceeded 溢出强制压缩自愈重试",
+          "module": "Context Compression"
+        },
+        {
+          "id": "P1-BILL-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "用量与账单：单轮预算护栏、DeepSeek 实时查余与定时周期、手动校准(set/add/sub/clear)与旧版 googleBilling 迁移",
+          "module": "Usage & Billing"
+        },
+        {
+          "id": "P1-MOB-01",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "移动端 dist-web (390×844 触屏) 列表↔对话导航、左缘右滑返回、4 大底部抽屉与创建 13×11 Bot",
+          "module": "Mobile Web Bundle & Sheets"
+        },
+        {
+          "id": "P1-MOB-02",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "移动端局域网发现扫描、手动 IP 输入与全屏桌面横屏解锁(setScreenOrientation sensor -> portrait)",
+          "module": "Mobile Node Discovery & Orientation"
+        },
+        {
+          "id": "P1-MOB-03",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "Android 硬件返回键 22 级优先栈逐级出栈(弹窗 -> 抽屉 -> 对话退列表 -> minimizeApp)",
+          "module": "Mobile Hardware Back Stack"
+        }
+      ]
+    },
+    {
+      "id": "p2-settings-vault-and-permissions",
+      "tier": "P2",
+      "name": "Settings Tabs (Profile/Theme/Compression/Computer/Permissions/Vault/Diagnostics) & Capability Gates",
+      "runtime": "node",
+      "file": "test/e2e/p2-settings-vault-and-permissions.e2e.ts",
+      "compiledFile": "e2e/p2-settings-vault-and-permissions.e2e.js",
+      "sourceGlobs": [
+        "src/web/components/modals/SettingsModal.tsx",
+        "src/web/components/common/SharedPanels.tsx",
+        "src/server/routes/settings-providers.ts",
+        "src/server/routes/schedules-vault.ts",
+        "src/server/routes/system.ts",
+        "src/server/routes/lan-host.ts",
+        "src/web/services/ota-updater.ts"
+      ],
+      "cases": [
+        {
+          "id": "P2-SET-01",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "设置·通用：个人昵称保存与 6 色头像圆点切换(侧边栏联动 + 刷新持久化)",
+          "module": "Settings General / Profile"
+        },
+        {
+          "id": "P2-SET-02",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "设置·通用：浅色/深色/跟随系统主题(color-scheme 同步)、Bot 强调色 vs 默认黑灰与拼写检查开关",
+          "module": "Settings General / Appearance"
+        },
+        {
+          "id": "P2-SET-03",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "设置·通用：上下文压缩预设卡(50%/75%/85%)、滑块、自定义规则与全局共享记忆 CRUD/启停",
+          "module": "Settings General / Compression & Global Memories"
+        },
+        {
+          "id": "P2-SET-04",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "设置·电脑：宿主机策略 always/ask/off(切 off 自动关闭 MCP)、自动展开开关与检测/重置按钮",
+          "module": "Settings Computer"
+        },
+        {
+          "id": "P2-SET-05",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "设置·权限：自动审核开关与 11 类目标工具 askRules / allowRules 增删改",
+          "module": "Settings Permissions"
+        },
+        {
+          "id": "P2-SET-06",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "设置·保险库 Vault：分类筛选(all/login/contact)、实时搜索与条目 CRUD (PATCH /api/vault/:id)",
+          "module": "Settings Vault"
+        },
+        {
+          "id": "P2-SET-07",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "设置·关于与诊断 + 连接 v1.0.0 旧节点动态隐藏 multi-display-v1 屏幕池控件",
+          "module": "Diagnostics & Capability Gate"
+        },
+        {
+          "id": "P2-SET-08",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "LAN 开关关闭停用局域网发现 + 非管理员 Bot 调用 POST /api/computer/provision 返回 403",
+          "module": "LAN Toggle & Admin Provision Gate"
+        }
+      ]
+    },
+    {
+      "id": "p2-micro-ui-markdown-and-shortcuts",
+      "tier": "P2",
+      "name": "Micro UI: Avatar Editor, Badges, Markdown/TSV/SVG, Library, Scroll, IME, Splitters, Palette & Shortcuts",
+      "runtime": "node",
+      "file": "test/e2e/p2-micro-ui-markdown-and-shortcuts.e2e.ts",
+      "compiledFile": "e2e/p2-micro-ui-markdown-and-shortcuts.e2e.js",
+      "sourceGlobs": [
+        "src/web/avatars.ts",
+        "src/web/markdown-utils.ts",
+        "src/web/components/chat/MarkdownRenderer.tsx",
+        "src/web/components/chat/Composer.tsx",
+        "src/web/components/common/AvatarView.tsx",
+        "src/web/components/common/ConfirmDialog.tsx",
+        "src/web/components/common/Toast.tsx",
+        "src/web/components/modals/SecondaryModals.tsx",
+        "src/web/components/inspector/RightInspector.tsx",
+        "src/web/components/sidebar/LeftSidebar.tsx",
+        "src/web/components/App.tsx",
+        "src/web/hooks/*.ts"
+      ],
+      "cases": [
+        {
+          "id": "P2-UI-01",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "右侧头像编辑器：13形状×11颜色切换、恢复默认与名称输入框回车保存",
+          "module": "Avatar Editor / Preset"
+        },
+        {
+          "id": "P2-UI-02",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "右侧头像编辑器：AI 生成头像(含 SVG 降级)与本地上传大图 Canvas 裁剪 128×128 PNG",
+          "module": "Avatar Editor / AI & Upload"
+        },
+        {
+          "id": "P2-UI-03",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "侧边栏微状态：未读蓝点累加/切入清零(touch:false)+未读分割线、空状态与顶部分享克隆",
+          "module": "Sidebar Badges & Header Share"
+        },
+        {
+          "id": "P2-UI-04",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "Markdown 语法细节与安全：标题/引用/嵌套列表/任务复选框/snake_case 保护与 javascript: 危险链接拦截",
+          "module": "MarkdownRenderer"
+        },
+        {
+          "id": "P2-UI-05",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "代码块一键复制与 GFM 表格行数徽章 + 复制 TSV 到剪贴板",
+          "module": "Markdown Code & Table Copy"
+        },
+        {
+          "id": "P2-UI-06",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "HTML/SVG 预览卡微交互：浅色/透明格/深色三态底色循环、刷新与切源码",
+          "module": "MarkupPreviewCard Micro"
+        },
+        {
+          "id": "P2-UI-07",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "右侧资料库 all/media/file 筛选、超 5 项展开收起(#library-expand-btn)与大图灯箱",
+          "module": "Library & Lightbox"
+        },
+        {
+          "id": "P2-UI-08",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "长对话上滚脱离底部浮现「回到底部」(#scroll-bottom-btn)点击平滑吸底",
+          "module": "useChatScrollPin"
+        },
+        {
+          "id": "P2-UI-09",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "中文 IME compositionend 50ms 窗口按 Enter 防误发 + 上传 >10MB 文件拦截弹 Toast",
+          "module": "Composer IME & Size Guard"
+        },
+        {
+          "id": "P2-UI-10",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "左右分栏拖拽调宽(#left-splitter / #right-splitter 边界限制) + 窄屏 <720px/<920px 自动折叠恢复",
+          "module": "Splitters & Responsive Collapse"
+        },
+        {
+          "id": "P2-UI-11",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "⌘K 全局搜索命令面板(搜 Bot / 历史消息 / 快捷导航)与快捷键帮助弹窗(#shortcuts-help-dialog)",
+          "module": "Search Palette & Help Dialog"
+        },
+        {
+          "id": "P2-UI-12",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "全局快捷键(⌘, / ⌘\\\\ / ⌘I / 无焦点 1~6 秒选提问卡)与 Escape 优先关闭栈",
+          "module": "useGlobalShortcuts"
+        }
+      ]
+    },
+    {
+      "id": "p2-cli-and-landing",
+      "tier": "P2",
+      "name": "CLI Tool (Settings Providers / Approval / SIGINT) & Landing Portal Interactive E2E",
+      "runtime": "node",
+      "file": "test/e2e/p2-cli-and-landing.e2e.ts",
+      "compiledFile": "e2e/p2-cli-and-landing.e2e.js",
+      "sourceGlobs": [
+        "src/cli/index.ts",
+        "src/lib/config.ts",
+        "src/lib/github-releases.ts",
+        "src/landing/app.ts",
+        "landing/index.html",
+        "landing/styles.css"
+      ],
+      "cases": [
+        {
+          "id": "P2-CLI-01",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "CLI 空参数退出码 1 + 白盒线索 #1 取证：仅配置 settings.json 供应商(无 GEMINI_API_KEY)运行 CLI",
+          "module": "CLI Multi-Provider Bootstrap"
+        },
+        {
+          "id": "P2-CLI-02",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "CLI 流式执行、readline [y/N] 审批放行、会话落盘与 SIGINT 优雅中断",
+          "module": "CLI Interactive Execution & SIGINT"
+        },
+        {
+          "id": "P2-LAND-01",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "Landing 官网 4 个工作台模拟 Tab 切换(collab/desktop/mobile/routing) + 多 OS UA 自动高亮下载卡",
+          "module": "Landing Page Interactive"
+        },
+        {
+          "id": "P2-LAND-02",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D1",
+          "title": "Landing 官网 GitHub Releases 资产水合、403 限流静态兜底与一键复制按钮",
+          "module": "Landing Hydration & Copy"
+        }
+      ]
+    },
+    {
+      "id": "p3-x11-desktop",
+      "tier": "P3",
+      "name": "OrbStack Ubuntu Real Physical X11 Desktop Input & Window Management",
+      "runtime": "python",
+      "file": "executor/test_e2e_x11_desktop.py",
+      "pythonPattern": "test_e2e_x11_desktop.py",
+      "sourceGlobs": [
+        "executor/executor.py"
+      ],
+      "cases": [
+        {
+          "id": "P3-X11-01",
+          "priority": "P3",
+          "featureTier": "F2",
+          "difficulty": "D3",
+          "title": "Ubuntu 物理 X11 桌面控制：/click、/type(xclip+ctrl+v 中文输入)、/key、/scroll 与 /drag",
+          "module": "Physical X11 Input"
+        },
+        {
+          "id": "P3-X11-02",
+          "priority": "P3",
+          "featureTier": "F3",
+          "difficulty": "D3",
+          "title": "Ubuntu 物理 X11 窗口管理：双 Chrome 窗口 /windows 识别、/focus 切换与 /screenshot 根窗口截屏",
+          "module": "Physical X11 Windows"
+        }
+      ]
+    },
+    {
+      "id": "p3-tray-resilience-and-chaos",
+      "tier": "P3",
+      "name": "Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos Security Redteam",
+      "runtime": "node",
+      "file": "test/e2e/p3-tray-resilience-and-chaos.e2e.ts",
+      "compiledFile": "e2e/p3-tray-resilience-and-chaos.e2e.js",
+      "sourceGlobs": [
+        "electron/tray.html",
+        "electron/tray-preload.cjs",
+        "src/electron/tray.ts",
+        "src/agent/loop.ts",
+        "src/agent/prompt.ts",
+        "src/lib/web-search.ts",
+        "src/lib/gcp-env.ts",
+        "src/server/http-utils.ts",
+        "src/server/static.ts",
+        "src/server/routes/media-files.ts",
+        "src/store/index.ts",
+        "src/web/services/realtime.ts"
+      ],
+      "cases": [
+        {
+          "id": "P3-ELEC-02",
+          "priority": "P3",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "Electron 托盘 UI(electron/tray.html)全状态与按钮交互 + 8 项原生菜单指令联动渲染层",
+          "module": "Electron Tray & Menu Commands"
+        },
+        {
+          "id": "P3-RES-01",
+          "priority": "P3",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "Agent 死循环重复检测告警、finishReason='length' 截断工具拦截重试、markInterrupted 与孤立调用清洗",
+          "module": "Agent Loop Resilience"
+        },
+        {
+          "id": "P3-RES-02",
+          "priority": "P3",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "web_search(DDG→Bing 回退)、workspace_search / library_manage(save_note) 及 /api/workspace/file 安全响应头",
+          "module": "Built-in Tools & Security Headers"
+        },
+        {
+          "id": "P3-CHAOS-01",
+          "priority": "P3",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "安全红队：web_fetch 内网/元数据 SSRF 拦截、URL 空字节 \\\\0、静态目录 .. 穿越与非法截图路径拦截",
+          "module": "Security Redteam (SSRF & Traversal)"
+        },
+        {
+          "id": "P3-CHAOS-02",
+          "priority": "P3",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "认证红队：配对码 5 次输错销毁锁定 403、设备吊销即时 401 与非 GCP 伪造 Vertex 强制阻断",
+          "module": "Auth Redteam & Vertex Gate"
+        },
+        {
+          "id": "P3-CHAOS-03",
+          "priority": "P3",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "存储损坏容错(.ndjson 混入半截非法行跳过不丢数据) + 超大 JSON 请求体拦截返回 400",
+          "module": "Storage Resilience & Body Limits"
+        },
+        {
+          "id": "P3-CHAOS-04",
+          "priority": "P3",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "WebSocket 强制断线 2s 自动重连并无损追平断线期间产生的新消息",
+          "module": "WebSocket Reconnect Sync"
+        }
+      ]
+    },
+    {
+      "id": "p3-live-smoke",
+      "tier": "P3",
+      "name": "Opt-In Live Public API & Real Sandbox Smoke (TWINKLEBOT_E2E_LIVE=1)",
+      "runtime": "node",
+      "liveOnly": true,
+      "file": "test/e2e/p3-live-smoke.e2e.ts",
+      "compiledFile": "e2e/p3-live-smoke.e2e.js",
+      "sourceGlobs": [
+        "src/agent/providers/gemini-driver.ts",
+        "src/agent/providers/openai-driver.ts"
+      ],
+      "cases": [
+        {
+          "id": "P3-LIVE-01",
+          "priority": "P3",
+          "featureTier": "F1",
+          "difficulty": "D3",
+          "title": "可选真实 .env 大模型与真实沙盒端到端冒烟(需配置 TWINKLEBOT_E2E_LIVE=1 与真实 API Key)",
+          "module": "Live API Smoke"
+        }
+      ]
+    }
+  ]
+}

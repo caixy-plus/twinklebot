@@ -49,6 +49,9 @@ jobs:
       - name: Run unit & cross-process integration tests
         run: npm test
 
+      - name: Check E2E catalog integrity & feature coverage sync
+        run: node .agents/skills/twinklebot-e2e/scripts/check-e2e-sync.mjs --ci
+
       - name: Run real Google Chrome multi-tab shared-profile & Web UI E2E tests
         run: npm run test:e2e:chrome
 

@@ -2,6 +2,7 @@ import readline from "node:readline";
 import { loadConfig } from "../lib/config.js";
 import { createExecutorClient } from "../agent/executor-client.js";
 import { createModel } from "../agent/model.js";
+import { isProviderUsable } from "../agent/providers/registry.js";
 import { createStore } from "../store/index.js";
 import { runTask, createControl } from "../agent/loop.js";
 
@@ -12,13 +13,35 @@ async function main() {
     process.exit(1);
   }
 
-  const config = loadConfig(process.env);
+  const config = loadConfig({
+    ...process.env,
+    TWINKLEBOT_ALLOW_UNCONFIGURED: "1",
+  });
+  const store = createStore(config.dataDir);
+  const settings = store.readSettings() || {};
+  const providers = Array.isArray(settings.providers) ? settings.providers : [];
+  const hasUsableProvider = providers.some((p: any) => isProviderUsable(p, process.env));
+  if (!config.geminiApiKey && !hasUsableProvider) {
+    const vertexRequested =
+      process.env.GOOGLE_GENAI_USE_VERTEXAI === "true" ||
+      process.env.GOOGLE_GENAI_USE_VERTEXAI === "1";
+    if (vertexRequested && config.deployEnv !== "cloud") {
+      throw new Error(
+        "Vertex AI 仅支持 GCP 云服务器部署，当前环境请配置 GEMINI_API_KEY (AI Studio)"
+      );
+    }
+    throw new Error("GEMINI_API_KEY is not set");
+  }
+
   const executor = createExecutorClient({
     url: config.executorUrl,
     token: config.executorToken,
   });
-  const model = createModel({ apiKey: config.geminiApiKey });
-  const store = createStore(config.dataDir);
+  const model = createModel({
+    apiKey: config.geminiApiKey,
+    getProviders: () => store.readSettings()?.providers || [],
+    getRouting: () => store.readSettings()?.routing || {},
+  });
 
   const session = store.createSession({
     title: taskText.slice(0, 40),

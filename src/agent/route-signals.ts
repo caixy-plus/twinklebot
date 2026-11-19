@@ -212,7 +212,7 @@ export function decideEscalation(
         tier: "deep",
         reason: "重复操作 · 重新规划",
         thinkingLevel: "high",
-        nudge: "注意：你已连续多次执行完全相同的操作且没有进展，请换一种思路或直接向用户说明情况。",
+        nudge: "Warning: You have repeated the exact same action multiple times with no progress. Try a different approach or explain the blocker directly to the user.",
       };
     }
     if (canSubstituteXhigh && !budget?.canUseDeep?.()) {
@@ -220,7 +220,7 @@ export function decideEscalation(
         tier: "fast",
         reason: "预算保护 · Hydrogen XHigh 重规划",
         thinkingLevel: "xhigh",
-        nudge: "注意：你已连续多次执行完全相同的操作且没有进展，请换一种思路或直接向用户说明情况。",
+        nudge: "Warning: You have repeated the exact same action multiple times with no progress. Try a different approach or explain the blocker directly to the user.",
       };
     }
   }

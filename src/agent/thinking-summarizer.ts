@@ -190,15 +190,15 @@ export async function summarizeThinkingProgress({
   const callsBrief = summarizeCallsContext(calls).slice(0, 220);
 
   const prompt = [
-    "请将当前任务进展提炼成极简中文短语（严格少于 10 个汉字，绝对不能包含任何标点符号），用于聊天界面里的实时状态胶囊。",
-    "严格要求：",
-    "1. 字数严格控制在 4 到 9 个汉字之间，绝不超过 9 个字，绝不加任何标点符号（如句号、逗号、省略号、顿号、引号、空格等）。",
-    "2. 绝不出现具体 shell 命令、代码、工具英文名（如 run_shell/click/read_file）、文件路径、URL 或坐标数字。",
-    "3. 用自然动宾短语概括当前正在做什么（例如：正在核查服务状态、正在查阅相关文件、正在联网搜索信息、正在整理回复内容）。",
-    "4. 只输出该短语本身，不要引号、不要换行、不要编号、不要解释。",
-    userText ? `用户需求：${String(userText).replace(/\s+/g, " ").trim().slice(0, 180)}` : "",
-    thoughtsBrief ? `模型思路：${thoughtsBrief}` : "",
-    callsBrief ? `执行意图：${callsBrief}` : "",
+    "Distill the current task progress into a single ultra-short Chinese phrase (strictly fewer than 10 Chinese characters, with zero punctuation marks) for a live status capsule in the chat UI.",
+    "Strict rules:",
+    "1. Length MUST be strictly 4 to 9 Chinese characters — never exceed 9 characters, and include ZERO punctuation marks or spaces (no periods, commas, ellipses, quotes, spaces, etc.).",
+    "2. NEVER include shell commands, code, English tool names (such as run_shell, click, or read_file), file paths, URLs, or coordinate numbers.",
+    "3. Use a natural Chinese verb-object phrase describing what is currently happening (e.g., 正在核查服务状态, 正在查阅相关文件, 正在联网搜索信息, 正在整理回复内容).",
+    "4. Output ONLY the phrase itself — no quotes, no newlines, no numbering, and no explanation.",
+    userText ? `User request: ${String(userText).replace(/\s+/g, " ").trim().slice(0, 180)}` : "",
+    thoughtsBrief ? `Model thoughts: ${thoughtsBrief}` : "",
+    callsBrief ? `Action intent: ${callsBrief}` : "",
   ]
     .filter(Boolean)
     .join("\n");

@@ -238,7 +238,7 @@ test("Bot tool custom_skill_manage attributes bot creator, executes CRUD, and fe
   assert.match(promptForOtherBot, /custom_skill_manage\(action: "get"/);
   assert.equal(promptForOtherBot.includes("2. 运行 node --check"), false);
   // Auto-judgment instructions present
-  assert.match(promptForOtherBot, /自动判断 记忆 vs 共享自定义技能/);
+  assert.match(promptForOtherBot, /Memory vs\. Shared Custom Skills \(Auto-Classify & Execute Directly\)/);
 
   // Other Bot calls `get` on demand to load full instructions
   const loaded = await runBotCollabTool(

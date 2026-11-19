@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# TwinkleBot non-blocking E2E feature-sync check on staged changes.
+# Silent on routine local edits; ONLY reminds when brand-new unmapped features are staged.
+# Install with: npm run hooks:install  (git config core.hooksPath .githooks)
+
+if command -v node >/dev/null 2>&1 && [ -f ".agents/skills/twinklebot-e2e/scripts/check-e2e-sync.mjs" ]; then
+  node .agents/skills/twinklebot-e2e/scripts/check-e2e-sync.mjs --staged --quiet-if-synced || true
+fi
+
+exit 0

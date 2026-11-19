@@ -59,4 +59,10 @@ contextBridge.exposeInMainWorld("twinklebotDesktop", {
     ipcRenderer.on("twinklebot:ota-progress", handler);
     return () => ipcRenderer.removeListener("twinklebot:ota-progress", handler);
   },
+  onScrollTouch(callback) {
+    if (typeof callback !== "function") return () => {};
+    const handler = (_event, ev) => callback(ev);
+    ipcRenderer.on("twinklebot:scroll-touch", handler);
+    return () => ipcRenderer.removeListener("twinklebot:scroll-touch", handler);
+  },
 });

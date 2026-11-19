@@ -168,6 +168,76 @@ export function compareSemver(a: string, b: string): -1 | 0 | 1 {
   return pa.pre > pb.pre ? 1 : -1;
 }
 
+export const PROJECT_VERSION_MAX_PATCH = 9;
+export const PROJECT_VERSION_MAX_MINOR = 19;
+
+/**
+ * Validates TwinkleBot's project version convention (aligned with cc-gateway):
+ * - Format: `MAJOR.MINOR.PATCH` (no leading zeros on multi-digit parts)
+ * - `PATCH`: 0–9 (at 9, next bump rolls over to 0 and increments MINOR)
+ * - `MINOR`: 0–19 (at 19, next bump rolls over to 0 and increments MAJOR)
+ */
+export function isValidProjectVersion(raw: string): boolean {
+  const cleaned = String(raw || "")
+    .trim()
+    .replace(/^v/i, "");
+  const m = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(cleaned);
+  if (!m) return false;
+  const minor = Number(m[2]);
+  const patch = Number(m[3]);
+  return (
+    minor >= 0 &&
+    minor <= PROJECT_VERSION_MAX_MINOR &&
+    patch >= 0 &&
+    patch <= PROJECT_VERSION_MAX_PATCH
+  );
+}
+
+/**
+ * Bumps a `MAJOR.MINOR.PATCH` version following the cc-gateway rollover convention:
+ * - `patch`: PATCH 0–9 (9 -> 0, MINOR + 1); MINOR 0–19 (19 -> 0, MAJOR + 1)
+ * - `minor`: resets PATCH to 0; MINOR 0–19 (19 -> 0, MAJOR + 1)
+ * - `major`: MAJOR + 1, resets MINOR and PATCH to 0
+ * Examples: `1.0.9 -> 1.1.0`, `1.5.9 -> 1.6.0`, `1.19.9 -> 2.0.0`.
+ */
+export function bumpProjectVersion(
+  current: string,
+  level: "patch" | "minor" | "major" = "patch"
+): string {
+  if (!isValidProjectVersion(current)) {
+    throw new Error(
+      `Invalid project version "${current}": expected MAJOR.MINOR.PATCH with MINOR 0-${PROJECT_VERSION_MAX_MINOR} and PATCH 0-${PROJECT_VERSION_MAX_PATCH}`
+    );
+  }
+  let { major, minor, patch } = parseSemverParts(current);
+  if (level === "major") {
+    major += 1;
+    minor = 0;
+    patch = 0;
+  } else if (level === "minor") {
+    patch = 0;
+    if (minor >= PROJECT_VERSION_MAX_MINOR) {
+      major += 1;
+      minor = 0;
+    } else {
+      minor += 1;
+    }
+  } else {
+    if (patch >= PROJECT_VERSION_MAX_PATCH) {
+      patch = 0;
+      if (minor >= PROJECT_VERSION_MAX_MINOR) {
+        major += 1;
+        minor = 0;
+      } else {
+        minor += 1;
+      }
+    } else {
+      patch += 1;
+    }
+  }
+  return `${major}.${minor}.${patch}`;
+}
+
 export function extractWebBuildParts(raw: string): {
   stampNums: number[];
   hash: string;

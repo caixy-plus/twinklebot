@@ -9,11 +9,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import zlib from "node:zlib";
 import {
   BASELINE_V1_2_CAPABILITIES,
+  bumpProjectVersion,
   CURRENT_API_CAPABILITIES,
   compareSemver,
   compareWebBuild,
   evaluateConnectedNodeStatus,
   evaluateUpdateCompatibility,
+  isValidProjectVersion,
   nodeSupportsCapability,
   resolveDesktopAssetForPlatform,
   type VersionManifest,
@@ -73,6 +75,11 @@ test("version-policy.json stays strictly synchronized with package.json, Android
   );
 
   assert.equal(policy.baselineVersion, "1.0.0");
+  assert.equal(isValidProjectVersion(pkg.version), true, "package.json version must satisfy PATCH 0-9 & MINOR 0-19");
+  assert.equal(isValidProjectVersion(policy.shells.desktop.version), true);
+  assert.equal(isValidProjectVersion(policy.shells.android.version), true);
+  assert.equal(isValidProjectVersion(policy.shells.ios.version), true);
+  assert.equal(isValidProjectVersion(policy.backend.version), true);
   assert.equal(policy.shells.desktop.version, pkg.version);
   assert.equal(policy.backend.version, pkg.version);
   assert.ok(compareSemver(policy.shells.desktop.version, policy.shells.desktop.minVersionForOta) >= 0);
@@ -90,6 +97,26 @@ test("version-policy.json stays strictly synchronized with package.json, Android
   assert.ok(compareSemver(policy.shells.ios.version, policy.shells.ios.minVersionForOta) >= 0);
 
   assert.deepEqual(policy.backend.apiCapabilities, [...CURRENT_API_CAPABILITIES]);
+});
+
+test("bumpProjectVersion and isValidProjectVersion enforce cc-gateway rollover rules (PATCH 0-9, MINOR 0-19)", () => {
+  assert.equal(isValidProjectVersion("1.0.0"), true);
+  assert.equal(isValidProjectVersion("1.19.9"), true);
+  assert.equal(isValidProjectVersion("2.0.0"), true);
+  assert.equal(isValidProjectVersion("1.0.10"), false);
+  assert.equal(isValidProjectVersion("1.20.0"), false);
+  assert.equal(isValidProjectVersion("1.05.0"), false);
+
+  assert.equal(bumpProjectVersion("1.0.0"), "1.0.1");
+  assert.equal(bumpProjectVersion("1.0.9"), "1.1.0");
+  assert.equal(bumpProjectVersion("1.5.9"), "1.6.0");
+  assert.equal(bumpProjectVersion("1.19.8"), "1.19.9");
+  assert.equal(bumpProjectVersion("1.19.9"), "2.0.0");
+  assert.equal(bumpProjectVersion("1.5.3", "minor"), "1.6.0");
+  assert.equal(bumpProjectVersion("1.19.3", "minor"), "2.0.0");
+  assert.equal(bumpProjectVersion("1.5.3", "major"), "2.0.0");
+  assert.throws(() => bumpProjectVersion("1.0.10"), /Invalid project version/);
+  assert.throws(() => bumpProjectVersion("1.20.0"), /Invalid project version/);
 });
 
 test("compareSemver and compareWebBuild enforce monotonic ordering and short-circuit identical hashes", () => {

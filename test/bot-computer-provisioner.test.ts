@@ -180,7 +180,7 @@ test("regular bot blocked from computer provisioning and update_bot_computer whi
     deployEnv: "local",
   });
   assert.match(adminPrompt, /computer_provision/);
-  assert.match(regularPrompt, /仅管理员 Bot 有权/);
+  assert.match(regularPrompt, /Only the Admin Bot has permission/);
 
   const winAdminPrompt = buildSystemInstruction({
     enableBotTools: true,

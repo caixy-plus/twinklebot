@@ -90,10 +90,16 @@ export function ChatStage({
 
   useChatScrollPin(eventStreamRef, composerWrapRef);
 
+  const isPrimaryOrAdmin = Boolean(
+    activeSession &&
+      (activeSession.isAdmin || (primarySessionId && activeSession.id === primarySessionId))
+  );
   const displayName =
     activeSession?.title && activeSession.title !== "New Session"
       ? activeSession.title
-      : "Twinkle";
+      : isPrimaryOrAdmin
+        ? "Twinkle"
+        : "新 Bot";
   const statusKey = sessionStatus || "idle";
   const statusLabel = STATUS_LABELS[statusKey] || statusKey;
   const busy = isSessionCurrentlyBusy(statusKey);

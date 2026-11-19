@@ -692,7 +692,13 @@ export function createServer({
     hasUsableProviderConfig,
     getMergedSettings,
     billingFetchImpl,
-    broadcastEvent: (ev: Record<string, unknown>) => wsServer.broadcast(ev),
+    broadcastEvent: (ev: Record<string, unknown>) => {
+      if (typeof runner?.broadcastGlobal === "function") {
+        runner.broadcastGlobal(ev);
+      } else {
+        wsServer.broadcast(ev);
+      }
+    },
   };
 
   let billingRefreshInFlight = false;

@@ -49,16 +49,52 @@ function scoreBotRelevance(text = "", bot: Partial<GroupMemberBot> = {}): number
 
   if (title && lower.includes(title)) score += 5;
 
-  const tokens = `${title} ${role}`
+  const rawTokens = `${title} ${role}`
     .split(/[\s,，。、；;：:/()（）-]+/)
     .map((t) => t.trim())
     .filter((t) => t.length >= 2);
 
-  for (const tok of tokens) {
-    if (lower.includes(tok)) {
-      score += 2;
+  // Split continuous CJK phrases on common Chinese connectors (与/和/及/的/负责/擅长/专精/等)
+  const expandedTokens = new Set<string>();
+  const cjkChunksForNgrams: string[] = [];
+  for (const tok of rawTokens) {
+    expandedTokens.add(tok);
+    if (/[\u4e00-\u9fff]/.test(tok)) {
+      const subParts = tok
+        .split(/(?:负责|擅长|专精|精通|处理|编写|以及|或者|[与和及的为对在中并等])/)
+        .map((p) => p.trim())
+        .filter((p) => p.length >= 2);
+      for (const p of subParts) {
+        expandedTokens.add(p);
+        if (p.length >= 3 && /^[\u4e00-\u9fff]+$/.test(p)) {
+          cjkChunksForNgrams.push(p);
+        }
+      }
     }
   }
+
+  const matchedTokens = new Set<string>();
+  for (const tok of expandedTokens) {
+    if (lower.includes(tok)) {
+      score += 2;
+      matchedTokens.add(tok);
+    }
+  }
+
+  // Fallback CJK 2-gram overlap for long unspaced Chinese phrases that didn't match verbatim
+  const seenBigrams = new Set<string>();
+  for (const chunk of cjkChunksForNgrams) {
+    if (matchedTokens.has(chunk)) continue;
+    for (let i = 0; i <= chunk.length - 2; i++) {
+      const bi = chunk.slice(i, i + 2);
+      if (seenBigrams.has(bi)) continue;
+      seenBigrams.add(bi);
+      if (lower.includes(bi)) {
+        score += 0.5;
+      }
+    }
+  }
+
   return score;
 }
 
@@ -133,12 +169,12 @@ export function buildGroupPromptContext(
     .slice(-limit);
 
   if (relevant.length === 0) {
-    return `[你 (User)]: ${currentUserText}`;
+    return `[User]: ${currentUserText}`;
   }
 
   const lines = relevant.map((ev) => {
     if (ev.type === "user") {
-      return `[你 (User)]: ${ev.text || ""}`;
+      return `[User]: ${ev.text || ""}`;
     }
     const speaker = ev.botName || "Bot";
     return `[${speaker}]: ${ev.text || ""}`;

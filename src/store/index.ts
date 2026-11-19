@@ -419,8 +419,13 @@ export function createStore(dataDir: string) {
     if (!text) return false;
     if (text === "Current screen:" || text === "Current desktop screen:") return false;
     if (
+      text.startsWith("[Auto Context Summary]") ||
+      text.startsWith("[System Notice]") ||
+      text.startsWith("[System Notice:") ||
+      text.startsWith("[The user sent new follow-up instructions") ||
       text.startsWith("[自动上下文压缩摘要]") ||
       text.startsWith("[系统提示]") ||
+      text.startsWith("[系统提示：") ||
       text.startsWith("[用户在你当前处理过程中发来了新的补充/指令")
     ) {
       return false;

@@ -18,6 +18,7 @@ import {
   parseJsonBody,
   scanWorkspaceFiles,
   sendJson,
+  sendParseBodyError,
 } from "../http-utils.js";
 import {
   runBotCollabTool,
@@ -84,8 +85,8 @@ export async function handleMediaFilesRoutes(
           let body;
           try {
             body = await parseJsonBody(req, 8 * 1024 * 1024);
-          } catch {
-            return sendJson(res, 400, { error: "invalid json" });
+          } catch (err) {
+            return sendParseBodyError(res, err, "invalid json");
           }
           const prompt = String(body?.prompt || "").trim();
           if (!prompt) {
@@ -215,8 +216,8 @@ export async function handleMediaFilesRoutes(
           let body;
           try {
             body = await parseJsonBody(req, 16 * 1024 * 1024);
-          } catch {
-            return sendJson(res, 400, { error: "invalid or oversized json" });
+          } catch (err) {
+            return sendParseBodyError(res, err, "invalid or oversized json");
           }
 
           const targetFormat = String(body?.format || body?.outputFormat || "").trim();
@@ -330,8 +331,8 @@ export async function handleMediaFilesRoutes(
           let body;
           try {
             body = await parseJsonBody(req, 16 * 1024 * 1024);
-          } catch {
-            return sendJson(res, 400, { error: "invalid or oversized payload" });
+          } catch (err) {
+            return sendParseBodyError(res, err, "invalid or oversized payload");
           }
           const rawSessionId = String(body?.sessionId || body?.botId || "").trim();
           const sessionId = rawSessionId ? sanitizeBotWorkspaceId(rawSessionId) : "";

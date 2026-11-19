@@ -227,20 +227,22 @@ test("settings modal scroll stability avoids nested GPU RenderPass clipping and 
   const sidebarFooterBlock = styleCss.match(/\.sidebar-footer\s*\{[^}]+\}/)?.[0] || "";
   assert.equal(sidebarFooterBlock.includes("border-top:"), false);
 
-  assert.match(settingsModalBlock, /max-width:\s*min\(920px,\s*calc\(100vw - 48px\)\)/);
+  assert.match(settingsModalBlock, /max-width:\s*min\(1080px,\s*calc\(100vw - 48px\)\)/);
   assert.match(settingsModalBlock, /height:\s*min\(calc\(100dvh - 124px\),\s*840px\)/);
+  assert.match(settingsModalBlock, /grid-template-columns:\s*204px\s+minmax\(0,\s*1fr\)/);
+  assert.match(settingsContentBlock, /overflow-x:\s*hidden/);
+  assert.match(settingsContentBlock, /min-width:\s*0/);
   assert.ok(
-    styleCss.includes(".settings-modal.is-continuous-scroll .settings-pane + .settings-pane"),
-    "continuous desktop settings modal must separate stacked category panes"
+    styleCss.includes(".settings-inline-editor select:not(.sr-only)"),
+    "inline editor select styling must not override hidden .sr-only select dimensions"
   );
-  assert.ok(
-    styleCss.includes(
-      '.settings-modal.is-continuous-scroll .settings-pane[data-settings-pane="usage"]'
-    ),
-    "continuous desktop settings modal must expand usage pane into the unified vertical scroller"
-  );
-  assert.ok(
+  assert.equal(
     appJs.includes("is-continuous-scroll"),
-    "SettingsModal must enable continuous desktop scroll class"
+    false,
+    "SettingsModal desktop tabs must use per-tab isolated scroll containers rather than stacking all panes"
+  );
+  assert.ok(
+    styleCss.includes(".settings-content.is-usage-pane-active"),
+    "usage tab must retain its dedicated isolated vertical scroll layout"
   );
 });

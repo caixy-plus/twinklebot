@@ -10,6 +10,16 @@ import {
   markModelUnavailable,
 } from "../router.js";
 
+export function extractInteractionSteps(res: any): any[] {
+  if (Array.isArray(res?.steps) && res.steps.length > 0) return res.steps;
+  if (Array.isArray(res?.outputs) && res.outputs.length > 0) return res.outputs;
+  return Array.isArray(res?.steps)
+    ? res.steps
+    : Array.isArray(res?.outputs)
+      ? res.outputs
+      : [];
+}
+
 export function parseToolArguments(rawArgs: unknown): {
   args: Record<string, unknown>;
   parseError?: string;
@@ -261,7 +271,7 @@ export function createGeminiDriver({
         }
       }
 
-      const outputSteps = res?.steps ?? res?.outputs ?? [];
+      const outputSteps = extractInteractionSteps(res);
       const thoughts: string[] = [];
       const textPieces: string[] = [];
       const calls: ModelTurnResult["calls"] = [];
@@ -431,7 +441,7 @@ export function createGeminiDriver({
       if (res?.output_image) {
         pushCandidate(res.output_image);
       }
-      const steps = res?.steps ?? res?.outputs ?? [];
+      const steps = extractInteractionSteps(res);
       const textPieces: string[] = [];
       for (const step of steps) {
         if (!step) continue;

@@ -5,6 +5,7 @@ import {
   useState,
   type FormEvent,
   type TouchEvent as ReactTouchEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
   CONTEXT_COMPRESSION_PRESETS,
@@ -350,15 +351,46 @@ export function SettingsModal() {
 
   const activeTab = settingsModal.tab || "general";
   const isStandalone = Boolean(settingsModal.standaloneBotSessionId);
-  const continuousDesktop = !isStandalone && !isMobileViewport();
 
   const settingsNavRef = useRef<HTMLElement | null>(null);
   const settingsContentRef = useRef<HTMLDivElement | null>(null);
   const wasModalOpenRef = useRef(false);
-  const wasDesktopOpenRef = useRef(false);
-  const scrollSpyTabRef = useRef<string | null>(null);
-  const ignoreScrollSpyUntilRef = useRef<number>(0);
-  const scrollRafRef = useRef<number>(0);
+  const pendingEdgeLandingRef = useRef<"top" | "bottom">("top");
+  const pendingEdgeAnimDirRef = useRef<1 | -1 | 0>(0);
+  const pulledPaneRef = useRef<HTMLElement | null>(null);
+  const pullResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const edgeFillRef = useRef<HTMLSpanElement | null>(null);
+  const [edgePullHint, setEdgePullHint] = useState<{
+    dir: 1 | -1;
+    targetLabel: string;
+  } | null>(null);
+  const edgeWheelRef = useRef<{
+    dir: 1 | -1 | 0;
+    accum: number;
+    lastEventAt: number;
+    lastScrollMoveAt: number;
+    cooldownUntil: number;
+    touchActive: boolean;
+    momentumBlocked: boolean;
+    requireNewGesture: boolean;
+    prevAbsDy: number;
+    peakAbsDy: number;
+    decayStreak: number;
+    webMomentumBlocked: boolean;
+  }>({
+    dir: 0,
+    accum: 0,
+    lastEventAt: 0,
+    lastScrollMoveAt: 0,
+    cooldownUntil: 0,
+    touchActive: false,
+    momentumBlocked: false,
+    requireNewGesture: false,
+    prevAbsDy: 0,
+    peakAbsDy: 0,
+    decayStreak: 0,
+    webMomentumBlocked: false,
+  });
   const prevTabIndexRef = useRef<number>(
     Math.max(0, SETTINGS_TABS.findIndex(([k]) => k === activeTab))
   );
@@ -370,103 +402,330 @@ export function SettingsModal() {
     locked: "h" | "v" | null;
   } | null>(null);
 
-  const scrollToSettingsPane = (tabKey: string, smooth: boolean) => {
-    const contentEl = settingsContentRef.current;
-    if (!contentEl) return;
-    const targetPane = contentEl.querySelector<HTMLElement>(
-      `.settings-pane[data-settings-pane="${tabKey}"]`
-    );
-    if (!targetPane) return;
+  const EDGE_SWITCH_THRESHOLD = 280;
+  const EDGE_CONTINUOUS_GAP_MS = 100;
 
-    ignoreScrollSpyUntilRef.current = Date.now() + (smooth ? 520 : 80);
-    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = 0;
-      const top =
-        tabKey === SETTINGS_TABS[0][0]
-          ? 0
-          : Math.max(
-              0,
-              Math.round(
-                targetPane.getBoundingClientRect().top -
-                  contentEl.getBoundingClientRect().top +
-                  contentEl.scrollTop -
-                  20
-              )
-            );
-      if (typeof contentEl.scrollTo === "function") {
-        contentEl.scrollTo({
-          top,
-          behavior: smooth ? "smooth" : "auto",
-        });
-      } else {
-        contentEl.scrollTop = top;
-      }
-    });
+  const getActivePaneEl = (): HTMLElement | null => {
+    const contentEl = settingsContentRef.current;
+    if (!contentEl) return null;
+    return contentEl.querySelector<HTMLElement>(
+      `.settings-pane[data-settings-pane="${activeTab}"]`
+    );
+  };
+
+  const getActivePaneScroller = (): HTMLElement | null => {
+    const contentEl = settingsContentRef.current;
+    if (!contentEl) return null;
+    if (activeTab === "usage") {
+      const traceEl = contentEl.querySelector<HTMLElement>(
+        "#usage-inline-trace-view:not([hidden])"
+      );
+      if (traceEl) return traceEl;
+      const mainEl = contentEl.querySelector<HTMLElement>(
+        "#usage-main-view:not([hidden])"
+      );
+      if (mainEl) return mainEl;
+    }
+    return contentEl;
+  };
+
+  const clearPullTimers = () => {
+    if (pullResetTimerRef.current) {
+      clearTimeout(pullResetTimerRef.current);
+      pullResetTimerRef.current = null;
+    }
+  };
+
+  const resetEdgePull = () => {
+    clearPullTimers();
+    edgeWheelRef.current.accum = 0;
+    edgeWheelRef.current.dir = 0;
+    setEdgePullHint(null);
+    if (edgeFillRef.current) {
+      edgeFillRef.current.style.transform = "scaleX(0)";
+    }
+    const paneEl = pulledPaneRef.current;
+    pulledPaneRef.current = null;
+    if (!paneEl) return;
+
+    paneEl.style.transition = "";
+    paneEl.style.transform = "";
   };
 
   useEffect(() => {
-    const isOpen = settingsModal.open && continuousDesktop;
-    const justOpened = isOpen && !wasDesktopOpenRef.current;
-    wasDesktopOpenRef.current = isOpen;
+    if (!settingsModal.open) {
+      pendingEdgeLandingRef.current = "top";
+      pendingEdgeAnimDirRef.current = 0;
+      resetEdgePull();
+      return;
+    }
+    if (isMobileViewport()) return;
 
-    if (!isOpen) {
-      scrollSpyTabRef.current = null;
+    const landing = pendingEdgeLandingRef.current;
+    const animDir = pendingEdgeAnimDirRef.current;
+    pendingEdgeLandingRef.current = "top";
+    pendingEdgeAnimDirRef.current = 0;
+
+    const applyLanding = () => {
+      const scroller = getActivePaneScroller();
+      if (!scroller) return;
+      scroller.scrollTop = landing === "bottom" ? scroller.scrollHeight : 0;
+      edgeWheelRef.current.lastScrollMoveAt = Date.now();
+    };
+    applyLanding();
+
+    if (animDir !== 0) {
+      const reducedMotion =
+        typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      const targetPane = getActivePaneEl();
+      if (targetPane && typeof targetPane.animate === "function" && !reducedMotion) {
+        const fromY = animDir > 0 ? 36 : -36;
+        targetPane.animate(
+          [
+            { opacity: 0.22, transform: `translateY(${fromY}px)` },
+            { opacity: 1, transform: "translateY(0)" },
+          ],
+          { duration: 260, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
+        );
+      }
+    }
+
+    if (landing === "bottom") {
+      const rafId = requestAnimationFrame(applyLanding);
+      return () => cancelAnimationFrame(rafId);
+    }
+  }, [settingsModal.open, activeTab, usageTraceActive]);
+
+  useEffect(() => {
+    const unsub = window.twinklebotDesktop?.onScrollTouch?.(
+      (ev: { phase?: "begin" | "fling" | "end"; active?: boolean }) => {
+        const wheelState = edgeWheelRef.current;
+        const phase = ev?.phase || (ev?.active ? "begin" : "end");
+        if (phase === "begin") {
+          wheelState.touchActive = true;
+          wheelState.momentumBlocked = false;
+          wheelState.requireNewGesture = false;
+          wheelState.webMomentumBlocked = false;
+          wheelState.decayStreak = 0;
+          wheelState.peakAbsDy = 0;
+        } else if (phase === "fling") {
+          wheelState.touchActive = false;
+          wheelState.momentumBlocked = true;
+          wheelState.webMomentumBlocked = true;
+          wheelState.requireNewGesture = false;
+          resetEdgePull();
+        } else {
+          wheelState.touchActive = false;
+          wheelState.requireNewGesture = false;
+          resetEdgePull();
+        }
+      }
+    );
+    return () => {
+      if (typeof unsub === "function") unsub();
+      clearPullTimers();
+    };
+  }, []);
+
+  const handleContentScrollCapture = () => {
+    if (!settingsModal.open || isStandalone || isMobileViewport()) return;
+    edgeWheelRef.current.lastScrollMoveAt = Date.now();
+    if (edgeWheelRef.current.accum > 0 || pulledPaneRef.current) {
+      resetEdgePull();
+    }
+  };
+
+  const hasInnerScrollCapacity = (
+    target: EventTarget | null,
+    stopEl: HTMLElement,
+    dir: 1 | -1
+  ): boolean => {
+    let cur = target instanceof HTMLElement ? target : null;
+    while (cur && cur !== stopEl) {
+      const overflowY = window.getComputedStyle(cur).overflowY;
+      if (
+        (overflowY === "auto" || overflowY === "scroll") &&
+        cur.scrollHeight > cur.clientHeight + 2
+      ) {
+        if (dir > 0 && cur.scrollTop < cur.scrollHeight - cur.clientHeight - 2) {
+          return true;
+        }
+        if (dir < 0 && cur.scrollTop > 2) {
+          return true;
+        }
+      }
+      cur = cur.parentElement;
+    }
+    return false;
+  };
+
+  const handleContentWheel = (e: ReactWheelEvent<HTMLDivElement>) => {
+    if (!settingsModal.open || isStandalone || isMobileViewport()) return;
+    if (e.ctrlKey || Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.deltaY === 0) return;
+
+    const dy =
+      e.deltaMode === 1
+        ? e.deltaY * 24
+        : e.deltaMode === 2
+          ? e.deltaY * 240
+          : e.deltaY;
+    const dir: 1 | -1 = dy > 0 ? 1 : -1;
+    const absDy = Math.abs(dy);
+    const now = Date.now();
+    const wheelState = edgeWheelRef.current;
+    const dt = wheelState.lastEventAt ? now - wheelState.lastEventAt : 9999;
+
+    // 1. Hardware-exact macOS Electron inertia kill: after fingers lift (`scroll-touch-end`),
+    // ignore all momentum wheel events until `scroll-touch-begin` (or full silence for USB mice).
+    if (wheelState.momentumBlocked) {
+      if (dt < 220) {
+        wheelState.lastEventAt = now;
+        return;
+      }
+      wheelState.momentumBlocked = false;
+    }
+
+    // Prevent one single long swipe from chain-switching two tabs in a row
+    if (wheelState.requireNewGesture) {
+      if (wheelState.touchActive || dt < 220) {
+        wheelState.lastEventAt = now;
+        return;
+      }
+      wheelState.requireNewGesture = false;
+    }
+
+    // 2. Always-on macOS trackpad momentum / inertia eliminator:
+    // AppKit trackpad inertia emits smooth monotonically decaying wheel deltas (~16ms apart)
+    // even when Chromium doesn't fire gestureFlingStart. Kill it immediately on decay.
+    if (wheelState.webMomentumBlocked) {
+      const freshPush =
+        dt >= 140 || (absDy >= 10 && absDy > wheelState.prevAbsDy * 1.6);
+      if (!freshPush) {
+        wheelState.prevAbsDy = absDy;
+        wheelState.lastEventAt = now;
+        return;
+      }
+      wheelState.webMomentumBlocked = false;
+      wheelState.decayStreak = 0;
+      wheelState.peakAbsDy = absDy;
+    } else if (dt < 75 && wheelState.prevAbsDy > 0) {
+      if (absDy <= wheelState.prevAbsDy && absDy < wheelState.peakAbsDy * 0.85) {
+        wheelState.decayStreak += 1;
+      } else if (absDy > wheelState.prevAbsDy) {
+        wheelState.decayStreak = 0;
+      }
+      wheelState.peakAbsDy = Math.max(wheelState.peakAbsDy, absDy);
+      if (wheelState.decayStreak >= 3 || (wheelState.peakAbsDy >= 10 && absDy <= 4)) {
+        wheelState.webMomentumBlocked = true;
+        wheelState.prevAbsDy = absDy;
+        wheelState.lastEventAt = now;
+        resetEdgePull();
+        return;
+      }
+    } else if (dt >= 75) {
+      wheelState.decayStreak = 0;
+      wheelState.peakAbsDy = absDy;
+    }
+    wheelState.prevAbsDy = absDy;
+
+    if (now < wheelState.cooldownUntil) {
+      wheelState.lastEventAt = now;
       return;
     }
 
-    const fromScrollSpy = !justOpened && scrollSpyTabRef.current === activeTab;
-    scrollSpyTabRef.current = null;
-    if (fromScrollSpy) return;
+    const scroller = getActivePaneScroller();
+    if (!scroller) return;
+    if (hasInnerScrollCapacity(e.target, scroller, dir)) {
+      if (wheelState.accum > 0) resetEdgePull();
+      wheelState.lastEventAt = now;
+      return;
+    }
 
-    scrollToSettingsPane(activeTab, !justOpened);
-    return () => {
-      if (scrollRafRef.current) {
-        cancelAnimationFrame(scrollRafRef.current);
-        scrollRafRef.current = 0;
-      }
-    };
-  }, [settingsModal.open, activeTab, continuousDesktop]);
+    const maxScroll = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const hasScrollbar = maxScroll > 2;
+    const atEdge =
+      dir > 0
+        ? !hasScrollbar || scroller.scrollTop >= maxScroll - 2
+        : !hasScrollbar || scroller.scrollTop <= 2;
 
-  const handleContentScroll = () => {
-    if (!continuousDesktop || !settingsModal.open) return;
-    if (Date.now() < ignoreScrollSpyUntilRef.current) return;
-    const contentEl = settingsContentRef.current;
-    if (!contentEl) return;
+    if (!atEdge) {
+      if (wheelState.accum > 0) resetEdgePull();
+      wheelState.lastScrollMoveAt = now;
+      wheelState.lastEventAt = now;
+      return;
+    }
 
-    const panes = Array.from(
-      contentEl.querySelectorAll<HTMLElement>(".settings-pane[data-settings-pane]")
+    // Wait briefly after arriving at the top/bottom of a scrollable tab so the
+    // initial arrival settles cleanly before the continuous pull starts.
+    if (hasScrollbar && now - wheelState.lastScrollMoveAt < 160) {
+      if (wheelState.accum > 0) resetEdgePull();
+      wheelState.lastEventAt = now;
+      return;
+    }
+
+    const curIdx = SETTINGS_TABS.findIndex(([k]) => k === activeTab);
+    const nextIdx = curIdx + dir;
+    if (curIdx < 0 || nextIdx < 0 || nextIdx >= SETTINGS_TABS.length) {
+      if (wheelState.accum > 0) resetEdgePull();
+      wheelState.lastEventAt = now;
+      return;
+    }
+
+    if (wheelState.dir !== dir || dt > EDGE_CONTINUOUS_GAP_MS) {
+      wheelState.accum = 0;
+      wheelState.dir = dir;
+    }
+    wheelState.lastEventAt = now;
+    wheelState.accum += absDy;
+
+    const progress = Math.min(1, wheelState.accum / EDGE_SWITCH_THRESHOLD);
+    const targetTab = SETTINGS_TABS[nextIdx];
+
+    if (progress >= 1) {
+      resetEdgePull();
+      wheelState.cooldownUntil = now + 560;
+      wheelState.requireNewGesture = true;
+      pendingEdgeLandingRef.current = dir > 0 ? "top" : "bottom";
+      pendingEdgeAnimDirRef.current = dir;
+      openSettingsModal(targetTab[0]);
+      return;
+    }
+
+    // Continuous rubber-band pull + progress indicator while user keeps scrolling
+    const reducedMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    const paneEl = getActivePaneEl();
+    if (paneEl && !reducedMotion) {
+      pulledPaneRef.current = paneEl;
+      const offsetPx = -dir * Math.round(24 * Math.pow(progress, 0.78));
+      paneEl.style.transition = "none";
+      paneEl.style.transform = `translateY(${offsetPx}px)`;
+    }
+
+    setEdgePullHint((prev) =>
+      prev && prev.dir === dir && prev.targetLabel === targetTab[2]
+        ? prev
+        : { dir, targetLabel: targetTab[2] }
     );
-    if (!panes.length) return;
-
-    const scrollTop = contentEl.scrollTop;
-    const maxScroll = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
-    let resolvedTab = SETTINGS_TABS[0][0];
-
-    if (scrollTop <= 8) {
-      resolvedTab = SETTINGS_TABS[0][0];
-    } else if (maxScroll > 0 && scrollTop >= maxScroll - 8) {
-      const lastTab = panes[panes.length - 1]?.dataset.settingsPane;
-      if (lastTab) resolvedTab = lastTab as typeof resolvedTab;
+    if (edgeFillRef.current) {
+      edgeFillRef.current.style.transform = `scaleX(${progress.toFixed(3)})`;
     } else {
-      const contentRect = contentEl.getBoundingClientRect();
-      for (const pane of panes) {
-        const relTop = pane.getBoundingClientRect().top - contentRect.top;
-        if (relTop <= 72) {
-          const tab = pane.dataset.settingsPane;
-          if (tab) resolvedTab = tab as typeof resolvedTab;
-        } else {
-          break;
+      requestAnimationFrame(() => {
+        if (edgeFillRef.current && edgeWheelRef.current.accum > 0) {
+          const p = Math.min(1, edgeWheelRef.current.accum / EDGE_SWITCH_THRESHOLD);
+          edgeFillRef.current.style.transform = `scaleX(${p.toFixed(3)})`;
         }
-      }
+      });
     }
 
-    if (resolvedTab !== activeTab) {
-      scrollSpyTabRef.current = resolvedTab;
-      setState((prev) => ({
-        settingsModal: { ...prev.settingsModal, tab: resolvedTab },
-      }));
-    }
+    // The moment scrolling stops, immediately disappear with zero exit/rebound animation
+    if (pullResetTimerRef.current) clearTimeout(pullResetTimerRef.current);
+    pullResetTimerRef.current = setTimeout(() => {
+      pullResetTimerRef.current = null;
+      resetEdgePull();
+    }, EDGE_CONTINUOUS_GAP_MS);
   };
 
   useEffect(() => {
@@ -1579,7 +1838,7 @@ export function SettingsModal() {
       }}
     >
       <div
-        className={`settings-modal${isStandalone ? " is-standalone-pane" : ""}${continuousDesktop ? " is-continuous-scroll" : ""}`}
+        className={`settings-modal${isStandalone ? " is-standalone-pane" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label="TwinkleBot 设置"
@@ -1601,6 +1860,27 @@ export function SettingsModal() {
             />
           </svg>
         </button>
+
+        {edgePullHint && !isStandalone && (
+          <div
+            className={`settings-edge-hint ${edgePullHint.dir > 0 ? "is-bottom" : "is-top"}`}
+            aria-hidden="true"
+          >
+            <div className="settings-edge-hint-pill">
+              <span className="settings-edge-hint-arrow">
+                {edgePullHint.dir > 0 ? "↓" : "↑"}
+              </span>
+              <span className="settings-edge-hint-text">
+                {edgePullHint.dir > 0
+                  ? `继续下滑切换「${edgePullHint.targetLabel}」`
+                  : `继续上滑切换「${edgePullHint.targetLabel}」`}
+              </span>
+              <span className="settings-edge-hint-track">
+                <span ref={edgeFillRef} className="settings-edge-hint-fill" />
+              </span>
+            </div>
+          </div>
+        )}
 
         <div className="settings-mobile-topbar">
           <button
@@ -1625,8 +1905,12 @@ export function SettingsModal() {
                   className={`settings-nav-item${activeTab === tabKey ? " is-active" : ""}`}
                   data-settings-tab={tabKey}
                   onClick={() => {
-                    if (continuousDesktop && activeTab === tabKey) {
-                      scrollToSettingsPane(tabKey, true);
+                    resetEdgePull();
+                    pendingEdgeLandingRef.current = "top";
+                    pendingEdgeAnimDirRef.current = 0;
+                    if (activeTab === tabKey) {
+                      const scroller = getActivePaneScroller();
+                      if (scroller) scroller.scrollTop = 0;
                       return;
                     }
                     openSettingsModal(tabKey);
@@ -1646,15 +1930,13 @@ export function SettingsModal() {
         </div>
 
         <div
-          className={`settings-content${!continuousDesktop && activeTab === "usage" ? " is-usage-pane-active" : ""}`}
+          className={`settings-content${activeTab === "usage" ? " is-usage-pane-active" : ""}`}
           ref={(node) => {
             settingsContentRef.current = node;
             bindScrollEndTracking(node);
           }}
-          onScroll={handleContentScroll}
-          onWheel={() => {
-            ignoreScrollSpyUntilRef.current = 0;
-          }}
+          onScrollCapture={handleContentScrollCapture}
+          onWheel={handleContentWheel}
           onTouchStart={handleContentTouchStart}
           onTouchMove={handleContentTouchMove}
           onTouchEnd={handleContentTouchEnd}
@@ -1664,7 +1946,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="general"
-            hidden={!continuousDesktop && activeTab !== "general"}
+            hidden={activeTab !== "general"}
           >
             <h2 className="settings-pane-title">通用</h2>
 
@@ -2181,7 +2463,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="models"
-            hidden={!continuousDesktop && activeTab !== "models"}
+            hidden={activeTab !== "models"}
           >
             <div className="vault-header-row">
               <h2 className="settings-pane-title">模型接入与路由</h2>
@@ -2478,7 +2760,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="computer"
-            hidden={!continuousDesktop && activeTab !== "computer"}
+            hidden={activeTab !== "computer"}
           >
             <h2 className="settings-pane-title">电脑</h2>
 
@@ -2860,7 +3142,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="permissions"
-            hidden={!continuousDesktop && activeTab !== "permissions"}
+            hidden={activeTab !== "permissions"}
           >
             <h2 className="settings-pane-title">权限</h2>
 
@@ -3252,7 +3534,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="vault"
-            hidden={!continuousDesktop && activeTab !== "vault"}
+            hidden={activeTab !== "vault"}
           >
             <div className="vault-header-row">
               <h2 className="settings-pane-title">保险库</h2>
@@ -3414,7 +3696,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="usage"
-            hidden={!continuousDesktop && activeTab !== "usage"}
+            hidden={activeTab !== "usage"}
           >
             <div className="vault-header-row">
               <h2 className="settings-pane-title" id="usage-pane-title">
@@ -3940,7 +4222,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="updates"
-            hidden={!continuousDesktop && activeTab !== "updates"}
+            hidden={activeTab !== "updates"}
           >
             <div className="vault-header-row">
               <h2 className="settings-pane-title">关于与诊断</h2>
