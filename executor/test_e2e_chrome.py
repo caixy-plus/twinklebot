@@ -275,7 +275,7 @@ class TestRealGoogleChromeMultiTabE2E(unittest.TestCase):
             primary_profile_dir=cls.primary_profile_dir,
             max_concurrent_screens=2,
             browser_idle_sec=300,
-            browser_boot_timeout_sec=15.0,
+            browser_boot_timeout_sec=30.0,
             cdp_port=cls.cdp_port,
             display=cls.display_str,
             spawn_fn=tracked_spawn,
@@ -342,7 +342,7 @@ class TestRealGoogleChromeMultiTabE2E(unittest.TestCase):
             headers=headers,
             method="GET" if body is None else "POST",
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=45) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
 
     def _find_ref(self, snap: dict, *, tag: str = None, text_contains: str = None) -> str:

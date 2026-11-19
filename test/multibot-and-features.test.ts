@@ -301,6 +301,15 @@ test("scheduler triggers due tasks when session is idle and disables once-only t
     assert.equal(started.length, 1);
     assert.match(started[0].text, /检查收件箱/);
     assert.equal(store.readSchedules()[0].enabled, false);
+
+    // Starting scheduler with empty schedules must not seed any default inspection task
+    store.writeSchedules([]);
+    scheduler.start();
+    try {
+      assert.deepEqual(store.readSchedules(), []);
+    } finally {
+      scheduler.stop();
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

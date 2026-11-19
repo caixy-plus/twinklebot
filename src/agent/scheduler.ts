@@ -1,7 +1,3 @@
-import crypto from "node:crypto";
-import os from "node:os";
-import path from "node:path";
-
 export function extractHourMinute(text = ""): { hour: number; minute: number } | null {
   const m = String(text || "").match(/(?:^|\D)([01]?\d|2[0-3]):([0-5]\d)(?:\D|$)/);
   if (!m) return null;
@@ -107,32 +103,7 @@ export function createScheduler({
   let timer: ReturnType<typeof setInterval> | null = null;
 
   function ensureDefaults(): void {
-    if (!store?.readSchedules || !store?.writeSchedules) return;
-    const existing = store.readSchedules();
-    if (existing.length > 0) return;
-    const sessions = store.listSessions?.() || [];
-    const primaryId = sessions[0]?.id || null;
-    if (!primaryId) return;
-
-    const tomorrow10am = new Date();
-    tomorrow10am.setDate(tomorrow10am.getDate() + 1);
-    tomorrow10am.setHours(10, 0, 0, 0);
-
-    const workspaceDir = path.join(os.homedir(), "TwinkleBot", "workspace");
-
-    store.writeSchedules([
-      {
-        id: crypto.randomUUID(),
-        sessionId: primaryId,
-        title: "工作区状态与待办巡检",
-        scheduleLabel: "每天 10:00",
-        repeat: "daily",
-        prompt: `请检查 ${workspaceDir} 目录的最新文件变动，并给我一份简短日报。`,
-        nextRunAt: tomorrow10am.toISOString(),
-        enabled: true,
-        createdAt: new Date().toISOString(),
-      },
-    ]);
+    // Intentionally a no-op: do not auto-seed default inspection schedules.
   }
 
   function tick(): string[] {
