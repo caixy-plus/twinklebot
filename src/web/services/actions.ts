@@ -1094,6 +1094,13 @@ export async function sendUserMessage(rawText?: string) {
   if (shouldKeepFocus && typeof document !== "undefined" && document.activeElement !== msgInputEl) {
     msgInputEl?.focus?.({ preventScroll: true });
   }
+  let blurredAfterSend = false;
+  const onBlurAfterSend = () => {
+    blurredAfterSend = true;
+  };
+  if (msgInputEl) {
+    msgInputEl.addEventListener("blur", onBlurAfterSend, { once: true });
+  }
   scrollChatStreamToBottom({ guardMs: 500, settle: true });
 
   try {
@@ -1159,8 +1166,20 @@ export async function sendUserMessage(rawText?: string) {
   } catch (err: any) {
     renderEventForActiveSession({ type: "error", message: err?.message || "发送失败" });
   } finally {
+    if (msgInputEl) {
+      msgInputEl.removeEventListener("blur", onBlurAfterSend);
+    }
     setState({ keepInputFocusedOnSend: false });
-    if (shouldKeepFocus && typeof document !== "undefined" && document.activeElement !== msgInputEl) {
+    const hasPendingChoice = getState().streamItems.some(
+      (it) => it.kind === "choice" && it.status === "pending"
+    );
+    if (
+      shouldKeepFocus &&
+      !blurredAfterSend &&
+      !hasPendingChoice &&
+      typeof document !== "undefined" &&
+      document.activeElement !== msgInputEl
+    ) {
       msgInputEl?.focus?.({ preventScroll: true });
     }
     if (getState().autoScrollPinned) {
@@ -1190,17 +1209,26 @@ export async function stopCurrentSessionTask() {
 }
 
 /* ==================== AVATAR, MODALS, SETTINGS, BILLING & SKILLS ==================== */
+let avatarPatchSeq = 0;
+
 export async function saveActiveAvatarPatch(patch: any) {
   const s = getState();
   if (!s.activeSessionId) return;
+  const activeSid = s.activeSessionId;
   const active = getActiveSessionFromState(s);
   const currentAv = resolveBotAvatar(active, s.primarySessionId);
   const nextAvatar = { ...currentAv, ...patch };
-  const updated = await apiJson(`/api/sessions/${s.activeSessionId}`, {
+  const seq = ++avatarPatchSeq;
+  if (active) {
+    upsertLocalSession({ ...active, avatar: nextAvatar });
+  }
+  const updated = await apiJson(`/api/sessions/${activeSid}`, {
     method: "PATCH",
     body: JSON.stringify({ avatar: nextAvatar, touch: false }),
   });
-  upsertLocalSession(updated);
+  if (seq === avatarPatchSeq) {
+    upsertLocalSession(updated);
+  }
 }
 
 export function openSettingsModal(

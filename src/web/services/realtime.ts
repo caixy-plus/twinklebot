@@ -261,7 +261,16 @@ export function handleRealtimePayload(payload: any) {
   }
 }
 
+function setRealtimeConnectedMarker(connected: boolean) {
+  try {
+    if (typeof document !== "undefined" && document.documentElement) {
+      document.documentElement.dataset.realtimeConnected = connected ? "1" : "0";
+    }
+  } catch {}
+}
+
 export function disconnectRealtimeTransport() {
+  setRealtimeConnectedMarker(false);
   if (runtimeRefs.wsReconnectTimer) {
     clearTimeout(runtimeRefs.wsReconnectTimer);
     runtimeRefs.wsReconnectTimer = null;
@@ -313,6 +322,7 @@ export function connectGlobalSse(epoch = getState().accountEpoch) {
       return;
     }
     sseOpened = true;
+    setRealtimeConnectedMarker(true);
     markLanReachable();
   };
   es.onmessage = (msg) => {
@@ -402,6 +412,7 @@ export function connectRealtimeTransport() {
       const isReconnect = runtimeRefs.wsHasOpenedInEpoch === true;
       runtimeRefs.wsHasOpenedInEpoch = true;
       openedOnce = true;
+      setRealtimeConnectedMarker(true);
       markLanReachable();
 
       const cur = getState();
@@ -444,6 +455,9 @@ export function connectRealtimeTransport() {
     ws.onclose = () => {
       if (epoch !== getState().accountEpoch) return;
       runtimeRefs.wsSocket = null;
+      if (!runtimeRefs.eventSource) {
+        setRealtimeConnectedMarker(false);
+      }
       if (!openedOnce) {
         connectGlobalSse(epoch);
         return;

@@ -583,7 +583,8 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
       // 2. Desktop tab stays on loopback URL listening to WS lan_pairing_requested
       await chrome!.navigate(ws.baseUrl);
       await chrome!.waitFor(
-        `document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`
+        `document.querySelector('#account-usage-pct')?.textContent?.includes('tok') &&
+         document.documentElement.dataset.realtimeConnected === '1'`
       );
 
       // 3. Mobile tab initiates pairing against non-loopback lanOrigin

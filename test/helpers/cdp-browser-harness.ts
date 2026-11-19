@@ -14,12 +14,20 @@ export function findChromeBinary(): string | null {
           "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
           "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
         ]
-      : [
-          "/usr/bin/google-chrome-stable",
-          "/usr/bin/google-chrome",
-          "/usr/bin/chromium",
-          "/usr/bin/chromium-browser",
-        ];
+      : process.platform === "win32"
+        ? [
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+            ...(process.env.LOCALAPPDATA
+              ? [path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe")]
+              : []),
+          ]
+        : [
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+          ];
 
   for (const cand of [...envCands, ...fixedCands]) {
     if (cand && fs.existsSync(cand)) {
@@ -301,15 +309,49 @@ async function attachPageTarget(
   };
 
   const navigate = async (url: string): Promise<void> => {
+    const navNonce = `nav-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let shouldAwaitDocSwap = false;
+    try {
+      const curHref = await evalJs<string>(`(() => {
+        window.__tbNavGuard = ${JSON.stringify(navNonce)};
+        return String(window.location.href || "");
+      })()`);
+      if (curHref) {
+        try {
+          const curUrl = new URL(curHref);
+          const nextUrl = new URL(url, curHref);
+          const hashOnly =
+            curUrl.origin === nextUrl.origin &&
+            curUrl.pathname === nextUrl.pathname &&
+            curUrl.search === nextUrl.search &&
+            curUrl.hash !== nextUrl.hash;
+          shouldAwaitDocSwap = !hashOnly;
+        } catch {
+          shouldAwaitDocSwap = true;
+        }
+      }
+    } catch {}
     await cdpCall("Page.navigate", { url });
-    await waitFor(`document.readyState === "complete"`, 15_000);
+    await waitFor(
+      shouldAwaitDocSwap
+        ? `window.__tbNavGuard !== ${JSON.stringify(navNonce)} && document.readyState === "complete"`
+        : `document.readyState === "complete"`,
+      15_000
+    );
     await renderHudInPage(currentHud);
     await pace();
   };
 
   const reload = async (ignoreCache = true): Promise<void> => {
+    const navNonce = `reload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      await evalJs(`window.__tbNavGuard = ${JSON.stringify(navNonce)}`);
+    } catch {}
     await cdpCall("Page.reload", { ignoreCache });
-    await waitFor(`document.readyState === "complete"`, 15_000);
+    await waitFor(
+      `window.__tbNavGuard !== ${JSON.stringify(navNonce)} && document.readyState === "complete"`,
+      15_000
+    );
     await renderHudInPage(currentHud);
     await pace();
   };

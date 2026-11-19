@@ -55,7 +55,12 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       module: "Avatar Editor / Preset",
     },
     async () => {
-      await chrome!.click("#edit-avatar-btn");
+      const popHidden = await chrome!.evalJs<boolean>(
+        `Boolean(document.querySelector('#avatar-editor-popover')?.hidden)`
+      );
+      if (popHidden) {
+        await chrome!.click("#edit-avatar-btn");
+      }
       await chrome!.waitFor(`!document.querySelector('#avatar-editor-popover')?.hidden`);
       await chrome!.click(`.avatar-shape-btn[data-shape-key="star"]`);
       await chrome!.click(`.avatar-color-btn[data-color-key="violet"]`);
@@ -87,7 +92,12 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       module: "Avatar Editor / AI & Upload",
     },
     async () => {
-      await chrome!.click("#edit-avatar-btn");
+      const popHidden = await chrome!.evalJs<boolean>(
+        `Boolean(document.querySelector('#avatar-editor-popover')?.hidden)`
+      );
+      if (popHidden) {
+        await chrome!.click("#edit-avatar-btn");
+      }
       await chrome!.waitFor(`!document.querySelector('#avatar-editor-popover')?.hidden`);
 
       // AI generate tab
@@ -334,25 +344,29 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       module: "useChatScrollPin",
     },
     async () => {
-      // Force long scrollable container & scroll up to top
-      const scrollMoved = await chrome!.evalJs<boolean>(`(() => {
-        const el = document.querySelector('#event-stream');
-        if (!el) return false;
-        const spacer = document.createElement('div');
-        spacer.id = '__e2e_tall_spacer__';
-        spacer.style.height = '1800px';
-        spacer.style.minHeight = '1800px';
-        spacer.style.flexShrink = '0';
-        el.prepend(spacer);
-        el.scrollTop = 0;
-        el.dispatchEvent(new Event('scroll'));
-        return el.scrollHeight > el.clientHeight + 200;
-      })()`);
-      assert.equal(scrollMoved, true);
-      await chrome!.waitFor(`!document.querySelector('#scroll-bottom-btn')?.hidden`, 4000);
-      await chrome!.click("#scroll-bottom-btn");
-      await chrome!.waitFor(`document.querySelector('#scroll-bottom-btn')?.hidden`, 4000);
-      await chrome!.evalJs(`document.getElementById('__e2e_tall_spacer__')?.remove()`);
+      // Force long scrollable container & simulate real user wheel-up to clear auto-scroll pin guard
+      try {
+        const scrollMoved = await chrome!.evalJs<boolean>(`(() => {
+          const el = document.querySelector('#event-stream');
+          if (!el) return false;
+          const spacer = document.createElement('div');
+          spacer.id = '__e2e_tall_spacer__';
+          spacer.style.height = '1800px';
+          spacer.style.minHeight = '1800px';
+          spacer.style.flexShrink = '0';
+          el.prepend(spacer);
+          el.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }));
+          el.scrollTop = 0;
+          el.dispatchEvent(new Event('scroll'));
+          return el.scrollHeight > el.clientHeight + 200;
+        })()`);
+        assert.equal(scrollMoved, true);
+        await chrome!.waitFor(`!document.querySelector('#scroll-bottom-btn')?.hidden`, 4000);
+        await chrome!.click("#scroll-bottom-btn");
+        await chrome!.waitFor(`document.querySelector('#scroll-bottom-btn')?.hidden`, 4000);
+      } finally {
+        await chrome!.evalJs(`document.getElementById('__e2e_tall_spacer__')?.remove()`);
+      }
     },
     { getChrome: () => chrome }
   );

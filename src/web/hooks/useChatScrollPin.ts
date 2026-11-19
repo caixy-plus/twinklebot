@@ -46,6 +46,7 @@ export function useChatScrollPin(
       }
     };
 
+    streamEl.addEventListener("pointerdown", clearScrollPinGuard, { passive: true });
     streamEl.addEventListener("touchstart", clearScrollPinGuard, { passive: true });
     streamEl.addEventListener("wheel", clearScrollPinGuard, { passive: true });
     streamEl.addEventListener("scroll", handleScroll, { passive: true });
@@ -66,6 +67,7 @@ export function useChatScrollPin(
     }
 
     return () => {
+      streamEl.removeEventListener("pointerdown", clearScrollPinGuard);
       streamEl.removeEventListener("touchstart", clearScrollPinGuard);
       streamEl.removeEventListener("wheel", clearScrollPinGuard);
       streamEl.removeEventListener("scroll", handleScroll);
