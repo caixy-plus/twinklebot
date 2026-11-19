@@ -54,7 +54,9 @@
 
 #mobile-pair-modal,
 #mobile-lan-offline-modal,
-#cloud-account-modal {
+#cloud-account-modal,
+#schedule-modal-backdrop,
+#bot-memory-modal-backdrop {
   padding: 20px;
   z-index: 400;
   backdrop-filter: none;
@@ -63,7 +65,9 @@
 
 #mobile-pair-modal .compact-dialog,
 #mobile-lan-offline-modal .compact-dialog,
-#cloud-account-modal .compact-dialog {
+#cloud-account-modal .compact-dialog,
+#schedule-modal-backdrop .compact-dialog,
+#bot-memory-modal-backdrop .compact-dialog {
   animation: mobileModalPop 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -138,9 +142,7 @@
 
 .apps-modal .modal-close-btn,
 .settings-modal .modal-close-btn {
-  top: calc(max(12px, env(safe-area-inset-top)) + 2px);
-  right: 14px;
-  z-index: 40;
+  display: none !important;
 }
 
 .modal-close-btn {
@@ -163,7 +165,7 @@
   color: var(--text-primary);
   justify-content: center;
   gap: 0;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   flex-shrink: 0;
   transition: transform 0.14s ease, background 0.16s ease, opacity 0.14s ease;
 }
@@ -173,8 +175,8 @@
 }
 
 .modal-back-btn .icon-svg {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
   display: block;
 }
 
@@ -190,30 +192,127 @@
   padding: max(8px, env(safe-area-inset-top)) 0 max(8px, env(safe-area-inset-bottom));
 }
 
+.settings-mobile-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 6px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 5;
+  background: color-mix(in srgb, var(--bg-modal) 88%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.settings-nav-wrap {
+  display: block;
+  position: relative;
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.settings-nav-wrap::before,
+.settings-nav-wrap::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 48px;
+  pointer-events: none;
+  z-index: 2;
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+
+.settings-nav-wrap::before {
+  left: 0;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--bg-modal) 82%, transparent) 0%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(to right, #000 18%, transparent 100%);
+  mask-image: linear-gradient(to right, #000 18%, transparent 100%);
+}
+
+.settings-nav-wrap::after {
+  right: 0;
+  background: linear-gradient(
+    to left,
+    color-mix(in srgb, var(--bg-modal) 82%, transparent) 0%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(to left, #000 18%, transparent 100%);
+  mask-image: linear-gradient(to left, #000 18%, transparent 100%);
+}
+
 .settings-nav {
   display: flex;
   flex-direction: row;
   align-items: center;
   flex-shrink: 0;
-  width: calc(100% - 62px) !important;
-  margin-right: 62px;
+  width: 100% !important;
+  margin-right: 0;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 10px 14px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  padding: 6px 0;
   gap: 8px;
+  background: transparent;
   border-right: none;
   border-bottom: none;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
-  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(0, 0, 0, 0.5) 9%,
+    #000 18%,
+    #000 82%,
+    rgba(0, 0, 0, 0.5) 91%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    rgba(0, 0, 0, 0.5) 9%,
+    #000 18%,
+    #000 82%,
+    rgba(0, 0, 0, 0.5) 91%,
+    transparent 100%
+  );
+}
+
+.settings-nav::before,
+.settings-nav::after {
+  content: "";
+  flex: 0 0 44%;
+  height: 1px;
+  pointer-events: none;
+}
+
+.settings-nav::-webkit-scrollbar {
+  display: none;
 }
 
 .settings-nav-item {
   width: auto;
   flex: 0 0 auto;
-  padding: 8px 12px;
+  padding: 8px 13px;
   border-radius: 999px;
+  border: 1px solid transparent;
   white-space: nowrap;
+  scroll-snap-align: center;
+  opacity: 0.72;
+  transition: opacity 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.settings-nav-item.is-active {
+  opacity: 1;
+  border-color: var(--border-card);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 
 .settings-content {
@@ -225,8 +324,10 @@
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: auto;
+  touch-action: pan-y;
 }
 
+.settings-modal.is-standalone-pane .settings-nav-wrap,
 .settings-modal.is-standalone-pane .settings-nav {
   display: none !important;
 }
@@ -256,7 +357,7 @@
 }
 
 .settings-modal.is-standalone-pane .settings-pane[data-settings-pane="usage"] .vault-header-row {
-  padding-right: 48px;
+  padding-right: 0;
 }
 
 .settings-pane[data-settings-pane="usage"] .vault-header-row .settings-pane-title {

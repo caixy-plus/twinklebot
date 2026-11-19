@@ -369,11 +369,12 @@ test("end-to-end new HTTP APIs: search, clone, patch, delete, attachments, libra
     assert.equal(cloned.title, "Klip 推广官 副本");
     assert.equal(cloned.avatar.color, "green");
 
-    // 4. Upload Attachment + Read via Library & Safe Workspace File Endpoint
+    // 4. Upload Attachment scoped to Bot + Read via exclusive Library & Safe Workspace File Endpoint
     const uploadRes = await fetch(`${baseUrl}/api/attachments`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        sessionId: bot.id,
         name: "note.txt",
         dataBase64: Buffer.from("hello workspace").toString("base64"),
       }),
@@ -385,6 +386,14 @@ test("end-to-end new HTTP APIs: search, clone, patch, delete, attachments, libra
     const libRes = await fetch(`${baseUrl}/api/sessions/${bot.id}/library`);
     const libJson = await libRes.json();
     assert.ok(libJson.items.some((i: any) => i.name.includes("note.txt")));
+
+    const clonedLibRes = await fetch(`${baseUrl}/api/sessions/${cloned.id}/library`);
+    const clonedLibJson = await clonedLibRes.json();
+    assert.equal(
+      clonedLibJson.items.some((i: any) => i.name.includes("note.txt")),
+      false,
+      "Cloned Bot must start with an isolated empty Library"
+    );
 
     const fileRes = await fetch(
       `${baseUrl}/api/workspace/file?path=${encodeURIComponent(uploaded.path)}`

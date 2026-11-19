@@ -32,6 +32,7 @@ import {
   createMcpManager,
 } from "../lib/mcp-client.js";
 import { updateBotComputer } from "../lib/bot-computer-updater.js";
+import { probeBotComputerState } from "../lib/bot-computer-provisioner.js";
 import { stopWslKeepalive } from "../lib/wsl-ubuntu.js";
 import { createRuntimeState } from "../lib/runtime-state.js";
 import { attachWebSocketServer } from "../lib/ws-server.js";
@@ -102,6 +103,7 @@ export function createServer({
   mcpManager,
   scheduler,
   updateBotComputerFn = updateBotComputer,
+  probeBotComputerFn = probeBotComputerState,
   testProviderFn = testProviderConnection,
   billingFetchImpl,
   gcpProbe = null,
@@ -118,6 +120,7 @@ export function createServer({
   mcpManager?: any;
   scheduler?: any;
   updateBotComputerFn?: typeof updateBotComputer;
+  probeBotComputerFn?: typeof probeBotComputerState;
   testProviderFn?: typeof testProviderConnection;
   billingFetchImpl?: typeof globalThis.fetch;
   gcpProbe?: GcpEnvironmentProbe | null;
@@ -676,6 +679,7 @@ export function createServer({
     activeMcpManager,
     hostBridge,
     updateBotComputerFn,
+    probeBotComputerFn,
     testProviderFn,
     getDiscoveryPayload,
     isLanAccessEnabled,

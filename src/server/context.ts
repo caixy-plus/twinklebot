@@ -1,5 +1,6 @@
 import http from "node:http";
 import type { updateBotComputer } from "../lib/bot-computer-updater.js";
+import type { probeBotComputerState } from "../lib/bot-computer-provisioner.js";
 import type { testProviderConnection } from "../agent/providers/registry.js";
 import type { GeminiVertexRuntime } from "../lib/gcp-env.js";
 
@@ -31,6 +32,7 @@ export interface ServerContext {
   activeMcpManager: any;
   hostBridge: any;
   updateBotComputerFn: typeof updateBotComputer;
+  probeBotComputerFn: typeof probeBotComputerState;
   testProviderFn: typeof testProviderConnection;
   getDiscoveryPayload: () => any;
   isLanAccessEnabled: () => boolean;

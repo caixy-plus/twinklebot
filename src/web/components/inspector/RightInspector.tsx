@@ -23,6 +23,7 @@ import {
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
 import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
+import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import {
   computeClientSessionSummary,
   formatClientRouteLabel,
@@ -88,12 +89,7 @@ export function RightInspector({
   const [avatarPrompt, setAvatarPrompt] = useState("");
   const [avatarGenerating, setAvatarGenerating] = useState(false);
 
-  const [newMemoryOpen, setNewMemoryOpen] = useState(false);
-  const [memoryName, setMemoryName] = useState("");
-  const [memoryContent, setMemoryContent] = useState("");
-
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
-  const memoryNameInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setNameInput(displayName);
@@ -117,53 +113,24 @@ export function RightInspector({
     .map((id) => sessions.find((s: any) => s.id === id))
     .filter(Boolean);
 
-  // Computer card status
-  const compState = computerStatus?.state || "ready";
-  const isCompOnline = computerStatus?.online !== false;
-  const hasComputerProbe =
-    computerStatus?.latencyMs !== undefined ||
-    Boolean(computerStatus?.detail) ||
-    Boolean(computerStatus?.error);
+  // Computer card status (unified with SettingsModal & MobileSheets via resolveBotComputerStatusDisplay)
   const anySessionRunning =
     isSessionCurrentlyBusy(sessionStatus) ||
     Object.values(activeMap || {}).some((st) => isSessionCurrentlyBusy(st));
-
-  let compStatusText = "检测中…";
-  if (compState === "uncreated") {
-    compStatusText = "待创建 · 点击初始化";
-  } else if (compState === "creating") {
-    compStatusText = "创建中…";
-  } else if (compState === "unsupported") {
-    compStatusText = "暂不支持";
-  } else if (compState === "error") {
-    compStatusText = "状态异常";
-  } else if (!isCompOnline) {
-    compStatusText = "休眠中";
-  } else if (takeoverActive) {
-    compStatusText = "你正在控制";
-  } else if (sessionStatus === "waiting_screen") {
-    compStatusText = "排队等待空闲屏幕…";
-  } else if (computerStatus?.provider === "cloud-linux" && !anySessionRunning) {
-    compStatusText = "云端沙箱已就绪";
-  } else if (hasComputerProbe) {
-    const multiDisplayEnabled = hasConnectedNodeCapability("multi-display-v1", { diagnostics });
-    const boundDisplay = multiDisplayEnabled
-      ? computerDisplays?.bindings?.[String(activeSession?.id || "")] || ""
-      : "";
-    const pool = computerDisplays?.pool;
-    const queueHint =
-      multiDisplayEnabled && pool && pool.queuedCount > 0
-        ? ` · 排队 ${pool.queuedCount}`
-        : "";
-    const boundLabel = boundDisplay
-      ? boundDisplay.startsWith(":")
-        ? `屏 ${boundDisplay}`
-        : boundDisplay
-      : "";
-    compStatusText = boundLabel
-      ? `运行中 · ${boundLabel}${queueHint}`
-      : `运行中${queueHint}`;
-  }
+  const multiDisplayEnabled = hasConnectedNodeCapability("multi-display-v1", { diagnostics });
+  const {
+    compState,
+    isCompOnline,
+    isSleeping,
+    cardStatusText: compStatusText,
+  } = resolveBotComputerStatusDisplay(computerStatus, {
+    sessionStatus,
+    takeoverActive,
+    anySessionRunning,
+    multiDisplayEnabled,
+    computerDisplays,
+    activeSessionId: activeSession?.id,
+  });
 
   // Usage & route stats
   const totalTok = (Number(usage.input) || 0) + (Number(usage.output) || 0);
@@ -227,38 +194,6 @@ export function RightInspector({
     upsertLocalSession(updated);
     setPersonaDirty(false);
     showToast("职责与人设已保存");
-  };
-
-  const handleSaveBotMemory = async () => {
-    if (!activeSession?.id) return;
-    const name = memoryName.trim();
-    const content = memoryContent.trim();
-    if (!content) {
-      showToast("请填写该 Bot 的专属记忆内容");
-      return;
-    }
-    const title = name || content.replace(/\s+/g, " ").slice(0, 18);
-    const next = [
-      {
-        id: `bmem-${Date.now()}`,
-        name: title,
-        desc: content,
-        instruction: content,
-        content,
-        enabled: true,
-        updatedAt: new Date().toISOString(),
-      },
-      ...memories,
-    ];
-    const updated = await apiJson(`/api/sessions/${activeSession.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ memories: next, touch: false }),
-    });
-    upsertLocalSession(updated);
-    setMemoryName("");
-    setMemoryContent("");
-    setNewMemoryOpen(false);
-    showToast(`已保存到「${activeSession.title || "当前 Bot"}」的专属记忆`);
   };
 
   const handleAddGroupMember = async () => {
@@ -729,54 +664,26 @@ export function RightInspector({
               type="button"
               className="section-action-link"
               onClick={() => {
-                const next = !newMemoryOpen;
-                setNewMemoryOpen(next);
-                if (next) {
-                  requestAnimationFrame(() => memoryNameInputRef.current?.focus());
-                }
+                setState({
+                  botMemoryModal: {
+                    open: true,
+                    sessionId: activeSession?.id || null,
+                    memoryId: null,
+                    name: "",
+                    content: "",
+                  },
+                });
+                requestAnimationFrame(() => {
+                  (
+                    document.getElementById(
+                      "bot-memory-modal-name-input"
+                    ) as HTMLInputElement | null
+                  )?.focus();
+                });
               }}
             >
               + 新增
             </button>
-          </div>
-          <div id="new-bot-memory-form-card" className="inline-form-card" hidden={!newMemoryOpen}>
-            <input
-              ref={memoryNameInputRef}
-              id="bot-memory-name-input"
-              type="text"
-              className="inline-text-input"
-              placeholder="记忆要点（如：给王总发信默认抄送财务）"
-              aria-label="Bot 专属记忆标题"
-              value={memoryName}
-              onChange={(e) => setMemoryName(e.target.value)}
-            />
-            <textarea
-              id="bot-memory-content-input"
-              className="inline-textarea"
-              rows={2}
-              placeholder="输入该 Bot 专属记住的上下文或约定..."
-              aria-label="Bot 专属记忆内容"
-              value={memoryContent}
-              onChange={(e) => setMemoryContent(e.target.value)}
-            />
-            <div className="inline-form-actions">
-              <button
-                id="cancel-bot-memory-btn"
-                type="button"
-                className="settings-pill-btn"
-                onClick={() => setNewMemoryOpen(false)}
-              >
-                取消
-              </button>
-              <button
-                id="save-bot-memory-btn"
-                type="button"
-                className="settings-blue-pill"
-                onClick={handleSaveBotMemory}
-              >
-                保存
-              </button>
-            </div>
           </div>
           <BotMemoriesList session={activeSession} listId="bot-memories-list" />
         </section>
@@ -790,7 +697,7 @@ export function RightInspector({
               type="button"
               className="section-action-link"
               onClick={() => {
-                setState({ scheduleModalOpen: true });
+                setState({ scheduleModalOpen: true, editingScheduleId: null });
                 requestAnimationFrame(() => {
                   (document.getElementById("sched-title-input") as HTMLInputElement | null)?.focus();
                 });
@@ -850,7 +757,7 @@ export function RightInspector({
                   className="sleep-zz"
                   id="computer-sleep-zz"
                   aria-hidden="true"
-                  hidden={!(compState === "ready" && !isCompOnline)}
+                  hidden={!isSleeping}
                 >
                   z<sup>z</sup>
                 </span>

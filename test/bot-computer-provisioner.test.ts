@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildMacOrbExecutorDeployScript,
   COMPUTER_STATES,
   createLocalAwareExecutorClient,
   ensureLocalWslExecutorAwake,
@@ -20,6 +21,7 @@ import {
 } from "../src/lib/wsl-ubuntu.js";
 import { runBotCollabTool, BOT_COLLAB_TOOL_DECLARATIONS } from "../src/agent/bot-tools.js";
 import { buildSystemInstruction } from "../src/agent/prompt.js";
+import { resolveBotComputerStatusDisplay } from "../src/shared/computer-status.js";
 import { createStore } from "../src/store/index.js";
 
 test("probeBotComputerState resolves cloud, linux, macOS orbstack, and windows wsl states", async () => {
@@ -392,4 +394,98 @@ test("buildWslProvisionScript unifies persistent chrome profile, SwiftShader GL,
   assert.equal(shellRes.stdout, "recovered");
   assert.equal(wslExecCount, 1);
   assert.equal(healthProbeCount, 2);
+});
+
+test("probeBotComputerState and resolveBotComputerStatusDisplay consistently classify 401 unauthorized, running-but-unreachable, and genuine hibernation", async () => {
+  const unauthErr: any = new Error("unauthorized");
+  unauthErr.status = 401;
+  const macUnauth = await probeBotComputerState({
+    deployEnv: "local",
+    platform: "darwin",
+    executor: {
+      health: async () => {
+        throw unauthErr;
+      },
+    },
+    execFileFn: async () => ({ stdout: "ubuntu  running  ubuntu  plucky  arm64\n", stderr: "" }),
+  });
+  assert.equal(macUnauth.state, "error");
+  assert.equal(macUnauth.online, false);
+  assert.equal(macUnauth.errorCode, "unauthorized");
+  assert.equal(macUnauth.vmInstalled, true);
+  assert.equal(macUnauth.vmRunning, true);
+
+  const unauthView = resolveBotComputerStatusDisplay({
+    ...macUnauth,
+    error: macUnauth.healthError,
+    latencyMs: 3,
+  });
+  assert.equal(unauthView.isAuthMismatch, true);
+  assert.equal(unauthView.isSleeping, false, "unauthorized executor must NEVER be mislabeled as sleeping");
+  assert.equal(unauthView.cardStatusText, "令牌未对齐 · 点击自检自愈");
+  assert.match(unauthView.settingsOfflineReason, /unauthorized/);
+
+  const macDownWhileRunning = await probeBotComputerState({
+    deployEnv: "local",
+    platform: "darwin",
+    executor: {
+      health: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+    },
+    execFileFn: async () => ({ stdout: "ubuntu  running\n", stderr: "" }),
+  });
+  assert.equal(macDownWhileRunning.state, "error");
+  assert.equal(macDownWhileRunning.errorCode, "unreachable");
+  const downView = resolveBotComputerStatusDisplay({
+    ...macDownWhileRunning,
+    error: macDownWhileRunning.healthError,
+    latencyMs: 4,
+  });
+  assert.equal(downView.isSleeping, false);
+  assert.equal(downView.cardStatusText, "状态异常 · 点击自检自愈");
+
+  const macReallySleeping = await probeBotComputerState({
+    deployEnv: "local",
+    platform: "darwin",
+    executor: {
+      health: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+    },
+    execFileFn: async () => ({ stdout: "ubuntu  stopped\n", stderr: "" }),
+  });
+  assert.equal(macReallySleeping.state, "ready");
+  assert.equal(macReallySleeping.errorCode, "not_started");
+  const sleepView = resolveBotComputerStatusDisplay({
+    ...macReallySleeping,
+    error: macReallySleeping.healthError,
+    latencyMs: 12,
+  });
+  assert.equal(sleepView.isSleeping, true);
+  assert.equal(sleepView.cardStatusText, "休眠中");
+
+  const runningWithTabBinding = resolveBotComputerStatusDisplay(
+    { state: "ready", online: true, latencyMs: 5 },
+    {
+      multiDisplayEnabled: true,
+      activeSessionId: "s-1",
+      computerDisplays: { bindings: { "s-1": "标签 #1" }, pool: { queuedCount: 0 } },
+    }
+  );
+  assert.equal(runningWithTabBinding.cardStatusText, "运行中");
+
+  const runningWithQueue = resolveBotComputerStatusDisplay(
+    { state: "ready", online: true, latencyMs: 5 },
+    {
+      multiDisplayEnabled: true,
+      activeSessionId: "s-1",
+      computerDisplays: { bindings: { "s-1": "标签 #1" }, pool: { queuedCount: 2 } },
+    }
+  );
+  assert.equal(runningWithQueue.cardStatusText, "运行中 · 排队 2");
+
+  const macDeployScript = buildMacOrbExecutorDeployScript({ executorToken: "tok-123", overwriteToken: true });
+  assert.match(macDeployScript, /-BlacklistThreshold=0 -BlacklistTimeout=0/);
+  assert.match(macDeployScript, /blacklisted: 127\.0\.0\.1/);
 });

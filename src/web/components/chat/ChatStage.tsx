@@ -250,15 +250,7 @@ export function ChatStage({
           aria-label="返回列表"
           onClick={() => setState({ mobileView: "list" })}
         >
-          <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path
-              d="M12.5 4.8L7.3 10L12.5 15.2"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          <UiIcon name="chevron-left" />
         </button>
         <div className="stage-header-spacer" />
 

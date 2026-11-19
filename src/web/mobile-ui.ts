@@ -114,14 +114,6 @@ export function closeMobileSettingsSheet() {
 export function openMobileSettingsSheet() {
   const sheet = el("mobile-settings-sheet");
   if (!sheet) return;
-  const tzEl = el("mobile-timezone-value");
-  if (tzEl) {
-    try {
-      tzEl.textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai";
-    } catch {
-      tzEl.textContent = "Asia/Shanghai";
-    }
-  }
   openSheetAnimated(sheet);
 }
 

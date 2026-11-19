@@ -34,14 +34,25 @@ export const COMPUTER_STATES = [
 
 export type ComputerState = (typeof COMPUTER_STATES)[number];
 
+export type ComputerErrorCode =
+  | "unauthorized"
+  | "unreachable"
+  | "not_started"
+  | "not_created"
+  | "error"
+  | "unsupported";
+
 export interface ProbeBotComputerResult {
   state: ComputerState;
   provider: string;
   platform: string;
   online: boolean;
   vmInstalled?: boolean;
+  vmRunning?: boolean;
   distro?: string;
   screen?: any;
+  errorCode?: ComputerErrorCode;
+  healthError?: string;
   detail: string;
 }
 
@@ -76,6 +87,52 @@ function defaultExec(cmd: string, args: string[], timeout = 120_000) {
   });
 }
 
+function isHealthAuthError(err: any, errMsg: string): boolean {
+  return err?.status === 401 || /\bunauthorized\b|401/i.test(String(errMsg || ""));
+}
+
+/**
+ * Builds an idempotent root bash setup script for OrbStack Ubuntu (macOS):
+ * - Migrates/stops any legacy `geminibot-executor` or `grokbot-executor` processes
+ * - Syncs `/etc/twinklebot/executor.env` token & browser config
+ * - Ensures `/etc/systemd/system/twinklebot-executor.service` and Google Chrome wrapper exist
+ * - Reloads and restarts `twinklebot-executor.service`
+ */
+export function buildMacOrbExecutorDeployScript({
+  executorToken = "",
+  overwriteToken = true,
+}: {
+  executorToken?: string;
+  overwriteToken?: boolean;
+} = {}): string {
+  const token = String(executorToken || "").trim();
+  const hasExplicitToken = Boolean(token && token !== "unconfigured-token");
+  const tokenB64 = Buffer.from(token || "unconfigured-token", "utf-8").toString("base64");
+  const wrapperB64 = Buffer.from(buildTwinklebotChromeWrapperScript(), "utf-8").toString("base64");
+
+  return [
+    `set -e`,
+    `TARGET_USER="$(systemctl show -p User --value ubuntu-desktop-vnc.service 2>/dev/null || true)"`,
+    `if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then TARGET_USER="$(awk -F: '$3>=500 && $3<65534 && $1!="nobody"{print $1; exit}' /etc/passwd 2>/dev/null || echo root)"; fi`,
+    `TARGET_GROUP="$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")"`,
+    `mkdir -p /opt/twinklebot /opt/twinklebot/chrome-profile /etc/twinklebot`,
+    `chown -R "$TARGET_USER:$TARGET_GROUP" /opt/twinklebot`,
+    `for legacy in geminibot-executor.service grokbot-executor.service; do if systemctl list-unit-files "$legacy" >/dev/null 2>&1; then systemctl stop "$legacy" >/dev/null 2>&1 || true; systemctl disable "$legacy" >/dev/null 2>&1 || true; fi; done`,
+    `pkill -f '[/]opt/(geminibot|grokbot)/executor\\.py' >/dev/null 2>&1 || true`,
+    `NEW_TOK="$(printf '%s' '${tokenB64}' | base64 -d)"`,
+    `if [ ! -s /etc/twinklebot/executor.env ]; then if [ -s /etc/geminibot/executor.env ]; then cp /etc/geminibot/executor.env /etc/twinklebot/executor.env; else touch /etc/twinklebot/executor.env; fi; fi`,
+    hasExplicitToken && overwriteToken
+      ? `grep -vE '^TWINKLEBOT_EXECUTOR_TOKEN=|^TWINKLEBOT_BROWSER=|^DISPLAY=' /etc/twinklebot/executor.env > /etc/twinklebot/executor.env.tmp 2>/dev/null || true; { printf 'TWINKLEBOT_EXECUTOR_TOKEN=%s\\nTWINKLEBOT_BROWSER=/usr/local/bin/google-chrome\\nDISPLAY=:1\\n' "$NEW_TOK"; cat /etc/twinklebot/executor.env.tmp 2>/dev/null || true; } > /etc/twinklebot/executor.env; rm -f /etc/twinklebot/executor.env.tmp`
+      : `if ! grep -q '^TWINKLEBOT_EXECUTOR_TOKEN=' /etc/twinklebot/executor.env; then printf 'TWINKLEBOT_EXECUTOR_TOKEN=%s\\n' "$NEW_TOK" >> /etc/twinklebot/executor.env; fi; grep -q '^TWINKLEBOT_BROWSER=' /etc/twinklebot/executor.env && sed -i 's|^TWINKLEBOT_BROWSER=/usr/local/bin/chromium$|TWINKLEBOT_BROWSER=/usr/local/bin/google-chrome|' /etc/twinklebot/executor.env || printf 'TWINKLEBOT_BROWSER=/usr/local/bin/google-chrome\\n' >> /etc/twinklebot/executor.env; grep -q '^DISPLAY=' /etc/twinklebot/executor.env || printf 'DISPLAY=:1\\n' >> /etc/twinklebot/executor.env`,
+    `chown root:"$TARGET_GROUP" /etc/twinklebot/executor.env && chmod 640 /etc/twinklebot/executor.env`,
+    `for cand in /usr/bin/google-chrome-stable /usr/bin/google-chrome /usr/bin/chromium /usr/bin/chromium-browser; do if [ -x "$cand" ]; then ln -sf "$cand" /opt/twinklebot/browser-bin; printf '%s' '${wrapperB64}' | base64 -d > /usr/local/bin/twinklebot-chrome; chmod 0755 /usr/local/bin/twinklebot-chrome; ln -sf /usr/local/bin/twinklebot-chrome /usr/local/bin/google-chrome; ln -sf /usr/local/bin/twinklebot-chrome /usr/local/bin/chromium; break; fi; done`,
+    `if [ -f /opt/twinklebot/executor.py ]; then chmod 0755 /opt/twinklebot/executor.py; fi`,
+    `NEED_VNC_RESTART=0; if [ -f /usr/local/bin/start-ubuntu-desktop.sh ] && grep -q 'Xtigervnc' /usr/local/bin/start-ubuntu-desktop.sh && ! grep -q 'BlacklistThreshold' /usr/local/bin/start-ubuntu-desktop.sh; then sed -i 's|-AlwaysShared|-BlacklistThreshold=0 -BlacklistTimeout=0 -AlwaysShared|' /usr/local/bin/start-ubuntu-desktop.sh; NEED_VNC_RESTART=1; fi; if journalctl -u ubuntu-desktop-vnc.service -n 20 --no-pager 2>/dev/null | grep -q 'blacklisted: 127.0.0.1'; then NEED_VNC_RESTART=1; fi; if [ "$NEED_VNC_RESTART" = "1" ]; then systemctl restart ubuntu-desktop-vnc.service >/dev/null 2>&1 || true; sleep 1; systemctl restart ubuntu-desktop-novnc.service >/dev/null 2>&1 || true; fi`,
+    `if [ ! -s /etc/systemd/system/twinklebot-executor.service ]; then printf '[Unit]\\nDescription=TwinkleBot Desktop Executor\\nAfter=ubuntu-desktop-vnc.service\\n\\n[Service]\\nType=simple\\nUser=%s\\nEnvironment=DISPLAY=:1\\nEnvironmentFile=/etc/twinklebot/executor.env\\nExecStart=/usr/bin/python3 /opt/twinklebot/executor.py\\nRestart=always\\nRestartSec=2\\n\\n[Install]\\nWantedBy=multi-user.target\\n' "$TARGET_USER" > /etc/systemd/system/twinklebot-executor.service; fi`,
+    `systemctl daemon-reload && systemctl enable --now twinklebot-executor.service && systemctl restart twinklebot-executor.service`,
+  ].join(" && ");
+}
+
 export async function probeBotComputerState({
   deployEnv = "local",
   platform = process.platform,
@@ -105,6 +162,7 @@ export async function probeBotComputerState({
       provider,
       platform,
       online: false,
+      errorCode: "unsupported",
       detail: "二期暂不支持 Linux 桌面端本地容器",
     };
   }
@@ -121,11 +179,37 @@ export async function probeBotComputerState({
   }
 
   let healthError = "";
+  let authMismatch = false;
   let vmInstalled = false;
   let vmRunning = false;
   let vmCheckSucceeded = false;
   let vmCheckEnoent = false;
   let distro: string | null = null;
+
+  // Fast path on macOS: probe executor HTTP directly first (~2ms when healthy, avoids `orb list` spawn)
+  if (platform === "darwin" && executor?.health) {
+    try {
+      const h = await executor.health({ timeoutMs: 2500, skipWake: true });
+      if (h && h.ok !== false) {
+        return {
+          state: "ready",
+          provider,
+          platform,
+          online: true,
+          vmInstalled: true,
+          vmRunning: true,
+          distro: "ubuntu",
+          screen: h.screen || null,
+          detail: "OrbStack 桌面已就绪",
+        };
+      }
+      healthError = "executor health returned not ok";
+    } catch (err: any) {
+      healthError = err?.message || String(err);
+      authMismatch = isHealthAuthError(err, healthError);
+    }
+  }
+
   try {
     if (platform === "darwin") {
       const out = await execFileFn("orb", ["list"], 5_000);
@@ -146,9 +230,8 @@ export async function probeBotComputerState({
     vmCheckEnoent = err?.code === "ENOENT";
   }
 
-  if (executor?.health) {
+  if (platform === "win32" && executor?.health) {
     const shouldAutoWakeWsl =
-      platform === "win32" &&
       vmInstalled &&
       Boolean(distro) &&
       persisted.state === "ready" &&
@@ -159,9 +242,9 @@ export async function probeBotComputerState({
     const probeAttempts = shouldAutoWakeWsl ? 10 : 1;
     for (let i = 0; i < probeAttempts; i++) {
       try {
-        const h = await executor.health();
+        const h = await executor.health({ timeoutMs: 2500, skipWake: true });
         if (h && h.ok !== false) {
-          if (platform === "win32" && distro && execFileFn === defaultExec) {
+          if (distro && execFileFn === defaultExec) {
             ensureWslKeepalive(distro);
           }
           return {
@@ -169,37 +252,82 @@ export async function probeBotComputerState({
             provider,
             platform,
             online: true,
+            vmInstalled: true,
+            vmRunning: true,
             ...(distro ? { distro } : {}),
             screen: h.screen || null,
-            detail: `${provider === "orbstack" ? "OrbStack" : `WSL (${distro || "Ubuntu"})`} 桌面已就绪`,
+            detail: `WSL (${distro || "Ubuntu"}) 桌面已就绪`,
           };
         }
         healthError = "executor health returned not ok";
       } catch (err: any) {
         healthError = err?.message || String(err);
+        authMismatch = isHealthAuthError(err, healthError);
       }
-      if (i + 1 < probeAttempts) {
+      if (i + 1 < probeAttempts && !authMismatch) {
         await new Promise((r) => setTimeout(r, 350));
+      } else if (authMismatch) {
+        break;
       }
     }
   }
 
+  if (authMismatch) {
+    return {
+      state: "error",
+      provider,
+      platform,
+      online: false,
+      vmInstalled: true,
+      vmRunning: true,
+      ...(distro ? { distro } : {}),
+      errorCode: "unauthorized",
+      healthError: healthError || "unauthorized",
+      detail: "执行器令牌校验失败 (unauthorized)，请在设置中点击「更新」同步组件并重启服务",
+    };
+  }
+
   const isInstalled = vmInstalled || (!vmCheckSucceeded && !vmCheckEnoent && persisted.state === "ready");
-  const detail = isInstalled
-    ? vmRunning
-      ? `检测到 ${provider === "orbstack" ? "OrbStack" : `WSL (${distro || "Ubuntu"})`} 容器已启动，但桌面执行器未就绪`
-      : `检测到 ${provider === "orbstack" ? "OrbStack" : `WSL (${distro || "Ubuntu"})`} 容器尚未启动或未就绪`
-    : `尚未创建本地 Bot 电脑（将使用 ${platform === "darwin" ? "OrbStack + Ubuntu" : "WSL2 + Ubuntu"}）`;
+  if (!isInstalled) {
+    return {
+      state: "uncreated",
+      provider,
+      platform,
+      online: false,
+      vmInstalled: false,
+      vmRunning: false,
+      ...(healthError ? { healthError } : {}),
+      errorCode: "not_created",
+      detail: `尚未创建本地 Bot 电脑（将使用 ${platform === "darwin" ? "OrbStack + Ubuntu" : "WSL2 + Ubuntu"}）`,
+    };
+  }
+
+  if (vmRunning) {
+    return {
+      state: "error",
+      provider,
+      platform,
+      online: false,
+      vmInstalled: true,
+      vmRunning: true,
+      ...(distro ? { distro } : {}),
+      ...(healthError ? { healthError } : {}),
+      errorCode: "unreachable",
+      detail: `检测到 ${provider === "orbstack" ? "OrbStack" : `WSL (${distro || "Ubuntu"})`} 容器已启动，但桌面执行器未就绪（可在设置中点击「更新」）`,
+    };
+  }
 
   return {
-    state: isInstalled ? "ready" : "uncreated",
+    state: "ready",
     provider,
     platform,
     online: false,
-    vmInstalled,
+    vmInstalled: true,
+    vmRunning: false,
     ...(distro ? { distro } : {}),
     ...(healthError ? { healthError } : {}),
-    detail,
+    errorCode: "not_started",
+    detail: `检测到 ${provider === "orbstack" ? "OrbStack" : `WSL (${distro || "Ubuntu"})`} 容器已休眠或尚未启动`,
   };
 }
 
@@ -390,28 +518,9 @@ export async function provisionBotComputer({
       }
       activeDistro = "ubuntu";
       onProgress("正在配置桌面环境与执行器服务…");
-      const envB64 = Buffer.from(
-        `TWINKLEBOT_EXECUTOR_TOKEN=${resolvedToken}\nTWINKLEBOT_BROWSER=/usr/local/bin/google-chrome\nDISPLAY=:1\n`,
-        "utf-8"
-      ).toString("base64");
-      const macWrapperB64 = Buffer.from(
-        buildTwinklebotChromeWrapperScript(),
-        "utf-8"
-      ).toString("base64");
-      await execFileFn("orb", [
-        "-m",
-        "ubuntu",
-        "-u",
-        "root",
-        "bash",
-        "-lc",
-        [
-          `mkdir -p /opt/twinklebot /opt/twinklebot/chrome-profile /etc/twinklebot`,
-          `if [ -s /etc/twinklebot/executor.env ]; then sed -i 's|^TWINKLEBOT_BROWSER=/usr/local/bin/chromium$|TWINKLEBOT_BROWSER=/usr/local/bin/google-chrome|' /etc/twinklebot/executor.env || true; else printf '%s' '${envB64}' | base64 -d > /etc/twinklebot/executor.env && chmod 640 /etc/twinklebot/executor.env; fi`,
-          `if [ ! -x /usr/bin/google-chrome-stable ] && [ ! -x /usr/bin/google-chrome ]; then case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) ARCH="" ;; esac; if [ -n "$ARCH" ]; then TMP_DEB=/tmp/google-chrome-stable.deb; if curl -fsSL --connect-timeout 15 --max-time 180 "https://dl.google.com/linux/direct/google-chrome-stable_current_\${ARCH}.deb" -o "$TMP_DEB"; then export DEBIAN_FRONTEND=noninteractive; apt-get -o Acquire::Retries=3 update -y >/dev/null 2>&1 || true; apt-get -o Acquire::Retries=3 install -y "$TMP_DEB" >/dev/null 2>&1 || (dpkg -i "$TMP_DEB" || apt-get -o Acquire::Retries=3 install -f -y); rm -f "$TMP_DEB"; fi; fi; fi`,
-          `for cand in /usr/bin/google-chrome-stable /usr/bin/google-chrome /usr/bin/chromium /usr/bin/chromium-browser; do if [ -x "$cand" ]; then ln -sf "$cand" /opt/twinklebot/browser-bin; printf '%s' '${macWrapperB64}' | base64 -d > /usr/local/bin/twinklebot-chrome; chmod 0755 /usr/local/bin/twinklebot-chrome; ln -sf /usr/local/bin/twinklebot-chrome /usr/local/bin/google-chrome; ln -sf /usr/local/bin/twinklebot-chrome /usr/local/bin/chromium; break; fi; done`,
-        ].join(" && "),
-      ]);
+      const macChromeSetup = [
+        `if [ ! -x /usr/bin/google-chrome-stable ] && [ ! -x /usr/bin/google-chrome ]; then case "$(uname -m)" in x86_64|amd64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) ARCH="" ;; esac; if [ -n "$ARCH" ]; then TMP_DEB=/tmp/google-chrome-stable.deb; if curl -fsSL --connect-timeout 15 --max-time 180 "https://dl.google.com/linux/direct/google-chrome-stable_current_\${ARCH}.deb" -o "$TMP_DEB"; then export DEBIAN_FRONTEND=noninteractive; apt-get -o Acquire::Retries=3 update -y >/dev/null 2>&1 || true; apt-get -o Acquire::Retries=3 install -y "$TMP_DEB" >/dev/null 2>&1 || (dpkg -i "$TMP_DEB" || apt-get -o Acquire::Retries=3 install -f -y); rm -f "$TMP_DEB"; fi; fi; fi`,
+      ];
       if (hasLocalExecutor) {
         await execFileFn("orb", [
           "-m",
@@ -419,20 +528,25 @@ export async function provisionBotComputer({
           "-u",
           "root",
           "install",
+          "-D",
           "-m",
           "0755",
           executorPy,
           "/opt/twinklebot/executor.py",
         ]);
       }
+      const macDeployScript = buildMacOrbExecutorDeployScript({
+        executorToken: resolvedToken,
+        overwriteToken: true,
+      });
       await execFileFn("orb", [
         "-m",
         "ubuntu",
         "-u",
         "root",
-        "systemctl",
-        "restart",
-        "twinklebot-executor.service",
+        "bash",
+        "-lc",
+        [...macChromeSetup, macDeployScript].join(" && "),
       ]);
     } else if (platform === "win32") {
       onProgress("检测 WSL2 与 Ubuntu 发行版…");

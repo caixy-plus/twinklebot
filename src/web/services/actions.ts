@@ -26,6 +26,7 @@ import {
 } from "../mobile-ui.js";
 import {
   ACCOUNTS_STORAGE_KEY,
+  buildBotComputerSelfHealPrompt,
   PRESET_BOT_COMPUTER_INIT_PROMPT,
 } from "../state/constants.js";
 import {
@@ -335,11 +336,12 @@ export function setNovncMode(viewOnly: boolean) {
   setState({ takeoverActive: !viewOnly });
 }
 
-export function openBotScreenOverlay() {
+export function openBotScreenOverlay(targetBotId?: string | null) {
   setState({
     desktopFullscreen: true,
     screenOverlayOpen: true,
     screenConnecting: true,
+    ...(targetBotId ? { screenOverlayTargetBotId: targetBotId } : {}),
   });
   if (isMobileViewport()) {
     setScreenOrientation("sensor");
@@ -387,7 +389,19 @@ export async function handleBotComputerCardActivate() {
     showToast(s.computerStatus?.detail || "当前平台暂不支持本地 Bot 电脑");
     return;
   }
-  if (s.config?.novncUrl && s.computerStatus?.online !== false) {
+  if (compState === "error" || s.computerStatus?.online === false) {
+    const adminBot = s.sessions.find((item) => item.isAdmin) || getPrimarySessionFromState(s);
+    if (adminBot && s.computerStatus?.provider !== "cloud-linux") {
+      if (s.activeSessionId !== adminBot.id) {
+        await selectSession(adminBot.id);
+      }
+      await sendUserMessage(buildBotComputerSelfHealPrompt(s.computerStatus));
+      return;
+    }
+    openSettingsModal("computer");
+    return;
+  }
+  if (s.config?.novncUrl) {
     openBotScreenOverlay();
   } else {
     openSettingsModal("computer");
@@ -415,7 +429,7 @@ export function renderEmptyState() {
   });
 }
 
-export function resetActiveSessionViewState(sessionId: string | null, _wasSameSession: boolean) {
+export function resetActiveSessionViewState(sessionId: string | null, wasSameSession: boolean) {
   teardownAllPreviewFrames({ includeModal: true });
   setState({
     activeSessionId: sessionId,
@@ -435,6 +449,7 @@ export function resetActiveSessionViewState(sessionId: string | null, _wasSameSe
     botExchangeSheet: { open: false, participants: [], messages: [] },
     traceDrawerOpen: false,
     computerMiniThumbUrl: null,
+    ...(!wasSameSession ? { libraryItems: [], libraryExpanded: false } : {}),
   });
   syncDerivedAccent();
 }
@@ -449,7 +464,7 @@ export function renderEventForActiveSession(evt: any, { replay = false } = {}) {
     setState(next);
   }
   if (effects.shouldAutoExpandScreen) {
-    openBotScreenOverlay();
+    openBotScreenOverlay(effects.autoExpandTargetBotId || null);
   }
   if (effects.shouldRefreshUsage) {
     refreshUsageAndHealth().catch(() => {});
@@ -929,11 +944,13 @@ export async function uploadAndStageFiles(files: File[]) {
       r.onload = () => resolve(String(r.result).split(",")[1] || "");
       r.readAsDataURL(file);
     });
+    const activeSessionId = getState().activeSessionId || "";
     const uploaded = await apiJson("/api/attachments", {
       method: "POST",
       body: JSON.stringify({
         name: file.name || `paste_${Date.now()}.png`,
         dataBase64: base64,
+        ...(activeSessionId ? { sessionId: activeSessionId } : {}),
       }),
     });
     setState((prev) => ({
@@ -1186,6 +1203,7 @@ export function openSettingsModal(
     refreshUsageAndHealth();
     refreshVault();
     refreshSystemDiagnostics(false);
+    void refreshLocalUpdateMetadata();
   } else if (tab === "usage" || tab === "computer") {
     refreshUsageAndHealth();
   } else if (tab === "vault") {
@@ -1385,37 +1403,81 @@ export async function refreshComputerDisplays() {
 
 let inflightComputerStatusPromise: Promise<void> | null = null;
 
-export async function refreshComputerStatus(opts: { suppressLanOfflineModal?: boolean } = {}) {
-  if (inflightComputerStatusPromise) return inflightComputerStatusPromise;
+function applyComputerStatusPayload(c: any) {
+  if (!c || typeof c !== "object") return;
+  const online = Boolean(c.online);
+  setState((prev) => ({
+    computerStatus: {
+      state: c.state || (online ? "ready" : "uncreated"),
+      provider: c.provider || prev.computerStatus?.provider || "orbstack",
+      online,
+      latencyMs: c.latencyMs,
+      screen: c.screen,
+      detail: typeof c.detail === "string" ? c.detail : c.error || "",
+      error: online ? undefined : c.error,
+      errorCode: online ? undefined : c.errorCode,
+      vmInstalled: c.vmInstalled,
+      vmRunning: c.vmRunning,
+      hostComputer: c.hostComputer || prev.computerStatus?.hostComputer,
+    },
+  }));
+}
+
+export async function refreshComputerStatus(
+  opts: { suppressLanOfflineModal?: boolean; force?: boolean } = {}
+) {
+  if (inflightComputerStatusPromise && !opts.force) {
+    return inflightComputerStatusPromise;
+  }
   const epoch = getState().accountEpoch;
-  inflightComputerStatusPromise = (async () => {
+  const promise = (async () => {
     try {
       const c = await apiJson("/api/computer/status", {
         suppressLanOfflineModal: opts.suppressLanOfflineModal,
       });
-      if (epoch !== getState().accountEpoch) return;
-      runWhenSettingsScrollIdle("computer-status", () => {
-        setState((prev) => ({
-          computerStatus: {
-            state: c.state || (c.online ? "ready" : "uncreated"),
-            provider: c.provider || prev.computerStatus?.provider || "orbstack",
-            online: Boolean(c.online),
-            latencyMs: c.latencyMs,
-            screen: c.screen,
-            detail: typeof c.detail === "string" ? c.detail : c.error || "",
-            error: c.error,
-            hostComputer: c.hostComputer || prev.computerStatus?.hostComputer,
-          },
-        }));
-      });
+      if (epoch !== getState().accountEpoch) return getState().computerStatus;
+      if (opts.force) {
+        applyComputerStatusPayload(c);
+      } else {
+        runWhenSettingsScrollIdle("computer-status", () => applyComputerStatusPayload(c));
+      }
       if (c.online && hasConnectedNodeCapability("multi-display-v1")) {
         void refreshComputerDisplays();
       }
-    } catch {}
+      return c;
+    } catch {
+      return null;
+    }
   })().finally(() => {
-    inflightComputerStatusPromise = null;
+    if (inflightComputerStatusPromise === promise) {
+      inflightComputerStatusPromise = null;
+    }
   });
-  return inflightComputerStatusPromise;
+  inflightComputerStatusPromise = promise;
+  return promise;
+}
+
+export async function resetBotComputerConnection() {
+  setNovncMode(true);
+  setState((prev) => ({
+    novncReconnectSeq: (Number(prev.novncReconnectSeq) || 0) + 1,
+  }));
+  const res = await apiJson("/api/computer/reset", { method: "POST", body: "{}" });
+  if (res?.status && typeof res.status === "object") {
+    applyComputerStatusPayload(res.status);
+  }
+  const latest = await refreshComputerStatus({ force: true, suppressLanOfflineModal: true });
+  return { res, latest };
+}
+
+export async function updateBotComputerComponents() {
+  const res = await apiJson("/api/computer/update", { method: "POST", body: "{}" });
+  if (res?.status && typeof res.status === "object") {
+    applyComputerStatusPayload(res.status);
+  }
+  const latest = await refreshComputerStatus({ force: true, suppressLanOfflineModal: true });
+  void refreshSystemDiagnostics(false);
+  return { res, latest };
 }
 
 export async function refreshUsageAndHealth() {
@@ -1466,6 +1528,7 @@ export async function refreshLibrary() {
   if (!sid) return;
   try {
     const data = await apiJson(`/api/sessions/${sid}/library`);
+    if (getState().activeSessionId !== sid) return;
     setState({ libraryItems: Array.isArray(data.items) ? data.items : [] });
   } catch {}
 }

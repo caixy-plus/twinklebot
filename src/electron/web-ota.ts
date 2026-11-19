@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isTrustedGithubReleaseUrl } from "../lib/github-releases.js";
 import { extractTarGzSafely } from "../lib/tar-gzip.js";
+import { compareWebBuild } from "../shared/versioning.js";
 
 export interface DesktopWebOtaState {
   builtInAppVersion: string;
@@ -120,9 +121,19 @@ export function createWebOtaManager(options: WebOtaManagerOptions) {
   function initState(): DesktopWebOtaState {
     fs.mkdirSync(releasesDir, { recursive: true });
     const loaded = readJsonSafe<Partial<DesktopWebOtaState>>(statePath);
+    const builtInMeta = readJsonSafe<{ webBuild?: string }>(
+      path.join(options.builtInPublicDir, "web-meta.json")
+    );
+    const builtInWebBuild = String(builtInMeta?.webBuild || "").trim();
+    const cachedBuildRef =
+      loaded?.activeBuild || loaded?.pendingBuild || loaded?.lastGoodBuild || "";
+    const builtInNewerOrEqual =
+      Boolean(builtInWebBuild) &&
+      Boolean(cachedBuildRef) &&
+      compareWebBuild(builtInWebBuild, cachedBuildRef) >= 0;
 
-    // If native binary upgraded to a new appVersion, clear old OTA overrides cleanly
-    if (!loaded || loaded.builtInAppVersion !== options.appVersion) {
+    // If native binary upgraded to a new appVersion OR ships a built-in webBuild newer/equal to cached OTA, clear old OTA overrides cleanly
+    if (!loaded || loaded.builtInAppVersion !== options.appVersion || builtInNewerOrEqual) {
       try {
         fs.rmSync(releasesDir, { recursive: true, force: true });
         fs.rmSync(stagingDir, { recursive: true, force: true });

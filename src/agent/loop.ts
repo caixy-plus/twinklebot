@@ -15,6 +15,14 @@ import {
   isSensitiveFilePath,
 } from "../lib/file-attachments.js";
 import {
+  ensureBotWorkspaceDir,
+  isPathInsideBotAccessibleRoots,
+  resolveBaseWorkspaceRoot,
+  resolveBotWorkspaceRoot,
+  resolveBotWriteRoots,
+  sanitizeBotWorkspaceId,
+} from "../lib/bot-workspace.js";
+import {
   BOT_COLLAB_TOOL_DECLARATIONS,
   isBotCollabTool,
   runBotCollabTool,
@@ -117,7 +125,11 @@ function isPathInsideWriteRoots(targetPath: string, writeRoots: string[] = []): 
 
 function loadVisualAttachmentImages(
   attachments: any,
-  writeRoots: string[] = []
+  writeRoots: string[] = [],
+  {
+    sessionId = "",
+    config = null,
+  }: { sessionId?: string; config?: Record<string, any> | null } = {}
 ): Array<{ data: string; mimeType: string }> {
   if (!Array.isArray(attachments) || attachments.length === 0) return [];
   const images: Array<{ data: string; mimeType: string }> = [];
@@ -127,7 +139,15 @@ function loadVisualAttachmentImages(
     if (!rawPath) continue;
     const resolved = expandUserPath(rawPath);
     if (!resolved || isSensitiveFilePath(resolved)) continue;
-    if (!isPathInsideWriteRoots(resolved, writeRoots)) continue;
+    if (Array.isArray(writeRoots) && writeRoots.length > 0) {
+      if (sessionId) {
+        if (!isPathInsideBotAccessibleRoots(resolved, { config, writeRoots, sessionId })) {
+          continue;
+        }
+      } else if (!isPathInsideWriteRoots(resolved, writeRoots)) {
+        continue;
+      }
+    }
     const ext = path.extname(resolved).toLowerCase();
     if (!CHAT_INLINE_IMAGE_EXTS.has(ext)) continue;
     try {
@@ -649,6 +669,44 @@ async function runTaskInner({
   }
 
   try {
+    const hasConfiguredWriteRoots =
+      Array.isArray(config?.writeRoots) && config.writeRoots.length > 0;
+    const fallbackWorkspaceBase =
+      !hasConfiguredWriteRoots && store?.dataDir
+        ? path.join(store.dataDir, "workspaces")
+        : "";
+    const rawConfiguredWriteRoots: string[] = hasConfiguredWriteRoots
+      ? config.writeRoots
+      : fallbackWorkspaceBase
+        ? [fallbackWorkspaceBase]
+        : [];
+    const botWorkspaceSessionId = sanitizeBotWorkspaceId(sessionId);
+    const baseWorkspaceRoot = rawConfiguredWriteRoots[0]
+      ? resolveBaseWorkspaceRoot({ config, writeRoots: rawConfiguredWriteRoots })
+      : "";
+    const botWorkspaceRoot = rawConfiguredWriteRoots[0]
+      ? resolveBotWorkspaceRoot({
+          config,
+          writeRoots: rawConfiguredWriteRoots,
+          sessionId: botWorkspaceSessionId,
+        })
+      : "";
+    const botWriteRoots =
+      rawConfiguredWriteRoots.length > 0
+        ? resolveBotWriteRoots({
+            config,
+            writeRoots: rawConfiguredWriteRoots,
+            sessionId: botWorkspaceSessionId,
+          })
+        : [];
+    const scopedRuntimeConfig: Record<string, any> = {
+      ...config,
+      ...(botWriteRoots.length > 0 ? { writeRoots: botWriteRoots } : {}),
+      ...(baseWorkspaceRoot ? { baseWorkspaceRoot } : {}),
+      ...(botWorkspaceRoot ? { botWorkspaceRoot } : {}),
+      ...(botWorkspaceSessionId ? { botWorkspaceSessionId } : {}),
+    };
+
     function formatContextualUserText(rawText: string, meta: any, includeAttachments = false): string {
       let out = String(rawText || "");
       if (!meta || typeof meta !== "object") return out;
@@ -689,7 +747,8 @@ async function runTaskInner({
     );
     const userAttachmentImages = loadVisualAttachmentImages(
       userMeta?.attachments,
-      config?.writeRoots
+      rawConfiguredWriteRoots,
+      { sessionId: botWorkspaceSessionId, config: scopedRuntimeConfig }
     );
     const hasVisualAttachments = Boolean(
       userAttachmentImages.length > 0 ||
@@ -913,7 +972,8 @@ async function runTaskInner({
       if (formattedTexts.length === 0) return false;
       const steeredImages = loadVisualAttachmentImages(
         steeredAttachments,
-        config?.writeRoots
+        rawConfiguredWriteRoots,
+        { sessionId: botWorkspaceSessionId, config: scopedRuntimeConfig }
       );
       if (steeredImages.length > 0) hasVisualSteer = true;
       const joined = formattedTexts.join("\n\n");
@@ -1256,7 +1316,7 @@ async function runTaskInner({
         }));
       const sessionObj = speakerBot || store?.getSession?.(sessionId) || null;
       const promptConfig = {
-        ...config,
+        ...scopedRuntimeConfig,
         routing: settings.routing || config.routing,
         providers: settings.providers || config.providers,
         enableBotTools,
@@ -1756,7 +1816,7 @@ async function runTaskInner({
         }
 
         const policyConfig = {
-          ...config,
+          ...scopedRuntimeConfig,
           hostExecutionMode,
           sandboxMode: config?.sandboxMode || settings?.sandboxMode || "restricted",
           isAdminBot: Boolean(speakerBot?.isAdmin || store?.getSession?.(sessionId)?.isAdmin),
@@ -1795,11 +1855,25 @@ async function runTaskInner({
               }
             }
             try {
-              return await runHostTool(call.name, call.args, {
+              const hostOut = await runHostTool(call.name, call.args, {
                 shellTimeoutSec: config?.shellTimeoutSec ?? 60,
-                workspaceRoot: config?.writeRoots?.[0],
+                workspaceRoot: botWorkspaceRoot || config?.writeRoots?.[0],
                 signal: ctrl.signal,
               });
+              if (
+                hostOut?.result?.ok &&
+                (call.name === "host_record_screen" ||
+                  (call.name === "host_write_file" &&
+                    botWorkspaceRoot &&
+                    typeof hostOut.result.path === "string" &&
+                    hostOut.result.path.startsWith(botWorkspaceRoot)))
+              ) {
+                broadcastGlobal?.({
+                  type: "library_updated",
+                  sessionId,
+                });
+              }
+              return hostOut;
             } catch (err: any) {
               if (ctrl.stopped) throw err;
               return { result: { ok: false, error: err.message || String(err) }, screenshot: null };
@@ -1821,7 +1895,22 @@ async function runTaskInner({
           if (needsScreenLock) {
             await ensureTaskScreenLease(ctrl.signal);
           }
-          return withOptionalMutex(
+          if (
+            (call.name === "run_shell" || call.name === "write_file") &&
+            botWorkspaceRoot &&
+            hasConfiguredWriteRoots
+          ) {
+            try {
+              ensureBotWorkspaceDir({
+                config: scopedRuntimeConfig,
+                writeRoots: rawConfiguredWriteRoots,
+                sessionId: botWorkspaceSessionId,
+              });
+            } catch {
+              // ignore uncreatable mock/custom paths
+            }
+          }
+          const sandboxOut = await withOptionalMutex(
             desktopMutex,
             needsScreenLock,
             () =>
@@ -1831,6 +1920,16 @@ async function runTaskInner({
                 prevScreenshotSha1: lastScreenSha1,
               })
           );
+          if (
+            (call.name === "write_file" || call.name === "run_shell") &&
+            !sandboxOut?.result?.error
+          ) {
+            broadcastGlobal?.({
+              type: "library_updated",
+              sessionId,
+            });
+          }
+          return sandboxOut;
         };
 
         if (decision === "deny") {

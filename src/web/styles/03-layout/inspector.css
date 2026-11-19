@@ -313,6 +313,10 @@
 }
 
 .upcoming-copy { flex: 1; min-width: 0; }
+.upcoming-copy.is-editable,
+.private-skill-row .skill-row-info.is-editable {
+  cursor: pointer;
+}
 .upcoming-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .upcoming-sub { font-size: 11.5px; color: var(--text-secondary); }
 

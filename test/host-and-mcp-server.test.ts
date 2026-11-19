@@ -186,7 +186,7 @@ test("routing settings persist with validation", async (t) => {
   assert.equal((await call("POST", "/api/settings", { routing: { maxTurnUsd: 50 } })).status, 400);
 });
 
-test("GET /api/computer/status includes local Mac hostComputer info and POST /api/computer/update updates Bot's computer", async (t) => {
+test("GET /api/computer/status includes local Mac hostComputer info and POST /api/computer/update & reset update Bot's computer", async (t) => {
   const { call, getRunnerStopped, getUpdateCalls } = await bootServer(t);
 
   const comp = await call("GET", "/api/computer/status");
@@ -200,8 +200,15 @@ test("GET /api/computer/status includes local Mac hostComputer info and POST /ap
   const upd = await call("POST", "/api/computer/update");
   assert.equal(upd.status, 200);
   assert.equal(upd.json.ok, true);
+  assert.ok(upd.json.status);
   assert.equal(getRunnerStopped(), 1);
   assert.equal(getUpdateCalls(), 1);
+
+  const rst = await call("POST", "/api/computer/reset");
+  assert.equal(rst.status, 200);
+  assert.equal(rst.json.ok, true);
+  assert.ok(rst.json.status);
+  assert.equal(getRunnerStopped(), 2);
 });
 
 test("GET /api/mcp/status and POST /api/mcp/reconnect report KimiCU connection details", async (t) => {

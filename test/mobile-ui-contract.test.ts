@@ -35,8 +35,9 @@ test("public/index.html, React App & mobile.css provide 2-level stack navigation
     "mobile-bot-save-btn",
     "mobile-inspector-sheet",
     "mobile-settings-sheet",
-    "mobile-auto-timezone-toggle",
-    "mobile-timezone-value",
+    "mobile-settings-more-row",
+    "mobile-settings-modal-back-btn",
+    "mobile-apps-back-btn",
     "mobile-host-control-card",
     "mobile-host-status-badge",
     "mobile-cloud-hosts-list",
@@ -76,7 +77,47 @@ test("public/index.html, React App & mobile.css provide 2-level stack navigation
   assert.ok(mobileCss.includes(".mobile-node-card-left"));
   assert.ok(mobileCss.includes("#mobile-active-node-name"));
 
-  // Desktop RightInspector and MobileSheets share pure declarative React panel components without innerHTML cloning
+  // Mobile Settings sheet removes timezone/computer/skills rows, groups primary items together, and pins standalone 关于 card to bottom
+  assert.equal(html.includes('id="mobile-auto-timezone-toggle"'), false);
+  assert.equal(html.includes('id="mobile-timezone-value"'), false);
+  assert.equal(html.includes('id="mobile-settings-computer-row"'), false);
+  assert.equal(html.includes('id="mobile-settings-skills-row"'), false);
+  assert.equal(html.includes('<div class="mobile-section-caption">Bot</div>'), false);
+  assert.equal(html.includes('<div class="mobile-section-caption">更多</div>'), false);
+  const moreIdx = html.indexOf('id="mobile-settings-more-row"');
+  const aboutCardIdx = html.indexOf('class="mobile-grouped-card mobile-settings-about-card"');
+  const aboutIdx = html.indexOf('id="mobile-settings-about-row"');
+  assert.ok(
+    moreIdx > 0 && aboutCardIdx > moreIdx && aboutIdx > aboutCardIdx,
+    "更多设置 must sit inside main grouped card above standalone bottom-pinned 关于 card"
+  );
+  assert.match(mobileCss, /#mobile-settings-sheet\s+\.mobile-settings-about-card\s*\{[^}]*margin-top:\s*auto/);
+  assert.ok(html.includes("更多设置"));
+
+  // Unified top-left back buttons across fullscreen mobile pages without X close buttons or drawer back buttons
+  for (const backBtnId of [
+    "mobile-back-btn",
+    "mobile-settings-close-btn",
+    "mobile-bot-editor-close-btn",
+    "mobile-settings-modal-back-btn",
+    "mobile-apps-back-btn",
+  ]) {
+    assert.ok(html.includes(`id="${backBtnId}"`), `missing mobile back button #${backBtnId}`);
+  }
+  assert.equal(html.includes('id="mobile-inspector-close-btn"'), false);
+  assert.equal(html.includes('id="mobile-node-sheet-close-btn"'), false);
+  assert.match(mobileCss, /\.apps-modal\s+\.modal-close-btn,\s*\.settings-modal\s+\.modal-close-btn\s*\{[^}]*display:\s*none\s*!important/s);
+
+  assert.ok(html.includes('id="mobile-apps-back-btn"') || html.includes("mobile-apps-back-btn"));
+  assert.equal(appJs.includes("settings-mobile-editor-sheet"), false, "list editing must stay inline instead of opening mobile popup sheet");
+  assert.equal(mobileCss.includes("settings-mobile-editor-sheet"), false);
+  assert.ok(styleCss.includes(".is-inline-row-editor"), "style.css must define .is-inline-row-editor for inline row editing");
+  assert.ok(appJs.includes("isEditingThisProv") && appJs.includes("isEditingThisMem") && appJs.includes("isEditingThisVault"));
+  assert.ok(appJs.includes("isEditingThisSkill") && appJs.includes("isEditingThisAcct"));
+  assert.ok(html.includes('id="bot-memory-modal-backdrop"') && html.includes('id="schedule-modal-backdrop"'));
+  assert.equal(html.includes('id="new-bot-memory-form-card"'), false);
+  assert.equal(html.includes('id="mobile-new-bot-memory-form-card"'), false);
+  assert.ok(appJs.includes("editingScheduleId") && appJs.includes("botMemoryModal"));
   const webSrc = readWebSourceTs();
   assert.ok(webSrc.includes("BotMemoriesList"));
   assert.ok(webSrc.includes("SchedulesList"));
@@ -212,6 +253,7 @@ test("Desktop popover/inspector rows & mobile custom-skills/settings layouts pre
   const html = renderFullAppHtml();
   const styleCss = fs.readFileSync(path.join(PROJECT_ROOT, "public/style.css"), "utf8");
   const mobileCss = fs.readFileSync(path.join(PROJECT_ROOT, "public/mobile.css"), "utf8");
+  const appJs = readWebSourceTs();
 
   // 1. Account popover & inspector kv-row keep labels single-line and chevron inline
   assert.match(styleCss, /\.account-popover\s*\{[^}]*width:\s*284px/s);
@@ -226,8 +268,12 @@ test("Desktop popover/inspector rows & mobile custom-skills/settings layouts pre
   );
   assert.match(styleCss, /\.session-cost-inline\s*\{[^}]*flex-shrink:\s*0;/s);
 
-  // 2. Mobile Settings nav stops short of close button gutter; permission rule remove stays horizontal
-  assert.match(mobileCss, /\.settings-nav\s*\{[^}]*width:\s*calc\(100%\s*-\s*62px\)\s*!important/s);
+  // 2. Mobile Settings nav sits inside .settings-nav-wrap with centered active tab, left/right blur, and swipeable content
+  assert.match(mobileCss, /\.settings-mobile-topbar\s*\{[^}]*display:\s*flex/s);
+  assert.match(mobileCss, /\.settings-nav-wrap::before,[\s\S]*?backdrop-filter:\s*blur\(5px\)/s);
+  assert.match(mobileCss, /\.settings-nav\s*\{[^}]*scroll-snap-type:\s*x\s+proximity/s);
+  assert.match(mobileCss, /\.settings-nav-item\s*\{[^}]*scroll-snap-align:\s*center/s);
+  assert.ok(appJs.includes("handleContentTouchStart") && appJs.includes("handleContentTouchEnd"));
   assert.match(styleCss, /\.perm-rule-chip\s*>\s*span\s*\{[^}]*min-width:\s*0;[^}]*flex:\s*1/s);
   assert.match(styleCss, /\.section-action-link\s*\{[^}]*white-space:\s*nowrap;\s*flex-shrink:\s*0/s);
 
@@ -241,7 +287,6 @@ test("Desktop popover/inspector rows & mobile custom-skills/settings layouts pre
   // 4. Desktop narrow-window responsiveness stays 100% pure Desktop UI and never turns into Mobile UI
   const electronMainTs = fs.readFileSync(path.join(PROJECT_ROOT, "src/electron/main.ts"), "utf8");
   const mobileUiJs = fs.readFileSync(path.join(PROJECT_ROOT, "src/web/mobile-ui.ts"), "utf8");
-  const appJs = readWebSourceTs();
   const minWMatch = electronMainTs.match(/minWidth:\s*(\d+)/);
   assert.ok(minWMatch && Number(minWMatch[1]) === 560, "Electron minWidth must be 560px for split-screen desktop");
   assert.ok(
@@ -353,7 +398,7 @@ test("SE3 small-screen, keyboard viewport lock, and direct-attach composer contr
   assert.ok(mobileCss.includes(".mobile-sheet-panel > *:not(.mobile-inspector-scroll)"));
   assert.ok(mobileCss.includes(".mobile-sheet.is-fullscreen.is-open::before"));
   assert.ok(mobileCss.includes("#mobile-bot-editor-sheet .mobile-sheet-header"));
-  assert.ok(mobileCss.includes("grid-template-columns: minmax(42px, 1fr) auto minmax(42px, 1fr)"));
+  assert.ok(mobileCss.includes("grid-template-columns: minmax(42px, 1fr) minmax(0, auto) minmax(42px, 1fr)"));
   assert.ok(mobileCss.includes(".msg-reply-anchor"));
   assert.ok(mobileCss.includes("font-size: 16px !important"));
   assert.ok(mobileCss.includes("height: 100% !important"));

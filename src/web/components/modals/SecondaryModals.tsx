@@ -10,6 +10,7 @@ import {
   selectSession,
   showToast,
   switchAccount,
+  upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
 import { BG_MODES } from "../../state/constants.js";
@@ -41,6 +42,9 @@ function handleDialogOutsideFallback(
 export function SecondaryModals() {
   const searchModalOpen = useStore((s) => s.searchModalOpen);
   const scheduleModalOpen = useStore((s) => s.scheduleModalOpen);
+  const editingScheduleId = useStore((s) => s.editingScheduleId);
+  const botMemoryModal = useStore((s) => s.botMemoryModal);
+  const schedules = useStore((s) => s.schedules);
   const shortcutsDialogOpen = useStore((s) => s.shortcutsDialogOpen);
   const imageLightbox = useStore((s) => s.imageLightbox);
   const htmlPreviewModal = useStore((s) => s.htmlPreviewModal);
@@ -62,6 +66,24 @@ export function SecondaryModals() {
   const [schedRepeat, setSchedRepeat] = useState("daily");
   const [schedLabel, setSchedLabel] = useState("每天 10:00");
   const [schedPrompt, setSchedPrompt] = useState("");
+
+  useEffect(() => {
+    if (!scheduleModalOpen) return;
+    if (editingScheduleId) {
+      const target = schedules.find((s: any) => s.id === editingScheduleId);
+      if (target) {
+        setSchedTitle(String(target.title || ""));
+        setSchedRepeat(String(target.repeat || "daily"));
+        setSchedLabel(String(target.scheduleLabel || "每天 10:00"));
+        setSchedPrompt(String(target.prompt || ""));
+        return;
+      }
+    }
+    setSchedTitle("");
+    setSchedRepeat("daily");
+    setSchedLabel("每天 10:00");
+    setSchedPrompt("");
+  }, [scheduleModalOpen, editingScheduleId]);
 
   const htmlPreviewDialogRef = useRef<HTMLDialogElement | null>(null);
   const htmlPreviewFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -160,7 +182,7 @@ export function SecondaryModals() {
     const title = schedTitle.trim();
     const prompt = schedPrompt.trim();
     const scheduleLabel = schedLabel.trim() || "每天 10:00";
-    if (!title || !prompt || !activeSessionId) {
+    if (!title || !prompt || (!editingScheduleId && !activeSessionId)) {
       showToast("请填写任务名称与执行指令");
       return;
     }
@@ -169,22 +191,101 @@ export function SecondaryModals() {
       schedRepeat === "once" && !hasExplicitClock
         ? new Date(Date.now() + 60 * 1000).toISOString()
         : undefined;
-    await apiJson("/api/schedules", {
-      method: "POST",
-      body: JSON.stringify({
-        sessionId: activeSessionId,
-        title,
-        prompt,
-        repeat: schedRepeat,
-        scheduleLabel,
-        ...(nextRunAt ? { nextRunAt } : {}),
-      }),
-    });
+    if (editingScheduleId) {
+      await apiJson(`/api/schedules/${encodeURIComponent(editingScheduleId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title,
+          prompt,
+          repeat: schedRepeat,
+          scheduleLabel,
+          ...(nextRunAt ? { nextRunAt } : {}),
+        }),
+      });
+    } else {
+      await apiJson("/api/schedules", {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: activeSessionId,
+          title,
+          prompt,
+          repeat: schedRepeat,
+          scheduleLabel,
+          ...(nextRunAt ? { nextRunAt } : {}),
+        }),
+      });
+    }
     setSchedTitle("");
     setSchedPrompt("");
-    setState({ scheduleModalOpen: false });
+    setState({ scheduleModalOpen: false, editingScheduleId: null });
     refreshSchedules();
-    showToast("例行任务已创建");
+    showToast(editingScheduleId ? "例行任务已更新" : "例行任务已创建");
+  };
+
+  const handleSaveBotMemoryModal = async () => {
+    const targetSid = botMemoryModal.sessionId || activeSessionId;
+    if (!targetSid) return;
+    const targetSession = sessions.find((s: any) => s.id === targetSid);
+    if (!targetSession) return;
+    const content = botMemoryModal.content.trim();
+    if (!content) {
+      showToast("请输入该 Bot 的专属记忆内容");
+      return;
+    }
+    const title =
+      botMemoryModal.name.trim() || content.replace(/\s+/g, " ").slice(0, 18);
+    const prevMemories = Array.isArray(targetSession.memories)
+      ? targetSession.memories
+      : [];
+    const nowIso = new Date().toISOString();
+    const nextMemories = botMemoryModal.memoryId
+      ? prevMemories.map((m: any) =>
+          (m.id || m.name) === botMemoryModal.memoryId
+            ? {
+                ...m,
+                name: title,
+                desc: content,
+                instruction: content,
+                content,
+                updatedAt: nowIso,
+              }
+            : m
+        )
+      : [
+          {
+            id: `bmem-${Date.now()}`,
+            name: title,
+            desc: content,
+            instruction: content,
+            content,
+            enabled: true,
+            updatedAt: nowIso,
+          },
+          ...prevMemories,
+        ];
+    try {
+      const updated = await apiJson(`/api/sessions/${targetSid}`, {
+        method: "PATCH",
+        body: JSON.stringify({ memories: nextMemories, touch: false }),
+      });
+      upsertLocalSession(updated);
+      setState((prev) => ({
+        botMemoryModal: {
+          ...prev.botMemoryModal,
+          open: false,
+          memoryId: null,
+          name: "",
+          content: "",
+        },
+      }));
+      showToast(
+        botMemoryModal.memoryId
+          ? `已更新「${targetSession.title || "当前 Bot"}」的专属记忆`
+          : `已保存到「${targetSession.title || "当前 Bot"}」的专属记忆`
+      );
+    } catch (err: any) {
+      showToast(`保存失败: ${err?.message || "未知错误"}`);
+    }
   };
 
   const handleSaveCloudAccount = async () => {
@@ -338,22 +439,99 @@ export function SecondaryModals() {
         </div>
       </div>
 
-      {/* ==================== SCHEDULE CREATION MODAL ==================== */}
+      {/* ==================== BOT DEDICATED MEMORY MODAL ==================== */}
       <div
-        id="schedule-modal-backdrop"
+        id="bot-memory-modal-backdrop"
         className="modal-backdrop"
-        hidden={!scheduleModalOpen}
+        hidden={!botMemoryModal.open}
         onClick={(e) => {
-          if (e.target === e.currentTarget) setState({ scheduleModalOpen: false });
+          if (e.target === e.currentTarget) {
+            setState((prev) => ({
+              botMemoryModal: { ...prev.botMemoryModal, open: false },
+            }));
+          }
         }}
       >
         <div
           className="compact-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label="创建例行任务"
+          aria-label={botMemoryModal.memoryId ? "编辑专属记忆" : "新增专属记忆"}
         >
-          <h3 className="compact-dialog-title">创建例行任务</h3>
+          <h3 className="compact-dialog-title">
+            {botMemoryModal.memoryId ? "编辑专属记忆" : "新增专属记忆"}
+          </h3>
+          <input
+            id="bot-memory-modal-name-input"
+            type="text"
+            className="inline-text-input"
+            placeholder="记忆要点（如：给王总发信默认抄送财务）"
+            aria-label="Bot 专属记忆标题"
+            value={botMemoryModal.name}
+            onChange={(e) =>
+              setState((prev) => ({
+                botMemoryModal: { ...prev.botMemoryModal, name: e.target.value },
+              }))
+            }
+          />
+          <textarea
+            id="bot-memory-modal-content-input"
+            className="inline-textarea"
+            rows={4}
+            placeholder="输入该 Bot 专属记住的上下文或约定..."
+            aria-label="Bot 专属记忆内容"
+            value={botMemoryModal.content}
+            onChange={(e) =>
+              setState((prev) => ({
+                botMemoryModal: { ...prev.botMemoryModal, content: e.target.value },
+              }))
+            }
+          />
+          <div className="inline-form-actions">
+            <button
+              id="cancel-bot-memory-modal-btn"
+              type="button"
+              className="settings-pill-btn"
+              onClick={() =>
+                setState((prev) => ({
+                  botMemoryModal: { ...prev.botMemoryModal, open: false },
+                }))
+              }
+            >
+              取消
+            </button>
+            <button
+              id="save-bot-memory-modal-btn"
+              type="button"
+              className="settings-blue-pill"
+              onClick={handleSaveBotMemoryModal}
+            >
+              {botMemoryModal.memoryId ? "保存修改" : "保存"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ==================== SCHEDULE CREATION / EDIT MODAL ==================== */}
+      <div
+        id="schedule-modal-backdrop"
+        className="modal-backdrop"
+        hidden={!scheduleModalOpen}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            setState({ scheduleModalOpen: false, editingScheduleId: null });
+          }
+        }}
+      >
+        <div
+          className="compact-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingScheduleId ? "编辑例行任务" : "创建例行任务"}
+        >
+          <h3 className="compact-dialog-title">
+            {editingScheduleId ? "编辑例行任务" : "创建例行任务"}
+          </h3>
           <input
             id="sched-title-input"
             type="text"
@@ -395,7 +573,7 @@ export function SecondaryModals() {
               id="cancel-sched-modal-btn"
               type="button"
               className="settings-pill-btn"
-              onClick={() => setState({ scheduleModalOpen: false })}
+              onClick={() => setState({ scheduleModalOpen: false, editingScheduleId: null })}
             >
               取消
             </button>
@@ -405,7 +583,7 @@ export function SecondaryModals() {
               className="settings-blue-pill"
               onClick={handleSaveSchedule}
             >
-              创建任务
+              {editingScheduleId ? "保存修改" : "创建任务"}
             </button>
           </div>
         </div>

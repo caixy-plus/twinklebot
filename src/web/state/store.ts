@@ -197,6 +197,9 @@ export interface AppState {
     screen?: { width?: number; height?: number };
     detail: string;
     error?: string;
+    errorCode?: string;
+    vmInstalled?: boolean;
+    vmRunning?: boolean;
     hostComputer?: { hostname?: string; executionMode?: string };
   };
   computerDisplays: {
@@ -287,6 +290,7 @@ export interface AppState {
   screenOverlayOpen: boolean;
   screenConnecting: boolean;
   landscapeDesktop: boolean;
+  novncReconnectSeq: number;
 
   // Composer & NewChatBar
   composerText: string;
@@ -319,6 +323,14 @@ export interface AppState {
   // Modals & Drawers
   searchModalOpen: boolean;
   scheduleModalOpen: boolean;
+  editingScheduleId: string | null;
+  botMemoryModal: {
+    open: boolean;
+    sessionId: string | null;
+    memoryId: string | null;
+    name: string;
+    content: string;
+  };
   shortcutsDialogOpen: boolean;
   botExchangeSheet: { open: boolean; participants: any[]; messages: any[] };
   traceDrawerOpen: boolean;
@@ -445,6 +457,7 @@ export function createInitialState(): AppState {
     },
     groupActiveSpeakerBySession: {},
     screenOverlayTargetBotId: null,
+    novncReconnectSeq: 0,
     diagnostics: null,
     updateState: {
       checking: false,
@@ -560,6 +573,14 @@ export function createInitialState(): AppState {
 
     searchModalOpen: false,
     scheduleModalOpen: false,
+    editingScheduleId: null,
+    botMemoryModal: {
+      open: false,
+      sessionId: null,
+      memoryId: null,
+      name: "",
+      content: "",
+    },
     shortcutsDialogOpen: false,
     botExchangeSheet: { open: false, participants: [], messages: [] },
     traceDrawerOpen: false,
@@ -780,6 +801,7 @@ export function finalizeOrphanedInteractiveItems(
 
 export interface EventApplySideEffects {
   shouldAutoExpandScreen?: boolean;
+  autoExpandTargetBotId?: string;
   shouldRefreshUsage?: boolean;
   debouncedRefreshUsage?: boolean;
 }
@@ -945,10 +967,18 @@ export function reduceSessionEvent(
         "scroll",
         "type_text",
         "key",
+        "list_windows",
+        "focus_window",
         "open_url",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
       ].includes(evt.name);
       if (isBotDesktopVisualTool && prev.settings?.autoExpandScreen && !prev.screenOverlayOpen && !replay) {
         effects.shouldAutoExpandScreen = true;
+        if (evt.botId) {
+          effects.autoExpandTargetBotId = String(evt.botId);
+        }
       }
       const argSummary = summarizeArgs(evt.args) || `步骤 #${stepCount}`;
       traceItems = [

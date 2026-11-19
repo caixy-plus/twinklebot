@@ -44,12 +44,20 @@
 
 .mail-account-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   padding: var(--pad-card-compact);
   background: var(--bg-card);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mail-account-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .mail-account-card.is-editing {
@@ -121,6 +129,11 @@
   cursor: pointer;
 }
 .mail-acct-btn:hover { background: var(--bg-card-hover); }
+.mail-acct-btn.is-active {
+  background: color-mix(in srgb, var(--accent-blue, #2563eb) 14%, var(--bg-modal-card));
+  border-color: color-mix(in srgb, var(--accent-blue, #2563eb) 42%, var(--border-hairline));
+  color: var(--accent-blue, #2563eb);
+}
 .mail-acct-btn:disabled { opacity: 0.55; cursor: default; }
 
 .mail-form-editor-shell {
@@ -155,6 +168,12 @@
   gap: 14px;
 }
 .mail-config-form[hidden] { display: none !important; }
+.mail-form-editor-shell.is-inline-row-editor .mail-config-form {
+  border-radius: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+}
 
 .mail-form-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .mail-form-title { margin: 0; font-size: 15px; font-weight: 700; }

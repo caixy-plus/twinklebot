@@ -314,8 +314,8 @@ test("runTask executes generate_image tool host-side, saves file, records image 
     assert.ok(imgUsageEv, "emits usage event for Google image model");
     assert.equal(imgUsageEv.output, 1120);
 
-    // Check file saved in <workspaceDir>/generated/
-    const genDir = path.join(workspaceDir, "generated");
+    // Check file saved inside this Bot's exclusive <workspaceDir>/bots/<sessionId>/generated/
+    const genDir = path.join(workspaceDir, "bots", session.id, "generated");
     const files = fs.readdirSync(genDir);
     assert.equal(files.length, 1);
     assert.ok(files[0].endsWith(".png"));
@@ -527,8 +527,8 @@ test("runTask degrades to LLM-coded SVG by default when no image model is config
     assert.equal(generateImageCalled, false);
     assert.equal(llmNextTurnCalls, 3);
 
-    // Saved file must default to .svg with sanitized attributes
-    const genDir = path.join(workspaceDir, "generated");
+    // Saved file must default to .svg with sanitized attributes inside this Bot's dedicated workspace
+    const genDir = path.join(workspaceDir, "bots", session.id, "generated");
     const files = fs.readdirSync(genDir);
     assert.equal(files.length, 1);
     assert.ok(files[0].endsWith(".svg"));

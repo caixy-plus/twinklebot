@@ -63,10 +63,21 @@ test(
     let holdGate = new Promise<void>((resolve) => {
       releaseHeldSlots = resolve;
     });
+    let simCompMode: "ready" | "unauthorized" = "ready";
+    let updateCallCount = 0;
+    let snapshotEnteredCount = 0;
+    const releasedTabs: string[] = [];
 
     const executor = {
-      health: async () => ({ ok: true, screen: { width: 1440, height: 900 } }),
-      call: async (route: string, _body?: any) => {
+      health: async () => {
+        if (simCompMode === "unauthorized") {
+          const err: any = new Error("unauthorized");
+          err.status = 401;
+          throw err;
+        }
+        return { ok: true, screen: { width: 1440, height: 900 } };
+      },
+      call: async (route: string, body?: any) => {
         if (route === "/displays") {
           return {
             ok: true,
@@ -75,10 +86,19 @@ test(
             displays: [{ display_num: 1, display: ":1", novnc_online: true, cdp_online: true }],
           };
         }
+        if (route === "/displays/release") {
+          const bid = String(body?.bot_id || "");
+          if (bid) {
+            releasedTabs.push(bid);
+            delete bindings[bid];
+          }
+          return { ok: true, released: Boolean(bid) };
+        }
         if (route === "/displays/ensure") {
           return { ok: true, novnc_port: novncPort, display: ":1" };
         }
         if (route === "/browser/snapshot") {
+          snapshotEnteredCount += 1;
           await holdGate;
           return { ok: true, url: "https://example.test", elements: [] };
         }
@@ -88,7 +108,21 @@ test(
 
     const model = {
       async nextTurn({ input }: any) {
-        if (input.some((s: any) => s.type === "function_result")) {
+        const getStepText = (s: any) =>
+          typeof s?.text === "string"
+            ? s.text
+            : Array.isArray(s?.content)
+              ? s.content.map((c: any) => c?.text || "").join("\n")
+              : String(s?.content || "");
+        let lastUserIdx = -1;
+        for (let i = input.length - 1; i >= 0; i -= 1) {
+          if (input[i]?.type === "user_input" && !getStepText(input[i]).startsWith("Current screen")) {
+            lastUserIdx = i;
+            break;
+          }
+        }
+        const currentTurnSteps = lastUserIdx >= 0 ? input.slice(lastUserIdx + 1) : input;
+        if (currentTurnSteps.some((s: any) => s?.type === "function_result")) {
           return {
             thoughts: [],
             text: "ui-e2e-done",
@@ -129,59 +163,98 @@ test(
     };
 
     const runner = createRunner({ store, config, model, executor });
-    const appServer = createServer({ store, config, runner, executor, model });
+    const appServer = createServer({
+      store,
+      config,
+      runner,
+      executor,
+      model,
+      probeBotComputerFn: async () => {
+        if (simCompMode === "unauthorized") {
+          return {
+            state: "error",
+            provider: "orbstack",
+            platform: "darwin",
+            online: false,
+            vmInstalled: true,
+            vmRunning: true,
+            errorCode: "unauthorized",
+            healthError: "unauthorized",
+            detail: "执行器令牌校验失败 (unauthorized)，请在设置中点击「更新」同步组件并重启服务",
+          };
+        }
+        return {
+          state: "ready",
+          provider: "orbstack",
+          platform: "darwin",
+          online: true,
+          vmInstalled: true,
+          vmRunning: true,
+          screen: { width: 1440, height: 900 },
+          detail: "OrbStack 桌面已就绪",
+        };
+      },
+      updateBotComputerFn: async () => {
+        updateCallCount += 1;
+        simCompMode = "ready";
+        return {
+          ok: true,
+          updatedAt: new Date().toISOString(),
+          screen: { width: 1440, height: 900 },
+        };
+      },
+    });
     await new Promise<void>((resolve) => appServer.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise<void>((resolve) => appServer.close(() => resolve())));
+    t.after(() => new Promise<void>((resolve) => {
+      (appServer as any).closeAllConnections?.();
+      appServer.close(() => resolve());
+    }));
     const appPort = (appServer.address() as net.AddressInfo).port;
     const rawAppUrl = `http://127.0.0.1:${appPort}`;
 
-    // Helper proxy so Linux CI runners (where native VM provisioning says "unsupported")
-    // present a deterministic online Bot Computer state to Chrome, and legacy mode strips capabilities.
+    // Helper proxy so Linux CI legacy mode can strip capabilities dynamically while letting
+    // `/api/computer/status` reflect live `probeBotComputerFn` transitions cleanly.
     const makeUiProxy = async ({ legacyV1 = false } = {}) => {
       const proxySrv = http.createServer(async (req, res) => {
-        const targetUrl = `${rawAppUrl}${req.url || "/"}`;
-        const method = req.method || "GET";
-        const chunks: Buffer[] = [];
-        if (method !== "GET" && method !== "HEAD") {
-          for await (const chunk of req) {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        try {
+          const targetUrl = `${rawAppUrl}${req.url || "/"}`;
+          const method = req.method || "GET";
+          const chunks: Buffer[] = [];
+          if (method !== "GET" && method !== "HEAD") {
+            for await (const chunk of req) {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            }
           }
-        }
-        const upstreamRes = await fetch(targetUrl, {
-          method,
-          headers: req.headers as any,
-          ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
-        });
-        if ((req.url || "").startsWith("/api/computer/status")) {
-          const stBody: any = await upstreamRes.json();
-          stBody.online = true;
-          stBody.state = "ready";
-          stBody.provider = "orbstack";
-          stBody.latencyMs = stBody.latencyMs ?? 2;
-          stBody.detail = "Ubuntu 桌面已就绪";
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(stBody));
-          return;
-        }
-        if (legacyV1 && (req.url || "").startsWith("/api/system/diagnostics")) {
-          const diag: any = await upstreamRes.json();
-          diag.appVersion = "1.0.0";
-          diag.apiCapabilities = (diag.apiCapabilities || []).filter(
-            (c: string) => c !== "multi-display-v1"
-          );
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(diag));
-          return;
-        }
-        const buf = Buffer.from(await upstreamRes.arrayBuffer());
-        const headers: Record<string, string> = {};
-        upstreamRes.headers.forEach((v, k) => {
-          if (k.toLowerCase() !== "content-length" && k.toLowerCase() !== "transfer-encoding") {
-            headers[k] = v;
+          const upstreamRes = await fetch(targetUrl, {
+            method,
+            headers: req.headers as any,
+            ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+          });
+          if (legacyV1 && (req.url || "").startsWith("/api/system/diagnostics")) {
+            const diag: any = await upstreamRes.json();
+            diag.appVersion = "1.0.0";
+            diag.apiCapabilities = (diag.apiCapabilities || []).filter(
+              (c: string) => c !== "multi-display-v1"
+            );
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(diag));
+            return;
           }
-        });
-        res.writeHead(upstreamRes.status, headers);
-        res.end(buf);
+          const buf = Buffer.from(await upstreamRes.arrayBuffer());
+          const headers: Record<string, string> = {};
+          upstreamRes.headers.forEach((v, k) => {
+            if (k.toLowerCase() !== "content-length" && k.toLowerCase() !== "transfer-encoding") {
+              headers[k] = v;
+            }
+          });
+          res.writeHead(upstreamRes.status, headers);
+          res.end(buf);
+        } catch {
+          if (!res.headersSent) {
+            res.writeHead(502, { "Content-Type": "application/json" });
+          }
+          res.end(JSON.stringify({ error: "proxy_upstream_closed" }));
+        }
       });
       proxySrv.on("upgrade", (req, socket, head) => {
         const up = net.connect(appPort, "127.0.0.1", () => {
@@ -198,7 +271,10 @@ test(
         socket.on("error", () => up.destroy());
       });
       await new Promise<void>((resolve) => proxySrv.listen(0, "127.0.0.1", resolve));
-      t.after(() => proxySrv.close());
+      t.after(() => {
+        (proxySrv as any).closeAllConnections?.();
+        proxySrv.close();
+      });
       return (proxySrv.address() as net.AddressInfo).port;
     };
 
@@ -363,6 +439,181 @@ test(
        document.querySelector('#novnc-frame')?.getAttribute('src')?.includes('${worker1.id}')`
     );
     await chrome.click("#exit-fullscreen-btn");
+
+    // ---------- UI-3b: RightInspector Library isolates per Bot cleanly ----------
+    await fetch(`${baseUrl}/api/attachments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: worker1.id,
+        name: "w1-exclusive.txt",
+        dataBase64: Buffer.from("w1 only").toString("base64"),
+      }),
+    });
+    await fetch(`${baseUrl}/api/attachments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: worker2.id,
+        name: "w2-exclusive.txt",
+        dataBase64: Buffer.from("w2 only").toString("base64"),
+      }),
+    });
+
+    await chrome.click("#tab-library");
+    await chrome.waitFor(`!document.querySelector('#inspector-pane-library').hidden`);
+
+    await chrome.evalJs(`(() => {
+      const items = Array.from(document.querySelectorAll('#session-list .session-item'));
+      const target = items.find(el => el.textContent && el.textContent.includes(${JSON.stringify(worker1.title)}));
+      target && target.click();
+    })()`);
+    await chrome.waitFor(
+      `(() => {
+        const txt = document.querySelector('#library-list')?.textContent || '';
+        return txt.includes('w1-exclusive.txt') && !txt.includes('w2-exclusive.txt');
+      })()`
+    );
+
+    await chrome.evalJs(`(() => {
+      const items = Array.from(document.querySelectorAll('#session-list .session-item'));
+      const target = items.find(el => el.textContent && el.textContent.includes(${JSON.stringify(worker2.title)}));
+      target && target.click();
+    })()`);
+    await chrome.waitFor(
+      `(() => {
+        const txt = document.querySelector('#library-list')?.textContent || '';
+        return txt.includes('w2-exclusive.txt') && !txt.includes('w1-exclusive.txt');
+      })()`
+    );
+
+    await chrome.click("#pinned-primary-bot");
+    await chrome.waitFor(
+      `(() => {
+        const txt = document.querySelector('#library-list')?.textContent || '';
+        return !txt.includes('w1-exclusive.txt') && !txt.includes('w2-exclusive.txt');
+      })()`
+    );
+
+    // ---------- UI-5: Bot Computer status consistency (unauthorized vs sleep), Re-check, Update, Reset & Auto-Expand ----------
+    // Switch to Activity tab so #computer-card-status is mounted and observable
+    await chrome.click("#tab-activity");
+    await chrome.waitFor(`Boolean(document.querySelector('#computer-card-status'))`);
+
+    // Simulate HTTP 401 unauthorized token mismatch (previously caused Settings="离线(unauthorized)" vs Card="休眠中")
+    simCompMode = "unauthorized";
+    await chrome.click("#account-menu-btn");
+    await chrome.waitFor(`!document.querySelector('#account-popover').hidden`);
+    await chrome.click(`[data-account-action="computer"]`);
+    await chrome.waitFor(`!document.querySelector('#settings-modal-backdrop').hidden`);
+
+    await chrome.click("#settings-check-computer-btn");
+    await chrome.waitFor(
+      `document.querySelector('#computer-health-line')?.textContent?.includes('unauthorized')`
+    );
+
+    // Card behind SettingsModal MUST stay consistent: NOT "休眠中", NO z^z sleep icon!
+    const cardStateDuringUnauth = await chrome.evalJs<{ statusText: string; sleepHidden: boolean }>(
+      `({
+        statusText: document.querySelector('#computer-card-status')?.textContent || '',
+        sleepHidden: Boolean(document.querySelector('#computer-sleep-zz')?.hidden),
+      })`
+    );
+    assert.notEqual(
+      cardStateDuringUnauth.statusText,
+      "休眠中",
+      "RightInspector must never label 401 unauthorized as 休眠中"
+    );
+    assert.equal(cardStateDuringUnauth.statusText, "令牌未对齐 · 点击自检自愈");
+    assert.equal(cardStateDuringUnauth.sleepHidden, true);
+
+    // Clicking #bot-computer-card while abnormal from any Bot jumps to Primary/Admin Bot & sends AI self-heal message
+    await chrome.click("#close-settings-modal-btn");
+    await chrome.waitFor(`document.querySelector('#settings-modal-backdrop').hidden`);
+    await chrome.evalJs(`(() => {
+      const items = Array.from(document.querySelectorAll('#session-list .session-item'));
+      const target = items.find(el => el.textContent && el.textContent.includes(${JSON.stringify(worker2.title)}));
+      target && target.click();
+    })()`);
+    await chrome.waitFor(
+      `Array.from(document.querySelectorAll('#session-list .session-item')).some(el => el.classList.contains('is-active') && el.textContent && el.textContent.includes(${JSON.stringify(worker2.title)}))`
+    );
+
+    await chrome.click("#bot-computer-card");
+    await chrome.waitFor(
+      `document.querySelector('#pinned-primary-bot')?.classList.contains('is-active') &&
+       (document.querySelector('#event-stream')?.textContent || '').includes('自动自检并完成自愈修复')`
+    );
+    await waitPool(() => !runner.isSessionBusy(adminBot.id), "adminBot self-heal turn finished");
+
+    // Re-open Settings -> Computer to verify manual Feature 1: '更新 Bot 的电脑'
+    await chrome.click("#account-menu-btn");
+    await chrome.waitFor(`!document.querySelector('#account-popover').hidden`);
+    await chrome.click(`[data-account-action="computer"]`);
+    await chrome.waitFor(`!document.querySelector('#settings-modal-backdrop').hidden`);
+    await chrome.click("#settings-update-computer-btn");
+    await chrome.waitFor(
+      `document.querySelector('#computer-health-line')?.textContent?.includes('在线') &&
+       !document.querySelector('#computer-health-line')?.textContent?.includes('unauthorized')`
+    );
+    assert.equal(updateCallCount, 1);
+    const cardTextAfterUpdate = await chrome.evalJs<string>(
+      `document.querySelector('#computer-card-status')?.textContent || ''`
+    );
+    assert.match(cardTextAfterUpdate, /运行中/);
+
+    // Feature 2: '重置桌面连接与在途任务' stops held task, releases lingering non-admin tabs, and bumps novncReconnectSeq
+    const seqBeforeReset = await chrome.evalJs<string>(
+      `document.querySelector('#novnc-frame')?.getAttribute('data-reconnect-seq') || '0'`
+    );
+    holdGate = new Promise<void>((resolve) => {
+      releaseHeldSlots = resolve;
+    });
+    const snapshotsBeforeReset = snapshotEnteredCount;
+    runner.start(worker1.id, "held task before computer reset");
+    await waitPool(
+      () => runner.isSessionBusy(worker1.id) && snapshotEnteredCount > snapshotsBeforeReset,
+      "worker1 entered held browser_snapshot before reset"
+    );
+
+    await chrome.click("#settings-reset-computer-btn");
+    await waitPool(() => !runner.isSessionBusy(worker1.id), "worker1 stopped by reset");
+    releaseHeldSlots();
+
+    await chrome.waitFor(
+      `Number(document.querySelector('#novnc-frame')?.getAttribute('data-reconnect-seq') || '0') > ${Number(seqBeforeReset)}`
+    );
+    assert.ok(releasedTabs.includes(worker1.id), "Reset should release lingering non-admin Bot tab bindings");
+
+    // Feature 3: '执行动作时自动全屏打开画面' persists toggle and auto-opens #bot-screen-overlay on browser_snapshot tool_call
+    const checkedBefore = await chrome.evalJs<boolean>(
+      `Boolean(document.querySelector('#auto-expand-toggle')?.checked)`
+    );
+    assert.equal(checkedBefore, false);
+    await chrome.click("#auto-expand-toggle");
+    await chrome.waitFor(`Boolean(document.querySelector('#auto-expand-toggle')?.checked)`);
+    const savedAutoExpand: any = await (await fetch(`${baseUrl}/api/settings`)).json();
+    assert.equal(savedAutoExpand.autoExpandScreen, true);
+
+    await chrome.click("#close-settings-modal-btn");
+    await chrome.waitFor(`document.querySelector('#settings-modal-backdrop').hidden`);
+
+    // Select worker1 and trigger a visual browser action (`browser_snapshot`) -> fullscreen overlay must auto-open!
+    await chrome.evalJs(`(() => {
+      const items = Array.from(document.querySelectorAll('#session-list .session-item'));
+      const target = items.find(el => el.textContent && el.textContent.includes(${JSON.stringify(worker1.title)}));
+      target && target.click();
+    })()`);
+    await chrome.waitFor(
+      `Array.from(document.querySelectorAll('#session-list .session-item')).some(el => el.classList.contains('is-active') && el.textContent && el.textContent.includes(${JSON.stringify(worker1.title)}))`
+    );
+    await new Promise((r) => setTimeout(r, 80));
+
+    runner.start(worker1.id, "trigger browser snapshot for auto-expand");
+    await chrome.waitFor(`!document.querySelector('#bot-screen-overlay').hidden`);
+    await chrome.click("#exit-fullscreen-btn");
+    await chrome.waitFor(`document.querySelector('#bot-screen-overlay').hidden`);
+    await waitPool(() => !runner.isSessionBusy(worker1.id), "auto-expand task drained");
 
     // ---------- UI-4: v1.0.0 legacy node capability gating ----------
     await chrome.navigate(`http://127.0.0.1:${legacyPort}`);

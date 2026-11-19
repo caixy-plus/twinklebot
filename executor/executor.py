@@ -164,8 +164,9 @@ def desktop_env(display: str = None, cdp_port: int = None, profile_dir: str = No
     return env
 
 
-def default_run(argv, input=None, timeout=None, display: str = None, cdp_port: int = None, profile_dir: str = None):
+def default_run(argv, input=None, timeout=None, display: str = None, cdp_port: int = None, profile_dir: str = None, cwd: str = None):
     env = desktop_env(display=display, cdp_port=cdp_port, profile_dir=profile_dir)
+    run_cwd = cwd if (cwd and os.path.isdir(cwd)) else None
     if input is not None:
         return subprocess.run(
             argv,
@@ -174,8 +175,9 @@ def default_run(argv, input=None, timeout=None, display: str = None, cdp_port: i
             stderr=subprocess.DEVNULL,
             timeout=timeout or 10,
             env=env,
+            cwd=run_cwd,
         )
-    return subprocess.run(argv, input=input, capture_output=True, timeout=timeout or 15, env=env)
+    return subprocess.run(argv, input=input, capture_output=True, timeout=timeout or 15, env=env, cwd=run_cwd)
 
 
 def default_spawn(argv, start_new_session=True, display: str = None, cdp_port: int = None, profile_dir: str = None):
@@ -571,7 +573,34 @@ def display_resources(
     }
 
 
+def _read_proc_listening_ports(
+    proc_files: tuple = ("/proc/net/tcp", "/proc/net/tcp6"),
+) -> set:
+    ports = set()
+    readable = False
+    for path in proc_files:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                readable = True
+                for line in f.readlines()[1:]:
+                    cols = line.split()
+                    if len(cols) >= 4 and cols[3] == "0A":
+                        addr_parts = cols[1].split(":", 1)
+                        if len(addr_parts) == 2:
+                            try:
+                                ports.add(int(addr_parts[1], 16))
+                            except ValueError:
+                                pass
+        except OSError:
+            continue
+    return ports if readable else None
+
+
 def _default_tcp_open(port: int, host: str = "127.0.0.1", timeout: float = 0.25) -> bool:
+    if host in ("127.0.0.1", "localhost", "::1"):
+        listening_ports = _read_proc_listening_ports()
+        if listening_ports is not None:
+            return int(port) in listening_ports
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -1239,14 +1268,18 @@ class Actions:
         target_ws_url: str = None,
         targets_fn=None,
         protected_targets_fn=None,
+        cwd: str = None,
     ):
         self.display = str(display or ":1")
         self.cdp_port = int(cdp_port or DEFAULT_CDP_PORT)
         self.profile_dir = profile_dir
+        self.cwd = str(cwd or "").strip() or None
         self.target_id = str(target_id or "").strip() or None
         self.target_ws_url = str(target_ws_url or "").strip() or None
         self.targets_fn = targets_fn or fetch_cdp_targets
         self.protected_targets_fn = protected_targets_fn
+        self._custom_run = run
+        self._custom_spawn = spawn
         self._custom_cdp_eval = cdp_eval
         self._custom_cdp_session = cdp_session
         self.run = run or (
@@ -1257,6 +1290,7 @@ class Actions:
                 display=self.display,
                 cdp_port=self.cdp_port,
                 profile_dir=self.profile_dir,
+                cwd=self.cwd,
             )
         )
         self.browser = resolve_default_browser(browser)
@@ -1872,6 +1906,13 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                     pass
         return bot_id, is_admin
 
+    def _resolve_bot_workspace(self, body: dict) -> str:
+        return str(
+            self.headers.get("X-Twinkle-Bot-Workspace", "")
+            or (body.get("bot_workspace") if isinstance(body, dict) else "")
+            or ""
+        ).strip()
+
     def do_POST(self):
         if not self.check_auth():
             self.send_json(401, {"error": "unauthorized"})
@@ -1946,8 +1987,9 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             bot_id, is_admin = self._resolve_bot_context(body)
+            bot_workspace = self._resolve_bot_workspace(body)
             actions, acquired_bot_key, acquired_tab = self.server.acquire_actions_for_request(
-                bot_id=bot_id, is_admin=is_admin, route=path
+                bot_id=bot_id, is_admin=is_admin, route=path, bot_workspace=bot_workspace
             )
             use_x11_lock = dm is not None and path in self.server._X11_ROUTES
             if use_x11_lock:
@@ -2091,9 +2133,36 @@ class ExecutorServer(http.server.ThreadingHTTPServer):
             protected_targets_fn=(dm.protected_target_ids if dm is not None else None),
         )
 
-    def acquire_actions_for_request(self, bot_id: str = "", is_admin: bool = False, route: str = ""):
+    def _make_shell_actions(self, bot_workspace: str = "") -> Actions:
+        ws = str(bot_workspace or "").strip()
+        if (
+            not ws
+            or not os.path.isabs(ws)
+            or not os.path.isdir(ws)
+            or getattr(self.actions, "_custom_run", None) is not None
+        ):
+            return self.actions
+        return Actions(
+            browser=self.actions.browser,
+            spawn=self.actions._custom_spawn,
+            cdp_eval=self.actions._custom_cdp_eval,
+            cdp_session=self.actions._custom_cdp_session,
+            display=self.actions.display,
+            cdp_port=self.actions.cdp_port,
+            profile_dir=self.actions.profile_dir,
+            targets_fn=self.actions.targets_fn,
+            protected_targets_fn=self.actions.protected_targets_fn,
+            cwd=ws,
+        )
+
+    def acquire_actions_for_request(
+        self, bot_id: str = "", is_admin: bool = False, route: str = "", bot_workspace: str = ""
+    ):
         dm = self.display_manager
-        if dm is None or route in self._FILE_ROUTES or route == "/shell":
+        if route == "/shell":
+            return self._make_shell_actions(bot_workspace), None, False
+
+        if dm is None or route in self._FILE_ROUTES:
             return self.actions, None, False
 
         if route in self._BROWSER_ROUTES:

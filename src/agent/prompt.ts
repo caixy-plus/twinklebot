@@ -56,9 +56,16 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
     );
   }
 
+  const botWorkspaceRoot =
+    typeof config.botWorkspaceRoot === "string" ? config.botWorkspaceRoot.trim() : "";
+
   sections.push(`Desktop & Coordinates:
 - Display resolution is ${width}x${height} pixels.
-- Use real pixel coordinates: x in [0, ${width - 1}] and y in [0, ${height - 1}]. Coordinates are real pixel coordinates, not normalized.
+- Use real pixel coordinates: x in [0, ${width - 1}] and y in [0, ${height - 1}]. Coordinates are real pixel coordinates, not normalized.${
+    botWorkspaceRoot
+      ? `\n- Dedicated Bot Workspace & Library (专属工作区 / 资料库): \`${botWorkspaceRoot}\`. All files, reports, downloads, images, and notes you create for this Bot MUST stay inside this dedicated workspace (isolated per Bot and surfaced directly in this Bot's right-sidebar 「资料库」).`
+      : ""
+  }
 - Permitted file write roots for write_file: ${writeRootsStr}. Writing outside these paths requires user confirmation.`);
 
   if (config.enableBotTools) {
@@ -126,7 +133,7 @@ ${imageGenPromptLine}
 
     const dualComputerLines = [
       `Dual-Computer Paradigm (「Bot 的电脑」 vs 「你的电脑」):`,
-      `- Bot 的电脑 (Bot's Computer): All Bots share the same Ubuntu Linux filesystem (zero-copy file handoff via shared workspace paths) and share the SAME official Google Chrome Primary Profile (\`/opt/twinklebot/chrome-profile\` on \`DISPLAY=:1\`, noVNC \`:6080\`, CDP \`127.0.0.1:9222\`, ${width}x${height}) so login states (Cookies / LocalStorage / IndexedDB) are 100% natively shared across all Bots, while each active Bot automatically operates in its OWN isolated Chrome Tab (with FIFO queueing when concurrent screen/tab sessions exceed the configured limit). Control via \`browser_snapshot\`, \`browser_click\`, \`browser_type\`, \`open_url\`, \`run_shell\`, \`read_file\`, \`write_file\`, \`screenshot\`, \`click\`, \`type_text\`, etc. Prefer Bot's Computer for web research, sandboxed scripts, background services, or untrusted files.`,
+      `- Bot 的电脑 (Bot's Computer): Each Bot has its OWN isolated dedicated workspace & Library directory (${botWorkspaceRoot ? `\`${botWorkspaceRoot}\`` : "scoped per Bot under `writeRoots[0]/bots/<botId>`"}) so Bot files, uploads, generated images, deliverables, and notes remain strictly private per Bot. Meanwhile, all Bots share the Ubuntu Linux runtime and official Google Chrome Primary Profile (\`/opt/twinklebot/chrome-profile\` on \`DISPLAY=:1\`, noVNC \`:6080\`, CDP \`127.0.0.1:9222\`, ${width}x${height}) so login states (Cookies / LocalStorage / IndexedDB) are shared seamlessly while each active Bot operates in its OWN isolated Chrome Tab (with FIFO queueing when concurrent screen/tab sessions exceed the configured limit). Control via \`browser_snapshot\`, \`browser_click\`, \`browser_type\`, \`open_url\`, \`run_shell\`, \`read_file\`, \`write_file\`, \`screenshot\`, \`click\`, \`type_text\`, etc. Prefer Bot's Computer for web research, sandboxed scripts, background services, or untrusted files.`,
       config.isAdminBot
         ? `- 管理员 Bot 专属特权与初始化规范 (Admin Bot Privilege & Provisioning Playbook): You are the **管理员 Bot (Admin Bot)**. In local mode, ONLY you have permission to initialize, repair, or update 「Bot 的电脑」:\n` +
           `  1. **One-Shot Built-in Provisioning**: Always run \`computer_provision(action: "probe")\` → \`computer_provision(action: "install")\` first! On Windows, \`computer_provision(action: "install")\` natively handles the ENTIRE WSL2 + Ubuntu stack automatically: detects any existing \`Ubuntu*\` distro (e.g. \`Ubuntu\`, \`Ubuntu-24.04\`, \`Ubuntu-22.04\`) or installs Ubuntu on a brand-new PC (\`--web-download --no-launch\` + non-interactive \`install --root\`), copies TwinkleBot's bundled \`executor.py\` to \`/opt/twinklebot/executor.py\`, injects the App's exact in-memory \`TWINKLEBOT_EXECUTOR_TOKEN\` into \`/etc/twinklebot/executor.env\`, installs \`xvfb\` + \`xfce4\` + \`x11vnc\` + \`novnc\` (\`:6080\`) + \`xdotool\`/\`wmctrl\`/\`xclip\`/\`imagemagick\` + official Google Chrome (\`google-chrome-stable\`, wrapped at \`/usr/local/bin/google-chrome\` on CDP \`:9222\`), configures systemd (or daemon fallback), and verifies \`:7300/health\`. On macOS, it provisions OrbStack + Ubuntu.\n` +

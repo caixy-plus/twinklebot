@@ -34,6 +34,7 @@ export function BotComputerOverlay() {
   const computerDisplays = useStore((s) => s.computerDisplays);
   const groupActiveSpeakerBySession = useStore((s) => s.groupActiveSpeakerBySession);
   const screenOverlayTargetBotId = useStore((s) => s.screenOverlayTargetBotId);
+  const novncReconnectSeq = useStore((s) => s.novncReconnectSeq);
 
   const isGroup = activeSession?.type === "group";
   const groupMembers = isGroup && Array.isArray(activeSession?.memberBotIds)
@@ -145,10 +146,12 @@ export function BotComputerOverlay() {
           </div>
 
           <iframe
+            key={novncReconnectSeq}
             id="novnc-frame"
             className="novnc-frame"
             title="Ubuntu XFCE Desktop"
             src={novncSrc}
+            data-reconnect-seq={novncReconnectSeq}
             allow="clipboard-read; clipboard-write"
           />
         </div>
@@ -193,7 +196,11 @@ export function BotComputerOverlay() {
             </svg>
             <span id="screen-status-label">
               {viewOnly ? "仅观看" : "你正在独占控制"}
-              {boundDisplay ? ` · ${displayName} (${boundDisplay})` : ""}
+              {boundDisplay.startsWith(":")
+                ? ` · ${displayName} (${boundDisplay})`
+                : isGroup && boundDisplay
+                  ? ` · ${displayName}`
+                  : ""}
             </span>
           </div>
 
@@ -224,7 +231,7 @@ export function BotComputerOverlay() {
                 return (
                   <option key={m.id} value={m.id} style={{ color: "#111" }}>
                     {m.title || "Bot"}
-                    {mDisp ? ` (${mDisp})` : ""}
+                    {mDisp.startsWith(":") ? ` (${mDisp})` : ""}
                   </option>
                 );
               })}

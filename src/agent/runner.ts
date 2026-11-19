@@ -1,5 +1,7 @@
+import path from "node:path";
 import { runTask, createControl } from "./loop.js";
 import { createBotScopedExecutorClient } from "./executor-client.js";
+import { resolveBotWorkspaceRoot } from "../lib/bot-workspace.js";
 import {
   createScreenLeasePool,
   getHostScreenPoolBudget,
@@ -379,9 +381,20 @@ export function createRunner({
       }
       const groupPrompt = buildGroupPromptContext(eventsSoFar, enrichedUserText);
 
+      const runnerWorkspaceBase =
+        (Array.isArray(config?.writeRoots) && config.writeRoots[0]) ||
+        (store?.dataDir ? path.join(store.dataDir, "workspaces") : "");
+      const groupWorkspace = runnerWorkspaceBase
+        ? resolveBotWorkspaceRoot({
+            writeRoots: [runnerWorkspaceBase],
+            sessionId: groupSession.id,
+          })
+        : "";
+
       const speakerExecutor = createBotScopedExecutorClient(executor, {
         botId: speaker.id,
         isAdmin: Boolean(speaker.isAdmin),
+        botWorkspace: groupWorkspace,
         getMaxConcurrentScreens,
       });
       const speakerKey = speaker.isAdmin ? "__primary__" : speaker.id;
@@ -523,9 +536,19 @@ export function createRunner({
         }
 
         const dmIsAdmin = Boolean(session?.isAdmin);
+        const runnerWorkspaceBase =
+          (Array.isArray(config?.writeRoots) && config.writeRoots[0]) ||
+          (store?.dataDir ? path.join(store.dataDir, "workspaces") : "");
+        const dmWorkspace = runnerWorkspaceBase
+          ? resolveBotWorkspaceRoot({
+              writeRoots: [runnerWorkspaceBase],
+              sessionId,
+            })
+          : "";
         const scopedExecutor = createBotScopedExecutorClient(executor, {
           botId: sessionId,
           isAdmin: dmIsAdmin,
+          botWorkspace: dmWorkspace,
           getMaxConcurrentScreens,
         });
         const dmKey = dmIsAdmin ? "__primary__" : sessionId;

@@ -16,9 +16,13 @@ import {
   VALID_PROFILE_COLORS,
   isInsideAllowedRoots,
   parseJsonBody,
-  scanWorkspaceFiles,
   sendJson,
 } from "../http-utils.js";
+import {
+  removeBotWorkspaceDir,
+  resolveBotWorkspaceRoot,
+  scanWorkspaceFiles,
+} from "../../lib/bot-workspace.js";
 import { buildSessionCostSummary } from "../../agent/pricing.js";
 import { detectSemanticStopIntent } from "../../agent/stop-detector.js";
 
@@ -122,9 +126,13 @@ export async function handleSessionRoutes(
             url: s.url,
             source: "screen",
           }));
-          const workspaceRoot = ctx.finalConfig.writeRoots?.[0];
-          const workspaceFiles = scanWorkspaceFiles(workspaceRoot, 30);
+          const workspaceRoot = resolveBotWorkspaceRoot({
+            config: ctx.finalConfig,
+            sessionId: id,
+          });
+          const workspaceFiles = scanWorkspaceFiles(workspaceRoot, 40);
           return sendJson(res, 200, {
+            workspaceRoot,
             items: [...screenshots, ...workspaceFiles],
           });
         }
@@ -233,6 +241,14 @@ export async function handleSessionRoutes(
             const ok = ctx.store?.deleteSession?.(id);
             if (!ok) {
               return sendJson(res, 404, { error: "session not found" });
+            }
+            try {
+              removeBotWorkspaceDir({
+                config: ctx.finalConfig,
+                sessionId: id,
+              });
+            } catch {
+              // ignore workspace cleanup errors after session metadata removal
             }
             if (!existing.isAdmin && existing.type !== "group" && ctx.executor?.call) {
               Promise.resolve(ctx.executor.call("/displays/release", { bot_id: id })).catch(() => {});

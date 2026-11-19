@@ -1,4 +1,11 @@
-import { Fragment, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type TouchEvent as ReactTouchEvent,
+} from "react";
 import {
   CONTEXT_COMPRESSION_PRESETS,
   matchContextCompressionPreset,
@@ -9,7 +16,7 @@ import {
   matchScreenPoolPreset,
   normalizeScreenPoolSettings,
 } from "/shared/screen-pool.js";
-import { useAnimatedSheet } from "../../hooks/useAnimatedSheet.js";
+import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
   applyThemePreference,
@@ -19,14 +26,17 @@ import {
   openSettingsModal,
   refreshAllLiveProviderBalances,
   refreshComputerDisplays,
+  refreshComputerStatus,
   refreshSettingsFromServer,
   refreshSystemDiagnostics,
   refreshUsageAndHealth,
   refreshVault,
+  resetBotComputerConnection,
   setNovncMode,
   showConfirmDialog,
   showToast,
   syncDerivedAccent,
+  updateBotComputerComponents,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
 import {
@@ -60,62 +70,48 @@ const SETTINGS_PROVIDER_KEYS = [
   "openai-compatible",
 ] as const;
 
-function SettingsEditorShell({
-  open,
-  title,
-  onClose,
-  children,
-}: {
-  open: boolean;
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const mobileMode = isMobileViewport();
-  const anim = useAnimatedSheet(mobileMode && open, onClose);
+const SETTINGS_TABS = [
+  ["general", "gear", "通用"],
+  ["models", "models-diamond", "模型接入与路由"],
+  ["computer", "monitor", "电脑"],
+  ["permissions", "shield-check", "权限"],
+  ["vault", "vault-safe", "保险库"],
+  ["usage", "bar-chart", "用量与账单"],
+  ["updates", "sparkle", "关于与诊断"],
+] as const;
 
-  if (!mobileMode) {
-    return <>{children}</>;
+function isHorizontallyScrollableAncestor(
+  target: EventTarget | null,
+  boundary: HTMLElement | null
+): boolean {
+  let node = target instanceof HTMLElement ? target : null;
+  while (node && node !== boundary) {
+    const tag = node.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || node.isContentEditable) {
+      return true;
+    }
+    if (node.scrollWidth > node.clientWidth + 2) {
+      const ox = getComputedStyle(node).overflowX;
+      if (ox === "auto" || ox === "scroll") return true;
+    }
+    node = node.parentElement;
   }
-
-  return (
-    <div
-      className={`mobile-sheet settings-mobile-editor-sheet${
-        anim.stateClass ? ` ${anim.stateClass}` : ""
-      }`}
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      hidden={anim.hidden}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div ref={anim.panelRef} className="mobile-sheet-panel">
-        <div className="mobile-sheet-handle" aria-hidden="true" {...anim.handleProps} />
-        <div className="mobile-sheet-header">
-          <h3 className="mobile-sheet-title">{title}</h3>
-          <button
-            type="button"
-            className="mobile-circle-btn"
-            aria-label="关闭"
-            onClick={onClose}
-          >
-            <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-              <path
-                d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
+  return false;
 }
+
+const PERMISSION_RULE_TOOLS = [
+  ["*", "任意工具 (*)"],
+  ["host_run_shell", "host_run_shell (宿主机终端)"],
+  ["host_open", "host_open (宿主机打开应用)"],
+  ["host_write_file", "host_write_file (宿主机写文件)"],
+  ["mcp__kimi_cu__click", "mcp__kimi_cu__click (Mac 点击)"],
+  ["mcp__kimi_cu__type_text", "mcp__kimi_cu__type_text (Mac 输入)"],
+  ["mcp__kimi_cu__js", "mcp__kimi_cu__js (Mac 页面脚本)"],
+  ["run_shell", "run_shell (Bot 电脑终端)"],
+  ["write_file", "write_file (Bot 电脑写文件)"],
+  ["open_url", "open_url"],
+  ["click", "click"],
+] as const;
 
 function ProviderCalibrationForm({ provider: p }: { provider: any }) {
   const savedMode = useStore(
@@ -354,6 +350,245 @@ export function SettingsModal() {
 
   const activeTab = settingsModal.tab || "general";
   const isStandalone = Boolean(settingsModal.standaloneBotSessionId);
+  const continuousDesktop = !isStandalone && !isMobileViewport();
+
+  const settingsNavRef = useRef<HTMLElement | null>(null);
+  const settingsContentRef = useRef<HTMLDivElement | null>(null);
+  const wasModalOpenRef = useRef(false);
+  const wasDesktopOpenRef = useRef(false);
+  const scrollSpyTabRef = useRef<string | null>(null);
+  const ignoreScrollSpyUntilRef = useRef<number>(0);
+  const scrollRafRef = useRef<number>(0);
+  const prevTabIndexRef = useRef<number>(
+    Math.max(0, SETTINGS_TABS.findIndex(([k]) => k === activeTab))
+  );
+  const swipeStateRef = useRef<{
+    startX: number;
+    startY: number;
+    lastDx: number;
+    startTime: number;
+    locked: "h" | "v" | null;
+  } | null>(null);
+
+  const scrollToSettingsPane = (tabKey: string, smooth: boolean) => {
+    const contentEl = settingsContentRef.current;
+    if (!contentEl) return;
+    const targetPane = contentEl.querySelector<HTMLElement>(
+      `.settings-pane[data-settings-pane="${tabKey}"]`
+    );
+    if (!targetPane) return;
+
+    ignoreScrollSpyUntilRef.current = Date.now() + (smooth ? 520 : 80);
+    if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = 0;
+      const top =
+        tabKey === SETTINGS_TABS[0][0]
+          ? 0
+          : Math.max(
+              0,
+              Math.round(
+                targetPane.getBoundingClientRect().top -
+                  contentEl.getBoundingClientRect().top +
+                  contentEl.scrollTop -
+                  20
+              )
+            );
+      if (typeof contentEl.scrollTo === "function") {
+        contentEl.scrollTo({
+          top,
+          behavior: smooth ? "smooth" : "auto",
+        });
+      } else {
+        contentEl.scrollTop = top;
+      }
+    });
+  };
+
+  useEffect(() => {
+    const isOpen = settingsModal.open && continuousDesktop;
+    const justOpened = isOpen && !wasDesktopOpenRef.current;
+    wasDesktopOpenRef.current = isOpen;
+
+    if (!isOpen) {
+      scrollSpyTabRef.current = null;
+      return;
+    }
+
+    const fromScrollSpy = !justOpened && scrollSpyTabRef.current === activeTab;
+    scrollSpyTabRef.current = null;
+    if (fromScrollSpy) return;
+
+    scrollToSettingsPane(activeTab, !justOpened);
+    return () => {
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = 0;
+      }
+    };
+  }, [settingsModal.open, activeTab, continuousDesktop]);
+
+  const handleContentScroll = () => {
+    if (!continuousDesktop || !settingsModal.open) return;
+    if (Date.now() < ignoreScrollSpyUntilRef.current) return;
+    const contentEl = settingsContentRef.current;
+    if (!contentEl) return;
+
+    const panes = Array.from(
+      contentEl.querySelectorAll<HTMLElement>(".settings-pane[data-settings-pane]")
+    );
+    if (!panes.length) return;
+
+    const scrollTop = contentEl.scrollTop;
+    const maxScroll = Math.max(0, contentEl.scrollHeight - contentEl.clientHeight);
+    let resolvedTab = SETTINGS_TABS[0][0];
+
+    if (scrollTop <= 8) {
+      resolvedTab = SETTINGS_TABS[0][0];
+    } else if (maxScroll > 0 && scrollTop >= maxScroll - 8) {
+      const lastTab = panes[panes.length - 1]?.dataset.settingsPane;
+      if (lastTab) resolvedTab = lastTab as typeof resolvedTab;
+    } else {
+      const contentRect = contentEl.getBoundingClientRect();
+      for (const pane of panes) {
+        const relTop = pane.getBoundingClientRect().top - contentRect.top;
+        if (relTop <= 72) {
+          const tab = pane.dataset.settingsPane;
+          if (tab) resolvedTab = tab as typeof resolvedTab;
+        } else {
+          break;
+        }
+      }
+    }
+
+    if (resolvedTab !== activeTab) {
+      scrollSpyTabRef.current = resolvedTab;
+      setState((prev) => ({
+        settingsModal: { ...prev.settingsModal, tab: resolvedTab },
+      }));
+    }
+  };
+
+  useEffect(() => {
+    const isOpen = settingsModal.open;
+    const justOpened = isOpen && !wasModalOpenRef.current;
+    wasModalOpenRef.current = isOpen;
+
+    const curIdx = Math.max(0, SETTINGS_TABS.findIndex(([k]) => k === activeTab));
+    const prevIdx = prevTabIndexRef.current;
+    prevTabIndexRef.current = curIdx;
+
+    if (!isOpen || isStandalone || !isMobileViewport()) return;
+
+    const rafId = requestAnimationFrame(() => {
+      const nav = settingsNavRef.current;
+      const activeBtn = nav?.querySelector<HTMLElement>(`[data-settings-tab="${activeTab}"]`);
+      if (nav && activeBtn) {
+        const targetLeft =
+          activeBtn.offsetLeft + activeBtn.offsetWidth / 2 - nav.clientWidth / 2;
+        nav.scrollTo({
+          left: Math.max(0, targetLeft),
+          behavior: justOpened ? "auto" : "smooth",
+        });
+      }
+
+      if (!justOpened && curIdx !== prevIdx) {
+        settingsContentRef.current?.scrollTo({ top: 0 });
+        const activePane = settingsContentRef.current?.querySelector<HTMLElement>(
+          `.settings-pane[data-settings-pane="${activeTab}"]`
+        );
+        const reducedMotion =
+          typeof window !== "undefined" &&
+          window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+        if (activePane && typeof activePane.animate === "function" && !reducedMotion) {
+          const offset = curIdx > prevIdx ? 28 : -28;
+          activePane.animate(
+            [
+              { opacity: 0.72, transform: `translateX(${offset}px)` },
+              { opacity: 1, transform: "translateX(0)" },
+            ],
+            { duration: 200, easing: "cubic-bezier(0.22, 1, 0.36, 1)" }
+          );
+        }
+      }
+    });
+
+    return () => cancelAnimationFrame(rafId);
+  }, [settingsModal.open, activeTab, isStandalone]);
+
+  const handleContentTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+    if (!isMobileViewport() || isStandalone || !settingsModal.open || e.touches.length !== 1) {
+      swipeStateRef.current = null;
+      return;
+    }
+    if (isHorizontallyScrollableAncestor(e.target, settingsContentRef.current)) {
+      swipeStateRef.current = null;
+      return;
+    }
+    const t = e.touches[0];
+    swipeStateRef.current = {
+      startX: t.clientX,
+      startY: t.clientY,
+      lastDx: 0,
+      startTime: Date.now(),
+      locked: null,
+    };
+  };
+
+  const handleContentTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const st = swipeStateRef.current;
+    if (!st || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - st.startX;
+    const dy = t.clientY - st.startY;
+    if (st.locked === null) {
+      if (Math.abs(dy) > 10 && Math.abs(dy) >= Math.abs(dx)) {
+        st.locked = "v";
+        return;
+      }
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+        st.locked = "h";
+      } else {
+        return;
+      }
+    }
+    if (st.locked !== "h") return;
+    st.lastDx = dx;
+    const curIdx = SETTINGS_TABS.findIndex(([k]) => k === activeTab);
+    const atEdge = (dx > 0 && curIdx <= 0) || (dx < 0 && curIdx >= SETTINGS_TABS.length - 1);
+    const damped = dx * (atEdge ? 0.2 : 0.42);
+    const activePane = settingsContentRef.current?.querySelector<HTMLElement>(
+      `.settings-pane[data-settings-pane="${activeTab}"]`
+    );
+    if (activePane) {
+      activePane.style.transform = `translateX(${damped}px)`;
+      activePane.style.transition = "none";
+    }
+  };
+
+  const handleContentTouchEnd = () => {
+    const st = swipeStateRef.current;
+    swipeStateRef.current = null;
+    const activePane = settingsContentRef.current?.querySelector<HTMLElement>(
+      `.settings-pane[data-settings-pane="${activeTab}"]`
+    );
+    if (activePane) {
+      activePane.style.transform = "";
+      activePane.style.transition = "";
+    }
+    if (!st || st.locked !== "h") return;
+    const elapsed = Math.max(1, Date.now() - st.startTime);
+    const velocity = Math.abs(st.lastDx) / elapsed;
+    const triggered = Math.abs(st.lastDx) > 48 || (Math.abs(st.lastDx) > 24 && velocity > 0.35);
+    if (!triggered) return;
+    const curIdx = SETTINGS_TABS.findIndex(([k]) => k === activeTab);
+    if (curIdx < 0) return;
+    const step = st.lastDx < 0 ? 1 : -1;
+    const nextEntry = SETTINGS_TABS[curIdx + step];
+    if (nextEntry) {
+      openSettingsModal(nextEntry[0]);
+    }
+  };
 
   // Profile local state
   const profile = settings?.profile || { name: "本地用户", color: "slate" };
@@ -431,8 +666,14 @@ export function SettingsModal() {
   const memNameRef = useRef<HTMLInputElement | null>(null);
 
   const openMemoryEditor = (mem: any | null) => {
+    const targetId = mem ? String(mem.id || mem.name || "") : null;
+    if (memFormOpen && editingMemId === targetId) {
+      setMemFormOpen(false);
+      setEditingMemId(null);
+      return;
+    }
     if (mem) {
-      setEditingMemId(String(mem.id || ""));
+      setEditingMemId(targetId);
       setMemName(String(mem.name || ""));
       setMemContent(String(mem.instruction || mem.content || mem.desc || ""));
     } else {
@@ -490,6 +731,9 @@ export function SettingsModal() {
   const [allowFormOpen, setAllowFormOpen] = useState(false);
   const [allowTool, setAllowTool] = useState("host_run_shell");
   const [allowPattern, setAllowPattern] = useState("");
+  const [editingRuleKey, setEditingRuleKey] = useState<string | null>(null);
+  const [editRuleTool, setEditRuleTool] = useState("*");
+  const [editRulePattern, setEditRulePattern] = useState("");
   const [pendingDeleteRuleId, setPendingDeleteRuleId] = useState<string | null>(null);
 
   // Vault form
@@ -502,12 +746,20 @@ export function SettingsModal() {
   const vaultTitleRef = useRef<HTMLInputElement | null>(null);
 
   // Computer & Billing busy states
+  const [detectingComputer, setDetectingComputer] = useState(false);
   const [updatingComputer, setUpdatingComputer] = useState(false);
+  const [resettingComputer, setResettingComputer] = useState(false);
   const [refreshingAllBilling, setRefreshingAllBilling] = useState(false);
 
   const openVaultEditor = (item: any | null) => {
+    const targetId = item ? String(item.id || "") : null;
+    if (vaultFormOpen && editingVaultId === targetId) {
+      setVaultFormOpen(false);
+      setEditingVaultId(null);
+      return;
+    }
     if (item) {
-      setEditingVaultId(String(item.id || ""));
+      setEditingVaultId(targetId);
       setVaultCat(item.category || "contact");
       setVaultTitle(String(item.title || ""));
       setVaultSub(String(item.subtitle || ""));
@@ -538,10 +790,16 @@ export function SettingsModal() {
   };
 
   const openProviderEditor = (p: any | null) => {
+    const targetId = p?.id || "";
+    if (provFormOpen && provId === targetId) {
+      setProvFormOpen(false);
+      setProvId("");
+      return;
+    }
     const rawT = p?.type === "vertex" ? "gemini" : p?.type || "gemini";
     const t = PROVIDER_PRESETS_UI[rawT] ? rawT : "gemini";
     const preset = PROVIDER_PRESETS_UI[t] || PROVIDER_PRESETS_UI.gemini;
-    setProvId(p?.id || "");
+    setProvId(targetId);
     setProvType(t);
     setProvName(p?.name || preset.name);
     setProvCurrency(
@@ -730,10 +988,10 @@ export function SettingsModal() {
       : hostExecMode === "ask"
         ? "宿主机操作每次询问"
         : "允许直接操控你的电脑";
-  const hasCompProbe =
-    computerStatus?.latencyMs !== undefined ||
-    Boolean(computerStatus?.detail) ||
-    Boolean(computerStatus?.error);
+  const compStatusView = resolveBotComputerStatusDisplay(computerStatus, {
+    detecting: detectingComputer,
+  });
+  const hasCompProbe = compStatusView.hasProbe;
 
   const providerModels = enabledProviders.flatMap((p: any) =>
     [...(p.models || []), ...(p.imageModels || [])]
@@ -757,6 +1015,560 @@ export function SettingsModal() {
   const diagExecOnline = Boolean(diagnostics?.executorOnline);
   const diagExecUrl = diagnostics?.executorUrl || "http://127.0.0.1:7300";
 
+  const openRuleEditor = (kind: "ask" | "allow", rule: any) => {
+    const key = `${kind}:${rule.id}`;
+    if (editingRuleKey === key) {
+      setEditingRuleKey(null);
+      return;
+    }
+    setPendingDeleteRuleId(null);
+    setEditingRuleKey(key);
+    setEditRuleTool(rule.tool || "*");
+    setEditRulePattern(rule.pattern || "");
+  };
+
+  const renderMemoryEditor = (inline: boolean, visible: boolean) => (
+    <div
+      id="new-memory-form-card"
+      className={`custom-skill-editor settings-inline-editor${inline ? " is-inline-row-editor" : ""}`}
+      hidden={!visible}
+    >
+      {!inline && (
+        <div className="custom-skill-editor-top">
+          <strong>新建全局记忆</strong>
+        </div>
+      )}
+      <div className="custom-skill-fields">
+        <label className="field-group">
+          <span>记忆标题（可选）</span>
+          <input
+            ref={memNameRef}
+            id="memory-name-input"
+            type="text"
+            placeholder="例如：周报排版规范 / 汇报语气偏好"
+            aria-label="记忆标题"
+            value={memName}
+            onChange={(e) => setMemName(e.target.value)}
+          />
+        </label>
+        <label className="field-group">
+          <span>记忆内容（所有 Bot 共享遵守）*</span>
+          <textarea
+            id="memory-content-input"
+            className="is-compact-textarea"
+            rows={3}
+            placeholder="输入希望所有 Bot 长期遵守的背景、偏好或执行约定（也可直接在聊天中说「记住…」自动添加）..."
+            aria-label="记忆内容"
+            value={memContent}
+            onChange={(e) => setMemContent(e.target.value)}
+          />
+        </label>
+      </div>
+      <div className="inline-form-actions">
+        <button
+          id="cancel-memory-btn"
+          type="button"
+          className="skill-pill-btn"
+          onClick={() => {
+            setMemFormOpen(false);
+            setEditingMemId(null);
+          }}
+        >
+          取消
+        </button>
+        <button
+          id="save-memory-btn"
+          type="button"
+          className="skill-pill-btn is-primary"
+          onClick={async () => {
+            const content = memContent.trim();
+            if (!content) {
+              showToast("请输入记忆内容");
+              return;
+            }
+            const title = memName.trim() || content.replace(/\s+/g, " ").slice(0, 18);
+            const nowIso = new Date().toISOString();
+            const next = editingMemId
+              ? globalMemories.map((x: any) =>
+                  String(x.id || x.name) === editingMemId
+                    ? {
+                        ...x,
+                        name: title,
+                        desc: content,
+                        instruction: content,
+                        content,
+                        updatedAt: nowIso,
+                      }
+                    : x
+                )
+              : [
+                  {
+                    id: `gmem-${Date.now()}`,
+                    name: title,
+                    desc: content,
+                    instruction: content,
+                    content,
+                    enabled: true,
+                    updatedAt: nowIso,
+                  },
+                  ...globalMemories,
+                ];
+            const saved = await apiJson("/api/settings", {
+              method: "POST",
+              body: JSON.stringify({ globalMemories: next, privateSkills: next }),
+            });
+            setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+            setMemName("");
+            setMemContent("");
+            setEditingMemId(null);
+            setMemFormOpen(false);
+            showToast(editingMemId ? "全局记忆已更新" : "全局记忆已保存");
+          }}
+        >
+          保存记忆
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderProviderEditor = (inline: boolean, visible: boolean) => (
+    <form
+      id="provider-form"
+      className={`custom-skill-editor settings-inline-editor provider-form-card${inline ? " is-inline-row-editor" : ""}`}
+      hidden={!visible}
+      onSubmit={async (e: FormEvent) => {
+        e.preventDefault();
+        const resolvedName =
+          provName.trim() || PROVIDER_PRESETS_UI[provType]?.name || provType;
+        try {
+          const res = await apiJson("/api/providers", {
+            method: "POST",
+            body: JSON.stringify({
+              id: provId.trim() || undefined,
+              type: provType,
+              name: resolvedName,
+              billingCurrency: provCurrency,
+              apiKey: provApiKey.trim(),
+              baseUrl: provBaseUrl.trim(),
+              models: parseModelsCsv(provModels),
+              imageModels: parseModelsCsv(provImageModels),
+            }),
+          });
+          setProvFormOpen(false);
+          setProvId("");
+          await refreshSettingsFromServer();
+          refreshSystemDiagnostics(false);
+          showToast(
+            res.autoAssignedTiers
+              ? `已保存「${resolvedName}」，已为你自动选好 3 档路由模型，可自行修改`
+              : `已保存模型供应商「${resolvedName}」`
+          );
+        } catch (err: any) {
+          setProvFeedback({ text: `❌ ${err.message}`, kind: "error" });
+        }
+      }}
+    >
+      <input id="provider-id-input" type="hidden" value={provId} readOnly />
+      {!inline && (
+        <div className="custom-skill-editor-top">
+          <strong>添加模型供应商</strong>
+        </div>
+      )}
+
+      <div className="custom-skill-fields">
+        <div className="field-group">
+          <span>供应商类型</span>
+          <div
+            className="provider-preset-pills"
+            role="radiogroup"
+            aria-label="供应商类型"
+          >
+            {SETTINGS_PROVIDER_KEYS.map((pKey) => {
+              const pr = PROVIDER_PRESETS_UI[pKey];
+              const active = provType === pKey;
+              return (
+                <button
+                  key={pKey}
+                  type="button"
+                  role="radio"
+                  aria-checked={active ? "true" : "false"}
+                  className={`provider-preset-pill${active ? " is-active" : ""}`}
+                  data-provider-preset={pKey}
+                  onClick={() => applyProviderTypePreset(pKey, Boolean(provId))}
+                >
+                  {pr?.shortLabel || pr?.name || pKey}
+                </button>
+              );
+            })}
+          </div>
+          <select
+            id="provider-type-select"
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+            value={provType}
+            onChange={(e) => applyProviderTypePreset(e.target.value, Boolean(provId))}
+          >
+            {SETTINGS_PROVIDER_KEYS.map((pKey) => (
+              <option key={pKey} value={pKey}>
+                {PROVIDER_PRESETS_UI[pKey]?.name || pKey}
+              </option>
+            ))}
+          </select>
+          <span className="provider-preset-hint">
+            {PROVIDER_PRESETS_UI[provType]?.hint || ""}
+          </span>
+        </div>
+
+        {provType === "gemini" && Boolean(settings?.gcpVertexActive) && (
+          <div className="mail-feedback-box is-success">
+            当前 GCP 云服务器已通过环境变量启用 Vertex AI 服务账号认证（
+            {settings?.gcpVertexProject} · {settings?.gcpVertexLocation}
+            ），API Key 可留空。
+          </div>
+        )}
+        {provType === "gemini" &&
+          !settings?.gcpVertexActive &&
+          Boolean(settings?.blockedVertexReason) && (
+            <div className="mail-feedback-box is-error">
+              {settings?.blockedVertexReason}
+            </div>
+          )}
+
+        <div className="custom-skill-row-two">
+          <label className="field-group custom-skill-name-field">
+            <span>显示名称 *</span>
+            <input
+              ref={provNameRef}
+              id="provider-name-input"
+              type="text"
+              placeholder="例如：Google Gemini / DeepSeek 主力"
+              aria-label="供应商名称"
+              value={provName}
+              onChange={(e) => setProvName(e.target.value)}
+            />
+          </label>
+          <label className="field-group custom-skill-slug-field">
+            <span>计费结算币种</span>
+            <select
+              id="provider-billing-currency-select"
+              aria-label="计费结算币种"
+              value={provCurrency}
+              onChange={(e) => setProvCurrency(e.target.value as "USD" | "CNY")}
+            >
+              <option value="USD">USD（美元，自动折算人民币 ¥）</option>
+              <option value="CNY">CNY（人民币 ¥ 原币计费）</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="field-group">
+          <div className="mail-label-row">
+            <span>
+              API Key / 环境变量名
+              {provId ? "（留空保留原密钥）" : ""}
+            </span>
+            <button
+              type="button"
+              className="mail-secret-toggle"
+              onClick={() => setProvShowKey((v) => !v)}
+            >
+              {provShowKey ? "隐藏" : "显示"}
+            </button>
+          </div>
+          <input
+            id="provider-api-key-input"
+            type={provShowKey ? "text" : "password"}
+            placeholder="粘贴 API Key 或填环境变量名（如 GEMINI_API_KEY）"
+            aria-label="供应商 API Key"
+            autoComplete="off"
+            value={provApiKey}
+            onChange={(e) => setProvApiKey(e.target.value)}
+          />
+        </div>
+
+        <label className="field-group">
+          <span>
+            接口地址 Base URL（
+            {provType === "openai-compatible" ? "自定义兼容必填" : "官方接口可留空"}
+            ）
+          </span>
+          <input
+            id="provider-base-url-input"
+            type="url"
+            placeholder="例如：https://api.openai.com/v1"
+            aria-label="供应商 Base URL"
+            value={provBaseUrl}
+            onChange={(e) => setProvBaseUrl(e.target.value)}
+          />
+        </label>
+
+        <label className="field-group">
+          <span>大语言模型列表（逗号或换行分隔）*</span>
+          <textarea
+            id="provider-models-input"
+            className="is-compact-textarea"
+            rows={2}
+            placeholder="例如：gemini-4-hydrogen, gemini-4-argon, gemini-4-carbon"
+            aria-label="大语言模型列表"
+            value={provModels}
+            onChange={(e) => setProvModels(e.target.value)}
+          />
+        </label>
+
+        <label className="field-group">
+          <span>生图模型列表（可选，逗号或换行分隔）</span>
+          <textarea
+            id="provider-image-models-input"
+            className="is-compact-textarea"
+            rows={1}
+            placeholder="例如：gemini-3.1-flash-image, gpt-image-1"
+            aria-label="生图模型列表"
+            value={provImageModels}
+            onChange={(e) => setProvImageModels(e.target.value)}
+          />
+        </label>
+      </div>
+
+      <div
+        id="provider-form-feedback"
+        className={`mail-feedback-box${
+          provFeedback.kind === "ok"
+            ? " is-success"
+            : provFeedback.kind === "error"
+              ? " is-error"
+              : ""
+        }`}
+        role="status"
+        aria-live="polite"
+        hidden={!provFeedback.text}
+      >
+        <StatusText text={provFeedback.text} />
+      </div>
+
+      <div className="inline-form-actions">
+        <button
+          id="provider-cancel-btn"
+          type="button"
+          className="skill-pill-btn"
+          onClick={() => {
+            setProvFormOpen(false);
+            setProvId("");
+          }}
+        >
+          取消
+        </button>
+        <button
+          id="provider-test-btn"
+          type="button"
+          className="skill-pill-btn"
+          onClick={async () => {
+            const models = parseModelsCsv(provModels);
+            setProvFeedback({ text: "正在测试连接…", kind: "info" });
+            try {
+              const res = await apiJson("/api/providers/test", {
+                method: "POST",
+                body: JSON.stringify({
+                  id: provId.trim() || undefined,
+                  type: provType,
+                  apiKey: provApiKey.trim(),
+                  baseUrl: provBaseUrl.trim(),
+                  models,
+                  model: models[0],
+                }),
+              });
+              setProvFeedback({
+                text: res.ok ? `✓ 连接成功 (${res.latencyMs}ms)` : `❌ 失败：${res.error}`,
+                kind: res.ok ? "ok" : "error",
+              });
+            } catch (err: any) {
+              setProvFeedback({ text: `❌ ${err.message}`, kind: "error" });
+            }
+          }}
+        >
+          测试连接
+        </button>
+        <button
+          id="provider-save-btn"
+          type="submit"
+          className="skill-pill-btn is-primary"
+        >
+          保存供应商
+        </button>
+      </div>
+    </form>
+  );
+
+  const renderVaultEditor = (inline: boolean, visible: boolean) => (
+    <div
+      id="vault-new-form"
+      className={`custom-skill-editor settings-inline-editor${inline ? " is-inline-row-editor" : ""}`}
+      hidden={!visible}
+    >
+      {!inline && (
+        <div className="custom-skill-editor-top">
+          <strong>新建保险库条目</strong>
+        </div>
+      )}
+      <div className="custom-skill-fields">
+        <div className="custom-skill-row-two">
+          <label className="field-group custom-skill-slug-field">
+            <span>条目分类</span>
+            <select
+              id="vault-cat-input"
+              value={vaultCat}
+              onChange={(e) => setVaultCat(e.target.value)}
+            >
+              <option value="contact">联系信息</option>
+              <option value="login">账号备注</option>
+            </select>
+          </label>
+          <label className="field-group custom-skill-name-field">
+            <span>名称 *</span>
+            <input
+              ref={vaultTitleRef}
+              id="vault-title-input"
+              type="text"
+              placeholder="如：测试站账号 / 常用收件人"
+              value={vaultTitle}
+              onChange={(e) => setVaultTitle(e.target.value)}
+            />
+          </label>
+        </div>
+        <label className="field-group">
+          <span>邮箱 / 用户名 / 备注内容</span>
+          <input
+            id="vault-sub-input"
+            type="text"
+            placeholder="邮箱 / 用户名 / 备注内容（请勿存真实银行卡安全码）"
+            value={vaultSub}
+            onChange={(e) => setVaultSub(e.target.value)}
+          />
+        </label>
+      </div>
+      <div className="inline-form-actions">
+        <button
+          type="button"
+          className="skill-pill-btn"
+          id="cancel-vault-item-btn"
+          onClick={() => {
+            setVaultFormOpen(false);
+            setEditingVaultId(null);
+          }}
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          className="skill-pill-btn is-primary"
+          id="save-vault-item-btn"
+          onClick={async () => {
+            const title = vaultTitle.trim();
+            if (!title) {
+              showToast("请输入条目名称");
+              return;
+            }
+            if (editingVaultId) {
+              await apiJson(`/api/vault/${encodeURIComponent(editingVaultId)}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  category: vaultCat,
+                  title,
+                  subtitle: vaultSub.trim(),
+                }),
+              });
+            } else {
+              await apiJson("/api/vault", {
+                method: "POST",
+                body: JSON.stringify({
+                  category: vaultCat,
+                  title,
+                  subtitle: vaultSub.trim(),
+                }),
+              });
+            }
+            setVaultTitle("");
+            setVaultSub("");
+            setEditingVaultId(null);
+            setVaultFormOpen(false);
+            refreshVault();
+            showToast(editingVaultId ? "保险库项目已更新" : "保险库项目已保存");
+          }}
+        >
+          保存项目
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderRuleInlineEditor = (kind: "ask" | "allow", rule: any) => (
+    <div className="custom-skill-editor settings-inline-editor is-inline-row-editor">
+      <div className="custom-skill-fields">
+        <div className="custom-skill-row-two">
+          <label className="field-group custom-skill-name-field">
+            <span>目标工具</span>
+            <select
+              value={editRuleTool}
+              onChange={(e) => setEditRuleTool(e.target.value)}
+            >
+              {PERMISSION_RULE_TOOLS.map(([val, label]) => (
+                <option key={val} value={val}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-group custom-skill-slug-field">
+            <span>参数匹配关键词（留空匹配全部）</span>
+            <input
+              type="text"
+              placeholder={kind === "ask" ? "如 rm、git push、pay" : "如 /tmp/、npm test"}
+              value={editRulePattern}
+              onChange={(e) => setEditRulePattern(e.target.value)}
+            />
+          </label>
+        </div>
+      </div>
+      <div className="inline-form-actions">
+        <button
+          type="button"
+          className="skill-pill-btn"
+          onClick={() => setEditingRuleKey(null)}
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          className="skill-pill-btn is-primary"
+          onClick={async () => {
+            const pat = editRulePattern.trim();
+            const listKey = kind === "ask" ? "askRules" : "allowRules";
+            const srcList = kind === "ask" ? askRules : allowRules;
+            const nextList = srcList.map((x: any) =>
+              x.id === rule.id
+                ? {
+                    ...x,
+                    tool: editRuleTool,
+                    pattern: pat,
+                    label: `${editRuleTool} ${pat}`.trim(),
+                  }
+                : x
+            );
+            await apiJson("/api/settings", {
+              method: "POST",
+              body: JSON.stringify({ policy: { ...policy, [listKey]: nextList } }),
+            });
+            setEditingRuleKey(null);
+            refreshSettingsFromServer();
+            showToast("权限规则已更新");
+          }}
+        >
+          保存规则
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div
       id="settings-modal-backdrop"
@@ -767,7 +1579,7 @@ export function SettingsModal() {
       }}
     >
       <div
-        className={`settings-modal${isStandalone ? " is-standalone-pane" : ""}`}
+        className={`settings-modal${isStandalone ? " is-standalone-pane" : ""}${continuousDesktop ? " is-continuous-scroll" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label="TwinkleBot 设置"
@@ -790,45 +1602,69 @@ export function SettingsModal() {
           </svg>
         </button>
 
-        <nav className="settings-nav" aria-label="设置分区">
-          {(
-            [
-              ["general", "gear", "通用"],
-              ["models", "models-diamond", "模型接入与路由"],
-              ["computer", "monitor", "电脑"],
-              ["permissions", "shield-check", "权限"],
-              ["vault", "vault-safe", "保险库"],
-              ["usage", "bar-chart", "用量与账单"],
-              ["updates", "sparkle", "关于与诊断"],
-            ] as const
-          ).map(([tabKey, iconName, label]) => (
-            <button
-              key={tabKey}
-              type="button"
-              className={`settings-nav-item${activeTab === tabKey ? " is-active" : ""}`}
-              data-settings-tab={tabKey}
-              onClick={() => openSettingsModal(tabKey)}
-            >
-              <span className="settings-nav-icon" aria-hidden="true">
-                <UiIcon name={iconName} />
-              </span>
-              <span>{label}</span>
-              {tabKey === "updates" && hasVisibleUpdate && (
-                <span className="settings-nav-update-dot" aria-label="有可用更新" />
-              )}
-            </button>
-          ))}
-        </nav>
+        <div className="settings-mobile-topbar">
+          <button
+            id="mobile-settings-modal-back-btn"
+            type="button"
+            className="mobile-circle-btn mobile-only"
+            title="返回"
+            aria-label="返回"
+            onClick={closeSettingsModal}
+          >
+            <UiIcon name="chevron-left" />
+          </button>
+          <div className="settings-nav-wrap">
+            <nav ref={settingsNavRef} className="settings-nav" role="tablist" aria-label="设置分区">
+              {SETTINGS_TABS.map(([tabKey, iconName, label]) => (
+                <button
+                  key={tabKey}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === tabKey}
+                  tabIndex={activeTab === tabKey ? 0 : -1}
+                  className={`settings-nav-item${activeTab === tabKey ? " is-active" : ""}`}
+                  data-settings-tab={tabKey}
+                  onClick={() => {
+                    if (continuousDesktop && activeTab === tabKey) {
+                      scrollToSettingsPane(tabKey, true);
+                      return;
+                    }
+                    openSettingsModal(tabKey);
+                  }}
+                >
+                  <span className="settings-nav-icon" aria-hidden="true">
+                    <UiIcon name={iconName} />
+                  </span>
+                  <span>{label}</span>
+                  {tabKey === "updates" && hasVisibleUpdate && (
+                    <span className="settings-nav-update-dot" aria-label="有可用更新" />
+                  )}
+                </button>
+              ))}
+            </nav>
+          </div>
+        </div>
 
         <div
-          className={`settings-content${activeTab === "usage" ? " is-usage-pane-active" : ""}`}
-          ref={bindScrollEndTracking}
+          className={`settings-content${!continuousDesktop && activeTab === "usage" ? " is-usage-pane-active" : ""}`}
+          ref={(node) => {
+            settingsContentRef.current = node;
+            bindScrollEndTracking(node);
+          }}
+          onScroll={handleContentScroll}
+          onWheel={() => {
+            ignoreScrollSpyUntilRef.current = 0;
+          }}
+          onTouchStart={handleContentTouchStart}
+          onTouchMove={handleContentTouchMove}
+          onTouchEnd={handleContentTouchEnd}
+          onTouchCancel={handleContentTouchEnd}
         >
           {/* ==================== PANE 1: 通用 ==================== */}
           <div
             className="settings-pane"
             data-settings-pane="general"
-            hidden={activeTab !== "general"}
+            hidden={!continuousDesktop && activeTab !== "general"}
           >
             <h2 className="settings-pane-title">通用</h2>
 
@@ -1202,119 +2038,7 @@ export function SettingsModal() {
               </button>
             </div>
 
-            <SettingsEditorShell
-              open={memFormOpen}
-              title={editingMemId ? `编辑全局记忆「${memName || "全局记忆"}」` : "新建全局记忆"}
-              onClose={() => {
-                setMemFormOpen(false);
-                setEditingMemId(null);
-              }}
-            >
-              <div
-                id="new-memory-form-card"
-                className="custom-skill-editor settings-inline-editor"
-                hidden={!memFormOpen}
-              >
-                <div className="custom-skill-editor-top">
-                  <strong>
-                    {editingMemId
-                      ? `编辑全局记忆「${memName || "全局记忆"}」`
-                      : "新建全局记忆"}
-                  </strong>
-                </div>
-                <div className="custom-skill-fields">
-                  <label className="field-group">
-                    <span>记忆标题（可选）</span>
-                    <input
-                      ref={memNameRef}
-                      id="memory-name-input"
-                      type="text"
-                      placeholder="例如：周报排版规范 / 汇报语气偏好"
-                      aria-label="记忆标题"
-                      value={memName}
-                      onChange={(e) => setMemName(e.target.value)}
-                    />
-                  </label>
-                  <label className="field-group">
-                    <span>记忆内容（所有 Bot 共享遵守）*</span>
-                    <textarea
-                      id="memory-content-input"
-                      className="is-compact-textarea"
-                      rows={3}
-                      placeholder="输入希望所有 Bot 长期遵守的背景、偏好或执行约定（也可直接在聊天中说「记住…」自动添加）..."
-                      aria-label="记忆内容"
-                      value={memContent}
-                      onChange={(e) => setMemContent(e.target.value)}
-                    />
-                  </label>
-                </div>
-                <div className="inline-form-actions">
-                  <button
-                    id="cancel-memory-btn"
-                    type="button"
-                    className="skill-pill-btn"
-                    onClick={() => {
-                      setMemFormOpen(false);
-                      setEditingMemId(null);
-                    }}
-                  >
-                    取消
-                  </button>
-                  <button
-                    id="save-memory-btn"
-                    type="button"
-                    className="skill-pill-btn is-primary"
-                    onClick={async () => {
-                      const content = memContent.trim();
-                      if (!content) {
-                        showToast("请输入记忆内容");
-                        return;
-                      }
-                      const title =
-                        memName.trim() || content.replace(/\s+/g, " ").slice(0, 18);
-                      const nowIso = new Date().toISOString();
-                      const next = editingMemId
-                        ? globalMemories.map((x: any) =>
-                            x.id === editingMemId
-                              ? {
-                                  ...x,
-                                  name: title,
-                                  desc: content,
-                                  instruction: content,
-                                  content,
-                                  updatedAt: nowIso,
-                                }
-                              : x
-                          )
-                        : [
-                            {
-                              id: `gmem-${Date.now()}`,
-                              name: title,
-                              desc: content,
-                              instruction: content,
-                              content,
-                              enabled: true,
-                              updatedAt: nowIso,
-                            },
-                            ...globalMemories,
-                          ];
-                      const saved = await apiJson("/api/settings", {
-                        method: "POST",
-                        body: JSON.stringify({ globalMemories: next, privateSkills: next }),
-                      });
-                      setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
-                      setMemName("");
-                      setMemContent("");
-                      setEditingMemId(null);
-                      setMemFormOpen(false);
-                      showToast(editingMemId ? "全局记忆已更新" : "全局记忆已保存");
-                    }}
-                  >
-                    保存记忆
-                  </button>
-                </div>
-              </div>
-            </SettingsEditorShell>
+            {(!memFormOpen || !editingMemId) && renderMemoryEditor(false, memFormOpen && !editingMemId)}
 
             <div id="global-memories-list" className="private-skills-list">
               {globalMemories.length === 0 ? (
@@ -1324,6 +2048,7 @@ export function SettingsModal() {
               ) : (
                 globalMemories.map((mem: any) => {
                   const memId = String(mem.id || mem.name);
+                  const isEditingThisMem = memFormOpen && editingMemId === memId;
                   const deleteGlobalMemory = async () => {
                     const next = globalMemories.filter((x: any) => (x.id || x.name) !== memId);
                     await apiJson("/api/settings", {
@@ -1342,7 +2067,7 @@ export function SettingsModal() {
                   return (
                     <div
                       key={memId}
-                      className={`private-skill-card${mem.enabled === false ? " is-disabled" : ""}`}
+                      className={`private-skill-card${mem.enabled === false ? " is-disabled" : ""}${isEditingThisMem ? " is-editing" : ""}`}
                     >
                       <div className="private-skill-card-head">
                         <div className="custom-skill-card-left">
@@ -1388,10 +2113,11 @@ export function SettingsModal() {
                           </label>
                           <button
                             type="button"
-                            className="skill-pill-btn"
+                            className={`skill-pill-btn${isEditingThisMem ? " is-active" : ""}`}
+                            aria-expanded={isEditingThisMem}
                             onClick={() => openMemoryEditor(mem)}
                           >
-                            查看 / 编辑
+                            {isEditingThisMem ? "收起" : "查看 / 编辑"}
                           </button>
                           <button
                             type="button"
@@ -1418,6 +2144,8 @@ export function SettingsModal() {
                           </button>
                         </div>
                       </div>
+
+                      {isEditingThisMem && renderMemoryEditor(true, true)}
 
                       {pendingDeleteMemId === memId && (
                         <div className="skill-remove-confirm">
@@ -1453,7 +2181,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="models"
-            hidden={activeTab !== "models"}
+            hidden={!continuousDesktop && activeTab !== "models"}
           >
             <div className="vault-header-row">
               <h2 className="settings-pane-title">模型接入与路由</h2>
@@ -1533,283 +2261,7 @@ export function SettingsModal() {
               已接入模型供应商（Google Gemini / OpenAI / DeepSeek / 自定义兼容）
             </div>
 
-            <SettingsEditorShell
-              open={provFormOpen}
-              title={provId ? `编辑模型供应商「${provName || provId}」` : "添加模型供应商"}
-              onClose={() => setProvFormOpen(false)}
-            >
-              <form
-                id="provider-form"
-                className="custom-skill-editor settings-inline-editor provider-form-card"
-                hidden={!provFormOpen}
-                onSubmit={async (e: FormEvent) => {
-                  e.preventDefault();
-                  const resolvedName =
-                    provName.trim() || PROVIDER_PRESETS_UI[provType]?.name || provType;
-                  try {
-                    const res = await apiJson("/api/providers", {
-                      method: "POST",
-                      body: JSON.stringify({
-                        id: provId.trim() || undefined,
-                        type: provType,
-                        name: resolvedName,
-                        billingCurrency: provCurrency,
-                        apiKey: provApiKey.trim(),
-                        baseUrl: provBaseUrl.trim(),
-                        models: parseModelsCsv(provModels),
-                        imageModels: parseModelsCsv(provImageModels),
-                      }),
-                    });
-                    setProvFormOpen(false);
-                    await refreshSettingsFromServer();
-                    refreshSystemDiagnostics(false);
-                    showToast(
-                      res.autoAssignedTiers
-                        ? `已保存「${resolvedName}」，已为你自动选好 3 档路由模型，可自行修改`
-                        : `已保存模型供应商「${resolvedName}」`
-                    );
-                  } catch (err: any) {
-                    setProvFeedback({ text: `❌ ${err.message}`, kind: "error" });
-                  }
-                }}
-              >
-                <input id="provider-id-input" type="hidden" value={provId} readOnly />
-                <div className="custom-skill-editor-top">
-                  <strong>
-                    {provId
-                      ? `编辑模型供应商「${provName || provId}」`
-                      : "添加模型供应商"}
-                  </strong>
-                </div>
-
-                <div className="custom-skill-fields">
-                  <div className="field-group">
-                    <span>供应商类型</span>
-                    <div
-                      className="provider-preset-pills"
-                      role="radiogroup"
-                      aria-label="供应商类型"
-                    >
-                      {SETTINGS_PROVIDER_KEYS.map((pKey) => {
-                        const pr = PROVIDER_PRESETS_UI[pKey];
-                        const active = provType === pKey;
-                        return (
-                          <button
-                            key={pKey}
-                            type="button"
-                            role="radio"
-                            aria-checked={active ? "true" : "false"}
-                            className={`provider-preset-pill${active ? " is-active" : ""}`}
-                            data-provider-preset={pKey}
-                            onClick={() =>
-                              applyProviderTypePreset(pKey, Boolean(provId))
-                            }
-                          >
-                            {pr?.shortLabel || pr?.name || pKey}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <select
-                      id="provider-type-select"
-                      className="sr-only"
-                      tabIndex={-1}
-                      aria-hidden="true"
-                      value={provType}
-                      onChange={(e) =>
-                        applyProviderTypePreset(e.target.value, Boolean(provId))
-                      }
-                    >
-                      {SETTINGS_PROVIDER_KEYS.map((pKey) => (
-                        <option key={pKey} value={pKey}>
-                          {PROVIDER_PRESETS_UI[pKey]?.name || pKey}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="provider-preset-hint">
-                      {PROVIDER_PRESETS_UI[provType]?.hint || ""}
-                    </span>
-                  </div>
-
-                  {provType === "gemini" && Boolean(settings?.gcpVertexActive) && (
-                    <div className="mail-feedback-box is-success">
-                      当前 GCP 云服务器已通过环境变量启用 Vertex AI 服务账号认证（
-                      {settings?.gcpVertexProject} · {settings?.gcpVertexLocation}
-                      ），API Key 可留空。
-                    </div>
-                  )}
-                  {provType === "gemini" &&
-                    !settings?.gcpVertexActive &&
-                    Boolean(settings?.blockedVertexReason) && (
-                      <div className="mail-feedback-box is-error">
-                        {settings?.blockedVertexReason}
-                      </div>
-                    )}
-
-                  <div className="custom-skill-row-two">
-                    <label className="field-group custom-skill-name-field">
-                      <span>显示名称 *</span>
-                      <input
-                        ref={provNameRef}
-                        id="provider-name-input"
-                        type="text"
-                        placeholder="例如：Google Gemini / DeepSeek 主力"
-                        aria-label="供应商名称"
-                        value={provName}
-                        onChange={(e) => setProvName(e.target.value)}
-                      />
-                    </label>
-                    <label className="field-group custom-skill-slug-field">
-                      <span>计费结算币种</span>
-                      <select
-                        id="provider-billing-currency-select"
-                        aria-label="计费结算币种"
-                        value={provCurrency}
-                        onChange={(e) =>
-                          setProvCurrency(e.target.value as "USD" | "CNY")
-                        }
-                      >
-                        <option value="USD">USD（美元，自动折算人民币 ¥）</option>
-                        <option value="CNY">CNY（人民币 ¥ 原币计费）</option>
-                      </select>
-                    </label>
-                  </div>
-
-                  <div className="field-group">
-                    <div className="mail-label-row">
-                      <span>
-                        API Key / 环境变量名
-                        {provId ? "（留空保留原密钥）" : ""}
-                      </span>
-                      <button
-                        type="button"
-                        className="mail-secret-toggle"
-                        onClick={() => setProvShowKey((v) => !v)}
-                      >
-                        {provShowKey ? "隐藏" : "显示"}
-                      </button>
-                    </div>
-                    <input
-                      id="provider-api-key-input"
-                      type={provShowKey ? "text" : "password"}
-                      placeholder="粘贴 API Key 或填环境变量名（如 GEMINI_API_KEY）"
-                      aria-label="供应商 API Key"
-                      autoComplete="off"
-                      value={provApiKey}
-                      onChange={(e) => setProvApiKey(e.target.value)}
-                    />
-                  </div>
-
-                  <label className="field-group">
-                    <span>
-                      接口地址 Base URL（
-                      {provType === "openai-compatible" ? "自定义兼容必填" : "官方接口可留空"}
-                      ）
-                    </span>
-                    <input
-                      id="provider-base-url-input"
-                      type="url"
-                      placeholder="例如：https://api.openai.com/v1"
-                      aria-label="供应商 Base URL"
-                      value={provBaseUrl}
-                      onChange={(e) => setProvBaseUrl(e.target.value)}
-                    />
-                  </label>
-
-                  <label className="field-group">
-                    <span>大语言模型列表（逗号或换行分隔）*</span>
-                    <textarea
-                      id="provider-models-input"
-                      className="is-compact-textarea"
-                      rows={2}
-                      placeholder="例如：gemini-4-hydrogen, gemini-4-argon, gemini-4-carbon"
-                      aria-label="大语言模型列表"
-                      value={provModels}
-                      onChange={(e) => setProvModels(e.target.value)}
-                    />
-                  </label>
-
-                  <label className="field-group">
-                    <span>生图模型列表（可选，逗号或换行分隔）</span>
-                    <textarea
-                      id="provider-image-models-input"
-                      className="is-compact-textarea"
-                      rows={1}
-                      placeholder="例如：gemini-3.1-flash-image, gpt-image-1"
-                      aria-label="生图模型列表"
-                      value={provImageModels}
-                      onChange={(e) => setProvImageModels(e.target.value)}
-                    />
-                  </label>
-                </div>
-
-                <div
-                  id="provider-form-feedback"
-                  className={`mail-feedback-box${
-                    provFeedback.kind === "ok"
-                      ? " is-success"
-                      : provFeedback.kind === "error"
-                        ? " is-error"
-                        : ""
-                  }`}
-                  role="status"
-                  aria-live="polite"
-                  hidden={!provFeedback.text}
-                >
-                  <StatusText text={provFeedback.text} />
-                </div>
-
-                <div className="inline-form-actions">
-                  <button
-                    id="provider-cancel-btn"
-                    type="button"
-                    className="skill-pill-btn"
-                    onClick={() => setProvFormOpen(false)}
-                  >
-                    取消
-                  </button>
-                  <button
-                    id="provider-test-btn"
-                    type="button"
-                    className="skill-pill-btn"
-                    onClick={async () => {
-                      const models = parseModelsCsv(provModels);
-                      setProvFeedback({ text: "正在测试连接…", kind: "info" });
-                      try {
-                        const res = await apiJson("/api/providers/test", {
-                          method: "POST",
-                          body: JSON.stringify({
-                            id: provId.trim() || undefined,
-                            type: provType,
-                            apiKey: provApiKey.trim(),
-                            baseUrl: provBaseUrl.trim(),
-                            models,
-                            model: models[0],
-                          }),
-                        });
-                        setProvFeedback({
-                          text: res.ok
-                            ? `✓ 连接成功 (${res.latencyMs}ms)`
-                            : `❌ 失败：${res.error}`,
-                          kind: res.ok ? "ok" : "error",
-                        });
-                      } catch (err: any) {
-                        setProvFeedback({ text: `❌ ${err.message}`, kind: "error" });
-                      }
-                    }}
-                  >
-                    测试连接
-                  </button>
-                  <button
-                    id="provider-save-btn"
-                    type="submit"
-                    className="skill-pill-btn is-primary"
-                  >
-                    保存供应商
-                  </button>
-                </div>
-              </form>
-            </SettingsEditorShell>
+            {(!provFormOpen || !provId) && renderProviderEditor(false, provFormOpen && !provId)}
 
             <div id="providers-list" className="providers-list">
               {providers.length === 0 ? (
@@ -1818,6 +2270,7 @@ export function SettingsModal() {
                 </div>
               ) : (
                 providers.map((p: any) => {
+                  const isEditingThisProv = provFormOpen && provId === p.id;
                   const billingCurr =
                     p.billingCurrency || (p.type === "deepseek" ? "CNY" : "USD");
                   const modelsText = (p.models || []).join(" · ") || "未指定大语言模型";
@@ -1837,7 +2290,10 @@ export function SettingsModal() {
                         { method: "DELETE" }
                       );
                       setPendingDeleteProviderId(null);
-                      if (provId === p.id) setProvFormOpen(false);
+                      if (provId === p.id) {
+                        setProvFormOpen(false);
+                        setProvId("");
+                      }
                       await refreshSettingsFromServer();
                       refreshUsageAndHealth();
                       refreshSystemDiagnostics(false);
@@ -1854,7 +2310,7 @@ export function SettingsModal() {
                   return (
                     <div
                       key={p.id}
-                      className={`provider-card${p.enabled === false ? " is-disabled" : ""}`}
+                      className={`provider-card${p.enabled === false ? " is-disabled" : ""}${isEditingThisProv ? " is-editing" : ""}`}
                     >
                       <div className="provider-card-head">
                         <div className="provider-card-title-row">
@@ -1918,10 +2374,11 @@ export function SettingsModal() {
                           </label>
                           <button
                             type="button"
-                            className="skill-pill-btn"
+                            className={`skill-pill-btn${isEditingThisProv ? " is-active" : ""}`}
+                            aria-expanded={isEditingThisProv}
                             onClick={() => openProviderEditor(p)}
                           >
-                            查看 / 编辑
+                            {isEditingThisProv ? "收起" : "查看 / 编辑"}
                           </button>
                           <button
                             type="button"
@@ -1985,6 +2442,8 @@ export function SettingsModal() {
                           .join(" · ")}
                       </div>
 
+                      {isEditingThisProv && renderProviderEditor(true, true)}
+
                       {pendingDeleteProviderId === p.id && (
                         <div className="skill-remove-confirm">
                           <div className="skill-remove-text">
@@ -2019,7 +2478,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="computer"
-            hidden={activeTab !== "computer"}
+            hidden={!continuousDesktop && activeTab !== "computer"}
           >
             <h2 className="settings-pane-title">电脑</h2>
 
@@ -2133,7 +2592,7 @@ export function SettingsModal() {
                           : "OrbStack Ubuntu XFCE (:1)"}
                     </div>
                     <div className="settings-row-sub" id="computer-health-line">
-                      {!hasCompProbe ? (
+                      {detectingComputer || !hasCompProbe ? (
                         "正在检测 Executor 状态…"
                       ) : computerStatus?.online ? (
                         <>
@@ -2145,7 +2604,7 @@ export function SettingsModal() {
                       ) : (
                         <>
                           <span className="status-dot-inline is-err" aria-hidden="true" />
-                          离线（{computerStatus?.error || "执行器未响应"}）
+                          离线（{compStatusView.settingsOfflineReason}）
                         </>
                       )}
                     </div>
@@ -2155,9 +2614,25 @@ export function SettingsModal() {
                   type="button"
                   className="settings-pill-btn"
                   id="settings-check-computer-btn"
-                  onClick={() => refreshUsageAndHealth()}
+                  disabled={detectingComputer}
+                  onClick={async () => {
+                    setDetectingComputer(true);
+                    try {
+                      const c = await refreshComputerStatus({ force: true, suppressLanOfflineModal: true });
+                      void refreshSystemDiagnostics(false);
+                      if (c?.online) {
+                        showToast(`✓ Bot 的电脑在线 · ${c.latencyMs ?? 0}ms`);
+                      } else if (c) {
+                        showToast(`Bot 的电脑离线：${c.error || c.detail || "执行器未响应"}`);
+                      } else {
+                        showToast("Bot 的电脑状态检测失败");
+                      }
+                    } finally {
+                      setDetectingComputer(false);
+                    }
+                  }}
                 >
-                  重新检测
+                  {detectingComputer ? "检测中…" : "重新检测"}
                 </button>
               </div>
             </div>
@@ -2177,8 +2652,7 @@ export function SettingsModal() {
                   onClick={async () => {
                     setUpdatingComputer(true);
                     try {
-                      await apiJson("/api/computer/update", { method: "POST" });
-                      await refreshUsageAndHealth();
+                      await updateBotComputerComponents();
                       showToast("✓ Bot 的电脑已同步最新执行器并重启");
                     } catch (err: any) {
                       showToast(`更新失败：${err.message || "无法连接桌面执行器"}`);
@@ -2202,14 +2676,27 @@ export function SettingsModal() {
                   type="button"
                   className="settings-red-btn"
                   id="settings-reset-computer-btn"
+                  disabled={resettingComputer}
                   onClick={async () => {
-                    setNovncMode(true);
-                    await apiJson("/api/computer/reset", { method: "POST" }).catch(() => {});
-                    refreshUsageAndHealth();
-                    showToast("已重置桌面连接与任务队列");
+                    setResettingComputer(true);
+                    try {
+                      const { res, latest } = await resetBotComputerConnection();
+                      const isOnline = latest ? Boolean(latest.online) : res?.online !== false;
+                      if (isOnline) {
+                        showToast("✓ 已停止在途任务并重连 noVNC 桌面");
+                      } else {
+                        showToast(
+                          `已停止在途任务，当前执行器离线（${latest?.error || res?.status?.error || "执行器未响应"}）`
+                        );
+                      }
+                    } catch (err: any) {
+                      showToast(`重置失败：${err?.message || "无法重置桌面连接"}`);
+                    } finally {
+                      setResettingComputer(false);
+                    }
                   }}
                 >
-                  重置
+                  {resettingComputer ? "重置中…" : "重置"}
                 </button>
               </div>
               <div className="settings-divider" />
@@ -2227,13 +2714,26 @@ export function SettingsModal() {
                     checked={Boolean(settings?.autoExpandScreen)}
                     onChange={async (e) => {
                       const autoExpandScreen = e.target.checked;
+                      const prevVal = Boolean(settings?.autoExpandScreen);
                       setState((prev) => ({
                         settings: { ...prev.settings, autoExpandScreen },
                       }));
-                      await apiJson("/api/settings", {
-                        method: "POST",
-                        body: JSON.stringify({ autoExpandScreen }),
-                      }).catch(() => {});
+                      try {
+                        const saved = await apiJson("/api/settings", {
+                          method: "POST",
+                          body: JSON.stringify({ autoExpandScreen }),
+                        });
+                        if (saved && typeof saved.autoExpandScreen === "boolean") {
+                          setState((prev) => ({
+                            settings: { ...prev.settings, autoExpandScreen: saved.autoExpandScreen },
+                          }));
+                        }
+                      } catch (err: any) {
+                        setState((prev) => ({
+                          settings: { ...prev.settings, autoExpandScreen: prevVal },
+                        }));
+                        showToast(`保存失败：${err?.message || "无法更新设置"}`);
+                      }
                     }}
                   />
                   <span className="ios-switch-track" />
@@ -2360,7 +2860,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="permissions"
-            hidden={activeTab !== "permissions"}
+            hidden={!continuousDesktop && activeTab !== "permissions"}
           >
             <h2 className="settings-pane-title">权限</h2>
 
@@ -2409,99 +2909,86 @@ export function SettingsModal() {
                 </button>
               </div>
 
-              <SettingsEditorShell
-                open={askFormOpen}
-                title="添加「始终询问」规则"
-                onClose={() => setAskFormOpen(false)}
+              <div
+                id="ask-rule-form"
+                className="custom-skill-editor settings-inline-editor"
+                hidden={!askFormOpen}
               >
-                <div
-                  id="ask-rule-form"
-                  className="custom-skill-editor settings-inline-editor"
-                  hidden={!askFormOpen}
-                >
-                  <div className="custom-skill-editor-top">
-                    <strong>添加「始终询问」规则</strong>
-                  </div>
-                  <div className="custom-skill-fields">
-                    <div className="custom-skill-row-two">
-                      <label className="field-group custom-skill-name-field">
-                        <span>目标工具</span>
-                        <select
-                          id="ask-rule-tool"
-                          value={askTool}
-                          onChange={(e) => setAskTool(e.target.value)}
-                        >
-                          <option value="*">任意工具 (*)</option>
-                          <option value="host_run_shell">host_run_shell (宿主机终端)</option>
-                          <option value="host_open">host_open (宿主机打开应用)</option>
-                          <option value="host_write_file">host_write_file (宿主机写文件)</option>
-                          <option value="mcp__kimi_cu__click">mcp__kimi_cu__click (Mac 点击)</option>
-                          <option value="mcp__kimi_cu__type_text">
-                            mcp__kimi_cu__type_text (Mac 输入)
+                <div className="custom-skill-editor-top">
+                  <strong>添加「始终询问」规则</strong>
+                </div>
+                <div className="custom-skill-fields">
+                  <div className="custom-skill-row-two">
+                    <label className="field-group custom-skill-name-field">
+                      <span>目标工具</span>
+                      <select
+                        id="ask-rule-tool"
+                        value={askTool}
+                        onChange={(e) => setAskTool(e.target.value)}
+                      >
+                        {PERMISSION_RULE_TOOLS.map(([val, label]) => (
+                          <option key={val} value={val}>
+                            {label}
                           </option>
-                          <option value="mcp__kimi_cu__js">mcp__kimi_cu__js (Mac 页面脚本)</option>
-                          <option value="run_shell">run_shell (Bot 电脑终端)</option>
-                          <option value="write_file">write_file (Bot 电脑写文件)</option>
-                          <option value="open_url">open_url</option>
-                          <option value="click">click</option>
-                        </select>
-                      </label>
-                      <label className="field-group custom-skill-slug-field">
-                        <span>参数匹配关键词（留空匹配全部）</span>
-                        <input
-                          id="ask-rule-pattern"
-                          type="text"
-                          placeholder="如 rm、git push、pay"
-                          value={askPattern}
-                          onChange={(e) => setAskPattern(e.target.value)}
-                        />
-                      </label>
-                    </div>
-                  </div>
-                  <div className="inline-form-actions">
-                    <button
-                      type="button"
-                      className="skill-pill-btn"
-                      onClick={() => setAskFormOpen(false)}
-                    >
-                      取消
-                    </button>
-                    <button
-                      type="button"
-                      className="skill-pill-btn is-primary"
-                      id="save-ask-rule-btn"
-                      onClick={async () => {
-                        const pat = askPattern.trim();
-                        const nextPolicy = {
-                          ...policy,
-                          askRules: [
-                            ...askRules,
-                            {
-                              id: `ask-${Date.now()}`,
-                              tool: askTool,
-                              pattern: pat,
-                              label: `${askTool} ${pat}`.trim(),
-                            },
-                          ],
-                        };
-                        await apiJson("/api/settings", {
-                          method: "POST",
-                          body: JSON.stringify({ policy: nextPolicy }),
-                        });
-                        setAskPattern("");
-                        setAskFormOpen(false);
-                        refreshSettingsFromServer();
-                        showToast("询问规则已生效");
-                      }}
-                    >
-                      保存询问规则
-                    </button>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-group custom-skill-slug-field">
+                      <span>参数匹配关键词（留空匹配全部）</span>
+                      <input
+                        id="ask-rule-pattern"
+                        type="text"
+                        placeholder="如 rm、git push、pay"
+                        value={askPattern}
+                        onChange={(e) => setAskPattern(e.target.value)}
+                      />
+                    </label>
                   </div>
                 </div>
-              </SettingsEditorShell>
+                <div className="inline-form-actions">
+                  <button
+                    type="button"
+                    className="skill-pill-btn"
+                    onClick={() => setAskFormOpen(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="skill-pill-btn is-primary"
+                    id="save-ask-rule-btn"
+                    onClick={async () => {
+                      const pat = askPattern.trim();
+                      const nextPolicy = {
+                        ...policy,
+                        askRules: [
+                          ...askRules,
+                          {
+                            id: `ask-${Date.now()}`,
+                            tool: askTool,
+                            pattern: pat,
+                            label: `${askTool} ${pat}`.trim(),
+                          },
+                        ],
+                      };
+                      await apiJson("/api/settings", {
+                        method: "POST",
+                        body: JSON.stringify({ policy: nextPolicy }),
+                      });
+                      setAskPattern("");
+                      setAskFormOpen(false);
+                      refreshSettingsFromServer();
+                      showToast("询问规则已生效");
+                    }}
+                  >
+                    保存询问规则
+                  </button>
+                </div>
+              </div>
 
               <div id="ask-rules-list" className="perm-rules-list">
                 {askRules.map((rule: any) => {
+                  const isEditingRule = editingRuleKey === `ask:${rule.id}`;
                   const removeAskRule = async () => {
                     const nextPolicy = {
                       ...policy,
@@ -2512,53 +2999,70 @@ export function SettingsModal() {
                       body: JSON.stringify({ policy: nextPolicy }),
                     });
                     setPendingDeleteRuleId(null);
+                    if (isEditingRule) setEditingRuleKey(null);
                     refreshSettingsFromServer();
                   };
                   return (
-                    <div key={rule.id} className="perm-rule-chip">
-                      <span>
-                        <code>{rule.tool || "*"}</code> · {rule.pattern || "全部参数"}
-                      </span>
-                      {pendingDeleteRuleId === rule.id ? (
-                        <span className="perm-inline-confirm">
-                          <button
-                            type="button"
-                            className="skill-pill-btn"
-                            onClick={() => setPendingDeleteRuleId(null)}
-                          >
-                            取消
-                          </button>
-                          <button
-                            type="button"
-                            className="skill-pill-btn is-danger"
-                            onClick={removeAskRule}
-                          >
-                            确认移除
-                          </button>
+                    <div
+                      key={rule.id}
+                      className={`perm-rule-chip${isEditingRule ? " is-editing" : ""}`}
+                    >
+                      <div className="perm-rule-chip-row">
+                        <span>
+                          <code>{rule.tool || "*"}</code> · {rule.pattern || "全部参数"}
                         </span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="section-action-link danger-text"
-                          onClick={async () => {
-                            if (isMobileViewport()) {
-                              const ok = await showConfirmDialog({
-                                title: "移除权限规则",
-                                message: "确定要移除这条每次询问规则吗？",
-                                detail: `${rule.tool || "*"} · ${rule.pattern || "全部参数"}`,
-                                confirmText: "确认移除",
-                                cancelText: "取消",
-                                tone: "danger",
-                              });
-                              if (ok) await removeAskRule();
-                              return;
-                            }
-                            setPendingDeleteRuleId(rule.id);
-                          }}
-                        >
-                          移除
-                        </button>
-                      )}
+                        {pendingDeleteRuleId === rule.id ? (
+                          <span className="perm-inline-confirm">
+                            <button
+                              type="button"
+                              className="skill-pill-btn"
+                              onClick={() => setPendingDeleteRuleId(null)}
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              className="skill-pill-btn is-danger"
+                              onClick={removeAskRule}
+                            >
+                              确认移除
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="perm-rule-actions">
+                            <button
+                              type="button"
+                              className="section-action-link"
+                              aria-expanded={isEditingRule}
+                              onClick={() => openRuleEditor("ask", rule)}
+                            >
+                              {isEditingRule ? "收起" : "编辑"}
+                            </button>
+                            <button
+                              type="button"
+                              className="section-action-link danger-text"
+                              onClick={async () => {
+                                if (isMobileViewport()) {
+                                  const ok = await showConfirmDialog({
+                                    title: "移除权限规则",
+                                    message: "确定要移除这条每次询问规则吗？",
+                                    detail: `${rule.tool || "*"} · ${rule.pattern || "全部参数"}`,
+                                    confirmText: "确认移除",
+                                    cancelText: "取消",
+                                    tone: "danger",
+                                  });
+                                  if (ok) await removeAskRule();
+                                  return;
+                                }
+                                setPendingDeleteRuleId(rule.id);
+                              }}
+                            >
+                              移除
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                      {isEditingRule && renderRuleInlineEditor("ask", rule)}
                     </div>
                   );
                 })}
@@ -2583,97 +3087,86 @@ export function SettingsModal() {
                 </button>
               </div>
 
-              <SettingsEditorShell
-                open={allowFormOpen}
-                title="添加「始终允许」规则"
-                onClose={() => setAllowFormOpen(false)}
+              <div
+                id="allow-rule-form"
+                className="custom-skill-editor settings-inline-editor"
+                hidden={!allowFormOpen}
               >
-                <div
-                  id="allow-rule-form"
-                  className="custom-skill-editor settings-inline-editor"
-                  hidden={!allowFormOpen}
-                >
-                  <div className="custom-skill-editor-top">
-                    <strong>添加「始终允许」规则</strong>
-                  </div>
-                  <div className="custom-skill-fields">
-                    <div className="custom-skill-row-two">
-                      <label className="field-group custom-skill-name-field">
-                        <span>目标工具</span>
-                        <select
-                          id="allow-rule-tool"
-                          value={allowTool}
-                          onChange={(e) => setAllowTool(e.target.value)}
-                        >
-                          <option value="host_run_shell">host_run_shell (宿主机终端)</option>
-                          <option value="host_open">host_open (宿主机打开应用)</option>
-                          <option value="host_write_file">host_write_file (宿主机写文件)</option>
-                          <option value="mcp__kimi_cu__click">mcp__kimi_cu__click (Mac 点击)</option>
-                          <option value="mcp__kimi_cu__type_text">
-                            mcp__kimi_cu__type_text (Mac 输入)
+                <div className="custom-skill-editor-top">
+                  <strong>添加「始终允许」规则</strong>
+                </div>
+                <div className="custom-skill-fields">
+                  <div className="custom-skill-row-two">
+                    <label className="field-group custom-skill-name-field">
+                      <span>目标工具</span>
+                      <select
+                        id="allow-rule-tool"
+                        value={allowTool}
+                        onChange={(e) => setAllowTool(e.target.value)}
+                      >
+                        {PERMISSION_RULE_TOOLS.map(([val, label]) => (
+                          <option key={val} value={val}>
+                            {label}
                           </option>
-                          <option value="run_shell">run_shell (Bot 电脑终端)</option>
-                          <option value="write_file">write_file (Bot 电脑写文件)</option>
-                          <option value="open_url">open_url</option>
-                          <option value="*">任意工具 (*)</option>
-                        </select>
-                      </label>
-                      <label className="field-group custom-skill-slug-field">
-                        <span>参数匹配关键词（留空匹配全部）</span>
-                        <input
-                          id="allow-rule-pattern"
-                          type="text"
-                          placeholder="如 /tmp/、npm test"
-                          value={allowPattern}
-                          onChange={(e) => setAllowPattern(e.target.value)}
-                        />
-                      </label>
-                    </div>
-                  </div>
-                  <div className="inline-form-actions">
-                    <button
-                      type="button"
-                      className="skill-pill-btn"
-                      onClick={() => setAllowFormOpen(false)}
-                    >
-                      取消
-                    </button>
-                    <button
-                      type="button"
-                      className="skill-pill-btn is-primary"
-                      id="save-allow-rule-btn"
-                      onClick={async () => {
-                        const pat = allowPattern.trim();
-                        const nextPolicy = {
-                          ...policy,
-                          allowRules: [
-                            ...allowRules,
-                            {
-                              id: `allow-${Date.now()}`,
-                              tool: allowTool,
-                              pattern: pat,
-                              label: `${allowTool} ${pat}`.trim(),
-                            },
-                          ],
-                        };
-                        await apiJson("/api/settings", {
-                          method: "POST",
-                          body: JSON.stringify({ policy: nextPolicy }),
-                        });
-                        setAllowPattern("");
-                        setAllowFormOpen(false);
-                        refreshSettingsFromServer();
-                        showToast("允许规则已生效");
-                      }}
-                    >
-                      保存允许规则
-                    </button>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field-group custom-skill-slug-field">
+                      <span>参数匹配关键词（留空匹配全部）</span>
+                      <input
+                        id="allow-rule-pattern"
+                        type="text"
+                        placeholder="如 /tmp/、npm test"
+                        value={allowPattern}
+                        onChange={(e) => setAllowPattern(e.target.value)}
+                      />
+                    </label>
                   </div>
                 </div>
-              </SettingsEditorShell>
+                <div className="inline-form-actions">
+                  <button
+                    type="button"
+                    className="skill-pill-btn"
+                    onClick={() => setAllowFormOpen(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="skill-pill-btn is-primary"
+                    id="save-allow-rule-btn"
+                    onClick={async () => {
+                      const pat = allowPattern.trim();
+                      const nextPolicy = {
+                        ...policy,
+                        allowRules: [
+                          ...allowRules,
+                          {
+                            id: `allow-${Date.now()}`,
+                            tool: allowTool,
+                            pattern: pat,
+                            label: `${allowTool} ${pat}`.trim(),
+                          },
+                        ],
+                      };
+                      await apiJson("/api/settings", {
+                        method: "POST",
+                        body: JSON.stringify({ policy: nextPolicy }),
+                      });
+                      setAllowPattern("");
+                      setAllowFormOpen(false);
+                      refreshSettingsFromServer();
+                      showToast("允许规则已生效");
+                    }}
+                  >
+                    保存允许规则
+                  </button>
+                </div>
+              </div>
 
               <div id="allow-rules-list" className="perm-rules-list">
                 {allowRules.map((rule: any) => {
+                  const isEditingRule = editingRuleKey === `allow:${rule.id}`;
                   const removeAllowRule = async () => {
                     const nextPolicy = {
                       ...policy,
@@ -2684,53 +3177,70 @@ export function SettingsModal() {
                       body: JSON.stringify({ policy: nextPolicy }),
                     });
                     setPendingDeleteRuleId(null);
+                    if (isEditingRule) setEditingRuleKey(null);
                     refreshSettingsFromServer();
                   };
                   return (
-                    <div key={rule.id} className="perm-rule-chip">
-                      <span>
-                        <code>{rule.tool || "*"}</code> · {rule.pattern || "全部参数"}
-                      </span>
-                      {pendingDeleteRuleId === rule.id ? (
-                        <span className="perm-inline-confirm">
-                          <button
-                            type="button"
-                            className="skill-pill-btn"
-                            onClick={() => setPendingDeleteRuleId(null)}
-                          >
-                            取消
-                          </button>
-                          <button
-                            type="button"
-                            className="skill-pill-btn is-danger"
-                            onClick={removeAllowRule}
-                          >
-                            确认移除
-                          </button>
+                    <div
+                      key={rule.id}
+                      className={`perm-rule-chip${isEditingRule ? " is-editing" : ""}`}
+                    >
+                      <div className="perm-rule-chip-row">
+                        <span>
+                          <code>{rule.tool || "*"}</code> · {rule.pattern || "全部参数"}
                         </span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="section-action-link danger-text"
-                          onClick={async () => {
-                            if (isMobileViewport()) {
-                              const ok = await showConfirmDialog({
-                                title: "移除权限规则",
-                                message: "确定要移除这条始终允许规则吗？",
-                                detail: `${rule.tool || "*"} · ${rule.pattern || "全部参数"}`,
-                                confirmText: "确认移除",
-                                cancelText: "取消",
-                                tone: "danger",
-                              });
-                              if (ok) await removeAllowRule();
-                              return;
-                            }
-                            setPendingDeleteRuleId(rule.id);
-                          }}
-                        >
-                          移除
-                        </button>
-                      )}
+                        {pendingDeleteRuleId === rule.id ? (
+                          <span className="perm-inline-confirm">
+                            <button
+                              type="button"
+                              className="skill-pill-btn"
+                              onClick={() => setPendingDeleteRuleId(null)}
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              className="skill-pill-btn is-danger"
+                              onClick={removeAllowRule}
+                            >
+                              确认移除
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="perm-rule-actions">
+                            <button
+                              type="button"
+                              className="section-action-link"
+                              aria-expanded={isEditingRule}
+                              onClick={() => openRuleEditor("allow", rule)}
+                            >
+                              {isEditingRule ? "收起" : "编辑"}
+                            </button>
+                            <button
+                              type="button"
+                              className="section-action-link danger-text"
+                              onClick={async () => {
+                                if (isMobileViewport()) {
+                                  const ok = await showConfirmDialog({
+                                    title: "移除权限规则",
+                                    message: "确定要移除这条始终允许规则吗？",
+                                    detail: `${rule.tool || "*"} · ${rule.pattern || "全部参数"}`,
+                                    confirmText: "确认移除",
+                                    cancelText: "取消",
+                                    tone: "danger",
+                                  });
+                                  if (ok) await removeAllowRule();
+                                  return;
+                                }
+                                setPendingDeleteRuleId(rule.id);
+                              }}
+                            >
+                              移除
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                      {isEditingRule && renderRuleInlineEditor("allow", rule)}
                     </div>
                   );
                 })}
@@ -2742,7 +3252,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="vault"
-            hidden={activeTab !== "vault"}
+            hidden={!continuousDesktop && activeTab !== "vault"}
           >
             <div className="vault-header-row">
               <h2 className="settings-pane-title">保险库</h2>
@@ -2787,120 +3297,7 @@ export function SettingsModal() {
               />
             </div>
 
-            <SettingsEditorShell
-              open={vaultFormOpen}
-              title={
-                editingVaultId
-                  ? `编辑保险库条目「${vaultTitle || "条目"}」`
-                  : "新建保险库条目"
-              }
-              onClose={() => {
-                setVaultFormOpen(false);
-                setEditingVaultId(null);
-              }}
-            >
-              <div
-                id="vault-new-form"
-                className="custom-skill-editor settings-inline-editor"
-                hidden={!vaultFormOpen}
-              >
-                <div className="custom-skill-editor-top">
-                  <strong>
-                    {editingVaultId
-                      ? `编辑保险库条目「${vaultTitle || "条目"}」`
-                      : "新建保险库条目"}
-                  </strong>
-                </div>
-                <div className="custom-skill-fields">
-                  <div className="custom-skill-row-two">
-                    <label className="field-group custom-skill-slug-field">
-                      <span>条目分类</span>
-                      <select
-                        id="vault-cat-input"
-                        value={vaultCat}
-                        onChange={(e) => setVaultCat(e.target.value)}
-                      >
-                        <option value="contact">联系信息</option>
-                        <option value="login">账号备注</option>
-                      </select>
-                    </label>
-                    <label className="field-group custom-skill-name-field">
-                      <span>名称 *</span>
-                      <input
-                        ref={vaultTitleRef}
-                        id="vault-title-input"
-                        type="text"
-                        placeholder="如：测试站账号 / 常用收件人"
-                        value={vaultTitle}
-                        onChange={(e) => setVaultTitle(e.target.value)}
-                      />
-                    </label>
-                  </div>
-                  <label className="field-group">
-                    <span>邮箱 / 用户名 / 备注内容</span>
-                    <input
-                      id="vault-sub-input"
-                      type="text"
-                      placeholder="邮箱 / 用户名 / 备注内容（请勿存真实银行卡安全码）"
-                      value={vaultSub}
-                      onChange={(e) => setVaultSub(e.target.value)}
-                    />
-                  </label>
-                </div>
-                <div className="inline-form-actions">
-                  <button
-                    type="button"
-                    className="skill-pill-btn"
-                    id="cancel-vault-item-btn"
-                    onClick={() => {
-                      setVaultFormOpen(false);
-                      setEditingVaultId(null);
-                    }}
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    className="skill-pill-btn is-primary"
-                    id="save-vault-item-btn"
-                    onClick={async () => {
-                      const title = vaultTitle.trim();
-                      if (!title) {
-                        showToast("请输入条目名称");
-                        return;
-                      }
-                      if (editingVaultId) {
-                        await apiJson(`/api/vault/${encodeURIComponent(editingVaultId)}`, {
-                          method: "PATCH",
-                          body: JSON.stringify({
-                            category: vaultCat,
-                            title,
-                            subtitle: vaultSub.trim(),
-                          }),
-                        });
-                      } else {
-                        await apiJson("/api/vault", {
-                          method: "POST",
-                          body: JSON.stringify({
-                            category: vaultCat,
-                            title,
-                            subtitle: vaultSub.trim(),
-                          }),
-                        });
-                      }
-                      setVaultTitle("");
-                      setVaultSub("");
-                      setEditingVaultId(null);
-                      setVaultFormOpen(false);
-                      refreshVault();
-                      showToast(editingVaultId ? "保险库项目已更新" : "保险库项目已保存");
-                    }}
-                  >
-                    保存项目
-                  </button>
-                </div>
-              </div>
-            </SettingsEditorShell>
+            {(!vaultFormOpen || !editingVaultId) && renderVaultEditor(false, vaultFormOpen && !editingVaultId)}
 
             <div className="settings-card" id="vault-items-list">
               {filteredVault.length === 0 ? (
@@ -2909,6 +3306,7 @@ export function SettingsModal() {
                 </div>
               ) : (
                 filteredVault.map((it: any, idx: number) => {
+                  const isEditingThisVault = vaultFormOpen && editingVaultId === it.id;
                   const executeDeleteVault = async () => {
                     await apiJson(`/api/vault/${encodeURIComponent(it.id)}`, {
                       method: "DELETE",
@@ -2925,7 +3323,7 @@ export function SettingsModal() {
                   return (
                     <Fragment key={it.id || idx}>
                       {idx > 0 && <div className="settings-divider" />}
-                      <div className="vault-item-block">
+                      <div className={`vault-item-block${isEditingThisVault ? " is-editing" : ""}`}>
                         <div className="settings-item-row">
                           <div className="settings-account-left">
                             <span className="vault-row-icon" aria-hidden="true">
@@ -2942,10 +3340,11 @@ export function SettingsModal() {
                           <div className="private-skill-card-actions">
                             <button
                               type="button"
-                              className="skill-pill-btn"
+                              className={`skill-pill-btn${isEditingThisVault ? " is-active" : ""}`}
+                              aria-expanded={isEditingThisVault}
                               onClick={() => openVaultEditor(it)}
                             >
-                              查看 / 编辑
+                              {isEditingThisVault ? "收起" : "查看 / 编辑"}
                             </button>
                             <button
                               type="button"
@@ -2974,6 +3373,8 @@ export function SettingsModal() {
                             </button>
                           </div>
                         </div>
+
+                        {isEditingThisVault && renderVaultEditor(true, true)}
 
                         {pendingDeleteVaultId === it.id && (
                           <div className="skill-remove-confirm">
@@ -3013,7 +3414,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="usage"
-            hidden={activeTab !== "usage"}
+            hidden={!continuousDesktop && activeTab !== "usage"}
           >
             <div className="vault-header-row">
               <h2 className="settings-pane-title" id="usage-pane-title">
@@ -3539,7 +3940,7 @@ export function SettingsModal() {
           <div
             className="settings-pane"
             data-settings-pane="updates"
-            hidden={activeTab !== "updates"}
+            hidden={!continuousDesktop && activeTab !== "updates"}
           >
             <div className="vault-header-row">
               <h2 className="settings-pane-title">关于与诊断</h2>

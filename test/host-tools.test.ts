@@ -118,6 +118,7 @@ test("updateBotComputer syncs executor.py via orb, restarts systemd unit, and ve
   const res = await updateBotComputer({
     platform: "darwin",
     projectRoot: "/Users/YOUR_USERNAME/Workspace/twinklebot",
+    executorToken: "synced-mac-tok-123",
     execFileFn: async (cmd, args) => {
       execCalls.push({ cmd, args });
       return { stdout: "done", stderr: "" };
@@ -126,7 +127,9 @@ test("updateBotComputer syncs executor.py via orb, restarts systemd unit, and ve
       async health() {
         healthChecks += 1;
         if (healthChecks < 2) {
-          throw new Error("restarting");
+          const err: any = new Error("unauthorized");
+          err.status = 401;
+          throw err;
         }
         return { ok: true, screen: { width: 1440, height: 900 } };
       },
@@ -138,7 +141,11 @@ test("updateBotComputer syncs executor.py via orb, restarts systemd unit, and ve
   assert.equal(execCalls.length, 2);
   assert.equal(execCalls[0].cmd, "orb");
   assert.ok(execCalls[0].args.includes("/opt/twinklebot/executor.py"));
-  assert.ok(execCalls[1].args.includes("twinklebot-executor.service"));
+  const bashScript = String(execCalls[1].args[execCalls[1].args.length - 1] || "");
+  assert.ok(bashScript.includes("twinklebot-executor.service"));
+  assert.ok(bashScript.includes("geminibot-executor.service"));
+  assert.ok(bashScript.includes("/etc/twinklebot/executor.env"));
+  assert.ok(bashScript.includes(Buffer.from("synced-mac-tok-123", "utf-8").toString("base64")));
   assert.equal(healthChecks, 2);
 });
 

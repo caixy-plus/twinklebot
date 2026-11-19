@@ -15,6 +15,10 @@ import {
   expandUserPath,
   isSensitiveFilePath,
 } from "../../lib/file-attachments.js";
+import {
+  resolveBotWorkspaceRoot,
+  scanWorkspaceFiles,
+} from "../../lib/bot-workspace.js";
 import { searchWeb, fetchWebPage } from "../../lib/web-search.js";
 import {
   normalizeMailConfig,
@@ -601,11 +605,13 @@ export async function handleSystemBotTool(
 
     case "library_manage": {
       const action = String(args.action || "").trim();
-      const targetBotId = senderBot?.id || senderSessionId || "default";
+      const targetBotId = String(senderSessionId || senderBot?.id || "").trim() || "default";
       const targetBotName = senderBot?.title || "Bot";
-      const workspaceRoot =
-        (Array.isArray(config.writeRoots) && config.writeRoots[0]) ||
-        path.join(os.tmpdir(), "twinklebot-workspace");
+      const workspaceRoot = resolveBotWorkspaceRoot({
+        config,
+        sessionId: targetBotId === "default" ? "" : targetBotId,
+        fallbackDir: path.join(os.tmpdir(), "twinklebot-workspace"),
+      });
 
       if (action === "save_note") {
         const rawTitle = String(args.title || "").trim();
@@ -642,6 +648,7 @@ export async function handleSystemBotTool(
           url,
           attachmentLine: `[文件附件: ${fileName} · 路径: ${destPath}]`,
           botName: targetBotName,
+          workspaceRoot,
         };
       }
 
@@ -649,7 +656,6 @@ export async function handleSystemBotTool(
         const filter = ["all", "media", "file"].includes(args.filter)
           ? args.filter
           : "all";
-        const mediaExts = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"]);
         const screenshots = (store?.listScreenshots?.(targetBotId) || []).map((s: any) => ({
           name: `桌面截图 ${s.file}`,
           type: "media",
@@ -658,40 +664,7 @@ export async function handleSystemBotTool(
           url: s.url,
           source: "screen",
         }));
-
-        const workspaceFiles: any[] = [];
-        const walkDir = (dir: string, depth = 0) => {
-          if (depth > 2 || workspaceFiles.length >= 30 || !fs.existsSync(dir)) return;
-          let entries: fs.Dirent[] = [];
-          try {
-            entries = fs.readdirSync(dir, { withFileTypes: true });
-          } catch {
-            return;
-          }
-          for (const ent of entries) {
-            if (ent.name.startsWith(".")) continue;
-            const full = path.join(dir, ent.name);
-            if (ent.isDirectory()) {
-              walkDir(full, depth + 1);
-            } else if (ent.isFile()) {
-              try {
-                const st = fs.statSync(full);
-                const ext = path.extname(ent.name).toLowerCase();
-                workspaceFiles.push({
-                  name: ent.name,
-                  path: full,
-                  type: mediaExts.has(ext) ? "media" : "file",
-                  size: st.size,
-                  mtime: st.mtime.toISOString(),
-                  url: `/api/workspace/file?path=${encodeURIComponent(full)}`,
-                });
-              } catch {}
-            }
-            if (workspaceFiles.length >= 30) break;
-          }
-        };
-        walkDir(workspaceRoot, 0);
-        workspaceFiles.sort((a, b) => Date.parse(b.mtime) - Date.parse(a.mtime));
+        const workspaceFiles = scanWorkspaceFiles(workspaceRoot, 40);
 
         const combined = [...screenshots, ...workspaceFiles].filter((item) =>
           filter === "all" ? true : item.type === filter
@@ -700,6 +673,7 @@ export async function handleSystemBotTool(
           ok: true,
           action: "list",
           filter,
+          workspaceRoot,
           count: combined.length,
           items: combined,
         };

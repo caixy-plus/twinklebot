@@ -162,6 +162,7 @@ export function createExecutorClient({
       skipWake?: boolean;
     }) {
       return request("GET", "/health", undefined, {
+        timeoutMs: 3500,
         ...options,
         skipWake: options?.skipWake ?? true,
       });
@@ -183,26 +184,31 @@ export function createExecutorClient({
 
 /**
  * Wraps an ExecutorClient so every tool call carries the Bot's identity headers
- * (`X-Twinkle-Bot-Id`, `X-Twinkle-Bot-Admin`), routing execution to that Bot's dedicated display.
+ * (`X-Twinkle-Bot-Id`, `X-Twinkle-Bot-Admin`, and optional `X-Twinkle-Bot-Workspace`),
+ * routing execution to that Bot's dedicated display tab and workspace.
  */
 export function createBotScopedExecutorClient(
   baseClient: ExecutorClient | null | undefined,
   {
     botId,
     isAdmin = false,
+    botWorkspace = "",
     getMaxConcurrentScreens,
   }: {
     botId?: string | null;
     isAdmin?: boolean;
+    botWorkspace?: string;
     getMaxConcurrentScreens?: () => number;
   } = {}
 ): ExecutorClient | null | undefined {
   if (!baseClient) return baseClient;
   const normalizedId = String(botId || "").trim();
-  if (!normalizedId && !isAdmin && !getMaxConcurrentScreens) return baseClient;
+  const normalizedWorkspace = String(botWorkspace || "").trim();
+  if (!normalizedId && !isAdmin && !normalizedWorkspace && !getMaxConcurrentScreens) return baseClient;
   const scopeHeaders: Record<string, string> = {
     ...(normalizedId ? { "X-Twinkle-Bot-Id": normalizedId } : {}),
     "X-Twinkle-Bot-Admin": isAdmin ? "1" : "0",
+    ...(normalizedWorkspace ? { "X-Twinkle-Bot-Workspace": normalizedWorkspace } : {}),
   };
   return {
     health: (opts) => baseClient.health(opts),

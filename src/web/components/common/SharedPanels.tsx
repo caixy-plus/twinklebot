@@ -61,12 +61,41 @@ export function BotMemoriesList({
       ) : (
         memories.map((mem) => {
           const enabled = mem.enabled !== false;
+          const openEditMemory = () => {
+            if (!session?.id) return;
+            setState({
+              botMemoryModal: {
+                open: true,
+                sessionId: session.id,
+                memoryId: mem.id || mem.name,
+                name: mem.name || "",
+                content: mem.instruction || mem.content || mem.desc || "",
+              },
+            });
+            requestAnimationFrame(() => {
+              (
+                document.getElementById("bot-memory-modal-name-input") as HTMLInputElement | null
+              )?.focus();
+            });
+          };
           return (
             <div key={mem.id || mem.name} className="private-skill-row">
               <div className="skill-row-icon" aria-hidden="true">
                 <UiIcon name="brain" size={19} />
               </div>
-              <div className="skill-row-info">
+              <div
+                className="skill-row-info is-editable"
+                role="button"
+                tabIndex={0}
+                title="点击编辑专属记忆"
+                onClick={openEditMemory}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    openEditMemory();
+                  }
+                }}
+              >
                 <div className="skill-row-name">{mem.name || "专属记忆"}</div>
                 <div className="skill-row-desc">
                   {mem.instruction || mem.content || mem.desc || ""}
@@ -81,6 +110,15 @@ export function BotMemoriesList({
                 />
                 <span className="ios-switch-track" />
               </label>
+              <button
+                type="button"
+                className="section-action-link"
+                aria-label={`编辑专属记忆 ${mem.name || "专属记忆"}`}
+                title="编辑"
+                onClick={openEditMemory}
+              >
+                <UiIcon name="pencil" size={14} />
+              </button>
               <button
                 type="button"
                 className="section-action-link danger-text"
@@ -144,9 +182,27 @@ export function SchedulesList({ listId }: { listId: string }) {
       ) : (
         items.map((item: any) => {
           const enabled = item.enabled !== false;
+          const openEditSchedule = () => {
+            setState({ scheduleModalOpen: true, editingScheduleId: item.id });
+            requestAnimationFrame(() => {
+              (document.getElementById("sched-title-input") as HTMLInputElement | null)?.focus();
+            });
+          };
           return (
             <div key={item.id} className="upcoming-card">
-              <div className="upcoming-copy">
+              <div
+                className="upcoming-copy is-editable"
+                role="button"
+                tabIndex={0}
+                title="点击编辑例行任务"
+                onClick={openEditSchedule}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    openEditSchedule();
+                  }
+                }}
+              >
                 <div className="upcoming-title">{item.title}</div>
                 <div className="upcoming-sub">{item.scheduleLabel || "定时执行"}</div>
               </div>
@@ -158,6 +214,15 @@ export function SchedulesList({ listId }: { listId: string }) {
                 />
                 <span className="ios-switch-track" />
               </label>
+              <button
+                type="button"
+                className="section-action-link"
+                aria-label={`编辑例行任务 ${item.title || "例行任务"}`}
+                title="编辑"
+                onClick={openEditSchedule}
+              >
+                <UiIcon name="pencil" size={14} />
+              </button>
               <button
                 type="button"
                 className="section-action-link danger-text"

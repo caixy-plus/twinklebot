@@ -128,17 +128,31 @@ export function handleRealtimePayload(payload: any) {
   }
 
   if (payload.type === "computer_status_updated") {
-    setState((prev) => ({
-      computerStatus: {
-        ...prev.computerStatus,
-        state: payload.state || prev.computerStatus?.state || "uncreated",
-        ...(payload.online !== undefined ? { online: Boolean(payload.online) } : {}),
-        ...(payload.provider ? { provider: payload.provider } : {}),
-        ...(payload.detail !== undefined ? { detail: payload.detail } : {}),
-      },
-      ...(Array.isArray(payload.connectedHosts) ? { onlineCloudHosts: payload.connectedHosts } : {}),
-      ...(payload.selectedHostId !== undefined ? { selectedCloudHostId: payload.selectedHostId } : {}),
-    }));
+    setState((prev) => {
+      const nextOnline =
+        payload.online !== undefined
+          ? Boolean(payload.online)
+          : Boolean(prev.computerStatus?.online);
+      return {
+        computerStatus: {
+          ...prev.computerStatus,
+          state: payload.state || prev.computerStatus?.state || "uncreated",
+          online: nextOnline,
+          ...(payload.provider ? { provider: payload.provider } : {}),
+          ...(payload.latencyMs !== undefined ? { latencyMs: payload.latencyMs } : {}),
+          ...(payload.screen !== undefined ? { screen: payload.screen } : {}),
+          ...(payload.detail !== undefined ? { detail: payload.detail } : {}),
+          ...(payload.vmInstalled !== undefined ? { vmInstalled: payload.vmInstalled } : {}),
+          ...(payload.vmRunning !== undefined ? { vmRunning: payload.vmRunning } : {}),
+          error: nextOnline ? undefined : payload.error ?? prev.computerStatus?.error,
+          errorCode: nextOnline
+            ? undefined
+            : payload.errorCode ?? prev.computerStatus?.errorCode,
+        },
+        ...(Array.isArray(payload.connectedHosts) ? { onlineCloudHosts: payload.connectedHosts } : {}),
+        ...(payload.selectedHostId !== undefined ? { selectedCloudHostId: payload.selectedHostId } : {}),
+      };
+    });
     return;
   }
 
@@ -148,7 +162,10 @@ export function handleRealtimePayload(payload: any) {
   }
 
   if (payload.type === "library_updated") {
-    if (s.inspectorTab === "library" || s.mobileSheets.inspectorOpen) {
+    if (
+      (!payload.sessionId || payload.sessionId === s.activeSessionId) &&
+      (s.inspectorTab === "library" || s.mobileSheets.inspectorOpen)
+    ) {
       refreshLibrary();
     }
     return;

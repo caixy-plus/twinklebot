@@ -198,7 +198,12 @@ export function useGlobalShortcuts() {
         if (s.searchModalOpen) setState({ searchModalOpen: false });
         if (s.appsModalOpen) closeAppsModal();
         if (s.settingsModal.open) closeSettingsModal();
-        if (s.scheduleModalOpen) setState({ scheduleModalOpen: false });
+        if (s.scheduleModalOpen) setState({ scheduleModalOpen: false, editingScheduleId: null });
+        if (s.botMemoryModal.open) {
+          setState((prev) => ({
+            botMemoryModal: { ...prev.botMemoryModal, open: false },
+          }));
+        }
         if (s.cloudAccountModal.open) {
           setState((prev) => ({
             cloudAccountModal: { ...prev.cloudAccountModal, open: false },

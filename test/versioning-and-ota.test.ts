@@ -488,6 +488,41 @@ test("createWebOtaManager enforces GitHub URL allowlist in production, 5s watchd
     mgrWatchdog.dispose();
     mgr.dispose();
 
+    // Reinstalling same appVersion with a newer built-in webBuild also clears stale OTA cache
+    const newerBuiltInDir = makeTempDir("ota-builtin-newer-");
+    try {
+      fs.writeFileSync(path.join(newerBuiltInDir, "index.html"), "<html>builtin-newer</html>");
+      fs.writeFileSync(
+        path.join(newerBuiltInDir, "web-meta.json"),
+        JSON.stringify({ webBuild: "20261118.0900-9999999999" })
+      );
+      const reinstalledSameSemver = createWebOtaManager({
+        userDataDir,
+        appVersion: "1.2.0",
+        builtInPublicDir: newerBuiltInDir,
+      });
+      assert.equal(reinstalledSameSemver.getStatus().usingBuiltIn, true);
+      assert.equal(reinstalledSameSemver.getStatus().activeBuild, null);
+      reinstalledSameSemver.dispose();
+    } finally {
+      fs.rmSync(newerBuiltInDir, { recursive: true, force: true });
+    }
+
+    // Re-seed an active OTA build at 1.2.0 to also verify semver bump reset
+    const reseed = createWebOtaManager({
+      userDataDir,
+      appVersion: "1.2.0",
+      builtInPublicDir: builtInDir,
+      allowLoopbackForTest: true,
+    });
+    await reseed.applyFromUrl({
+      bundleUrl: loopbackUrl,
+      expectedSha256: pkg.sha256,
+      webBuild: "20261117.1700-1234567890",
+    });
+    reseed.confirmReady("20261117.1700-1234567890");
+    reseed.dispose();
+
     // Binary upgrade clears stale OTA cache
     const upgraded = createWebOtaManager({
       userDataDir,

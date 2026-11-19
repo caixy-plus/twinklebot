@@ -228,6 +228,14 @@ export function SkillsStoreModal() {
 
   const startEditingMailAccount = (acct: any) => {
     if (!acct?.id) return;
+    if (mailEditorOpen && editingMailAccountId === acct.id) {
+      setState({
+        editingMailAccountId: null,
+        mailEditorOpen: false,
+        mailFormFeedback: {},
+      });
+      return;
+    }
     const provider = acct.provider === "custom-mail" ? "custom-mail" : "qqmail";
     setState({
       editingMailAccountId: acct.id,
@@ -558,6 +566,16 @@ export function SkillsStoreModal() {
     : customSkills;
 
   const openCustomEditorFor = (skill: any | null) => {
+    const targetId = skill ? skill.id : null;
+    if (customSkillEditorOpen && editingCustomSkillId === targetId) {
+      setState({
+        customSkillEditorOpen: false,
+        editingCustomSkillId: null,
+        customSkillPreviewMode: false,
+        customSkillFeedback: "",
+      });
+      return;
+    }
     setCsIcon(skill?.icon || "⚡");
     setCsName(skill?.name || "");
     setCsSlug(skill?.id || "");
@@ -671,7 +689,8 @@ export function SkillsStoreModal() {
   const editingAccount = editingMailAccountId
     ? detailProviderAccounts.find((a: any) => a.id === editingMailAccountId) || null
     : null;
-  const showMailForm = !isMcpSkill && (mailEditorOpen || detailProviderAccounts.length === 0);
+  const showMailCreateForm =
+    !isMcpSkill && ((mailEditorOpen && !editingMailAccountId) || detailProviderAccounts.length === 0);
   const detailBackLabel = detailFrom === "manage" ? "管理已添加技能" : "技能商店";
 
   const srv = mcpStatusByServer?.[mcpServerId];
@@ -689,6 +708,941 @@ export function SkillsStoreModal() {
     ...catalog.platform.filter((x: any) => x.removable && x.installed),
   ];
   const builtinPlatform = catalog.platform.filter((x: any) => !x.removable);
+
+  const renderCustomSkillEditorForm = (inline: boolean, visible: boolean) => (
+    <form
+      id="custom-skill-editor-form"
+      className={`custom-skill-editor${inline ? " is-inline-row-editor" : ""}`}
+      hidden={!visible}
+      onSubmit={handleSaveCustomSkill}
+    >
+      <div className="custom-skill-editor-top">
+        <strong id="custom-skill-editor-title">
+          {editingCustomSkillId
+            ? `编辑自定义技能「${csName || editingCustomSkillId}」`
+            : "新建自定义技能"}
+        </strong>
+        <button
+          id="custom-skill-preview-toggle-btn"
+          type="button"
+          className="skill-pill-btn"
+          onClick={() =>
+            setState((prev) => ({
+              customSkillPreviewMode: !prev.customSkillPreviewMode,
+            }))
+          }
+        >
+          {customSkillPreviewMode ? "返回表单编辑" : "预览 SKILL.md"}
+        </button>
+      </div>
+
+      <div
+        id="custom-skill-fields-pane"
+        className="custom-skill-fields"
+        hidden={customSkillPreviewMode}
+      >
+        <div className="custom-skill-row-two">
+          <label className="field-group custom-skill-icon-field">
+            <span>图标</span>
+            <input
+              id="custom-skill-icon-input"
+              type="text"
+              maxLength={4}
+              value={csIcon}
+              onChange={(e) => setCsIcon(e.target.value)}
+            />
+          </label>
+          <label className="field-group custom-skill-name-field">
+            <span>技能名称 *</span>
+            <input
+              ref={csNameRef}
+              id="custom-skill-name-input"
+              type="text"
+              maxLength={64}
+              placeholder="例如：周报汇总发送"
+              required
+              value={csName}
+              onChange={(e) => setCsName(e.target.value)}
+            />
+          </label>
+          <label className="field-group custom-skill-slug-field">
+            <span>英文标识 (Slug，可选)</span>
+            <input
+              id="custom-skill-slug-input"
+              type="text"
+              maxLength={64}
+              placeholder="自动生成如 weekly-report"
+              value={csSlug}
+              onChange={(e) => setCsSlug(e.target.value)}
+            />
+          </label>
+        </div>
+        <label className="field-group">
+          <span>触发简介（注入轻量索引供所有 Bot 按需识别）*</span>
+          <input
+            id="custom-skill-desc-input"
+            type="text"
+            maxLength={240}
+            placeholder="例如：当需要汇总项目进展并群发团队邮件周报时使用"
+            required
+            value={csDesc}
+            onChange={(e) => setCsDesc(e.target.value)}
+          />
+        </label>
+        <label className="field-group">
+          <span>完整操作步骤（Markdown 正文，按需加载给 Bot）*</span>
+          <textarea
+            id="custom-skill-instructions-input"
+            rows={6}
+            placeholder={"## 执行步骤\n1. 收集本周关键产出与阻塞事项\n2. 按「摘要 → 明细 → 下周计划」排版\n3. ..."}
+            required
+            value={csInstructions}
+            onChange={(e) => setCsInstructions(e.target.value)}
+          />
+        </label>
+      </div>
+
+      <pre
+        id="custom-skill-md-preview"
+        className="custom-skill-md-preview"
+        hidden={!customSkillPreviewMode}
+      >
+        {customSkillPreviewMode ? buildCustomPreviewMd() : ""}
+      </pre>
+
+      <div
+        id="custom-skill-form-feedback"
+        className="mail-feedback-box is-error"
+        hidden={!customSkillFeedback}
+      >
+        {customSkillFeedback}
+      </div>
+
+      <div className="custom-skill-editor-actions">
+        <label className="custom-skill-enabled-check">
+          <input
+            id="custom-skill-enabled-input"
+            type="checkbox"
+            checked={csEnabled}
+            onChange={(e) => setCsEnabled(e.target.checked)}
+          />
+          <span>保存后全 Bot 启用共享</span>
+        </label>
+        <div className="custom-skill-editor-btns">
+          <button
+            id="custom-skill-cancel-btn"
+            type="button"
+            className="skill-pill-btn"
+            onClick={() =>
+              setState({
+                customSkillEditorOpen: false,
+                editingCustomSkillId: null,
+                customSkillPreviewMode: false,
+                customSkillFeedback: "",
+              })
+            }
+          >
+            取消
+          </button>
+          <button
+            id="custom-skill-save-btn"
+            type="submit"
+            className="skill-pill-btn is-primary"
+            disabled={csSaving}
+          >
+            保存技能
+          </button>
+        </div>
+      </div>
+    </form>
+  );
+
+  const renderMailFormEditorShell = (inline: boolean, visible: boolean) => (
+    <div
+      className={`mail-form-editor-shell${inline ? " is-inline-row-editor" : ""}`}
+      id="mail-form-editor-shell"
+      hidden={!visible}
+    >
+      <div className="mail-editor-mode-bar" hidden>
+        <span className="mail-editor-mode-label" id="mail-editor-mode-label">
+          新增邮箱账号
+        </span>
+      </div>
+
+      {/* Form 1: QQ Mail */}
+      <form
+        ref={qqFormRef}
+        id="qqmail-config-form"
+        className="mail-config-form"
+        action="/api/integrations/mail/accounts"
+        method="POST"
+        aria-labelledby="qqmail-form-heading"
+        noValidate
+        hidden={activeMailProvider !== "qqmail"}
+        onSubmit={(e) => handleMailSave("qqmail", e)}
+      >
+        <div className="mail-form-header">
+          <div>
+            <h3 id="qqmail-form-heading" className="mail-form-title">
+              {editingAccount && activeMailProvider === "qqmail"
+                ? `编辑 QQ 邮箱：${editingAccount.email}`
+                : "新增 QQ 邮箱账号"}
+            </h3>
+            <div className="mail-form-meta" id="qqmail-verified-meta">
+              {editingAccount && activeMailProvider === "qqmail"
+                ? editingAccount.inboxStats
+                  ? `当前已连接 · 收件箱共 ${editingAccount.inboxStats.messages ?? 0} 封${
+                      editingAccount.inboxStats.unseen !== undefined
+                        ? `，未读 ${editingAccount.inboxStats.unseen} 封`
+                        : ""
+                    }`
+                  : `正在编辑 ${editingAccount.email}`
+                : "默认使用 imap.qq.com:993 与 smtp.qq.com:465 SSL 加密连接"}
+            </div>
+          </div>
+          <button
+            id="qqmail-cancel-edit-btn"
+            type="button"
+            className="settings-pill-btn"
+            hidden={detailProviderAccounts.length === 0}
+            onClick={() => setState({ mailEditorOpen: false, editingMailAccountId: null })}
+          >
+            {inline ? "收起" : "返回账号列表"}
+          </button>
+        </div>
+
+        <div className="mail-form-grid-two">
+          <div className="mail-field">
+            <label htmlFor="qqmail-email-input">
+              QQ 邮箱地址 <span aria-hidden="true">*</span>
+            </label>
+            <span id="qqmail-email-hint" className="mail-field-hint">
+              支持 @qq.com、@foxmail.com 或绑定的域名别名
+            </span>
+            <input
+              id="qqmail-email-input"
+              name="email"
+              type="email"
+              className="mail-text-input"
+              autoComplete="email"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              enterKeyHint="next"
+              required
+              aria-invalid="false"
+              aria-describedby="qqmail-email-hint"
+              data-error="qqmail-email-error"
+              placeholder="例如：12345678@qq.com"
+              value={qqEmail}
+              onChange={(e) => setQqEmail(e.target.value)}
+            />
+            <div id="qqmail-email-error" className="mail-error-msg">
+              请输入有效的 QQ 邮箱地址（如 123456@qq.com）。
+            </div>
+          </div>
+
+          <div className="mail-field">
+            <label htmlFor="qqmail-label-input">账号备注（区分多个邮箱，可选）</label>
+            <span id="qqmail-label-hint" className="mail-field-hint">
+              例如「工作QQ」「个人主号」，方便直接对 Bot 指定账号
+            </span>
+            <input
+              id="qqmail-label-input"
+              name="label"
+              type="text"
+              className="mail-text-input"
+              maxLength={32}
+              enterKeyHint="next"
+              aria-invalid="false"
+              aria-describedby="qqmail-label-hint"
+              placeholder="例如：工作QQ / 个人邮箱"
+              value={qqLabel}
+              onChange={(e) => setQqLabel(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="mail-field">
+          <div className="mail-label-row">
+            <label htmlFor="qqmail-authcode-input">
+              16 位 IMAP/POP3/SMTP 授权码{" "}
+              <span
+                id="qqmail-secret-req"
+                aria-hidden="true"
+                hidden={Boolean(editingAccount)}
+              >
+                *
+              </span>
+            </label>
+            <button
+              type="button"
+              id="qqmail-toggle-secret-btn"
+              className="mail-secret-toggle"
+              aria-pressed={qqShowSecret ? "true" : "false"}
+              aria-label="显示 QQ 邮箱授权码"
+              onClick={() => setQqShowSecret((v) => !v)}
+            >
+              {qqShowSecret ? "隐藏授权码" : "显示授权码"}
+            </button>
+          </div>
+          <span id="qqmail-authcode-hint" className="mail-field-hint">
+            获取路径：网页版 QQ 邮箱 → 设置 → 账户 → 开启「IMAP/SMTP服务」或「POP3/SMTP服务」→ 生成 16 位授权码（非 QQ 密码）
+          </span>
+          <input
+            id="qqmail-authcode-input"
+            name="authCode"
+            type={qqShowSecret ? "text" : "password"}
+            className="mail-text-input"
+            autoComplete="current-password"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            minLength={editingAccount ? undefined : 8}
+            enterKeyHint="done"
+            required={!editingAccount}
+            aria-invalid="false"
+            aria-describedby="qqmail-authcode-hint"
+            data-error="qqmail-authcode-error"
+            placeholder={
+              editingAccount
+                ? `已保存授权码 (${editingAccount.maskedSecret || "••••"})，留空保持不变`
+                : "输入 16 位授权码（支持自动去除空格）"
+            }
+            value={qqAuthCode}
+            onChange={(e) => setQqAuthCode(e.target.value)}
+          />
+          <div id="qqmail-authcode-error" className="mail-error-msg">
+            请输入至少 8 位的 QQ 邮箱客户端授权码。
+          </div>
+        </div>
+
+        <div className="mail-field mail-checkbox-row">
+          <div className="mail-inline-check">
+            <input
+              type="checkbox"
+              id="qqmail-default-check"
+              name="isDefault"
+              checked={qqDefault}
+              onChange={(e) => setQqDefault(e.target.checked)}
+            />
+            <label htmlFor="qqmail-default-check">设为默认收发邮箱</label>
+          </div>
+        </div>
+
+        <details className="mail-advanced-details">
+          <summary>高级选项（发件人昵称 · IMAP / POP3 协议）</summary>
+          <div className="mail-advanced-body">
+            <div className="mail-field">
+              <label htmlFor="qqmail-sender-input">发件人显示名称（可选）</label>
+              <span id="qqmail-sender-hint" className="mail-field-hint">
+                发信时收件人看到的名称，留空默认使用邮箱地址
+              </span>
+              <input
+                id="qqmail-sender-input"
+                name="senderName"
+                type="text"
+                className="mail-text-input"
+                autoComplete="name"
+                enterKeyHint="next"
+                aria-invalid="false"
+                aria-describedby="qqmail-sender-hint"
+                placeholder="例如：张工 / 研发助理"
+                value={qqSender}
+                onChange={(e) => setQqSender(e.target.value)}
+              />
+            </div>
+            <fieldset className="mail-radio-fieldset">
+              <legend>QQ 邮箱收件协议</legend>
+              <div className="mail-radio-group">
+                <div className="mail-radio-option">
+                  <input
+                    type="radio"
+                    id="qqmail-proto-imap"
+                    name="inboundProtocol"
+                    value="imap"
+                    checked={qqProto === "imap"}
+                    onChange={() => setQqProto("imap")}
+                  />
+                  <label htmlFor="qqmail-proto-imap">
+                    IMAP（imap.qq.com:993 · 推荐，支持未读筛选）
+                  </label>
+                </div>
+                <div className="mail-radio-option">
+                  <input
+                    type="radio"
+                    id="qqmail-proto-pop3"
+                    name="inboundProtocol"
+                    value="pop3"
+                    checked={qqProto === "pop3"}
+                    onChange={() => setQqProto("pop3")}
+                  />
+                  <label htmlFor="qqmail-proto-pop3">POP3（pop.qq.com:995）</label>
+                </div>
+              </div>
+            </fieldset>
+          </div>
+        </details>
+
+        <div
+          id="qqmail-feedback-box"
+          className={`mail-feedback-box${
+            qqFb.kind === "success"
+              ? " is-success"
+              : qqFb.kind === "error"
+                ? " is-error"
+                : ""
+          }`}
+          role="status"
+          aria-live="polite"
+          hidden={!qqFb.text}
+        >
+          <StatusText text={qqFb.text} />
+        </div>
+
+        <div className="mail-form-actions">
+          <button
+            id="qqmail-save-btn"
+            type="submit"
+            className="settings-blue-pill"
+            disabled={mailBusyBtn === "qqmail-save"}
+          >
+            {mailBusyBtn === "qqmail-save"
+              ? "正在验证并保存…"
+              : editingAccount
+                ? "保存修改"
+                : "连接并保存"}
+          </button>
+          <button
+            id="qqmail-test-btn"
+            type="button"
+            className="settings-pill-btn"
+            disabled={mailBusyBtn === "qqmail-test"}
+            onClick={() => handleMailTest("qqmail", false)}
+          >
+            {mailBusyBtn === "qqmail-test" ? "测试中…" : "测试连通性"}
+          </button>
+          <button
+            id="qqmail-send-test-btn"
+            type="button"
+            className="settings-pill-btn"
+            hidden={!editingAccount}
+            disabled={mailBusyBtn === "qqmail-send"}
+            onClick={() => handleMailTest("qqmail", true)}
+          >
+            {mailBusyBtn === "qqmail-send" ? "发送中…" : "给自己发封测试信"}
+          </button>
+          <button
+            id="qqmail-disconnect-btn"
+            type="button"
+            className="settings-pill-btn danger-text"
+            hidden={!editingAccount}
+            disabled={mailBusyBtn === "qqmail-disconnect"}
+            onClick={() => handleMailDisconnect("qqmail")}
+          >
+            移除此账号
+          </button>
+        </div>
+      </form>
+
+      {/* Form 2: Generic Mail */}
+      <form
+        ref={cmFormRef}
+        id="custom-mail-config-form"
+        className="mail-config-form"
+        action="/api/integrations/mail/accounts"
+        method="POST"
+        aria-labelledby="custom-mail-form-heading"
+        noValidate
+        hidden={activeMailProvider !== "custom-mail"}
+        onSubmit={(e) => handleMailSave("custom-mail", e)}
+      >
+        <div className="mail-form-header">
+          <div>
+            <h3 id="custom-mail-form-heading" className="mail-form-title">
+              {editingAccount && activeMailProvider === "custom-mail"
+                ? `编辑通用邮箱：${editingAccount.email}`
+                : "新增通用邮箱账号（POP3 / IMAP + SMTP）"}
+            </h3>
+            <div className="mail-form-meta" id="custom-mail-verified-meta">
+              {editingAccount && activeMailProvider === "custom-mail"
+                ? `正在编辑 ${editingAccount.email}`
+                : cmPresetApplied
+                  ? "已根据邮箱域名自动填入推荐服务器，可随时手动修改"
+                  : "自定义收件服务器（POP3 或 IMAP）与发件服务器（SMTP）接入任意标准邮箱"}
+            </div>
+          </div>
+          <button
+            id="custom-mail-cancel-edit-btn"
+            type="button"
+            className="settings-pill-btn"
+            hidden={detailProviderAccounts.length === 0}
+            onClick={() => setState({ mailEditorOpen: false, editingMailAccountId: null })}
+          >
+            {inline ? "收起" : "返回账号列表"}
+          </button>
+        </div>
+
+        <div className="mail-form-grid-two">
+          <div className="mail-field">
+            <label htmlFor="custom-mail-email-input">
+              邮箱账号 <span aria-hidden="true">*</span>
+            </label>
+            <span id="custom-mail-email-hint" className="mail-field-hint">
+              完整的登录邮箱地址，如 name@company.com
+            </span>
+            <input
+              id="custom-mail-email-input"
+              name="email"
+              type="email"
+              className="mail-text-input"
+              autoComplete="email"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              enterKeyHint="next"
+              required
+              aria-invalid="false"
+              aria-describedby="custom-mail-email-hint"
+              data-error="custom-mail-email-error"
+              placeholder="user@example.com"
+              value={cmEmail}
+              onChange={(e) => {
+                const val = e.target.value;
+                setCmEmail(val);
+                applyCustomPresetForEmail(val, cmProto);
+              }}
+            />
+            <div id="custom-mail-email-error" className="mail-error-msg">
+              请输入格式正确的完整邮箱账号（如 user@example.com）。
+            </div>
+          </div>
+
+          <div className="mail-field">
+            <div className="mail-label-row">
+              <label htmlFor="custom-mail-password-input">
+                邮箱密码 / 授权码{" "}
+                <span
+                  id="custom-mail-secret-req"
+                  aria-hidden="true"
+                  hidden={Boolean(editingAccount)}
+                >
+                  *
+                </span>
+              </label>
+              <button
+                type="button"
+                id="custom-mail-toggle-secret-btn"
+                className="mail-secret-toggle"
+                aria-pressed={cmShowSecret ? "true" : "false"}
+                aria-label="显示通用邮箱密码"
+                onClick={() => setCmShowSecret((v) => !v)}
+              >
+                {cmShowSecret ? "隐藏密码" : "显示密码"}
+              </button>
+            </div>
+            <span id="custom-mail-password-hint" className="mail-field-hint">
+              163/阿里/腾讯企业邮开启客户端登录时请填专用密码
+            </span>
+            <input
+              id="custom-mail-password-input"
+              name="password"
+              type={cmShowSecret ? "text" : "password"}
+              className="mail-text-input"
+              autoComplete="current-password"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              enterKeyHint="next"
+              required={!editingAccount}
+              aria-invalid="false"
+              aria-describedby="custom-mail-password-hint"
+              data-error="custom-mail-password-error"
+              placeholder={
+                editingAccount
+                  ? `已保存密码 (${editingAccount.maskedSecret || "••••"})，留空保持不变`
+                  : "输入邮箱密码或客户端专用授权码"
+              }
+              value={cmPassword}
+              onChange={(e) => setCmPassword(e.target.value)}
+            />
+            <div id="custom-mail-password-error" className="mail-error-msg">
+              请输入邮箱登录密码或客户端授权码。
+            </div>
+          </div>
+        </div>
+
+        <div className="mail-form-grid-two">
+          <div className="mail-field">
+            <label htmlFor="custom-mail-label-input">账号备注（区分多个邮箱，可选）</label>
+            <span id="custom-mail-label-hint" className="mail-field-hint">
+              例如「企业邮箱」「运维告警号」，便于对 Bot 指定收发账号
+            </span>
+            <input
+              id="custom-mail-label-input"
+              name="label"
+              type="text"
+              className="mail-text-input"
+              maxLength={32}
+              enterKeyHint="next"
+              aria-invalid="false"
+              aria-describedby="custom-mail-label-hint"
+              placeholder="例如：公司企业邮 / 163 备用号"
+              value={cmLabel}
+              onChange={(e) => setCmLabel(e.target.value)}
+            />
+          </div>
+
+          <div className="mail-field mail-checkbox-col">
+            <div className="mail-inline-check">
+              <input
+                type="checkbox"
+                id="custom-mail-default-check"
+                name="isDefault"
+                checked={cmDefault}
+                onChange={(e) => setCmDefault(e.target.checked)}
+              />
+              <label htmlFor="custom-mail-default-check">设为默认收发邮箱</label>
+            </div>
+          </div>
+        </div>
+
+        <fieldset className="mail-radio-fieldset">
+          <legend>收件服务器协议（POP3 / IMAP）</legend>
+          <div className="mail-radio-group">
+            <div className="mail-radio-option">
+              <input
+                type="radio"
+                id="custom-proto-pop3"
+                name="inboundProtocol"
+                value="pop3"
+                checked={cmProto === "pop3"}
+                onChange={() => {
+                  setCmProto("pop3");
+                  if (["995", "993", "110", "143", ""].includes(cmInboundPort.trim())) {
+                    setCmInboundPort(cmInboundTls ? "995" : "110");
+                  }
+                  applyCustomPresetForEmail(cmEmail, "pop3");
+                }}
+              />
+              <label htmlFor="custom-proto-pop3">POP3（标准收件协议 · 默认端口 995）</label>
+            </div>
+            <div className="mail-radio-option">
+              <input
+                type="radio"
+                id="custom-proto-imap"
+                name="inboundProtocol"
+                value="imap"
+                checked={cmProto === "imap"}
+                onChange={() => {
+                  setCmProto("imap");
+                  if (["995", "993", "110", "143", ""].includes(cmInboundPort.trim())) {
+                    setCmInboundPort(cmInboundTls ? "993" : "143");
+                  }
+                  applyCustomPresetForEmail(cmEmail, "imap");
+                }}
+              />
+              <label htmlFor="custom-proto-imap">
+                IMAP（双向同步与未读状态 · 默认端口 993）
+              </label>
+            </div>
+          </div>
+        </fieldset>
+
+        <div className="mail-server-grid">
+          <div className="mail-field">
+            <label htmlFor="custom-mail-inbound-host">
+              收件服务器 (POP3 / IMAP) <span aria-hidden="true">*</span>
+            </label>
+            <span id="custom-inbound-host-hint" className="mail-field-hint">
+              如 pop.163.com 或 imap.exmail.qq.com
+            </span>
+            <input
+              id="custom-mail-inbound-host"
+              name="inboundHost"
+              type="text"
+              className="mail-text-input"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              enterKeyHint="next"
+              required
+              aria-invalid="false"
+              aria-describedby="custom-inbound-host-hint"
+              data-error="custom-inbound-host-error"
+              placeholder={cmProto === "imap" ? "imap.example.com" : "pop.example.com"}
+              value={cmInboundHost}
+              onChange={(e) => {
+                setCmUserEditedHost(true);
+                setCmInboundHost(e.target.value);
+              }}
+            />
+            <div id="custom-inbound-host-error" className="mail-error-msg">
+              请填写收件服务器主机地址（如 pop.example.com）。
+            </div>
+          </div>
+
+          <div className="mail-field">
+            <label htmlFor="custom-mail-inbound-port">
+              收件端口 <span aria-hidden="true">*</span>
+            </label>
+            <span id="custom-inbound-port-hint" className="mail-field-hint">
+              SSL 常用 995 / 993
+            </span>
+            <input
+              id="custom-mail-inbound-port"
+              name="inboundPort"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{2,5}"
+              className="mail-text-input"
+              value={cmInboundPort}
+              required
+              aria-invalid="false"
+              aria-describedby="custom-inbound-port-hint"
+              data-error="custom-inbound-port-error"
+              onChange={(e) => {
+                setCmUserEditedHost(true);
+                setCmInboundPort(e.target.value);
+              }}
+            />
+            <div id="custom-inbound-port-error" className="mail-error-msg">
+              请输入有效的端口号（如 995 或 993）。
+            </div>
+          </div>
+
+          <div className="mail-field mail-checkbox-col">
+            <div className="mail-inline-check">
+              <input
+                type="checkbox"
+                id="custom-mail-inbound-tls"
+                name="inboundTls"
+                checked={cmInboundTls}
+                onChange={(e) => {
+                  const useTls = e.target.checked;
+                  setCmInboundTls(useTls);
+                  if (["995", "993", "110", "143", ""].includes(cmInboundPort.trim())) {
+                    setCmInboundPort(
+                      cmProto === "imap"
+                        ? useTls
+                          ? "993"
+                          : "143"
+                        : useTls
+                          ? "995"
+                          : "110"
+                    );
+                  }
+                }}
+              />
+              <label htmlFor="custom-mail-inbound-tls">收件 SSL/TLS</label>
+            </div>
+          </div>
+        </div>
+
+        <fieldset className="mail-radio-fieldset">
+          <legend>发件服务器加密方式（SMTP）</legend>
+          <div className="mail-radio-group">
+            <div className="mail-radio-option">
+              <input
+                type="radio"
+                id="custom-smtp-ssl"
+                name="smtpSecurity"
+                value="ssl"
+                checked={cmSmtpSec === "ssl"}
+                onChange={() => {
+                  setCmSmtpSec("ssl");
+                  if (["465", "587", "25", ""].includes(cmSmtpPort.trim())) {
+                    setCmSmtpPort("465");
+                  }
+                }}
+              />
+              <label htmlFor="custom-smtp-ssl">SSL/TLS 加密（端口 465）</label>
+            </div>
+            <div className="mail-radio-option">
+              <input
+                type="radio"
+                id="custom-smtp-starttls"
+                name="smtpSecurity"
+                value="starttls"
+                checked={cmSmtpSec === "starttls"}
+                onChange={() => {
+                  setCmSmtpSec("starttls");
+                  if (["465", "587", "25", ""].includes(cmSmtpPort.trim())) {
+                    setCmSmtpPort("587");
+                  }
+                }}
+              />
+              <label htmlFor="custom-smtp-starttls">STARTTLS 升级（端口 587）</label>
+            </div>
+            <div className="mail-radio-option">
+              <input
+                type="radio"
+                id="custom-smtp-none"
+                name="smtpSecurity"
+                value="none"
+                checked={cmSmtpSec === "none"}
+                onChange={() => {
+                  setCmSmtpSec("none");
+                  if (["465", "587", "25", ""].includes(cmSmtpPort.trim())) {
+                    setCmSmtpPort("25");
+                  }
+                }}
+              />
+              <label htmlFor="custom-smtp-none">明文（端口 25）</label>
+            </div>
+          </div>
+        </fieldset>
+
+        <div className="mail-server-grid">
+          <div className="mail-field">
+            <label htmlFor="custom-mail-smtp-host">
+              发件服务器 (SMTP) <span aria-hidden="true">*</span>
+            </label>
+            <span id="custom-smtp-host-hint" className="mail-field-hint">
+              如 smtp.163.com 或 smtp.exmail.qq.com
+            </span>
+            <input
+              id="custom-mail-smtp-host"
+              name="smtpHost"
+              type="text"
+              className="mail-text-input"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              enterKeyHint="next"
+              required
+              aria-invalid="false"
+              aria-describedby="custom-smtp-host-hint"
+              data-error="custom-smtp-host-error"
+              placeholder="smtp.example.com"
+              value={cmSmtpHost}
+              onChange={(e) => {
+                setCmUserEditedHost(true);
+                setCmSmtpHost(e.target.value);
+              }}
+            />
+            <div id="custom-smtp-host-error" className="mail-error-msg">
+              请填写 SMTP 发件服务器主机地址（如 smtp.example.com）。
+            </div>
+          </div>
+
+          <div className="mail-field">
+            <label htmlFor="custom-mail-smtp-port">
+              SMTP 端口 <span aria-hidden="true">*</span>
+            </label>
+            <span id="custom-smtp-port-hint" className="mail-field-hint">
+              常用 465 或 587
+            </span>
+            <input
+              id="custom-mail-smtp-port"
+              name="smtpPort"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{2,5}"
+              className="mail-text-input"
+              value={cmSmtpPort}
+              required
+              aria-invalid="false"
+              aria-describedby="custom-smtp-port-hint"
+              data-error="custom-smtp-port-error"
+              onChange={(e) => {
+                setCmUserEditedHost(true);
+                setCmSmtpPort(e.target.value);
+              }}
+            />
+            <div id="custom-smtp-port-error" className="mail-error-msg">
+              请输入有效的 SMTP 端口号（如 465 或 587）。
+            </div>
+          </div>
+        </div>
+
+        <details className="mail-advanced-details">
+          <summary>高级选项（发件人昵称）</summary>
+          <div className="mail-advanced-body">
+            <div className="mail-field">
+              <label htmlFor="custom-mail-sender-input">发件人昵称（可选）</label>
+              <span id="custom-sender-hint" className="mail-field-hint">
+                对外显示的发件人名
+              </span>
+              <input
+                id="custom-mail-sender-input"
+                name="senderName"
+                type="text"
+                className="mail-text-input"
+                autoComplete="name"
+                enterKeyHint="done"
+                aria-invalid="false"
+                aria-describedby="custom-sender-hint"
+                placeholder="选填"
+                value={cmSender}
+                onChange={(e) => setCmSender(e.target.value)}
+              />
+            </div>
+          </div>
+        </details>
+
+        <div
+          id="custom-mail-feedback-box"
+          className={`mail-feedback-box${
+            cmFb.kind === "success"
+              ? " is-success"
+              : cmFb.kind === "error"
+                ? " is-error"
+                : ""
+          }`}
+          role="status"
+          aria-live="polite"
+          hidden={!cmFb.text}
+        >
+          <StatusText text={cmFb.text} />
+        </div>
+
+        <div className="mail-form-actions">
+          <button
+            id="custom-mail-save-btn"
+            type="submit"
+            className="settings-blue-pill"
+            disabled={mailBusyBtn === "custom-mail-save"}
+          >
+            {mailBusyBtn === "custom-mail-save"
+              ? "正在验证并保存…"
+              : editingAccount
+                ? "保存修改"
+                : "连接并保存"}
+          </button>
+          <button
+            id="custom-mail-test-btn"
+            type="button"
+            className="settings-pill-btn"
+            disabled={mailBusyBtn === "custom-mail-test"}
+            onClick={() => handleMailTest("custom-mail", false)}
+          >
+            {mailBusyBtn === "custom-mail-test" ? "测试中…" : "测试连通性"}
+          </button>
+          <button
+            id="custom-mail-send-test-btn"
+            type="button"
+            className="settings-pill-btn"
+            hidden={!editingAccount}
+            disabled={mailBusyBtn === "custom-mail-send"}
+            onClick={() => handleMailTest("custom-mail", true)}
+          >
+            {mailBusyBtn === "custom-mail-send" ? "发送中…" : "给自己发封测试信"}
+          </button>
+          <button
+            id="custom-mail-disconnect-btn"
+            type="button"
+            className="settings-pill-btn danger-text"
+            hidden={!editingAccount}
+            disabled={mailBusyBtn === "custom-mail-disconnect"}
+            onClick={() => handleMailDisconnect("custom-mail")}
+          >
+            移除此账号
+          </button>
+        </div>
+      </form>
+    </div>
+  );
 
   return (
     <div
@@ -728,6 +1682,16 @@ export function SkillsStoreModal() {
           hidden={skillsView !== "store"}
         >
           <div className="skills-header-row">
+            <button
+              id="mobile-apps-back-btn"
+              type="button"
+              className="mobile-circle-btn mobile-only"
+              title="返回"
+              aria-label="返回"
+              onClick={closeAppsModal}
+            >
+              <UiIcon name="chevron-left" />
+            </button>
             <h2 className="apps-modal-title" id="skills-store-title" tabIndex={-1}>
               技能商店
             </h2>
@@ -978,20 +1942,7 @@ export function SkillsStoreModal() {
             aria-label="返回技能商店"
             onClick={() => openAppsModal("store")}
           >
-            <svg
-              className="icon-svg inline-ui-icon"
-              viewBox="0 0 20 20"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M12.2 5.2L7.4 10L12.2 14.8"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <UiIcon name="chevron-left" className="inline-ui-icon" />
             <span>技能商店</span>
           </button>
 
@@ -1039,152 +1990,11 @@ export function SkillsStoreModal() {
                 </label>
               </div>
 
-              {/* Collapsible Inline Custom Skill Editor */}
-              <form
-                id="custom-skill-editor-form"
-                className="custom-skill-editor"
-                hidden={!customSkillEditorOpen}
-                onSubmit={handleSaveCustomSkill}
-              >
-                <div className="custom-skill-editor-top">
-                  <strong id="custom-skill-editor-title">
-                    {editingCustomSkillId
-                      ? `编辑自定义技能「${csName || editingCustomSkillId}」`
-                      : "新建自定义技能"}
-                  </strong>
-                  <button
-                    id="custom-skill-preview-toggle-btn"
-                    type="button"
-                    className="skill-pill-btn"
-                    onClick={() =>
-                      setState((prev) => ({
-                        customSkillPreviewMode: !prev.customSkillPreviewMode,
-                      }))
-                    }
-                  >
-                    {customSkillPreviewMode ? "返回表单编辑" : "预览 SKILL.md"}
-                  </button>
-                </div>
-
-                <div
-                  id="custom-skill-fields-pane"
-                  className="custom-skill-fields"
-                  hidden={customSkillPreviewMode}
-                >
-                  <div className="custom-skill-row-two">
-                    <label className="field-group custom-skill-icon-field">
-                      <span>图标</span>
-                      <input
-                        id="custom-skill-icon-input"
-                        type="text"
-                        maxLength={4}
-                        value={csIcon}
-                        onChange={(e) => setCsIcon(e.target.value)}
-                      />
-                    </label>
-                    <label className="field-group custom-skill-name-field">
-                      <span>技能名称 *</span>
-                      <input
-                        ref={csNameRef}
-                        id="custom-skill-name-input"
-                        type="text"
-                        maxLength={64}
-                        placeholder="例如：周报汇总发送"
-                        required
-                        value={csName}
-                        onChange={(e) => setCsName(e.target.value)}
-                      />
-                    </label>
-                    <label className="field-group custom-skill-slug-field">
-                      <span>英文标识 (Slug，可选)</span>
-                      <input
-                        id="custom-skill-slug-input"
-                        type="text"
-                        maxLength={64}
-                        placeholder="自动生成如 weekly-report"
-                        value={csSlug}
-                        onChange={(e) => setCsSlug(e.target.value)}
-                      />
-                    </label>
-                  </div>
-                  <label className="field-group">
-                    <span>触发简介（注入轻量索引供所有 Bot 按需识别）*</span>
-                    <input
-                      id="custom-skill-desc-input"
-                      type="text"
-                      maxLength={240}
-                      placeholder="例如：当需要汇总项目进展并群发团队邮件周报时使用"
-                      required
-                      value={csDesc}
-                      onChange={(e) => setCsDesc(e.target.value)}
-                    />
-                  </label>
-                  <label className="field-group">
-                    <span>完整操作步骤（Markdown 正文，按需加载给 Bot）*</span>
-                    <textarea
-                      id="custom-skill-instructions-input"
-                      rows={6}
-                      placeholder={"## 执行步骤\n1. 收集本周关键产出与阻塞事项\n2. 按「摘要 → 明细 → 下周计划」排版\n3. ..."}
-                      required
-                      value={csInstructions}
-                      onChange={(e) => setCsInstructions(e.target.value)}
-                    />
-                  </label>
-                </div>
-
-                <pre
-                  id="custom-skill-md-preview"
-                  className="custom-skill-md-preview"
-                  hidden={!customSkillPreviewMode}
-                >
-                  {customSkillPreviewMode ? buildCustomPreviewMd() : ""}
-                </pre>
-
-                <div
-                  id="custom-skill-form-feedback"
-                  className="mail-feedback-box is-error"
-                  hidden={!customSkillFeedback}
-                >
-                  {customSkillFeedback}
-                </div>
-
-                <div className="custom-skill-editor-actions">
-                  <label className="custom-skill-enabled-check">
-                    <input
-                      id="custom-skill-enabled-input"
-                      type="checkbox"
-                      checked={csEnabled}
-                      onChange={(e) => setCsEnabled(e.target.checked)}
-                    />
-                    <span>保存后全 Bot 启用共享</span>
-                  </label>
-                  <div className="custom-skill-editor-btns">
-                    <button
-                      id="custom-skill-cancel-btn"
-                      type="button"
-                      className="skill-pill-btn"
-                      onClick={() =>
-                        setState({
-                          customSkillEditorOpen: false,
-                          editingCustomSkillId: null,
-                          customSkillPreviewMode: false,
-                          customSkillFeedback: "",
-                        })
-                      }
-                    >
-                      取消
-                    </button>
-                    <button
-                      id="custom-skill-save-btn"
-                      type="submit"
-                      className="skill-pill-btn is-primary"
-                      disabled={csSaving}
-                    >
-                      保存技能
-                    </button>
-                  </div>
-                </div>
-              </form>
+              {(!customSkillEditorOpen || !editingCustomSkillId) &&
+                renderCustomSkillEditorForm(
+                  false,
+                  customSkillEditorOpen && !editingCustomSkillId
+                )}
 
               <div id="custom-skills-list" className="custom-skills-list">
                 {filteredCustomSkills.length === 0 ? (
@@ -1196,10 +2006,12 @@ export function SkillsStoreModal() {
                 ) : (
                   filteredCustomSkills.map((s: any) => {
                     const isBot = s.createdBy === "bot";
+                    const isEditingThisSkill =
+                      customSkillEditorOpen && editingCustomSkillId === s.id;
                     return (
                       <div
                         key={s.id}
-                        className={`custom-skill-card${s.enabled === false ? " is-disabled" : ""}`}
+                        className={`custom-skill-card${s.enabled === false ? " is-disabled" : ""}${isEditingThisSkill ? " is-editing" : ""}`}
                         data-custom-skill-id={s.id}
                       >
                         <div className="custom-skill-card-main">
@@ -1270,10 +2082,11 @@ export function SkillsStoreModal() {
                             </label>
                             <button
                               type="button"
-                              className="skill-pill-btn"
+                              className={`skill-pill-btn${isEditingThisSkill ? " is-active" : ""}`}
+                              aria-expanded={isEditingThisSkill}
                               onClick={() => openCustomEditorFor(s)}
                             >
-                              查看 / 编辑
+                              {isEditingThisSkill ? "收起" : "查看 / 编辑"}
                             </button>
                             <button
                               type="button"
@@ -1289,6 +2102,8 @@ export function SkillsStoreModal() {
                             </button>
                           </div>
                         </div>
+
+                        {isEditingThisSkill && renderCustomSkillEditorForm(true, true)}
 
                         {pendingDeleteCustomSkillId === s.id && (
                           <div className="skill-remove-confirm">
@@ -1439,20 +2254,7 @@ export function SkillsStoreModal() {
               openAppsModal(detailFrom === "manage" ? "manage" : "store");
             }}
           >
-            <svg
-              className="icon-svg inline-ui-icon"
-              viewBox="0 0 20 20"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M12.2 5.2L7.4 10L12.2 14.8"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <UiIcon name="chevron-left" className="inline-ui-icon" />
             <span id="skill-detail-back-label">{detailBackLabel}</span>
           </button>
 
@@ -1511,7 +2313,7 @@ export function SkillsStoreModal() {
               id="mail-accounts-section"
               className="mail-accounts-section"
               aria-label="已绑定的邮箱账号"
-              hidden={isMcpSkill || showMailForm}
+              hidden={isMcpSkill || showMailCreateForm}
             >
               <div
                 id="mail-list-feedback-box"
@@ -1536,6 +2338,8 @@ export function SkillsStoreModal() {
                 aria-label="已绑定的邮箱账号列表"
               >
                 {detailProviderAccounts.map((acct: any) => {
+                  const isEditingThisAcct =
+                    mailEditorOpen && editingMailAccountId === acct.id;
                   const stats = acct.inboxStats;
                   const statsPart = stats
                     ? ` · 收件箱 ${stats.messages ?? 0} 封${
@@ -1543,106 +2347,114 @@ export function SkillsStoreModal() {
                       }`
                     : "";
                   return (
-                    <div key={acct.id} className="mail-account-card" role="listitem">
-                      <div className="mail-account-main">
-                        <div className="mail-account-meta">
-                          <div className="mail-account-title-row">
-                            <span className="mail-account-name">
-                              {acct.label ? `${acct.label} · ${acct.email}` : acct.email}
-                            </span>
-                            {acct.isDefault && (
-                              <span className="mail-default-badge">默认</span>
-                            )}
-                          </div>
-                          <div className="mail-account-sub">
-                            {(acct.inboundProtocol || "imap").toUpperCase()} + SMTP ·{" "}
-                            {acct.inboundHost || ""}
-                            {statsPart}
+                    <div
+                      key={acct.id}
+                      className={`mail-account-card${isEditingThisAcct ? " is-editing" : ""}`}
+                      role="listitem"
+                    >
+                      <div className="mail-account-head">
+                        <div className="mail-account-main">
+                          <div className="mail-account-meta">
+                            <div className="mail-account-title-row">
+                              <span className="mail-account-name">
+                                {acct.label ? `${acct.label} · ${acct.email}` : acct.email}
+                              </span>
+                              {acct.isDefault && (
+                                <span className="mail-default-badge">默认</span>
+                              )}
+                            </div>
+                            <div className="mail-account-sub">
+                              {(acct.inboundProtocol || "imap").toUpperCase()} + SMTP ·{" "}
+                              {acct.inboundHost || ""}
+                              {statsPart}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                      <div className="mail-account-actions">
-                        {!acct.isDefault && (
+                        <div className="mail-account-actions">
+                          {!acct.isDefault && (
+                            <button
+                              type="button"
+                              className="mail-acct-btn"
+                              onClick={async () => {
+                                try {
+                                  const res = await apiJson(
+                                    `/api/integrations/mail/accounts/${encodeURIComponent(acct.id)}`,
+                                    {
+                                      method: "PATCH",
+                                      body: JSON.stringify({ isDefault: true }),
+                                    }
+                                  );
+                                  applyMailApiResponse(res);
+                                  await refreshSettingsFromServer();
+                                  setState({
+                                    mailListFeedback: {
+                                      text: `✓ 已将 ${acct.email} 设为默认收发邮箱。`,
+                                      kind: "success",
+                                    },
+                                  });
+                                } catch (err: any) {
+                                  setState({
+                                    mailListFeedback: {
+                                      text: `❌ 设置默认失败：${err.message || ""}`,
+                                      kind: "error",
+                                    },
+                                  });
+                                }
+                              }}
+                            >
+                              设为默认
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="mail-acct-btn"
+                            disabled={testingAccountId === acct.id}
                             onClick={async () => {
+                              setTestingAccountId(acct.id);
+                              setState({
+                                mailListFeedback: {
+                                  text: `正在测试 ${acct.email} 的收发连接…`,
+                                  kind: "info",
+                                },
+                              });
                               try {
                                 const res = await apiJson(
-                                  `/api/integrations/mail/accounts/${encodeURIComponent(acct.id)}`,
-                                  {
-                                    method: "PATCH",
-                                    body: JSON.stringify({ isDefault: true }),
-                                  }
+                                  `/api/integrations/mail/accounts/${encodeURIComponent(acct.id)}/test`,
+                                  { method: "POST", body: JSON.stringify({}) }
                                 );
-                                applyMailApiResponse(res);
-                                await refreshSettingsFromServer();
+                                const unseenInfo =
+                                  res.unseen !== undefined ? `，未读 ${res.unseen} 封` : "";
                                 setState({
                                   mailListFeedback: {
-                                    text: `✓ 已将 ${acct.email} 设为默认收发邮箱。`,
+                                    text: `✓ ${acct.email} 连通正常（${res.latencyMs || 0}ms）：收件箱共 ${res.messages ?? 0} 封${unseenInfo}。`,
                                     kind: "success",
                                   },
                                 });
                               } catch (err: any) {
                                 setState({
                                   mailListFeedback: {
-                                    text: `❌ 设置默认失败：${err.message || ""}`,
+                                    text: `❌ ${acct.email} 测试失败：${err.message || ""}`,
                                     kind: "error",
                                   },
                                 });
+                              } finally {
+                                setTestingAccountId(null);
                               }
                             }}
                           >
-                            设为默认
+                            {testingAccountId === acct.id ? "测试中…" : "测试"}
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          className="mail-acct-btn"
-                          disabled={testingAccountId === acct.id}
-                          onClick={async () => {
-                            setTestingAccountId(acct.id);
-                            setState({
-                              mailListFeedback: {
-                                text: `正在测试 ${acct.email} 的收发连接…`,
-                                kind: "info",
-                              },
-                            });
-                            try {
-                              const res = await apiJson(
-                                `/api/integrations/mail/accounts/${encodeURIComponent(acct.id)}/test`,
-                                { method: "POST", body: JSON.stringify({}) }
-                              );
-                              const unseenInfo =
-                                res.unseen !== undefined ? `，未读 ${res.unseen} 封` : "";
-                              setState({
-                                mailListFeedback: {
-                                  text: `✓ ${acct.email} 连通正常（${res.latencyMs || 0}ms）：收件箱共 ${res.messages ?? 0} 封${unseenInfo}。`,
-                                  kind: "success",
-                                },
-                              });
-                            } catch (err: any) {
-                              setState({
-                                mailListFeedback: {
-                                  text: `❌ ${acct.email} 测试失败：${err.message || ""}`,
-                                  kind: "error",
-                                },
-                              });
-                            } finally {
-                              setTestingAccountId(null);
-                            }
-                          }}
-                        >
-                          {testingAccountId === acct.id ? "测试中…" : "测试"}
-                        </button>
-                        <button
-                          type="button"
-                          className="mail-acct-btn"
-                          onClick={() => startEditingMailAccount(acct)}
-                        >
-                          编辑
-                        </button>
+                          <button
+                            type="button"
+                            className={`mail-acct-btn${isEditingThisAcct ? " is-active" : ""}`}
+                            aria-expanded={isEditingThisAcct}
+                            onClick={() => startEditingMailAccount(acct)}
+                          >
+                            {isEditingThisAcct ? "收起" : "编辑"}
+                          </button>
+                        </div>
                       </div>
+                      {isEditingThisAcct && renderMailFormEditorShell(true, true)}
                     </div>
                   );
                 })}
@@ -1663,800 +2475,8 @@ export function SkillsStoreModal() {
               </button>
             </section>
 
-            <div
-              className="mail-form-editor-shell"
-              id="mail-form-editor-shell"
-              hidden={isMcpSkill || !showMailForm}
-            >
-              <div className="mail-editor-mode-bar" hidden>
-                <span className="mail-editor-mode-label" id="mail-editor-mode-label">
-                  新增邮箱账号
-                </span>
-              </div>
-
-              {/* Form 1: QQ Mail */}
-              <form
-                ref={qqFormRef}
-                id="qqmail-config-form"
-                className="mail-config-form"
-                action="/api/integrations/mail/accounts"
-                method="POST"
-                aria-labelledby="qqmail-form-heading"
-                noValidate
-                hidden={activeMailProvider !== "qqmail"}
-                onSubmit={(e) => handleMailSave("qqmail", e)}
-              >
-                <div className="mail-form-header">
-                  <div>
-                    <h3 id="qqmail-form-heading" className="mail-form-title">
-                      {editingAccount && activeMailProvider === "qqmail"
-                        ? `编辑 QQ 邮箱：${editingAccount.email}`
-                        : "新增 QQ 邮箱账号"}
-                    </h3>
-                    <div className="mail-form-meta" id="qqmail-verified-meta">
-                      {editingAccount && activeMailProvider === "qqmail"
-                        ? editingAccount.inboxStats
-                          ? `当前已连接 · 收件箱共 ${editingAccount.inboxStats.messages ?? 0} 封${
-                              editingAccount.inboxStats.unseen !== undefined
-                                ? `，未读 ${editingAccount.inboxStats.unseen} 封`
-                                : ""
-                            }`
-                          : `正在编辑 ${editingAccount.email}`
-                        : "默认使用 imap.qq.com:993 与 smtp.qq.com:465 SSL 加密连接"}
-                    </div>
-                  </div>
-                  <button
-                    id="qqmail-cancel-edit-btn"
-                    type="button"
-                    className="settings-pill-btn"
-                    hidden={detailProviderAccounts.length === 0}
-                    onClick={() =>
-                      setState({ mailEditorOpen: false, editingMailAccountId: null })
-                    }
-                  >
-                    返回账号列表
-                  </button>
-                </div>
-
-                <div className="mail-form-grid-two">
-                  <div className="mail-field">
-                    <label htmlFor="qqmail-email-input">
-                      QQ 邮箱地址 <span aria-hidden="true">*</span>
-                    </label>
-                    <span id="qqmail-email-hint" className="mail-field-hint">
-                      支持 @qq.com、@foxmail.com 或绑定的域名别名
-                    </span>
-                    <input
-                      id="qqmail-email-input"
-                      name="email"
-                      type="email"
-                      className="mail-text-input"
-                      autoComplete="email"
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck={false}
-                      enterKeyHint="next"
-                      required
-                      aria-invalid="false"
-                      aria-describedby="qqmail-email-hint"
-                      data-error="qqmail-email-error"
-                      placeholder="例如：12345678@qq.com"
-                      value={qqEmail}
-                      onChange={(e) => setQqEmail(e.target.value)}
-                    />
-                    <div id="qqmail-email-error" className="mail-error-msg">
-                      请输入有效的 QQ 邮箱地址（如 123456@qq.com）。
-                    </div>
-                  </div>
-
-                  <div className="mail-field">
-                    <label htmlFor="qqmail-label-input">
-                      账号备注（区分多个邮箱，可选）
-                    </label>
-                    <span id="qqmail-label-hint" className="mail-field-hint">
-                      例如「工作QQ」「个人主号」，方便直接对 Bot 指定账号
-                    </span>
-                    <input
-                      id="qqmail-label-input"
-                      name="label"
-                      type="text"
-                      className="mail-text-input"
-                      maxLength={32}
-                      enterKeyHint="next"
-                      aria-invalid="false"
-                      aria-describedby="qqmail-label-hint"
-                      placeholder="例如：工作QQ / 个人邮箱"
-                      value={qqLabel}
-                      onChange={(e) => setQqLabel(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="mail-field">
-                  <div className="mail-label-row">
-                    <label htmlFor="qqmail-authcode-input">
-                      16 位 IMAP/POP3/SMTP 授权码{" "}
-                      <span
-                        id="qqmail-secret-req"
-                        aria-hidden="true"
-                        hidden={Boolean(editingAccount)}
-                      >
-                        *
-                      </span>
-                    </label>
-                    <button
-                      type="button"
-                      id="qqmail-toggle-secret-btn"
-                      className="mail-secret-toggle"
-                      aria-pressed={qqShowSecret ? "true" : "false"}
-                      aria-label="显示 QQ 邮箱授权码"
-                      onClick={() => setQqShowSecret((v) => !v)}
-                    >
-                      {qqShowSecret ? "隐藏授权码" : "显示授权码"}
-                    </button>
-                  </div>
-                  <span id="qqmail-authcode-hint" className="mail-field-hint">
-                    获取路径：网页版 QQ 邮箱 → 设置 → 账户 → 开启「IMAP/SMTP服务」或「POP3/SMTP服务」→ 生成 16 位授权码（非 QQ 密码）
-                  </span>
-                  <input
-                    id="qqmail-authcode-input"
-                    name="authCode"
-                    type={qqShowSecret ? "text" : "password"}
-                    className="mail-text-input"
-                    autoComplete="current-password"
-                    autoCorrect="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    minLength={editingAccount ? undefined : 8}
-                    enterKeyHint="done"
-                    required={!editingAccount}
-                    aria-invalid="false"
-                    aria-describedby="qqmail-authcode-hint"
-                    data-error="qqmail-authcode-error"
-                    placeholder={
-                      editingAccount
-                        ? `已保存授权码 (${editingAccount.maskedSecret || "••••"})，留空保持不变`
-                        : "输入 16 位授权码（支持自动去除空格）"
-                    }
-                    value={qqAuthCode}
-                    onChange={(e) => setQqAuthCode(e.target.value)}
-                  />
-                  <div id="qqmail-authcode-error" className="mail-error-msg">
-                    请输入至少 8 位的 QQ 邮箱客户端授权码。
-                  </div>
-                </div>
-
-                <div className="mail-field mail-checkbox-row">
-                  <div className="mail-inline-check">
-                    <input
-                      type="checkbox"
-                      id="qqmail-default-check"
-                      name="isDefault"
-                      checked={qqDefault}
-                      onChange={(e) => setQqDefault(e.target.checked)}
-                    />
-                    <label htmlFor="qqmail-default-check">设为默认收发邮箱</label>
-                  </div>
-                </div>
-
-                <details className="mail-advanced-details">
-                  <summary>高级选项（发件人昵称 · IMAP / POP3 协议）</summary>
-                  <div className="mail-advanced-body">
-                    <div className="mail-field">
-                      <label htmlFor="qqmail-sender-input">发件人显示名称（可选）</label>
-                      <span id="qqmail-sender-hint" className="mail-field-hint">
-                        发信时收件人看到的名称，留空默认使用邮箱地址
-                      </span>
-                      <input
-                        id="qqmail-sender-input"
-                        name="senderName"
-                        type="text"
-                        className="mail-text-input"
-                        autoComplete="name"
-                        enterKeyHint="next"
-                        aria-invalid="false"
-                        aria-describedby="qqmail-sender-hint"
-                        placeholder="例如：张工 / 研发助理"
-                        value={qqSender}
-                        onChange={(e) => setQqSender(e.target.value)}
-                      />
-                    </div>
-                    <fieldset className="mail-radio-fieldset">
-                      <legend>QQ 邮箱收件协议</legend>
-                      <div className="mail-radio-group">
-                        <div className="mail-radio-option">
-                          <input
-                            type="radio"
-                            id="qqmail-proto-imap"
-                            name="inboundProtocol"
-                            value="imap"
-                            checked={qqProto === "imap"}
-                            onChange={() => setQqProto("imap")}
-                          />
-                          <label htmlFor="qqmail-proto-imap">
-                            IMAP（imap.qq.com:993 · 推荐，支持未读筛选）
-                          </label>
-                        </div>
-                        <div className="mail-radio-option">
-                          <input
-                            type="radio"
-                            id="qqmail-proto-pop3"
-                            name="inboundProtocol"
-                            value="pop3"
-                            checked={qqProto === "pop3"}
-                            onChange={() => setQqProto("pop3")}
-                          />
-                          <label htmlFor="qqmail-proto-pop3">POP3（pop.qq.com:995）</label>
-                        </div>
-                      </div>
-                    </fieldset>
-                  </div>
-                </details>
-
-                <div
-                  id="qqmail-feedback-box"
-                  className={`mail-feedback-box${
-                    qqFb.kind === "success"
-                      ? " is-success"
-                      : qqFb.kind === "error"
-                        ? " is-error"
-                        : ""
-                  }`}
-                  role="status"
-                  aria-live="polite"
-                  hidden={!qqFb.text}
-                >
-                  <StatusText text={qqFb.text} />
-                </div>
-
-                <div className="mail-form-actions">
-                  <button
-                    id="qqmail-save-btn"
-                    type="submit"
-                    className="settings-blue-pill"
-                    disabled={mailBusyBtn === "qqmail-save"}
-                  >
-                    {mailBusyBtn === "qqmail-save"
-                      ? "正在验证并保存…"
-                      : editingAccount
-                        ? "保存修改"
-                        : "连接并保存"}
-                  </button>
-                  <button
-                    id="qqmail-test-btn"
-                    type="button"
-                    className="settings-pill-btn"
-                    disabled={mailBusyBtn === "qqmail-test"}
-                    onClick={() => handleMailTest("qqmail", false)}
-                  >
-                    {mailBusyBtn === "qqmail-test" ? "测试中…" : "测试连通性"}
-                  </button>
-                  <button
-                    id="qqmail-send-test-btn"
-                    type="button"
-                    className="settings-pill-btn"
-                    hidden={!editingAccount}
-                    disabled={mailBusyBtn === "qqmail-send"}
-                    onClick={() => handleMailTest("qqmail", true)}
-                  >
-                    {mailBusyBtn === "qqmail-send" ? "发送中…" : "给自己发封测试信"}
-                  </button>
-                  <button
-                    id="qqmail-disconnect-btn"
-                    type="button"
-                    className="settings-pill-btn danger-text"
-                    hidden={!editingAccount}
-                    disabled={mailBusyBtn === "qqmail-disconnect"}
-                    onClick={() => handleMailDisconnect("qqmail")}
-                  >
-                    移除此账号
-                  </button>
-                </div>
-              </form>
-
-              {/* Form 2: Generic Mail */}
-              <form
-                ref={cmFormRef}
-                id="custom-mail-config-form"
-                className="mail-config-form"
-                action="/api/integrations/mail/accounts"
-                method="POST"
-                aria-labelledby="custom-mail-form-heading"
-                noValidate
-                hidden={activeMailProvider !== "custom-mail"}
-                onSubmit={(e) => handleMailSave("custom-mail", e)}
-              >
-                <div className="mail-form-header">
-                  <div>
-                    <h3 id="custom-mail-form-heading" className="mail-form-title">
-                      {editingAccount && activeMailProvider === "custom-mail"
-                        ? `编辑通用邮箱：${editingAccount.email}`
-                        : "新增通用邮箱账号（POP3 / IMAP + SMTP）"}
-                    </h3>
-                    <div className="mail-form-meta" id="custom-mail-verified-meta">
-                      {editingAccount && activeMailProvider === "custom-mail"
-                        ? `正在编辑 ${editingAccount.email}`
-                        : cmPresetApplied
-                          ? "已根据邮箱域名自动填入推荐服务器，可随时手动修改"
-                          : "自定义收件服务器（POP3 或 IMAP）与发件服务器（SMTP）接入任意标准邮箱"}
-                    </div>
-                  </div>
-                  <button
-                    id="custom-mail-cancel-edit-btn"
-                    type="button"
-                    className="settings-pill-btn"
-                    hidden={detailProviderAccounts.length === 0}
-                    onClick={() =>
-                      setState({ mailEditorOpen: false, editingMailAccountId: null })
-                    }
-                  >
-                    返回账号列表
-                  </button>
-                </div>
-
-                <div className="mail-form-grid-two">
-                  <div className="mail-field">
-                    <label htmlFor="custom-mail-email-input">
-                      邮箱账号 <span aria-hidden="true">*</span>
-                    </label>
-                    <span id="custom-mail-email-hint" className="mail-field-hint">
-                      完整的登录邮箱地址，如 name@company.com
-                    </span>
-                    <input
-                      id="custom-mail-email-input"
-                      name="email"
-                      type="email"
-                      className="mail-text-input"
-                      autoComplete="email"
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck={false}
-                      enterKeyHint="next"
-                      required
-                      aria-invalid="false"
-                      aria-describedby="custom-mail-email-hint"
-                      data-error="custom-mail-email-error"
-                      placeholder="user@example.com"
-                      value={cmEmail}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setCmEmail(val);
-                        applyCustomPresetForEmail(val, cmProto);
-                      }}
-                    />
-                    <div id="custom-mail-email-error" className="mail-error-msg">
-                      请输入格式正确的完整邮箱账号（如 user@example.com）。
-                    </div>
-                  </div>
-
-                  <div className="mail-field">
-                    <div className="mail-label-row">
-                      <label htmlFor="custom-mail-password-input">
-                        邮箱密码 / 授权码{" "}
-                        <span
-                          id="custom-mail-secret-req"
-                          aria-hidden="true"
-                          hidden={Boolean(editingAccount)}
-                        >
-                          *
-                        </span>
-                      </label>
-                      <button
-                        type="button"
-                        id="custom-mail-toggle-secret-btn"
-                        className="mail-secret-toggle"
-                        aria-pressed={cmShowSecret ? "true" : "false"}
-                        aria-label="显示通用邮箱密码"
-                        onClick={() => setCmShowSecret((v) => !v)}
-                      >
-                        {cmShowSecret ? "隐藏密码" : "显示密码"}
-                      </button>
-                    </div>
-                    <span id="custom-mail-password-hint" className="mail-field-hint">
-                      163/阿里/腾讯企业邮开启客户端登录时请填专用密码
-                    </span>
-                    <input
-                      id="custom-mail-password-input"
-                      name="password"
-                      type={cmShowSecret ? "text" : "password"}
-                      className="mail-text-input"
-                      autoComplete="current-password"
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck={false}
-                      enterKeyHint="next"
-                      required={!editingAccount}
-                      aria-invalid="false"
-                      aria-describedby="custom-mail-password-hint"
-                      data-error="custom-mail-password-error"
-                      placeholder={
-                        editingAccount
-                          ? `已保存密码 (${editingAccount.maskedSecret || "••••"})，留空保持不变`
-                          : "输入邮箱密码或客户端专用授权码"
-                      }
-                      value={cmPassword}
-                      onChange={(e) => setCmPassword(e.target.value)}
-                    />
-                    <div id="custom-mail-password-error" className="mail-error-msg">
-                      请输入邮箱登录密码或客户端授权码。
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mail-form-grid-two">
-                  <div className="mail-field">
-                    <label htmlFor="custom-mail-label-input">
-                      账号备注（区分多个邮箱，可选）
-                    </label>
-                    <span id="custom-mail-label-hint" className="mail-field-hint">
-                      例如「企业邮箱」「运维告警号」，便于对 Bot 指定收发账号
-                    </span>
-                    <input
-                      id="custom-mail-label-input"
-                      name="label"
-                      type="text"
-                      className="mail-text-input"
-                      maxLength={32}
-                      enterKeyHint="next"
-                      aria-invalid="false"
-                      aria-describedby="custom-mail-label-hint"
-                      placeholder="例如：公司企业邮 / 163 备用号"
-                      value={cmLabel}
-                      onChange={(e) => setCmLabel(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="mail-field mail-checkbox-col">
-                    <div className="mail-inline-check">
-                      <input
-                        type="checkbox"
-                        id="custom-mail-default-check"
-                        name="isDefault"
-                        checked={cmDefault}
-                        onChange={(e) => setCmDefault(e.target.checked)}
-                      />
-                      <label htmlFor="custom-mail-default-check">设为默认收发邮箱</label>
-                    </div>
-                  </div>
-                </div>
-
-                <fieldset className="mail-radio-fieldset">
-                  <legend>收件服务器协议（POP3 / IMAP）</legend>
-                  <div className="mail-radio-group">
-                    <div className="mail-radio-option">
-                      <input
-                        type="radio"
-                        id="custom-proto-pop3"
-                        name="inboundProtocol"
-                        value="pop3"
-                        checked={cmProto === "pop3"}
-                        onChange={() => {
-                          setCmProto("pop3");
-                          if (["995", "993", "110", "143", ""].includes(cmInboundPort.trim())) {
-                            setCmInboundPort(cmInboundTls ? "995" : "110");
-                          }
-                          applyCustomPresetForEmail(cmEmail, "pop3");
-                        }}
-                      />
-                      <label htmlFor="custom-proto-pop3">
-                        POP3（标准收件协议 · 默认端口 995）
-                      </label>
-                    </div>
-                    <div className="mail-radio-option">
-                      <input
-                        type="radio"
-                        id="custom-proto-imap"
-                        name="inboundProtocol"
-                        value="imap"
-                        checked={cmProto === "imap"}
-                        onChange={() => {
-                          setCmProto("imap");
-                          if (["995", "993", "110", "143", ""].includes(cmInboundPort.trim())) {
-                            setCmInboundPort(cmInboundTls ? "993" : "143");
-                          }
-                          applyCustomPresetForEmail(cmEmail, "imap");
-                        }}
-                      />
-                      <label htmlFor="custom-proto-imap">
-                        IMAP（双向同步与未读状态 · 默认端口 993）
-                      </label>
-                    </div>
-                  </div>
-                </fieldset>
-
-                <div className="mail-server-grid">
-                  <div className="mail-field">
-                    <label htmlFor="custom-mail-inbound-host">
-                      收件服务器 (POP3 / IMAP) <span aria-hidden="true">*</span>
-                    </label>
-                    <span id="custom-inbound-host-hint" className="mail-field-hint">
-                      如 pop.163.com 或 imap.exmail.qq.com
-                    </span>
-                    <input
-                      id="custom-mail-inbound-host"
-                      name="inboundHost"
-                      type="text"
-                      className="mail-text-input"
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck={false}
-                      enterKeyHint="next"
-                      required
-                      aria-invalid="false"
-                      aria-describedby="custom-inbound-host-hint"
-                      data-error="custom-inbound-host-error"
-                      placeholder={cmProto === "imap" ? "imap.example.com" : "pop.example.com"}
-                      value={cmInboundHost}
-                      onChange={(e) => {
-                        setCmUserEditedHost(true);
-                        setCmInboundHost(e.target.value);
-                      }}
-                    />
-                    <div id="custom-inbound-host-error" className="mail-error-msg">
-                      请填写收件服务器主机地址（如 pop.example.com）。
-                    </div>
-                  </div>
-
-                  <div className="mail-field">
-                    <label htmlFor="custom-mail-inbound-port">
-                      收件端口 <span aria-hidden="true">*</span>
-                    </label>
-                    <span id="custom-inbound-port-hint" className="mail-field-hint">
-                      SSL 常用 995 / 993
-                    </span>
-                    <input
-                      id="custom-mail-inbound-port"
-                      name="inboundPort"
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]{2,5}"
-                      className="mail-text-input"
-                      value={cmInboundPort}
-                      required
-                      aria-invalid="false"
-                      aria-describedby="custom-inbound-port-hint"
-                      data-error="custom-inbound-port-error"
-                      onChange={(e) => {
-                        setCmUserEditedHost(true);
-                        setCmInboundPort(e.target.value);
-                      }}
-                    />
-                    <div id="custom-inbound-port-error" className="mail-error-msg">
-                      请输入有效的端口号（如 995 或 993）。
-                    </div>
-                  </div>
-
-                  <div className="mail-field mail-checkbox-col">
-                    <div className="mail-inline-check">
-                      <input
-                        type="checkbox"
-                        id="custom-mail-inbound-tls"
-                        name="inboundTls"
-                        checked={cmInboundTls}
-                        onChange={(e) => {
-                          const useTls = e.target.checked;
-                          setCmInboundTls(useTls);
-                          if (["995", "993", "110", "143", ""].includes(cmInboundPort.trim())) {
-                            setCmInboundPort(
-                              cmProto === "imap"
-                                ? useTls
-                                  ? "993"
-                                  : "143"
-                                : useTls
-                                  ? "995"
-                                  : "110"
-                            );
-                          }
-                        }}
-                      />
-                      <label htmlFor="custom-mail-inbound-tls">收件 SSL/TLS</label>
-                    </div>
-                  </div>
-                </div>
-
-                <fieldset className="mail-radio-fieldset">
-                  <legend>发件服务器加密方式（SMTP）</legend>
-                  <div className="mail-radio-group">
-                    <div className="mail-radio-option">
-                      <input
-                        type="radio"
-                        id="custom-smtp-ssl"
-                        name="smtpSecurity"
-                        value="ssl"
-                        checked={cmSmtpSec === "ssl"}
-                        onChange={() => {
-                          setCmSmtpSec("ssl");
-                          if (["465", "587", "25", ""].includes(cmSmtpPort.trim())) {
-                            setCmSmtpPort("465");
-                          }
-                        }}
-                      />
-                      <label htmlFor="custom-smtp-ssl">SSL/TLS 加密（端口 465）</label>
-                    </div>
-                    <div className="mail-radio-option">
-                      <input
-                        type="radio"
-                        id="custom-smtp-starttls"
-                        name="smtpSecurity"
-                        value="starttls"
-                        checked={cmSmtpSec === "starttls"}
-                        onChange={() => {
-                          setCmSmtpSec("starttls");
-                          if (["465", "587", "25", ""].includes(cmSmtpPort.trim())) {
-                            setCmSmtpPort("587");
-                          }
-                        }}
-                      />
-                      <label htmlFor="custom-smtp-starttls">STARTTLS 升级（端口 587）</label>
-                    </div>
-                    <div className="mail-radio-option">
-                      <input
-                        type="radio"
-                        id="custom-smtp-none"
-                        name="smtpSecurity"
-                        value="none"
-                        checked={cmSmtpSec === "none"}
-                        onChange={() => {
-                          setCmSmtpSec("none");
-                          if (["465", "587", "25", ""].includes(cmSmtpPort.trim())) {
-                            setCmSmtpPort("25");
-                          }
-                        }}
-                      />
-                      <label htmlFor="custom-smtp-none">明文（端口 25）</label>
-                    </div>
-                  </div>
-                </fieldset>
-
-                <div className="mail-server-grid">
-                  <div className="mail-field">
-                    <label htmlFor="custom-mail-smtp-host">
-                      发件服务器 (SMTP) <span aria-hidden="true">*</span>
-                    </label>
-                    <span id="custom-smtp-host-hint" className="mail-field-hint">
-                      如 smtp.163.com 或 smtp.exmail.qq.com
-                    </span>
-                    <input
-                      id="custom-mail-smtp-host"
-                      name="smtpHost"
-                      type="text"
-                      className="mail-text-input"
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck={false}
-                      enterKeyHint="next"
-                      required
-                      aria-invalid="false"
-                      aria-describedby="custom-smtp-host-hint"
-                      data-error="custom-smtp-host-error"
-                      placeholder="smtp.example.com"
-                      value={cmSmtpHost}
-                      onChange={(e) => {
-                        setCmUserEditedHost(true);
-                        setCmSmtpHost(e.target.value);
-                      }}
-                    />
-                    <div id="custom-smtp-host-error" className="mail-error-msg">
-                      请填写 SMTP 发件服务器主机地址（如 smtp.example.com）。
-                    </div>
-                  </div>
-
-                  <div className="mail-field">
-                    <label htmlFor="custom-mail-smtp-port">
-                      SMTP 端口 <span aria-hidden="true">*</span>
-                    </label>
-                    <span id="custom-smtp-port-hint" className="mail-field-hint">
-                      常用 465 或 587
-                    </span>
-                    <input
-                      id="custom-mail-smtp-port"
-                      name="smtpPort"
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]{2,5}"
-                      className="mail-text-input"
-                      value={cmSmtpPort}
-                      required
-                      aria-invalid="false"
-                      aria-describedby="custom-smtp-port-hint"
-                      data-error="custom-smtp-port-error"
-                      onChange={(e) => {
-                        setCmUserEditedHost(true);
-                        setCmSmtpPort(e.target.value);
-                      }}
-                    />
-                    <div id="custom-smtp-port-error" className="mail-error-msg">
-                      请输入有效的 SMTP 端口号（如 465 或 587）。
-                    </div>
-                  </div>
-                </div>
-
-                <details className="mail-advanced-details">
-                  <summary>高级选项（发件人昵称）</summary>
-                  <div className="mail-advanced-body">
-                    <div className="mail-field">
-                      <label htmlFor="custom-mail-sender-input">发件人昵称（可选）</label>
-                      <span id="custom-sender-hint" className="mail-field-hint">
-                        对外显示的发件人名
-                      </span>
-                      <input
-                        id="custom-mail-sender-input"
-                        name="senderName"
-                        type="text"
-                        className="mail-text-input"
-                        autoComplete="name"
-                        enterKeyHint="done"
-                        aria-invalid="false"
-                        aria-describedby="custom-sender-hint"
-                        placeholder="选填"
-                        value={cmSender}
-                        onChange={(e) => setCmSender(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                </details>
-
-                <div
-                  id="custom-mail-feedback-box"
-                  className={`mail-feedback-box${
-                    cmFb.kind === "success"
-                      ? " is-success"
-                      : cmFb.kind === "error"
-                        ? " is-error"
-                        : ""
-                  }`}
-                  role="status"
-                  aria-live="polite"
-                  hidden={!cmFb.text}
-                >
-                  <StatusText text={cmFb.text} />
-                </div>
-
-                <div className="mail-form-actions">
-                  <button
-                    id="custom-mail-save-btn"
-                    type="submit"
-                    className="settings-blue-pill"
-                    disabled={mailBusyBtn === "custom-mail-save"}
-                  >
-                    {mailBusyBtn === "custom-mail-save"
-                      ? "正在验证并保存…"
-                      : editingAccount
-                        ? "保存修改"
-                        : "连接并保存"}
-                  </button>
-                  <button
-                    id="custom-mail-test-btn"
-                    type="button"
-                    className="settings-pill-btn"
-                    disabled={mailBusyBtn === "custom-mail-test"}
-                    onClick={() => handleMailTest("custom-mail", false)}
-                  >
-                    {mailBusyBtn === "custom-mail-test" ? "测试中…" : "测试连通性"}
-                  </button>
-                  <button
-                    id="custom-mail-send-test-btn"
-                    type="button"
-                    className="settings-pill-btn"
-                    hidden={!editingAccount}
-                    disabled={mailBusyBtn === "custom-mail-send"}
-                    onClick={() => handleMailTest("custom-mail", true)}
-                  >
-                    {mailBusyBtn === "custom-mail-send" ? "发送中…" : "给自己发封测试信"}
-                  </button>
-                  <button
-                    id="custom-mail-disconnect-btn"
-                    type="button"
-                    className="settings-pill-btn danger-text"
-                    hidden={!editingAccount}
-                    disabled={mailBusyBtn === "custom-mail-disconnect"}
-                    onClick={() => handleMailDisconnect("custom-mail")}
-                  >
-                    移除此账号
-                  </button>
-                </div>
-              </form>
-            </div>
+            {(!mailEditorOpen || !editingMailAccountId) &&
+              renderMailFormEditorShell(false, showMailCreateForm)}
 
             {/* MCP Skill Config Panel */}
             <section

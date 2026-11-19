@@ -18,6 +18,8 @@ try:
         DEFAULT_BROWSER,
         DisplayManager,
         TabManager,
+        _default_tcp_open,
+        _read_proc_listening_ports,
         cdp_ws_call,
         close_redundant_blank_tabs,
         display_resources,
@@ -31,6 +33,8 @@ except ImportError:
         DEFAULT_BROWSER,
         DisplayManager,
         TabManager,
+        _default_tcp_open,
+        _read_proc_listening_ports,
         cdp_ws_call,
         close_redundant_blank_tabs,
         display_resources,
@@ -996,6 +1000,75 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertIsNone(dm.peek_bound_target_id("bot-pure-cli-99", is_admin=False))
             finally:
                 srv.server_close()
+
+    def test_per_bot_workspace_shell_cwd_isolation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ws_a = os.path.join(tmpdir, "bots", "bot-alpha")
+            ws_b = os.path.join(tmpdir, "bots", "bot-beta")
+            os.makedirs(ws_a, exist_ok=True)
+            os.makedirs(ws_b, exist_ok=True)
+            srv = make_server(Actions(browser="/usr/bin/true"), "tok-ws", host="127.0.0.1", port=0)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                port = srv.server_address[1]
+                for bid, ws in [("bot-alpha", ws_a), ("bot-beta", ws_b)]:
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/shell",
+                        data=json.dumps({"command": f"pwd && echo {bid} > owned.txt"}).encode("utf-8"),
+                        headers={
+                            "Authorization": "Bearer tok-ws",
+                            "Content-Type": "application/json",
+                            "X-Twinkle-Bot-Id": bid,
+                            "X-Twinkle-Bot-Workspace": ws,
+                        },
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(data["exit_code"], 0)
+                    self.assertIn(os.path.realpath(ws), os.path.realpath(data["stdout"].strip()))
+
+                with open(os.path.join(ws_a, "owned.txt"), "r", encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), "bot-alpha")
+                with open(os.path.join(ws_b, "owned.txt"), "r", encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), "bot-beta")
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+    def test_passive_proc_port_check_avoids_vnc_blacklist_handshake(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proc_tcp = os.path.join(tmpdir, "tcp")
+            with open(proc_tcp, "w", encoding="utf-8") as f:
+                f.write(
+                    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt\n"
+                    "   0: 00000000:170D 00000000:0000 0A 00000000:00000000 00:00000000 00000000\n"
+                    "   1: 0100007F:17C0 00000000:0000 0A 00000000:00000000 00:00000000 00000000\n"
+                    "   2: 0100007F:9999 00000000:0000 01 00000000:00000000 00:00000000 00000000\n"
+                )
+            ports = _read_proc_listening_ports((proc_tcp,))
+            self.assertEqual(ports, {5901, 6080})
+
+        # On a live listening loopback socket on Linux, _default_tcp_open returns True
+        # without opening an extra client connection (no RFB aborted-handshake blacklist).
+        srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv_sock.bind(("127.0.0.1", 0))
+        srv_sock.listen(1)
+        try:
+            ephemeral_port = srv_sock.getsockname()[1]
+            self.assertTrue(_default_tcp_open(ephemeral_port))
+            srv_sock.settimeout(0.05)
+            accepted = False
+            try:
+                conn, _ = srv_sock.accept()
+                conn.close()
+                accepted = True
+            except socket.timeout:
+                pass
+            if os.path.exists("/proc/net/tcp"):
+                self.assertFalse(accepted, "/proc/net/tcp probe must not open an RFB/TCP connection")
+        finally:
+            srv_sock.close()
 
 
 if __name__ == "__main__":

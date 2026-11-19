@@ -22,6 +22,86 @@ import {
 import { isHostTool, runHostTool } from "../../agent/host-tools.js";
 import { assessToolCall } from "../../agent/policy.js";
 import { probeBotComputerState, provisionBotComputer } from "../../lib/bot-computer-provisioner.js";
+import {
+  resolveBaseWorkspaceRoot,
+  resolveBotWorkspaceRoot,
+  resolveBotWriteRoots,
+  sanitizeBotWorkspaceId,
+} from "../../lib/bot-workspace.js";
+
+async function collectComputerStatusPayload(ctx: ServerContext) {
+  const startMs = Date.now();
+  const executionMode = ctx.getMergedSettings().hostComputer.executionMode;
+  const hostComputer = ctx.getHostDeviceInfo(executionMode);
+  const probed = await ctx.probeBotComputerFn({
+    deployEnv: ctx.runtimeState.deployEnv,
+    executor: ctx.executor,
+    store: ctx.store,
+  });
+  const latencyMs = Math.max(1, Date.now() - startMs);
+  const commonFields = {
+    online: Boolean(probed.online),
+    state: probed.state,
+    provider: probed.provider,
+    latencyMs,
+    detail: probed.detail,
+    executorUrl: ctx.finalConfig.executorUrl || "http://127.0.0.1:7300",
+    ...(probed.vmInstalled !== undefined ? { vmInstalled: probed.vmInstalled } : {}),
+    ...(probed.vmRunning !== undefined ? { vmRunning: probed.vmRunning } : {}),
+    ...(probed.errorCode ? { errorCode: probed.errorCode } : {}),
+  };
+
+  if (!ctx.executor?.health || ctx.runtimeState.deployEnv === "cloud") {
+    const connectedHosts = ctx.hostBridge?.listConnectedHosts?.() || [];
+    const selectedHostId = ctx.hostBridge?.getSelectedHostId?.() || null;
+    return {
+      ...commonFields,
+      screen: ctx.finalConfig.screen,
+      hostComputer:
+        ctx.runtimeState.deployEnv === "cloud"
+          ? {
+              ...hostComputer,
+              online: connectedHosts.length > 0,
+              connectedHosts,
+              selectedHostId,
+            }
+          : hostComputer,
+    };
+  }
+
+  if (probed.online) {
+    return {
+      ...commonFields,
+      screen: (probed as any).screen || ctx.finalConfig.screen,
+      hostComputer,
+    };
+  }
+
+  return {
+    ...commonFields,
+    screen: ctx.finalConfig.screen,
+    error: (probed as any).healthError || probed.detail,
+    hostComputer,
+  };
+}
+
+function broadcastComputerStatus(ctx: ServerContext, status: Record<string, any>) {
+  try {
+    ctx.runner?.broadcastGlobal?.({
+      type: "computer_status_updated",
+      state: status.state,
+      online: Boolean(status.online),
+      provider: status.provider,
+      latencyMs: status.latencyMs,
+      screen: status.screen,
+      detail: status.detail || "",
+      error: status.online ? undefined : status.error,
+      errorCode: status.online ? undefined : status.errorCode,
+      vmInstalled: status.vmInstalled,
+      vmRunning: status.vmRunning,
+    });
+  } catch {}
+}
 
 export async function handleLanHostRoutes(
   req: http.IncomingMessage,
@@ -182,12 +262,26 @@ export async function handleLanHostRoutes(
             return sendJson(res, 400, { error: `unsupported host tool: ${toolName}` });
           }
           const toolArgs = body?.args && typeof body.args === "object" ? body.args : {};
+          const rawSessionId = String(body?.sessionId || body?.botId || "").trim();
+          const sessionId = rawSessionId ? sanitizeBotWorkspaceId(rawSessionId) : "";
+          const baseWriteRoots = Array.isArray(ctx.finalConfig.writeRoots)
+            ? ctx.finalConfig.writeRoots
+            : [];
+          const scopedWriteRoots = sessionId
+            ? resolveBotWriteRoots({ writeRoots: baseWriteRoots, sessionId })
+            : baseWriteRoots;
           const rawSettings = ctx.store?.readSettings?.() || {};
           const hostExecMode = rawSettings?.hostComputer?.executionMode || "always";
           const policyAssessment = assessToolCall(toolName, toolArgs, {
             hostExecutionMode: hostExecMode,
             policy: rawSettings.policy || DEFAULT_POLICY,
-            writeRoots: ctx.finalConfig.writeRoots,
+            writeRoots: scopedWriteRoots,
+            ...(sessionId && baseWriteRoots[0]
+              ? {
+                  botWorkspaceSessionId: sessionId,
+                  baseWorkspaceRoot: resolveBaseWorkspaceRoot({ writeRoots: baseWriteRoots }),
+                }
+              : {}),
             sandboxMode: "restricted",
           });
           if (policyAssessment.decision === "deny") {
@@ -203,13 +297,21 @@ export async function handleLanHostRoutes(
               reason: policyAssessment.reason,
             });
           }
-          const workspaceRoot =
-            (Array.isArray(ctx.finalConfig.writeRoots) && ctx.finalConfig.writeRoots[0]) ||
-            path.join(os.homedir(), "TwinkleBot", "workspace");
+          const workspaceRoot = resolveBotWorkspaceRoot({
+            config: ctx.finalConfig,
+            sessionId,
+            fallbackDir: path.join(os.homedir(), "TwinkleBot", "workspace"),
+          });
           const out = await runHostTool(toolName, toolArgs, {
             shellTimeoutSec: ctx.finalConfig.shellTimeoutSec ?? 60,
             workspaceRoot,
           });
+          if (sessionId && toolName === "host_record_screen" && out?.result?.ok) {
+            ctx.runner?.broadcastGlobal?.({
+              type: "library_updated",
+              sessionId,
+            });
+          }
           return sendJson(res, 200, {
             ok: out?.result?.ok !== false,
             result: out?.result ?? {},
@@ -218,59 +320,8 @@ export async function handleLanHostRoutes(
         }
 
         if (method === "GET" && pathname === "/api/computer/status") {
-          const startMs = Date.now();
-          const executionMode = ctx.getMergedSettings().hostComputer.executionMode;
-          const hostComputer = ctx.getHostDeviceInfo(executionMode);
-          const probed = await probeBotComputerState({
-            deployEnv: ctx.runtimeState.deployEnv,
-            executor: ctx.executor,
-            store: ctx.store,
-          });
-          if (!ctx.executor?.health || ctx.runtimeState.deployEnv === "cloud") {
-            const connectedHosts = ctx.hostBridge?.listConnectedHosts?.() || [];
-            const selectedHostId = ctx.hostBridge?.getSelectedHostId?.() || null;
-            return sendJson(res, 200, {
-              online: probed.online,
-              state: probed.state,
-              provider: probed.provider,
-              detail: probed.detail,
-              latencyMs: Date.now() - startMs || 1,
-              screen: ctx.finalConfig.screen,
-              executorUrl: ctx.finalConfig.executorUrl || "http://127.0.0.1:7300",
-              hostComputer:
-                ctx.runtimeState.deployEnv === "cloud"
-                  ? {
-                      ...hostComputer,
-                      online: connectedHosts.length > 0,
-                      connectedHosts,
-                      selectedHostId,
-                    }
-                  : hostComputer,
-            });
-          }
-          if (probed.online) {
-            return sendJson(res, 200, {
-              online: true,
-              state: "ready",
-              provider: probed.provider,
-              latencyMs: Date.now() - startMs || 1,
-              screen: (probed as any).screen || ctx.finalConfig.screen,
-              executorUrl: ctx.finalConfig.executorUrl || "http://127.0.0.1:7300",
-              detail: probed.detail,
-              hostComputer,
-            });
-          }
-          return sendJson(res, 200, {
-            online: false,
-            state: probed.state,
-            provider: probed.provider,
-            latencyMs: Date.now() - startMs || 1,
-            screen: ctx.finalConfig.screen,
-            executorUrl: ctx.finalConfig.executorUrl || "http://127.0.0.1:7300",
-            detail: probed.detail,
-            error: (probed as any).healthError || probed.detail,
-            hostComputer,
-          });
+          const payload = await collectComputerStatusPayload(ctx);
+          return sendJson(res, 200, payload);
         }
 
         // GET /api/computer/hosts & POST /api/computer/hosts/select
@@ -380,14 +431,21 @@ export async function handleLanHostRoutes(
         // POST /api/computer/update
         if (method === "POST" && pathname === "/api/computer/update") {
           ctx.runner?.stop?.();
+          ctx.runner?.reconcileScreenPool?.();
           try {
             const upd = await ctx.updateBotComputerFn({
               projectRoot: ctx.projectRoot,
               executor: ctx.executor,
               executorToken: ctx.finalConfig.executorToken,
             });
-            return sendJson(res, 200, { ...upd, ok: true });
+            const status = await collectComputerStatusPayload(ctx);
+            broadcastComputerStatus(ctx, status);
+            return sendJson(res, 200, { ...upd, ok: true, status });
           } catch (err: any) {
+            try {
+              const status = await collectComputerStatusPayload(ctx);
+              broadcastComputerStatus(ctx, status);
+            } catch {}
             return sendJson(res, 500, {
               ok: false,
               error: err?.message || "更新 Bot 的电脑失败",
@@ -398,15 +456,37 @@ export async function handleLanHostRoutes(
         // POST /api/computer/reset
         if (method === "POST" && pathname === "/api/computer/reset") {
           ctx.runner?.stop?.();
-          let online = true;
-          if (ctx.executor?.health) {
+          ctx.runner?.reconcileScreenPool?.();
+          if (ctx.executor?.call) {
             try {
-              await ctx.executor.health();
+              const dispInfo: any = await ctx.executor.call(
+                "/displays",
+                {},
+                { skipWake: true, timeoutMs: 2000 }
+              );
+              const boundKeys = Object.keys(dispInfo?.bindings || {}).filter(
+                (bk) => bk && !bk.startsWith("__primary__")
+              );
+              await Promise.allSettled(
+                boundKeys.map((bk) =>
+                  ctx.executor.call(
+                    "/displays/release",
+                    { bot_id: bk },
+                    { skipWake: true, timeoutMs: 2000 }
+                  )
+                )
+              );
             } catch {
-              online = false;
+              // ignore unreachable executor during reset; probed status below reports live state
             }
           }
-          return sendJson(res, 200, { ok: true, online });
+          const status = await collectComputerStatusPayload(ctx);
+          broadcastComputerStatus(ctx, status);
+          return sendJson(res, 200, {
+            ok: true,
+            online: Boolean(status.online),
+            status,
+          });
         }
   return false;
 }

@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { isHostTool } from "./host-tools.js";
 import { isMcpToolName } from "../lib/mcp-client.js";
+import { isOtherBotPrivateWorkspacePath } from "../lib/bot-workspace.js";
 
 const HOME_DIR = os.homedir();
 const CURRENT_USERNAME = (() => {
@@ -180,6 +181,20 @@ export function assessToolCall(
       return {
         decision: "deny",
         reason: `Access to sensitive path '${safeArgs.path}' is denied`,
+      };
+    }
+    if (
+      config?.botWorkspaceSessionId &&
+      config?.baseWorkspaceRoot &&
+      isOtherBotPrivateWorkspacePath(
+        safeArgs.path,
+        [config.baseWorkspaceRoot],
+        config.botWorkspaceSessionId
+      )
+    ) {
+      return {
+        decision: "confirm",
+        reason: "目标路径属于其他 Bot 的专属工作区/资料库，需用户确认后方可访问",
       };
     }
   }

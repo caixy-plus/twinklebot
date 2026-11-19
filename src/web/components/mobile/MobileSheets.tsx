@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { LOCAL_ACCOUNT_ID } from "/accounts-store.js";
 import {
   BOT_COLORS,
@@ -12,7 +12,6 @@ import {
   confirmAndRemoveCloudAccount,
   handleBotComputerCardActivate,
   initiateLanPairing,
-  openAppsModal,
   openSettingsModal,
   refreshLibrary,
   retryActiveLanConnection,
@@ -26,6 +25,7 @@ import {
 } from "../../services/actions.js";
 import { apiJson, dismissLanOfflineModal } from "../../services/api-client.js";
 import { computeUpdateDecisionKey } from "../../services/ota-updater.js";
+import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import { formatCny } from "../../state/helpers.js";
 import {
   getActiveSessionFromState,
@@ -95,19 +95,9 @@ export function MobileSheets() {
     setPersonaDraft(activeSession?.rolePrompt || "");
   }, [activeSession?.id, activeSession?.rolePrompt]);
 
-  const [newMemOpen, setNewMemOpen] = useState(false);
-  const [memName, setMemName] = useState("");
-  const [memContent, setMemContent] = useState("");
-  const memNameRef = useRef<HTMLInputElement | null>(null);
-
   const [manualIp, setManualIp] = useState("");
   const [lanRetrying, setLanRetrying] = useState(false);
   const [pairCode, setPairCode] = useState("");
-  const [autoTimezone, setAutoTimezone] = useState(true);
-  const resolvedTz =
-    typeof Intl !== "undefined"
-      ? Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai"
-      : "Asia/Shanghai";
 
   useEffect(() => {
     if (!mobilePairModalOpen) setPairCode("");
@@ -140,19 +130,7 @@ export function MobileSheets() {
     policy.autoAudit !== false ? "自动审查已开启" : "自动审查已关闭"
   } · ${ruleCount} 条规则`;
 
-  const compState = computerStatus?.state || "ready";
-  const mobileCompSub =
-    compState === "uncreated"
-      ? "待创建（点击跳转管理员 Bot 初始化）"
-      : compState === "creating"
-        ? "正在创建虚拟桌面环境…"
-        : compState === "unsupported"
-          ? "当前平台暂不支持"
-          : compState === "error"
-            ? "状态异常（点击查看详情）"
-            : computerStatus?.online
-              ? "运行中 · 点击全屏查看"
-              : "休眠中 · 点击查看详情";
+  const { mobileSubText: mobileCompSub } = resolveBotComputerStatusDisplay(computerStatus);
 
   const cloudHostOffline = isCloudMode && onlineCloudHosts.length === 0;
   const activeCloudHost =
@@ -163,13 +141,6 @@ export function MobileSheets() {
     : isCloudMode
       ? `在线宿主机：${activeCloudHost?.hostname || "已连接"}`
       : "本地电脑宿主机在线";
-  const settingsComputerSub = cloudHostOffline
-    ? "Bot 电脑就绪 · 宿主机离线/不可用"
-    : isCloudMode
-      ? `云端沙箱就绪 · ${onlineCloudHosts.length} 台宿主机在线`
-      : computerStatus?.online
-        ? "Bot 电脑在线 · 本地宿主机就绪"
-        : "点击查看与管理电脑环境";
 
   const memories = Array.isArray(activeSession?.memories) ? activeSession.memories : [];
   const activeMemCount = memories.filter((m: any) => m && m.enabled !== false).length;
@@ -282,48 +253,30 @@ export function MobileSheets() {
             <h2 className="mobile-sheet-title" id="mobile-inspector-title">
               {activeSession?.title || "Bot 能力面板"}
             </h2>
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              <button
-                id="mobile-edit-bot-btn"
-                type="button"
-                className="settings-pill-btn"
-                onClick={() => {
-                  closeInspector();
-                  if (activeSession) {
-                    const av = resolveBotAvatar(activeSession, primarySessionId);
-                    setState((prev) => ({
-                      mobileSheets: { ...prev.mobileSheets, botEditorOpen: true },
-                      mobileBotEditor: {
-                        mode: "edit",
-                        sessionId: activeSession.id,
-                        name: activeSession.title || "",
-                        rolePrompt: activeSession.rolePrompt || "",
-                        shape: av.shape || "blob",
-                        color: av.color || "red",
-                      },
-                    }));
-                  }
-                }}
-              >
-                编辑 Bot
-              </button>
-              <button
-                id="mobile-inspector-close-btn"
-                type="button"
-                className="mobile-circle-btn"
-                aria-label="关闭"
-                onClick={closeInspector}
-              >
-                <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                  <path
-                    d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            </div>
+            <button
+              id="mobile-edit-bot-btn"
+              type="button"
+              className="settings-pill-btn"
+              onClick={() => {
+                closeInspector();
+                if (activeSession) {
+                  const av = resolveBotAvatar(activeSession, primarySessionId);
+                  setState((prev) => ({
+                    mobileSheets: { ...prev.mobileSheets, botEditorOpen: true },
+                    mobileBotEditor: {
+                      mode: "edit",
+                      sessionId: activeSession.id,
+                      name: activeSession.title || "",
+                      rolePrompt: activeSession.rolePrompt || "",
+                      shape: av.shape || "blob",
+                      color: av.color || "red",
+                    },
+                  }));
+                }
+              }}
+            >
+              编辑 Bot
+            </button>
           </div>
 
           <div className="mobile-sheet-tabs" role="tablist">
@@ -479,90 +432,26 @@ export function MobileSheets() {
                   type="button"
                   className="settings-pill-btn"
                   onClick={() => {
-                    const next = !newMemOpen;
-                    setNewMemOpen(next);
-                    if (next) requestAnimationFrame(() => memNameRef.current?.focus());
+                    setState({
+                      botMemoryModal: {
+                        open: true,
+                        sessionId: activeSession?.id || null,
+                        memoryId: null,
+                        name: "",
+                        content: "",
+                      },
+                    });
+                    requestAnimationFrame(() => {
+                      (
+                        document.getElementById(
+                          "bot-memory-modal-name-input"
+                        ) as HTMLInputElement | null
+                      )?.focus();
+                    });
                   }}
                 >
                   + 新增
                 </button>
-              </div>
-              <div
-                id="mobile-new-bot-memory-form-card"
-                className="inline-form-card"
-                hidden={!newMemOpen}
-              >
-                <input
-                  ref={memNameRef}
-                  id="mobile-bot-memory-name-input"
-                  type="text"
-                  className="inline-text-input"
-                  placeholder="记忆要点（如：回复默认简洁）"
-                  aria-label="Bot 专属记忆标题"
-                  value={memName}
-                  onChange={(e) => setMemName(e.target.value)}
-                />
-                <textarea
-                  id="mobile-bot-memory-content-input"
-                  className="inline-textarea"
-                  rows={2}
-                  placeholder="输入该 Bot 专属记住的上下文或约定..."
-                  aria-label="Bot 专属记忆内容"
-                  value={memContent}
-                  onChange={(e) => setMemContent(e.target.value)}
-                />
-                <div className="inline-form-actions">
-                  <button
-                    id="mobile-cancel-bot-memory-btn"
-                    type="button"
-                    className="settings-pill-btn"
-                    onClick={() => setNewMemOpen(false)}
-                  >
-                    取消
-                  </button>
-                  <button
-                    id="mobile-save-bot-memory-btn"
-                    type="button"
-                    className="settings-blue-pill"
-                    onClick={async () => {
-                      if (!activeSession?.id) return;
-                      const content = memContent.trim();
-                      if (!content) {
-                        showToast("请填写该 Bot 的专属记忆内容");
-                        return;
-                      }
-                      const title =
-                        memName.trim() || content.replace(/\s+/g, " ").slice(0, 18);
-                      const next = [
-                        {
-                          id: `bmem-${Date.now()}`,
-                          name: title,
-                          desc: content,
-                          instruction: content,
-                          content,
-                          enabled: true,
-                          updatedAt: new Date().toISOString(),
-                        },
-                        ...memories,
-                      ];
-                      try {
-                        const updated = await apiJson(`/api/sessions/${activeSession.id}`, {
-                          method: "PATCH",
-                          body: JSON.stringify({ memories: next, touch: false }),
-                        });
-                        upsertLocalSession(updated);
-                        setMemName("");
-                        setMemContent("");
-                        setNewMemOpen(false);
-                        showToast(`已保存到「${activeSession.title || "当前 Bot"}」的专属记忆`);
-                      } catch (err: any) {
-                        showToast(`保存失败: ${err.message}`);
-                      }
-                    }}
-                  >
-                    保存
-                  </button>
-                </div>
               </div>
               <BotMemoriesList
                 session={activeSession}
@@ -578,8 +467,12 @@ export function MobileSheets() {
                   type="button"
                   className="settings-pill-btn"
                   onClick={() => {
-                    closeInspector();
-                    setState({ scheduleModalOpen: true });
+                    setState({ scheduleModalOpen: true, editingScheduleId: null });
+                    requestAnimationFrame(() => {
+                      (
+                        document.getElementById("sched-title-input") as HTMLInputElement | null
+                      )?.focus();
+                    });
                   }}
                 >
                   + 新建
@@ -680,20 +573,14 @@ export function MobileSheets() {
               id="mobile-settings-close-btn"
               type="button"
               className="mobile-circle-btn"
-              aria-label="关闭设置"
+              title="返回"
+              aria-label="返回"
               onClick={closeSettings}
             >
-              <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path
-                  d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  strokeLinecap="round"
-                />
-              </svg>
+              <UiIcon name="chevron-left" />
             </button>
             <h2 className="mobile-sheet-title">设置与工作台</h2>
-            <span style={{ width: "42px" }} />
+            <span style={{ width: "42px" }} aria-hidden="true" />
           </div>
 
           <div className="mobile-grouped-card">
@@ -800,41 +687,7 @@ export function MobileSheets() {
                 </svg>
               </span>
             </button>
-          </div>
 
-          <div className="mobile-grouped-card">
-            <button
-              id="mobile-settings-skills-row"
-              type="button"
-              className="mobile-card-row"
-              onClick={() => {
-                setState({ mobileReturnToSettingsSheet: true });
-                closeSettings();
-                openAppsModal("store");
-              }}
-            >
-              <div>
-                <div className="mobile-card-row-title">技能商店</div>
-                <div className="mobile-card-row-sub">
-                  平台能力、邮箱接入与自定义共享技能
-                </div>
-              </div>
-              <span className="menu-chevron" aria-hidden="true">
-                <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
-                  <path
-                    d="M7.8 5.2L12.6 10L7.8 14.8"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-            </button>
-          </div>
-
-          <div className="mobile-section-caption">Bot</div>
-          <div className="mobile-grouped-card">
             <button
               id="mobile-settings-permissions-row"
               type="button"
@@ -849,58 +702,6 @@ export function MobileSheets() {
                 <div className="mobile-card-row-title">权限</div>
                 <div className="mobile-card-row-sub" id="mobile-settings-permissions-sub">
                   {permSubText}
-                </div>
-              </div>
-              <span className="menu-chevron" aria-hidden="true">
-                <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
-                  <path
-                    d="M7.8 5.2L12.6 10L7.8 14.8"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-            </button>
-
-            <div className="mobile-card-row">
-              <div>
-                <div className="mobile-card-row-title">自动设置时区</div>
-                <div className="mobile-card-row-sub">Bot 的电脑跟随此设备的时区</div>
-              </div>
-              <label className="ios-switch" aria-label="自动设置时区">
-                <input
-                  id="mobile-auto-timezone-toggle"
-                  type="checkbox"
-                  checked={autoTimezone}
-                  onChange={(e) => setAutoTimezone(e.target.checked)}
-                />
-                <span className="ios-switch-track" />
-              </label>
-            </div>
-
-            <div className="mobile-card-row">
-              <div className="mobile-card-row-title">时区</div>
-              <span id="mobile-timezone-value" className="mobile-card-row-sub">
-                {resolvedTz}
-              </span>
-            </div>
-
-            <button
-              id="mobile-settings-computer-row"
-              type="button"
-              className="mobile-card-row"
-              onClick={() => {
-                setState({ mobileReturnToSettingsSheet: true });
-                closeSettings();
-                openSettingsModal("computer");
-              }}
-            >
-              <div>
-                <div className="mobile-card-row-title">Bot 电脑</div>
-                <div className="mobile-card-row-sub" id="mobile-settings-computer-sub">
-                  {settingsComputerSub}
                 </div>
               </div>
               <span className="menu-chevron" aria-hidden="true">
@@ -943,6 +744,35 @@ export function MobileSheets() {
               </span>
             </button>
 
+            <button
+              id="mobile-settings-more-row"
+              type="button"
+              className="mobile-card-row"
+              onClick={() => {
+                setState({ mobileReturnToSettingsSheet: true });
+                closeSettings();
+                openSettingsModal("general");
+              }}
+            >
+              <div>
+                <div className="mobile-card-row-title">更多设置</div>
+                <div className="mobile-card-row-sub">个人资料、外观主题与全部系统设置</div>
+              </div>
+              <span className="menu-chevron" aria-hidden="true">
+                <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
+                  <path
+                    d="M7.8 5.2L12.6 10L7.8 14.8"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+            </button>
+          </div>
+
+          <div className="mobile-grouped-card mobile-settings-about-card">
             <button
               id="mobile-settings-about-row"
               type="button"
@@ -1002,25 +832,8 @@ export function MobileSheets() {
       >
         <div ref={nodeAnim.panelRef} className="mobile-sheet-panel">
           <div className="mobile-sheet-handle" aria-hidden="true" {...nodeAnim.handleProps} />
-          <div className="mobile-sheet-header">
+          <div className="mobile-sheet-header is-centered">
             <h2 className="mobile-sheet-title">连接节点切换</h2>
-            <button
-              id="mobile-node-sheet-close-btn"
-              type="button"
-              className="modal-close-btn"
-              style={{ position: "static" }}
-              aria-label="关闭"
-              onClick={closeNode}
-            >
-              <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path
-                  d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
           </div>
 
           <div className="mobile-sheet-header">
@@ -1406,17 +1219,11 @@ export function MobileSheets() {
               id="mobile-bot-editor-close-btn"
               type="button"
               className="mobile-circle-btn"
-              aria-label="关闭"
+              title="返回"
+              aria-label="返回"
               onClick={closeBotEditor}
             >
-              <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                <path
-                  d="M5.5 5.5L14.5 14.5M14.5 5.5L5.5 14.5"
-                  stroke="currentColor"
-                  strokeWidth="1.7"
-                  strokeLinecap="round"
-                />
-              </svg>
+              <UiIcon name="chevron-left" />
             </button>
             <h2 className="mobile-sheet-title" id="mobile-bot-editor-title">
               {isEditBot ? "编辑 Bot" : "创建新 Bot"}

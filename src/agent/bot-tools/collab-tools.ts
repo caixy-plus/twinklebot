@@ -16,6 +16,10 @@ import {
   expandUserPath,
   isSensitiveFilePath,
 } from "../../lib/file-attachments.js";
+import {
+  isOtherBotPrivateWorkspacePath,
+  resolveBotWorkspaceRoot,
+} from "../../lib/bot-workspace.js";
 import { searchWeb, fetchWebPage } from "../../lib/web-search.js";
 import {
   normalizeMailConfig,
@@ -118,14 +122,26 @@ export async function handleCollabBotTool(
     if (!rawPath) {
       return { ok: false, error: "send_file requires a non-empty path" };
     }
-    const workspaceRoot =
-      (Array.isArray(config.writeRoots) && config.writeRoots[0]) ||
-      path.join(os.tmpdir(), "twinklebot-generated");
+    const workspaceSessionId = String(senderSessionId || senderBot?.id || "").trim();
+    const workspaceRoot = resolveBotWorkspaceRoot({
+      config,
+      sessionId: workspaceSessionId,
+      fallbackDir: path.join(os.tmpdir(), "twinklebot-generated"),
+    });
     const expanded = expandUserPath(rawPath);
     if (isSensitiveFilePath(expanded)) {
       return {
         ok: false,
         error: "access denied: sensitive system/credential files cannot be sent",
+      };
+    }
+    if (
+      workspaceSessionId &&
+      isOtherBotPrivateWorkspacePath(expanded, config, workspaceSessionId)
+    ) {
+      return {
+        ok: false,
+        error: "access denied: file belongs to another Bot's private workspace",
       };
     }
 

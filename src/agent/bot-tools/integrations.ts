@@ -16,6 +16,10 @@ import {
   expandUserPath,
   isSensitiveFilePath,
 } from "../../lib/file-attachments.js";
+import {
+  isPathInsideBotAccessibleRoots,
+  resolveBotWorkspaceRoot,
+} from "../../lib/bot-workspace.js";
 import { searchWeb, fetchWebPage } from "../../lib/web-search.js";
 import {
   normalizeMailConfig,
@@ -60,21 +64,6 @@ function extFromMime(mimeType = "") {
   if (m.includes("icon") || m.includes("ico")) return ".ico";
   if (m.includes("pdf")) return ".pdf";
   return ".png";
-}
-
-function isPathInsideAllowedRoots(targetPath: string, roots: string[] = []) {
-  if (!targetPath || typeof targetPath !== "string") return false;
-  const resolved = path.resolve(targetPath);
-  const base = path.basename(resolved).toLowerCase();
-  if (base === ".env" || /.*auth.*\.json$/i.test(base)) return false;
-  if (resolved.split(path.sep).some((seg) => seg.toLowerCase() === ".ssh")) {
-    return false;
-  }
-  return roots.some((root) => {
-    if (!root || typeof root !== "string") return false;
-    const r = path.resolve(root);
-    return resolved === r || resolved.startsWith(r + path.sep);
-  });
 }
 
 export function saveGeneratedImageFile({
@@ -294,13 +283,11 @@ export async function handleIntegrationBotTool(
     const quality = args.quality === "pro" ? "pro" : "standard";
     const configuredImage = config?.routing?.tiers?.image;
 
-    const allowedRoots = Array.isArray(config.writeRoots)
-      ? config.writeRoots
-      : [];
+    const workspaceSessionId = String(senderSessionId || senderBot?.id || "").trim();
     const referenceImages: any[] = [];
     if (args.reference_image_path && String(args.reference_image_path).trim()) {
       const refPath = String(args.reference_image_path).trim();
-      if (!isPathInsideAllowedRoots(refPath, allowedRoots)) {
+      if (!isPathInsideBotAccessibleRoots(refPath, { config, sessionId: workspaceSessionId })) {
         return {
           error: `reference_image_path denied: path must reside inside workspace writeRoots`,
         };
@@ -353,12 +340,24 @@ export async function handleIntegrationBotTool(
         });
       }
 
+      const targetWorkspaceRoot = resolveBotWorkspaceRoot({
+        config,
+        sessionId: workspaceSessionId,
+        fallbackDir: path.join(os.tmpdir(), "twinklebot-generated"),
+      });
       const saved = saveGeneratedImageFile({
         base64Data: genRes.base64Data,
         mimeType: genRes.mimeType,
         title: args.title || prompt.slice(0, 24),
-        workspaceRoot: allowedRoots[0],
+        workspaceRoot: targetWorkspaceRoot,
       });
+
+      if (workspaceSessionId) {
+        broadcastGlobal?.({
+          type: "library_updated",
+          sessionId: workspaceSessionId,
+        });
+      }
 
       if (typeof ctx.onImageGenerated === "function") {
         ctx.onImageGenerated({

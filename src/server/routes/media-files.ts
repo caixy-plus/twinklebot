@@ -27,6 +27,14 @@ import { inferImageMimeType } from "../../agent/model.js";
 import { convertImageBuffer } from "../../lib/image-convert.js";
 import { resolveProviderApiKey } from "../../agent/providers/registry.js";
 import { expandUserPath, inferFileMimeType, isSensitiveFilePath, MEDIA_EXTS } from "../../lib/file-attachments.js";
+import {
+  inferSessionIdFromWorkspacePath,
+  isOtherBotPrivateWorkspacePath,
+  resolveBaseWorkspaceRoot,
+  resolveBotWorkspaceRoot,
+  resolveBotWriteRoots,
+  sanitizeBotWorkspaceId,
+} from "../../lib/bot-workspace.js";
 import { normalizeRoutingSettings } from "../../agent/route-stats.js";
 import { accumulateSessionUsagePatch } from "../../agent/pricing.js";
 
@@ -93,6 +101,12 @@ export async function handleMediaFilesRoutes(
             });
           }
 
+          const rawSessionId = String(body?.sessionId || body?.botId || "").trim();
+          const sessionId = rawSessionId ? sanitizeBotWorkspaceId(rawSessionId) : "";
+          if (rawSessionId && !sessionId) {
+            return sendJson(res, 400, { error: "invalid sessionId" });
+          }
+
           const storedSettings = ctx.store?.readSettings?.() || {};
           const rawProviders =
             ctx.resolveRawProviders?.() ||
@@ -101,8 +115,20 @@ export async function handleMediaFilesRoutes(
           const rawRouting = storedSettings.routing
             ? normalizeRoutingSettings(storedSettings.routing)
             : undefined;
+          const baseWriteRoots = Array.isArray(ctx.finalConfig.writeRoots)
+            ? ctx.finalConfig.writeRoots
+            : [];
+          const scopedWriteRoots = sessionId
+            ? resolveBotWriteRoots({ writeRoots: baseWriteRoots, sessionId })
+            : baseWriteRoots;
           const effectiveConfig = {
             ...ctx.finalConfig,
+            ...(baseWriteRoots.length > 0
+              ? {
+                  baseWorkspaceRoot: resolveBaseWorkspaceRoot({ writeRoots: baseWriteRoots }),
+                  writeRoots: scopedWriteRoots,
+                }
+              : {}),
             ...(Array.isArray(rawProviders) && rawProviders.length > 0
               ? { providers: rawProviders }
               : {}),
@@ -126,6 +152,8 @@ export async function handleMediaFilesRoutes(
               model: ctx.model,
               executor: ctx.executor,
               config: effectiveConfig,
+              senderSessionId: sessionId || undefined,
+              broadcastGlobal: ctx.runner?.broadcastGlobal,
               onImageGenerated: (meta: { saved: any; genRes: any }) => {
                 capturedMeta = meta;
               },
@@ -147,7 +175,6 @@ export async function handleMediaFilesRoutes(
               : "");
 
           // Record usage against the session if sessionId was supplied
-          const sessionId = String(body?.sessionId || "").trim();
           recordSessionModelUsage(
             ctx,
             sessionId,
@@ -197,6 +224,14 @@ export async function handleMediaFilesRoutes(
             return sendJson(res, 400, { error: "format is required" });
           }
 
+          const rawExplicitSessionId = String(body?.sessionId || body?.botId || "").trim();
+          const explicitSessionId = rawExplicitSessionId
+            ? sanitizeBotWorkspaceId(rawExplicitSessionId)
+            : "";
+          if (rawExplicitSessionId && !explicitSessionId) {
+            return sendJson(res, 400, { error: "invalid sessionId" });
+          }
+
           let inputBuffer: Buffer | null = null;
           let inputMimeType = String(body?.mimeType || "").trim();
 
@@ -210,6 +245,12 @@ export async function handleMediaFilesRoutes(
           } else if (typeof body?.path === "string" && body.path.trim()) {
             const reqPath = body.path.trim();
             if (!isInsideAllowedRoots(reqPath, ctx.finalConfig.writeRoots)) {
+              return sendJson(res, 403, { error: "access denied" });
+            }
+            if (
+              explicitSessionId &&
+              isOtherBotPrivateWorkspacePath(reqPath, ctx.finalConfig.writeRoots, explicitSessionId)
+            ) {
               return sendJson(res, 403, { error: "access denied" });
             }
             const resolved = path.resolve(reqPath);
@@ -230,6 +271,12 @@ export async function handleMediaFilesRoutes(
             return sendJson(res, 400, { error: "empty input image data" });
           }
 
+          const targetSessionId =
+            explicitSessionId ||
+            (typeof body?.path === "string"
+              ? inferSessionIdFromWorkspacePath(body.path, ctx.finalConfig.writeRoots)
+              : "");
+
           try {
             const width = body?.width !== undefined ? Number(body.width) : undefined;
             const height = body?.height !== undefined ? Number(body.height) : undefined;
@@ -241,9 +288,11 @@ export async function handleMediaFilesRoutes(
               height: Number.isFinite(height) && (height as number) > 0 ? height : undefined,
               executor: ctx.executor,
             });
-            const workspaceRoot =
-              ctx.finalConfig.writeRoots?.[0] ||
-              path.join(os.tmpdir(), "twinklebot-generated");
+            const workspaceRoot = resolveBotWorkspaceRoot({
+              config: ctx.finalConfig,
+              sessionId: targetSessionId,
+              fallbackDir: path.join(os.tmpdir(), "twinklebot-generated"),
+            });
             const outB64 = converted.buffer.toString("base64");
             const saved = saveGeneratedImageFile({
               base64Data: outB64,
@@ -251,6 +300,12 @@ export async function handleMediaFilesRoutes(
               title: body?.title || (body?.path ? path.basename(body.path, path.extname(body.path)) : "converted_image"),
               workspaceRoot,
             });
+            if (targetSessionId) {
+              ctx.runner?.broadcastGlobal?.({
+                type: "library_updated",
+                sessionId: targetSessionId,
+              });
+            }
             return sendJson(res, 201, {
               ok: true,
               format: converted.format,
@@ -278,20 +333,35 @@ export async function handleMediaFilesRoutes(
           } catch {
             return sendJson(res, 400, { error: "invalid or oversized payload" });
           }
+          const rawSessionId = String(body?.sessionId || body?.botId || "").trim();
+          const sessionId = rawSessionId ? sanitizeBotWorkspaceId(rawSessionId) : "";
+          if (rawSessionId && !sessionId) {
+            return sendJson(res, 400, { error: "invalid sessionId" });
+          }
           const rawName = path.basename(String(body?.name || "upload.bin"));
           const safeName = rawName.replace(/[^a-zA-Z0-9._\u4e00-\u9fa5-]/g, "_");
           const dataBase64 = String(body?.dataBase64 || "");
           if (!dataBase64) {
             return sendJson(res, 400, { error: "dataBase64 is required" });
           }
-          const workspaceRoot =
-            ctx.finalConfig.writeRoots?.[0] || path.join(os.tmpdir(), "twinklebot-uploads");
+          const workspaceRoot = resolveBotWorkspaceRoot({
+            config: ctx.finalConfig,
+            sessionId,
+            fallbackDir: path.join(os.tmpdir(), "twinklebot-uploads"),
+          });
           const uploadsDir = path.join(workspaceRoot, "uploads");
           fs.mkdirSync(uploadsDir, { recursive: true });
           const uniqueName = `${Date.now()}_${safeName}`;
           const destPath = path.join(uploadsDir, uniqueName);
           const buf = Buffer.from(dataBase64, "base64");
           fs.writeFileSync(destPath, buf);
+
+          if (sessionId) {
+            ctx.runner?.broadcastGlobal?.({
+              type: "library_updated",
+              sessionId,
+            });
+          }
 
           const ext = path.extname(uniqueName).toLowerCase();
           return sendJson(res, 201, {
@@ -307,9 +377,16 @@ export async function handleMediaFilesRoutes(
         // GET /api/workspace/file?path=...
         if (method === "GET" && pathname === "/api/workspace/file") {
           const requestedPath = url.searchParams.get("path") || "";
+          const reqSessionId = String(url.searchParams.get("sessionId") || "").trim();
           if (
             !requestedPath ||
-            !isInsideAllowedRoots(requestedPath, ctx.finalConfig.writeRoots)
+            !isInsideAllowedRoots(requestedPath, ctx.finalConfig.writeRoots) ||
+            (reqSessionId &&
+              isOtherBotPrivateWorkspacePath(
+                requestedPath,
+                ctx.finalConfig.writeRoots,
+                reqSessionId
+              ))
           ) {
             return sendJson(res, 403, { error: "access denied" });
           }

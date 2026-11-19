@@ -226,4 +226,21 @@ test("settings modal scroll stability avoids nested GPU RenderPass clipping and 
   assert.match(composerPillBlock, /border-radius:\s*26px/);
   const sidebarFooterBlock = styleCss.match(/\.sidebar-footer\s*\{[^}]+\}/)?.[0] || "";
   assert.equal(sidebarFooterBlock.includes("border-top:"), false);
+
+  assert.match(settingsModalBlock, /max-width:\s*min\(920px,\s*calc\(100vw - 48px\)\)/);
+  assert.match(settingsModalBlock, /height:\s*min\(calc\(100dvh - 124px\),\s*840px\)/);
+  assert.ok(
+    styleCss.includes(".settings-modal.is-continuous-scroll .settings-pane + .settings-pane"),
+    "continuous desktop settings modal must separate stacked category panes"
+  );
+  assert.ok(
+    styleCss.includes(
+      '.settings-modal.is-continuous-scroll .settings-pane[data-settings-pane="usage"]'
+    ),
+    "continuous desktop settings modal must expand usage pane into the unified vertical scroller"
+  );
+  assert.ok(
+    appJs.includes("is-continuous-scroll"),
+    "SettingsModal must enable continuous desktop scroll class"
+  );
 });

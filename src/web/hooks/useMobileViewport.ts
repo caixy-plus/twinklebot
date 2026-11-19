@@ -90,8 +90,14 @@ export function useMobileViewport(chatStageRef: RefObject<HTMLElement | null>) {
         }));
         return;
       }
+      if (s.botMemoryModal.open) {
+        setState((prev) => ({
+          botMemoryModal: { ...prev.botMemoryModal, open: false },
+        }));
+        return;
+      }
       if (s.scheduleModalOpen) {
-        setState({ scheduleModalOpen: false });
+        setState({ scheduleModalOpen: false, editingScheduleId: null });
         return;
       }
       if (s.imageLightbox.open) {

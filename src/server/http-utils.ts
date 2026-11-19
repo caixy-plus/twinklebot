@@ -7,8 +7,9 @@ import {
   MEDIA_EXTS,
   isSensitiveFilePath,
 } from "../lib/file-attachments.js";
+import { scanWorkspaceFiles } from "../lib/bot-workspace.js";
 
-export { MIME_TYPES };
+export { MIME_TYPES, scanWorkspaceFiles };
 
 export const VALID_PROFILE_COLORS = new Set([
   "slate",
@@ -40,15 +41,13 @@ export const DEFAULT_POLICY = {
   allowRules: [],
 };
 
-const DEFAULT_WORKSPACE_DIR = path.join(os.homedir(), "TwinkleBot", "workspace");
-
 export const DEFAULT_PRIVATE_SKILLS = [
   {
     id: "skill-1",
     name: "工作区整洁约定",
-    desc: `生成的报告、脚本或下载产物统一存放在 ${DEFAULT_WORKSPACE_DIR} 下并告知绝对路径`,
+    desc: "生成的报告、脚本或下载产物统一存放在当前 Bot 专属工作区目录下并告知绝对路径",
     instruction:
-      `Save generated files under ${DEFAULT_WORKSPACE_DIR} and report the exact file path when done.`,
+      "Save generated files inside your dedicated Bot workspace root (your primary writeRoots directory) and report the exact file path when done.",
     enabled: true,
   },
   {
@@ -108,46 +107,4 @@ export function isInsideAllowedRoots(targetPath: string, roots: string[] = []) {
     const r = path.resolve(root);
     return resolved === r || resolved.startsWith(r + path.sep);
   });
-}
-
-export function scanWorkspaceFiles(rootDir: string, maxItems = 40) {
-  if (!rootDir || !fs.existsSync(rootDir)) return [];
-  const results: any[] = [];
-
-  function walk(dir: string, depth = 0) {
-    if (depth > 2 || results.length >= maxItems) return;
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      if (ent.name.startsWith(".")) continue;
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) {
-        walk(full, depth + 1);
-      } else if (ent.isFile()) {
-        try {
-          const stat = fs.statSync(full);
-          const ext = path.extname(ent.name).toLowerCase();
-          results.push({
-            name: ent.name,
-            path: full,
-            type: MEDIA_EXTS.has(ext) ? "media" : "file",
-            size: stat.size,
-            mtime: stat.mtime.toISOString(),
-            url: `/api/workspace/file?path=${encodeURIComponent(full)}`,
-          });
-        } catch {
-          // ignore
-        }
-      }
-      if (results.length >= maxItems) break;
-    }
-  }
-
-  walk(rootDir, 0);
-  results.sort((a, b) => Date.parse(b.mtime) - Date.parse(a.mtime));
-  return results;
 }

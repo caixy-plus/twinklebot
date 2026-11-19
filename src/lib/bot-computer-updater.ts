@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { buildScrubbedEnv } from "./mcp-client.js";
 import { resolveProjectRoot } from "./project-root.js";
+import { buildMacOrbExecutorDeployScript } from "./bot-computer-provisioner.js";
 import {
   buildWslProvisionScript,
   ensureWslKeepalive,
@@ -125,6 +126,8 @@ export async function updateBotComputer({
   } else {
     const rawExecutorPy = path.join(projectRoot, "executor", "executor.py");
     const macExecutorPy = rawExecutorPy.replace(/\.asar([/\\])/, ".asar.unpacked$1");
+    const explicitOrEnvToken =
+      String(executorToken || process.env.TWINKLEBOT_EXECUTOR_TOKEN || "").trim();
 
     await execFileFn("orb", [
       "-m",
@@ -132,20 +135,25 @@ export async function updateBotComputer({
       "-u",
       "root",
       "install",
+      "-D",
       "-m",
-      "0644",
+      "0755",
       macExecutorPy,
       "/opt/twinklebot/executor.py",
     ]);
 
+    const macDeployScript = buildMacOrbExecutorDeployScript({
+      executorToken: explicitOrEnvToken,
+      overwriteToken: Boolean(explicitOrEnvToken),
+    });
     await execFileFn("orb", [
       "-m",
       "ubuntu",
       "-u",
       "root",
-      "systemctl",
-      "restart",
-      "twinklebot-executor.service",
+      "bash",
+      "-lc",
+      macDeployScript,
     ]);
   }
 

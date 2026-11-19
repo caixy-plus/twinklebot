@@ -45,7 +45,7 @@ test("send_file stages local .docx deliverables, notifies library, and blocks se
       res.mime_type,
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     );
-    assert.ok(res.path.startsWith(path.join(workspace, "deliverables")));
+    assert.ok(res.path.startsWith(path.join(workspace, "bots", s.id, "deliverables")));
     assert.deepEqual(fs.readFileSync(res.path), fakeDocxBytes);
     assert.match(res.markdown, /^\[文件附件: B站关注UP主最新视频汇总\.docx · 路径: .+\]$/);
     assert.equal(broadcasts.some((e) => e.type === "library_updated"), true);

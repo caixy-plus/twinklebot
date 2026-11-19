@@ -3,6 +3,18 @@ export const ACCOUNTS_STORAGE_KEY = "twinklebot.accounts.v2";
 export const PRESET_BOT_COMPUTER_INIT_PROMPT =
   "请先检测当前系统的 Bot 电脑虚拟桌面环境状态；如果尚未创建或未就绪，请立即帮我完成初始化部署（computer_provision）并验证执行器与桌面画面可用。";
 
+export function buildBotComputerSelfHealPrompt(computerStatus?: {
+  state?: string;
+  errorCode?: string;
+  error?: string;
+  detail?: string;
+} | null): string {
+  const reason = String(
+    computerStatus?.error || computerStatus?.detail || computerStatus?.errorCode || "状态异常"
+  ).trim();
+  return `当前「Bot 的电脑」状态异常或未就绪（${reason}）。请立即自动自检并完成自愈修复（优先调用 system_diagnostics 或 computer_provision 同步组件、修复服务/令牌并唤醒桌面），最后确认执行器与桌面画面恢复在线可用。`;
+}
+
 export const PROVIDER_PRESETS_UI: Record<
   string,
   {
