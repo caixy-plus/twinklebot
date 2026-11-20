@@ -1196,6 +1196,36 @@ export async function sendUserMessage(rawText?: string) {
   }
 }
 
+export async function continueFromMaxSteps() {
+  const s = getState();
+  const activeSid = s.activeSessionId;
+  if (!activeSid || isSessionCurrentlyBusy(s.sessionStatus)) return;
+  const prevStatus = s.sessionStatus || "max_steps";
+  try {
+    setState((prev) => ({
+      sessionStatus: "running",
+      activeMap: { ...prev.activeMap, [activeSid]: "running" },
+    }));
+    await apiJson(`/api/sessions/${activeSid}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        text: "继续执行未完成的任务，请从当前进度接续完成。",
+      }),
+    });
+    scrollChatStreamToBottom({ guardMs: 400, settle: true });
+  } catch (err: any) {
+    setState((prev) => {
+      const nextMap = { ...prev.activeMap };
+      delete nextMap[activeSid];
+      return {
+        sessionStatus: prevStatus,
+        activeMap: nextMap,
+      };
+    });
+    showToast(`继续执行失败: ${err?.message || "请求失败"}`);
+  }
+}
+
 export async function stopCurrentSessionTask() {
   const targetSessionId = getState().activeSessionId;
   if (!targetSessionId) return;

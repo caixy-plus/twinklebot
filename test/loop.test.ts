@@ -383,8 +383,19 @@ test("stops at maxSteps", async () => {
     });
 
     assert.equal(res.status, "max_steps");
-    assert.equal(res.text, "");
+    assert.match(res.text, /已达到单轮最大步数上限（2 步）/);
+    assert.match(res.text, /已完成 2 次操作/);
+    assert.match(res.text, /继续/);
     assert.equal(model.historyCalls.length, 2);
+
+    const notice = events.find((e) => e.type === "route_notice" && e.level === "max_steps");
+    assert.ok(notice, "must emit user-visible route_notice when reaching maxSteps");
+    assert.equal(notice.maxSteps, 2);
+    assert.equal(notice.toolCount, 2);
+    assert.equal(notice.text, res.text);
+
+    const savedHist = store.loadHistory(session.id);
+    assert.equal(savedHist.at(-1)?.type, "model_output");
 
     const lastStatus = events.filter((e) => e.type === "status").at(-1);
     assert.equal(lastStatus.status, "max_steps");
@@ -1471,6 +1482,74 @@ test("runTask recovers from empty finishReason=length reasoning exhaustion inste
     assert.equal(res.status, "done");
     assert.equal(res.text, "精简结论：已完成。");
     assert.equal(model.historyCalls.length, 2);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runTask warns model on final step when maxSteps >= 4 and cleanly resumes on follow-up continue", async () => {
+  const { store, cleanup } = createTestStore();
+  try {
+    const session = store.createSession({ title: "Long multi-step video task" });
+    const events: any[] = [];
+    const executor = createFakeExecutor();
+    let stepCalls = 0;
+    const model = {
+      historyCalls: [] as any[],
+      async nextTurn({ input }: any) {
+        this.historyCalls.push(input);
+        stepCalls++;
+        if (stepCalls <= 4) {
+          return {
+            thoughts: [`Step ${stepCalls}`],
+            calls: [{ id: `c_${stepCalls}`, name: "run_shell", args: { command: `echo step ${stepCalls}` } }],
+            outputSteps: [
+              { type: "function_call", id: `c_${stepCalls}`, name: "run_shell", args: { command: `echo step ${stepCalls}` } },
+            ],
+          };
+        }
+        return {
+          thoughts: [],
+          text: "已接续完成剩余视频分镜与渲染。",
+          calls: [],
+          outputSteps: [{ type: "model_output", text: "已接续完成剩余视频分镜与渲染。" }],
+        };
+      },
+    };
+
+    const res1 = await runTask({
+      sessionId: session.id,
+      userText: "执行长视频多步生成任务",
+      deps: {
+        model,
+        executor,
+        store,
+        config: { maxSteps: 4, settleMs: 0 },
+        emit: (e: any) => events.push(e),
+      },
+    });
+    assert.equal(res1.status, "max_steps");
+    assert.match(res1.text, /已达到单轮最大步数上限（4 步）/);
+    assert.match(res1.text, /run_shell/);
+    const fourthInputTexts = JSON.stringify(model.historyCalls[3]);
+    assert.match(fourthInputTexts, /final step allowed for this turn/);
+
+    // Follow-up continue turn should NOT see interrupted/crashed notice
+    const res2 = await runTask({
+      sessionId: session.id,
+      userText: "继续",
+      deps: {
+        model,
+        executor,
+        store,
+        config: { maxSteps: 4, settleMs: 0 },
+        emit: (e: any) => events.push(e),
+      },
+    });
+    assert.equal(res2.status, "done");
+    assert.equal(res2.text, "已接续完成剩余视频分镜与渲染。");
+    const fifthInputTexts = JSON.stringify(model.historyCalls[4]);
+    assert.doesNotMatch(fifthInputTexts, /previous turn was interrupted before completion/);
   } finally {
     cleanup();
   }

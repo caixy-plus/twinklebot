@@ -129,6 +129,9 @@ export type StreamItem =
   | {
       kind: "route_notice";
       id: string;
+      level?: string;
+      maxSteps?: number;
+      toolCount?: number;
       text: string;
     }
   | {
@@ -1476,6 +1479,9 @@ export function reduceSessionEvent(
         {
           kind: "route_notice",
           id: nextStreamItemId("rnotice"),
+          level: evt.level,
+          maxSteps: Number.isFinite(Number(evt.maxSteps)) ? Number(evt.maxSteps) : undefined,
+          toolCount: Number.isFinite(Number(evt.toolCount)) ? Number(evt.toolCount) : undefined,
           text: evt.text || "本轮费用已接近预算上限",
         },
       ];

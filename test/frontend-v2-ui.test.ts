@@ -245,4 +245,8 @@ test("settings modal scroll stability avoids nested GPU RenderPass clipping and 
     styleCss.includes(".settings-content.is-usage-pane-active"),
     "usage tab must retain its dedicated isolated vertical scroll layout"
   );
+  assert.ok(
+    styleCss.includes(".max-steps-card") && appJs.includes("max-steps-continue-btn"),
+    "ChatStage must render actionable .max-steps-card with continue button on step limit"
+  );
 });

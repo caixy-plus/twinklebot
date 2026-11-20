@@ -16,6 +16,7 @@ import {
   clearSessionHistory,
   closeAllPopovers,
   closeNewChatBar,
+  continueFromMaxSteps,
   deleteSessionWithConfirm,
   openSettingsModal,
   refreshLibrary,
@@ -667,7 +668,7 @@ export function ChatStage({
             </div>
           </div>
         ) : (
-          streamItems.map((item: StreamItem) => {
+          streamItems.map((item: StreamItem, itemIdx: number) => {
             switch (item.kind) {
               case "unread_divider":
                 return (
@@ -695,13 +696,42 @@ export function ChatStage({
                 return <CredentialCard key={item.id} item={item} />;
               case "memory_suggestion":
                 return <MemorySuggestionCard key={item.id} item={item} />;
-              case "route_notice":
+              case "route_notice": {
+                if (item.level === "max_steps") {
+                  const hasFollowUp = streamItems
+                    .slice(itemIdx + 1)
+                    .some((it) => it.kind === "message" || (it.kind === "route_notice" && it.level === "max_steps"));
+                  return (
+                    <div key={item.id} className="confirm-card max-steps-card" role="status">
+                      <div className="confirm-header max-steps-header">
+                        <UiIcon name="alert-triangle" className="inline-ui-icon" size={14} />
+                        <span>已达单轮步数上限</span>
+                      </div>
+                      <div className="max-steps-body">{item.text}</div>
+                      {!hasFollowUp ? (
+                        <div className="confirm-actions">
+                          <button
+                            type="button"
+                            className="btn-approve max-steps-continue-btn"
+                            disabled={busy}
+                            onClick={() => void continueFromMaxSteps()}
+                          >
+                            {busy ? "继续执行中…" : "继续执行"}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="max-steps-continued-hint">已接续执行</div>
+                      )}
+                    </div>
+                  );
+                }
                 return (
                   <div key={item.id} className="route-notice-pill" role="status">
                     <UiIcon name="lightbulb" className="inline-ui-icon" size={14} />
                     {item.text || "本轮费用已接近预算上限"}
                   </div>
                 );
+              }
               case "error":
                 return (
                   <div key={item.id} className="error-card">

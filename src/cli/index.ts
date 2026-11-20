@@ -120,6 +120,9 @@ async function main() {
       case "answer":
         console.log(`\n${event.text}`);
         break;
+      case "route_notice":
+        if (event.text) console.log(`\n⚠️ ${event.text}`);
+        break;
       case "error":
         console.error(`❌ ${event.message}`);
         break;

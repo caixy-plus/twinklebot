@@ -165,6 +165,35 @@
   border-color: rgba(251, 43, 62, 0.45);
 }
 
+.max-steps-card {
+  min-width: 0;
+  max-width: min(80%, 100%);
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+}
+
+.max-steps-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.max-steps-body {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.max-steps-continue-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.max-steps-continued-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .confirm-header {
   font-size: 13px;
   font-weight: 600;

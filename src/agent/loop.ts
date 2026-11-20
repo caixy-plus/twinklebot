@@ -1138,6 +1138,8 @@ async function runTaskInner({
     };
 
     let consecutiveErrors = 0;
+    let executedToolCount = 0;
+    const recentExecutedTools: string[] = [];
     let lastScreenSha1 = hashScreenshot(initialPng);
     const generatedImageEmbeds: Array<{
       url: string;
@@ -1387,6 +1389,14 @@ async function runTaskInner({
         : allTools;
 
       const requestedModel = autoRoute ? stepRoute.model : modelName || defaultModel;
+      if (stepNo === maxSteps && maxSteps >= 4 && !ctrl.hasSteeredMessages()) {
+        history.push(
+          userStep(
+            `[System Notice: This is step ${stepNo}/${maxSteps} (the final step allowed for this turn). Finish and respond directly to the user if ready; otherwise summarize completed work and remaining steps so the user can continue.]`,
+            null
+          )
+        );
+      }
       const systemInstruction = buildSystemInstruction(promptConfig);
       const overheadTokens =
         estimateTextTokens(systemInstruction) +
@@ -1791,6 +1801,8 @@ async function runTaskInner({
 
         // Handle Built-in Bot Collaboration, Interactive Choice & Image Generation Tools
         if (enableBotTools && isBotCollabTool(call.name)) {
+          executedToolCount += 1;
+          recentExecutedTools.push(call.name);
           if (call.name === "memory_manage" && call.args?.action === "save") {
             memoryManagedInTurn = true;
           }
@@ -1874,6 +1886,8 @@ async function runTaskInner({
         const needsScreenLock = SCREEN_REQUIRED_TOOLS.has(call.name);
 
         const executeApprovedCall = async (approvedByUser = false): Promise<{ result: any; screenshot: Buffer | null }> => {
+          executedToolCount += 1;
+          recentExecutedTools.push(call.name);
           if (isHostTool(call.name)) {
             if (config?.deployEnv === "cloud" || hostBridge?.hasConnectedHost?.()) {
               if (!hostBridge) {
@@ -2074,8 +2088,42 @@ async function runTaskInner({
       }
     }
 
+    const recentUnique = [...new Set(recentExecutedTools.slice(-8))].slice(-4);
+    const progressDetail =
+      executedToolCount > 0
+        ? `已完成 ${executedToolCount} 次操作${recentUnique.length ? `（近期：${recentUnique.join("、")}）` : ""}。`
+        : "";
+    const maxStepsMessage =
+      `已达到单轮最大步数上限（${maxSteps} 步），当前任务已暂停。` +
+      `${progressDetail}你可以直接回复「继续」或点击下方「继续执行」让我从当前进度接续完成。`;
+
+    if (!skipHistorySave && store?.saveHistory) {
+      const lastStep = history[history.length - 1];
+      if (lastStep?.type !== "model_output") {
+        history.push({
+          type: "model_output",
+          content: [
+            {
+              type: "text",
+              text: `[System Notice: Reached the single-turn limit of ${maxSteps} steps (${executedToolCount} tool calls executed). Paused cleanly and notified the user that they can reply "继续" to resume from current progress.]`,
+            },
+          ],
+        });
+      }
+      store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
+    }
+
+    emitTagged({
+      type: "route_notice",
+      level: "max_steps",
+      maxSteps,
+      stepsUsed: maxSteps,
+      toolCount: executedToolCount,
+      recentTools: recentUnique,
+      text: maxStepsMessage,
+    });
     setStatus("max_steps");
-    return { status: "max_steps", text: "" };
+    return { status: "max_steps", text: maxStepsMessage };
   } finally {
     runEnded = true;
     if (releaseTaskScreenLease) {

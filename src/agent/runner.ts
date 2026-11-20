@@ -170,6 +170,16 @@ export function createRunner({
       } catch {
         // ignore
       }
+    } else if (event.type === "route_notice" && event.level === "max_steps" && event.text) {
+      try {
+        if (store?.updateSession) {
+          store.updateSession(sessionId, {
+            subtitle: String(event.text).replace(/\s+/g, " ").slice(0, 48),
+          });
+        }
+      } catch {
+        // ignore
+      }
     }
 
     broadcastGlobal({ sessionId, ...saved });
