@@ -80,6 +80,7 @@ import {
 import { normalizeMailAuthStore } from "../lib/mail-client.js";
 import { OFFICE_SKILLS, resolveInstalledSkillIds } from "../shared/skills-catalog.js";
 import { summarizeThinkingProgress } from "./thinking-summarizer.js";
+import { runPostTurnMemoryExtraction } from "./memory-extractor.js";
 import { USD_TO_CNY } from "./pricing.js";
 
 const MAX_SESSION_TOKEN_SCALES = 256;
@@ -528,6 +529,7 @@ async function runTaskInner({
   });
 
   let latestUserText = userText;
+  let memoryManagedInTurn = false;
   let runEnded = false;
   let hasModelSummary = false;
   let activeSummaryCtrl: AbortController | null = null;
@@ -1680,6 +1682,27 @@ async function runTaskInner({
           ...(effectiveReplyAnchor ? { replyTo: effectiveReplyAnchor } : {}),
         });
         setStatus("done");
+        if (
+          enableBotTools &&
+          !memoryManagedInTurn &&
+          !speakerBot &&
+          !ctrl.stopped &&
+          config?.autoMemoryExtract !== false &&
+          typeof model?.summarizeTurn === "function"
+        ) {
+          const postSettings = store?.readSettings?.() || {};
+          const postRouting = normalizeRoutingSettings(postSettings?.routing);
+          void runPostTurnMemoryExtraction({
+            store,
+            model,
+            sessionId,
+            botSession: sessionObj,
+            userText: latestUserText,
+            assistantText: answerText,
+            config: { ...config, routing: postRouting },
+            emit: emitTagged,
+          }).catch(() => {});
+        }
         return { status: "done", text: answerText };
       }
 
@@ -1768,12 +1791,16 @@ async function runTaskInner({
 
         // Handle Built-in Bot Collaboration, Interactive Choice & Image Generation Tools
         if (enableBotTools && isBotCollabTool(call.name)) {
+          if (call.name === "memory_manage" && call.args?.action === "save") {
+            memoryManagedInTurn = true;
+          }
           const collabResult: any = await runBotCollabTool(call.name, call.args, {
             store,
             model,
             executor,
             mcpManager,
             config: promptConfig,
+            userText: latestUserText,
             activeLlmModel: requestedModel,
             fallbackLlmModel: autoRoute ? stepRoute.fallbackModel : defaultModel,
             senderSessionId: sessionId,

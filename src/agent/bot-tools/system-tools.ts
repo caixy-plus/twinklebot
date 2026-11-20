@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { inferImageMimeType } from "../model.js";
 import { registerEphemeralSecret } from "../tools.js";
+import { findDuplicateMemory, hasExplicitMemoryIntent } from "../memory-extractor.js";
 import { computeInitialNextRun } from "../scheduler.js";
 import { buildSessionCostSummary } from "../pricing.js";
 import { updateBotComputer } from "../../lib/bot-computer-updater.js";
@@ -175,50 +176,6 @@ export async function handleSystemBotTool(
         };
       }
 
-      const normalizeMemText = (s: unknown) =>
-        String(s || "")
-          .toLowerCase()
-          .replace(/[\s\p{P}\p{S}]+/gu, "")
-          .trim();
-
-      const bigramJaccard = (a: string, b: string): number => {
-        if (!a || !b) return 0;
-        if (a === b) return 1;
-        if (a.length < 2 || b.length < 2) return 0;
-        const gramsA = new Set<string>();
-        const gramsB = new Set<string>();
-        for (let i = 0; i < a.length - 1; i++) gramsA.add(a.slice(i, i + 2));
-        for (let i = 0; i < b.length - 1; i++) gramsB.add(b.slice(i, i + 2));
-        let inter = 0;
-        for (const g of gramsA) {
-          if (gramsB.has(g)) inter += 1;
-        }
-        const union = gramsA.size + gramsB.size - inter;
-        return union > 0 ? inter / union : 0;
-      };
-
-      const findDuplicateMemory = (list: any[], candidateContent: string) => {
-        const normCand = normalizeMemText(candidateContent);
-        if (!normCand) return null;
-        for (const item of list) {
-          const existingText = item?.instruction || item?.content || item?.desc || "";
-          const normExist = normalizeMemText(existingText);
-          if (!normExist) continue;
-          if (normCand === normExist) return item;
-          if (
-            normCand.length >= 8 &&
-            normExist.length >= 8 &&
-            (normCand.includes(normExist) || normExist.includes(normCand))
-          ) {
-            return item;
-          }
-          if (bigramJaccard(normCand, normExist) >= 0.75) {
-            return item;
-          }
-        }
-        return null;
-      };
-
       if (action === "save") {
         const rawContent = String(args.content || args.instruction || "").trim();
         if (!rawContent) {
@@ -265,8 +222,18 @@ export async function handleSystemBotTool(
           }
         }
 
-        // Dual-track PI-016: model-inferred ("auto") memories emit a non-blocking suggestion card
-        if (args.trigger === "auto" && targetIdx < 0 && typeof emit === "function") {
+        // Server-side guard for PI-016:
+        // Only allow direct silent write when the user's actual message explicitly requested remembering
+        // (or in direct tool tests where ctx.userText is omitted). Otherwise downgrade to non-blocking suggestion card!
+        const turnUserText = typeof ctx.userText === "string" ? ctx.userText.trim() : "";
+        const downgradedToAuto =
+          args.trigger !== "auto" &&
+          turnUserText.length > 0 &&
+          !hasExplicitMemoryIntent(turnUserText);
+        const effectiveTrigger =
+          args.trigger === "auto" || downgradedToAuto ? "auto" : "explicit";
+
+        if (effectiveTrigger === "auto" && targetIdx < 0 && typeof emit === "function") {
           const suggestionId = `memsug-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           emit({
             type: "memory_suggestion",
@@ -276,11 +243,13 @@ export async function handleSystemBotTool(
             name: rawName,
             content: rawContent,
             status: "pending",
+            ...(downgradedToAuto ? { downgradedFromExplicit: true } : {}),
           });
           return {
             ok: true,
             action: "suggest",
             pendingUserConfirm: true,
+            downgradedToAuto,
             suggestionId,
             scope: targetScope,
             name: rawName,
