@@ -6,6 +6,7 @@ import {
   ChoiceCard,
   CredentialCard,
   DraftCard,
+  MemorySuggestionCard,
 } from "./components/chat/InteractiveCards.js";
 import { MarkdownRenderer } from "./components/chat/MarkdownRenderer.js";
 import { MarkupPreviewCard } from "./components/chat/MarkupPreviewCard.js";
@@ -109,6 +110,38 @@ export function renderStreamItemToStaticMarkup(
       return renderToStaticMarkup(<CredentialCard item={item} />);
     case "bot_exchange":
       return renderToStaticMarkup(<BotExchangePill item={item} />);
+    case "memory_suggestion":
+      return renderToStaticMarkup(<MemorySuggestionCard item={item} />);
+    case "route_notice":
+      if (item.level === "max_steps") {
+        return renderToStaticMarkup(
+          <div className="confirm-card max-steps-card" role="status">
+            <div className="confirm-header max-steps-header">
+              <span>已达单轮步数上限</span>
+            </div>
+            <div className="max-steps-body">{item.text}</div>
+          </div>
+        );
+      }
+      return renderToStaticMarkup(
+        <div className="route-notice-pill" role="status">
+          {item.text || "本轮费用已接近预算上限"}
+        </div>
+      );
+    case "error":
+      return renderToStaticMarkup(<div className="error-card">{item.message}</div>);
+    case "unread_divider":
+      return renderToStaticMarkup(
+        <div className="unread-divider">
+          <span>以下为新消息</span>
+        </div>
+      );
+    case "date_divider":
+      return renderToStaticMarkup(
+        <div className="date-divider">
+          <span>{item.label}</span>
+        </div>
+      );
     default:
       return "";
   }

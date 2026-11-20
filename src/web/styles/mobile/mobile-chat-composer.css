@@ -168,8 +168,9 @@
 }
 
 .msg-group.is-actions-open .msg-hover-actions {
-  display: inline-flex;
-  opacity: 1;
+  display: inline-flex !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
   align-items: center;
   gap: 6px;
   margin-top: 6px;

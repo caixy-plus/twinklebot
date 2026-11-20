@@ -1977,12 +1977,18 @@ export function SkillsStoreModal() {
               id="add-custom-skill-btn"
               type="button"
               className="settings-blue-pill custom-skill-create-btn"
+              disabled={remoteAccountOffline}
               onClick={() => openCustomEditorFor(null)}
             >
               + 新建自定义技能
             </button>
           </div>
 
+          <fieldset
+            className="remote-offline-fieldset"
+            data-remote-offline-guard="skills-manage"
+            disabled={remoteAccountOffline}
+          >
           <div className="apps-sections-scroll skills-sections">
             {/* Section A: 自定义技能 */}
             <section
@@ -2255,6 +2261,7 @@ export function SkillsStoreModal() {
               </div>
             </section>
           </div>
+          </fieldset>
         </div>
 
         {/* ==================== SUB-VIEW 3: SKILL DETAIL ==================== */}
@@ -2305,6 +2312,7 @@ export function SkillsStoreModal() {
               id="skill-detail-remove-btn"
               type="button"
               className="settings-pill-btn danger-text"
+              disabled={remoteAccountOffline}
               onClick={() =>
                 setState((prev) => ({
                   pendingRemoveSkillId:
@@ -2318,6 +2326,11 @@ export function SkillsStoreModal() {
             </button>
           </div>
 
+          <fieldset
+            className="remote-offline-fieldset"
+            data-remote-offline-guard="skills-detail"
+            disabled={remoteAccountOffline}
+          >
           <div id="skill-detail-remove-slot">
             {detailSkill && pendingRemoveSkillId === detailSkill.id && (
               <SkillRemoveConfirmBox
@@ -2756,6 +2769,7 @@ export function SkillsStoreModal() {
               </div>
             </section>
           </div>
+          </fieldset>
         </div>
       </div>
     </div>

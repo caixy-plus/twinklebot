@@ -37,7 +37,7 @@ export function NetworkStatusBanner({
   } as any);
 
   const effectiveStatus =
-    networkHealth.status === "online" && accMeta.type === "lan" && lanNodeOffline
+    accMeta.type === "lan" && lanNodeOffline && networkHealth.status !== "recovered"
       ? "offline"
       : networkHealth.status;
 
@@ -66,7 +66,8 @@ export function NetworkStatusBanner({
     }
   };
 
-  const handleSwitchAccount = () => {
+  const handleSwitchAccount = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
     if (isMobileViewport()) {
       setState((prev) => ({
         settingsModal: { ...prev.settingsModal, open: false },

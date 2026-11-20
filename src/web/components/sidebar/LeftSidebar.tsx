@@ -53,7 +53,7 @@ export function LeftSidebar({
   const networkHealth = useStore((s) => s.networkHealth);
   const activeAccMeta = getActiveAccountMeta({ accountsState } as any);
   const effectiveNetStatus =
-    networkHealth.status === "online" && activeAccMeta.type === "lan" && lanNodeOffline
+    activeAccMeta.type === "lan" && lanNodeOffline && networkHealth.status !== "recovered"
       ? "offline"
       : networkHealth.status;
   const mobileNodeIsOnline = effectiveNetStatus !== "offline" && !lanNodeOffline;

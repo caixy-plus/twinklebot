@@ -419,7 +419,7 @@ function buildTraySnapshot() {
   try {
     const sessions = backendStore?.listSessions?.() || [];
     for (const s of sessions) {
-      if (s?.isGroup) groupCount += 1;
+      if (s?.type === "group" || s?.isGroup) groupCount += 1;
       else botCount += 1;
     }
     const schedules = backendStore?.readSchedules?.() || [];
