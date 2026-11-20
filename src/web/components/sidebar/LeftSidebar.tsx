@@ -27,6 +27,8 @@ import {
 } from "../../state/store.js";
 import { SessionAvatar } from "../common/AvatarView.js";
 import { UiIcon } from "../common/Icon.js";
+import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
+import { getActiveAccountMeta } from "../../services/network-monitor.js";
 
 export function LeftSidebar({
   onToggleCompact,
@@ -48,6 +50,13 @@ export function LeftSidebar({
   const lastGlobalUsagePayload = useStore((s) => s.lastGlobalUsagePayload);
   const computerStatus = useStore((s) => s.computerStatus);
   const lanNodeOffline = useStore((s) => s.lanNodeOffline);
+  const networkHealth = useStore((s) => s.networkHealth);
+  const activeAccMeta = getActiveAccountMeta({ accountsState } as any);
+  const effectiveNetStatus =
+    networkHealth.status === "online" && activeAccMeta.type === "lan" && lanNodeOffline
+      ? "offline"
+      : networkHealth.status;
+  const mobileNodeIsOnline = effectiveNetStatus !== "offline" && !lanNodeOffline;
   const updateState = useStore((s) => s.updateState);
   const updateDecision = updateState?.decision;
   const hasVisibleUpdate = Boolean(
@@ -220,7 +229,8 @@ export function LeftSidebar({
           <span
             id="mobile-node-dot"
             className="mobile-node-dot"
-            data-online={lanNodeOffline ? "false" : "true"}
+            data-online={mobileNodeIsOnline ? "true" : "false"}
+            data-net-status={effectiveNetStatus}
             aria-hidden="true"
           />
         </button>
@@ -263,6 +273,8 @@ export function LeftSidebar({
           </button>
         </div>
       </div>
+
+      <NetworkStatusBanner placement="mobile-list" />
 
       {/* Pinned Primary Bot (Nori) */}
       <div className="pinned-bot-zone" aria-label="已置顶的 Bot">

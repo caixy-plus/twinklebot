@@ -1,4 +1,11 @@
 import { getState, runtimeRefs, setState } from "../state/store.js";
+import {
+  getActiveAccountMeta,
+  getNetworkThresholds,
+  isRemoteAccountType,
+  reportHttpOutcome,
+  reportHttpSlowInFlight,
+} from "./network-monitor.js";
 
 function isActiveLanAccount(s = getState()): boolean {
   const activeAcc = (s.accountsState?.accounts || []).find(
@@ -32,14 +39,9 @@ export function triggerLanUnreachableFallback(
 ) {
   const s = getState();
   if (!isActiveLanAccount(s)) return;
-  const shouldOpenModal =
-    !opts.suppressModal &&
-    (opts.forceModal ||
-      (!s.lanOfflineModalShown &&
-        !s.lanOfflineDismissed &&
-        !s.mobileSheets?.nodeOpen &&
-        !s.mobilePairModalOpen &&
-        !s.cloudAccountModal?.open));
+  // Non-blocking top NetworkStatusBanner is now the default UX for LAN disconnects;
+  // only open the legacy blocking modal when explicitly forced.
+  const shouldOpenModal = Boolean(opts.forceModal && !opts.suppressModal);
 
   if (s.lanNodeOffline && !shouldOpenModal) return;
 
@@ -92,33 +94,67 @@ export function apiUrl(pathOrUrl = ""): string {
 export async function apiFetch(url: string, options: any = {}): Promise<Response> {
   const s = getState();
   const reqEpoch = s.accountEpoch;
-  const { noLanTimeout, suppressLanOfflineModal, ...fetchOptions } = options || {};
+  const {
+    noLanTimeout,
+    noTimeout,
+    timeoutMs: customTimeoutMs,
+    suppressLanOfflineModal,
+    ...fetchOptions
+  } = options || {};
   const headers: Record<string, string> = { ...(fetchOptions.headers || {}) };
   if (s.activeAuthToken && !headers.Authorization) {
     headers.Authorization = `Bearer ${s.activeAuthToken}`;
   }
-  const activeAcc = (s.accountsState?.accounts || []).find(
-    (a) => a.id === s.accountsState?.activeAccountId
-  );
-  const isLanNode = activeAcc?.type === "lan";
-  let lanTimeoutId: any = null;
+
+  const accMeta = getActiveAccountMeta(s);
+  const accountType = accMeta.type;
+  const isLanNode = accountType === "lan";
+  const isRemote = isRemoteAccountType(accountType);
+  const thresholds = getNetworkThresholds();
+
+  const resolvedTimeoutMs =
+    typeof customTimeoutMs === "number" && customTimeoutMs > 0
+      ? customTimeoutMs
+      : noTimeout
+        ? 0
+        : isLanNode
+          ? noLanTimeout
+            ? 0
+            : thresholds.lanTimeoutMs
+          : accountType === "cloud"
+            ? thresholds.cloudTimeoutMs
+            : 0;
+
+  let timeoutId: any = null;
+  let slowTimerId: any = null;
   let timedOut = false;
   let localAbortCtrl: AbortController | null = null;
+  const startedAt = Date.now();
   const baseSignal = fetchOptions.signal || runtimeRefs.accountAbortController?.signal || null;
-  if (isLanNode && !noLanTimeout) {
+
+  if (resolvedTimeoutMs > 0) {
     localAbortCtrl = new AbortController();
     if (baseSignal) {
       if (baseSignal.aborted) localAbortCtrl.abort();
       else baseSignal.addEventListener("abort", () => localAbortCtrl?.abort(), { once: true });
     }
-    lanTimeoutId = setTimeout(() => {
+    timeoutId = setTimeout(() => {
       timedOut = true;
-      localAbortCtrl?.abort(new Error("LAN_TIMEOUT_3S"));
-    }, 3000);
+      localAbortCtrl?.abort(new Error(isLanNode ? "LAN_TIMEOUT" : "REMOTE_TIMEOUT"));
+    }, resolvedTimeoutMs);
     fetchOptions.signal = localAbortCtrl.signal;
   } else if (!fetchOptions.signal && runtimeRefs.accountAbortController) {
     fetchOptions.signal = runtimeRefs.accountAbortController.signal;
   }
+
+  if (isRemote && !baseSignal?.aborted) {
+    slowTimerId = setTimeout(() => {
+      if (reqEpoch === getState().accountEpoch) {
+        reportHttpSlowInFlight(accountType, Date.now() - startedAt);
+      }
+    }, thresholds.slowRequestMs);
+  }
+
   try {
     const res = await fetch(apiUrl(url), { ...fetchOptions, headers });
     if (reqEpoch !== getState().accountEpoch) {
@@ -129,20 +165,43 @@ export async function apiFetch(url: string, options: any = {}): Promise<Response
     if (isLanNode) {
       markLanReachable();
     }
+    reportHttpOutcome({
+      ok: true,
+      elapsedMs: Date.now() - startedAt,
+      accountType,
+    });
     return res;
   } catch (err: any) {
-    if (isLanNode && reqEpoch === getState().accountEpoch && err?.code !== "STALE_ACCOUNT_EPOCH") {
-      const isTimeoutOrNetworkFailure =
+    const elapsedMs = Date.now() - startedAt;
+    if (reqEpoch === getState().accountEpoch && err?.code !== "STALE_ACCOUNT_EPOCH") {
+      const callerAborted = Boolean(baseSignal?.aborted);
+      const isTimeoutFailure =
         timedOut ||
-        err?.message === "LAN_TIMEOUT_3S" ||
-        (err instanceof TypeError && !baseSignal?.aborted);
-      if (isTimeoutOrNetworkFailure) {
-        triggerLanUnreachableFallback(err, { suppressModal: Boolean(suppressLanOfflineModal) });
+        err?.message === "LAN_TIMEOUT" ||
+        err?.message === "REMOTE_TIMEOUT";
+      const isNetworkFailure =
+        !callerAborted &&
+        (err instanceof TypeError || err?.name === "TypeError");
+
+      if (isTimeoutFailure || isNetworkFailure) {
+        reportHttpOutcome({
+          ok: false,
+          elapsedMs,
+          timedOut: isTimeoutFailure,
+          networkError: isNetworkFailure,
+          accountType,
+        });
+        if (isLanNode) {
+          triggerLanUnreachableFallback(err, {
+            suppressModal: Boolean(suppressLanOfflineModal),
+          });
+        }
       }
     }
     throw err;
   } finally {
-    if (lanTimeoutId) clearTimeout(lanTimeoutId);
+    if (timeoutId) clearTimeout(timeoutId);
+    if (slowTimerId) clearTimeout(slowTimerId);
   }
 }
 

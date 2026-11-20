@@ -2,6 +2,16 @@ import { isMobileAppTarget } from "../mobile-bridge.js";
 import { getState, runtimeRefs, setState } from "../state/store.js";
 import { apiJson, apiUrl, markLanReachable } from "./api-client.js";
 import {
+  computeReconnectDelayMs,
+  getActiveAccountMeta,
+  getNetworkThresholds,
+  isRemoteAccountType,
+  reportHeartbeatRtt,
+  reportHeartbeatTimeout,
+  reportTransportConnected,
+  reportTransportDisconnected,
+} from "./network-monitor.js";
+import {
   applySessionClearedUI,
   applySessionRewoundUI,
   refreshComputerDisplays,
@@ -269,8 +279,80 @@ function setRealtimeConnectedMarker(connected: boolean) {
   } catch {}
 }
 
+function clearHeartbeatTimers() {
+  if (runtimeRefs.wsPingTimer) {
+    clearInterval(runtimeRefs.wsPingTimer);
+    runtimeRefs.wsPingTimer = null;
+  }
+  if (runtimeRefs.wsPongTimeoutTimer) {
+    clearTimeout(runtimeRefs.wsPongTimeoutTimer);
+    runtimeRefs.wsPongTimeoutTimer = null;
+  }
+  runtimeRefs.wsLastPingSentAt = 0;
+}
+
+function sendWsHeartbeatPing(
+  ws: WebSocket,
+  epoch: number,
+  timeoutMs = getNetworkThresholds().pongTimeoutMs
+) {
+  if (epoch !== getState().accountEpoch || runtimeRefs.wsSocket !== ws) return;
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (runtimeRefs.wsPongTimeoutTimer) return; // ping already in-flight
+  runtimeRefs.wsLastPingSentAt = Date.now();
+  try {
+    ws.send(JSON.stringify({ type: "ping", at: runtimeRefs.wsLastPingSentAt }));
+  } catch {
+    return;
+  }
+  runtimeRefs.wsPongTimeoutTimer = setTimeout(() => {
+    runtimeRefs.wsPongTimeoutTimer = null;
+    if (epoch !== getState().accountEpoch || runtimeRefs.wsSocket !== ws) return;
+    reportHeartbeatTimeout();
+    try {
+      ws.close();
+    } catch {}
+  }, timeoutMs);
+}
+
+function startWsHeartbeat(ws: WebSocket, epoch: number) {
+  clearHeartbeatTimers();
+  const meta = getActiveAccountMeta();
+  if (!isRemoteAccountType(meta.type)) return;
+  const thresholds = getNetworkThresholds();
+  runtimeRefs.wsPingTimer = setInterval(() => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    sendWsHeartbeatPing(ws, epoch, thresholds.pongTimeoutMs);
+  }, thresholds.pingIntervalMs);
+}
+
+function scheduleTransportReconnect(epoch: number, reason: string) {
+  if (epoch !== getState().accountEpoch) return;
+  if (runtimeRefs.wsReconnectTimer) return;
+
+  runtimeRefs.wsReconnectAttempt = (runtimeRefs.wsReconnectAttempt || 0) + 1;
+  const attempt = runtimeRefs.wsReconnectAttempt;
+  const browserOff = typeof navigator !== "undefined" && navigator.onLine === false;
+
+  if (browserOff) {
+    reportTransportDisconnected({ attempt, nextRetryDelayMs: null, reason: "browser_offline" });
+    return;
+  }
+
+  const delayMs = computeReconnectDelayMs(attempt);
+  reportTransportDisconnected({ attempt, nextRetryDelayMs: delayMs, reason });
+
+  runtimeRefs.wsReconnectTimer = setTimeout(() => {
+    runtimeRefs.wsReconnectTimer = null;
+    if (epoch === getState().accountEpoch) {
+      connectRealtimeTransport();
+    }
+  }, delayMs);
+}
+
 export function disconnectRealtimeTransport() {
   setRealtimeConnectedMarker(false);
+  clearHeartbeatTimers();
   if (runtimeRefs.wsReconnectTimer) {
     clearTimeout(runtimeRefs.wsReconnectTimer);
     runtimeRefs.wsReconnectTimer = null;
@@ -293,12 +375,11 @@ export function disconnectRealtimeTransport() {
 }
 
 export function connectGlobalSse(epoch = getState().accountEpoch) {
-  if (typeof EventSource !== "function") return;
+  if (typeof EventSource !== "function") {
+    scheduleTransportReconnect(epoch, "sse_unavailable");
+    return;
+  }
   const cur = getState();
-  const activeAcc = (cur.accountsState?.accounts || []).find(
-    (a) => a.id === cur.accountsState?.activeAccountId
-  );
-  if (activeAcc?.type === "lan" && cur.lanNodeOffline) return;
   if (runtimeRefs.eventSource) {
     try {
       runtimeRefs.eventSource.close();
@@ -321,9 +402,16 @@ export function connectGlobalSse(epoch = getState().accountEpoch) {
       es.close();
       return;
     }
+    const wasReconnect = runtimeRefs.wsReconnectAttempt > 0 || runtimeRefs.wsHasOpenedInEpoch;
+    runtimeRefs.wsReconnectAttempt = 0;
+    runtimeRefs.wsHasOpenedInEpoch = true;
     sseOpened = true;
     setRealtimeConnectedMarker(true);
     markLanReachable();
+    reportTransportConnected("sse", wasReconnect);
+    if (wasReconnect) {
+      syncSessionsAndActiveOnReconnect(epoch);
+    }
   };
   es.onmessage = (msg) => {
     if (epoch !== getState().accountEpoch) return;
@@ -332,12 +420,24 @@ export function connectGlobalSse(epoch = getState().accountEpoch) {
     } catch {}
   };
   es.onerror = () => {
-    if (epoch !== getState().accountEpoch || !sseOpened) {
+    if (epoch !== getState().accountEpoch) {
+      try {
+        es.close();
+      } catch {}
+      return;
+    }
+    if (!sseOpened) {
       try {
         es.close();
       } catch {}
       if (runtimeRefs.eventSource === es) runtimeRefs.eventSource = null;
+      setRealtimeConnectedMarker(false);
+      // Fix: previously stopped reconnecting permanently when both initial WS & SSE failed!
+      scheduleTransportReconnect(epoch, "sse_connect_error");
+      return;
     }
+    setRealtimeConnectedMarker(false);
+    scheduleTransportReconnect(epoch, "sse_dropped");
   };
 }
 
@@ -378,6 +478,14 @@ export function connectRealtimeTransport() {
   disconnectRealtimeTransport();
   const s = getState();
   const epoch = s.accountEpoch;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    reportTransportDisconnected({
+      attempt: Math.max(1, runtimeRefs.wsReconnectAttempt || 1),
+      nextRetryDelayMs: null,
+      reason: "browser_offline",
+    });
+    return;
+  }
   let wsTarget = s.activeWsUrl;
   if (!wsTarget && typeof window !== "undefined") {
     try {
@@ -409,11 +517,15 @@ export function connectRealtimeTransport() {
         ws.close();
         return;
       }
-      const isReconnect = runtimeRefs.wsHasOpenedInEpoch === true;
+      const isReconnect =
+        runtimeRefs.wsHasOpenedInEpoch === true || runtimeRefs.wsReconnectAttempt > 0;
       runtimeRefs.wsHasOpenedInEpoch = true;
+      runtimeRefs.wsReconnectAttempt = 0;
       openedOnce = true;
       setRealtimeConnectedMarker(true);
       markLanReachable();
+      reportTransportConnected("ws", isReconnect);
+      startWsHeartbeat(ws, epoch);
 
       const cur = getState();
       const activeAcc = (cur.accountsState?.accounts || []).find(
@@ -442,7 +554,20 @@ export function connectRealtimeTransport() {
     ws.onmessage = (evt) => {
       if (epoch !== getState().accountEpoch) return;
       try {
-        handleRealtimePayload(JSON.parse(String(evt.data)));
+        const payload = JSON.parse(String(evt.data));
+        if (payload && payload.type === "pong") {
+          if (runtimeRefs.wsPongTimeoutTimer) {
+            clearTimeout(runtimeRefs.wsPongTimeoutTimer);
+            runtimeRefs.wsPongTimeoutTimer = null;
+          }
+          if (runtimeRefs.wsLastPingSentAt > 0) {
+            const rtt = Math.max(1, Date.now() - runtimeRefs.wsLastPingSentAt);
+            runtimeRefs.wsLastPingSentAt = 0;
+            reportHeartbeatRtt(rtt);
+          }
+          return;
+        }
+        handleRealtimePayload(payload);
       } catch {}
     };
 
@@ -454,19 +579,52 @@ export function connectRealtimeTransport() {
 
     ws.onclose = () => {
       if (epoch !== getState().accountEpoch) return;
+      clearHeartbeatTimers();
       runtimeRefs.wsSocket = null;
       if (!runtimeRefs.eventSource) {
         setRealtimeConnectedMarker(false);
       }
       if (!openedOnce) {
-        connectGlobalSse(epoch);
+        if (!runtimeRefs.eventSource) {
+          connectGlobalSse(epoch);
+        }
         return;
       }
-      runtimeRefs.wsReconnectTimer = setTimeout(() => {
-        if (epoch === getState().accountEpoch) connectRealtimeTransport();
-      }, 2000);
+      scheduleTransportReconnect(epoch, "ws_closed");
     };
   } catch {
     connectGlobalSse(epoch);
+  }
+}
+
+export async function reconnectRealtimeNow(): Promise<boolean> {
+  const s = getState();
+  const epoch = s.accountEpoch;
+  runtimeRefs.wsReconnectAttempt = 0;
+  connectRealtimeTransport();
+  try {
+    await apiJson("/api/system/health", { timeoutMs: 4000, suppressLanOfflineModal: true });
+    if (epoch === getState().accountEpoch) {
+      markLanReachable();
+      await syncSessionsAndActiveOnReconnect(epoch);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function probeActiveTransportOnResume() {
+  const s = getState();
+  const epoch = s.accountEpoch;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  const ws = runtimeRefs.wsSocket;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    sendWsHeartbeatPing(ws, epoch, 2500);
+    return;
+  }
+  if (!runtimeRefs.eventSource && !ws) {
+    runtimeRefs.wsReconnectAttempt = 0;
+    connectRealtimeTransport();
   }
 }

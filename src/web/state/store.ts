@@ -12,6 +12,34 @@ import {
   translateToolHumanSummary,
 } from "./helpers.js";
 
+export type NetworkStatus = "online" | "weak" | "reconnecting" | "offline" | "recovered";
+
+export interface NetworkHealthState {
+  status: NetworkStatus;
+  rttMs: number | null;
+  reconnectAttempt: number;
+  nextRetryAt: number | null;
+  transport: "ws" | "sse" | "none";
+  reason: string;
+  browserOffline: boolean;
+  dismissedWeakBanner: boolean;
+  updatedAt: number;
+}
+
+export function createInitialNetworkHealth(): NetworkHealthState {
+  return {
+    status: "online",
+    rttMs: null,
+    reconnectAttempt: 0,
+    nextRetryAt: null,
+    transport: "none",
+    reason: "",
+    browserOffline: false,
+    dismissedWeakBanner: false,
+    updatedAt: 0,
+  };
+}
+
 export type StreamItem =
   | { kind: "unread_divider"; id: string }
   | { kind: "date_divider"; id: string; label: string }
@@ -186,6 +214,7 @@ export interface AppState {
   lanOfflineModalShown: boolean;
   lanNodeOffline: boolean;
   lanOfflineDismissed: boolean;
+  networkHealth: NetworkHealthState;
   mobilePairModalOpen: boolean;
   mobilePairFeedback: { text: string; kind: string };
   desktopPairingModal: { open: boolean; deviceName: string; code: string };
@@ -449,6 +478,7 @@ export function createInitialState(): AppState {
     lanOfflineModalShown: false,
     lanNodeOffline: false,
     lanOfflineDismissed: false,
+    networkHealth: createInitialNetworkHealth(),
     mobilePairModalOpen: false,
     mobilePairFeedback: { text: "", kind: "info" },
     desktopPairingModal: { open: false, deviceName: "", code: "000000" },
@@ -690,6 +720,11 @@ export const runtimeRefs: {
   accountAbortController: AbortController | null;
   wsSocket: WebSocket | null;
   wsReconnectTimer: any;
+  wsPingTimer: any;
+  wsPongTimeoutTimer: any;
+  wsLastPingSentAt: number;
+  wsReconnectAttempt: number;
+  lastHiddenAt: number;
   wsHasOpenedInEpoch: boolean;
   inflightReconnectSync: Promise<any> | null;
   eventSource: EventSource | null;
@@ -706,6 +741,11 @@ export const runtimeRefs: {
   accountAbortController: null,
   wsSocket: null,
   wsReconnectTimer: null,
+  wsPingTimer: null,
+  wsPongTimeoutTimer: null,
+  wsLastPingSentAt: 0,
+  wsReconnectAttempt: 0,
+  lastHiddenAt: 0,
   wsHasOpenedInEpoch: false,
   inflightReconnectSync: null,
   eventSource: null,

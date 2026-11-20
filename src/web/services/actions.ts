@@ -56,8 +56,16 @@ import {
 import {
   connectRealtimeTransport,
   disconnectRealtimeTransport,
+  probeActiveTransportOnResume,
+  reconnectRealtimeNow,
   syncSessionsAndActiveOnReconnect,
 } from "./realtime.js";
+import {
+  getNetworkThresholds,
+  handleBrowserOnlineChange,
+  inspectNavigatorConnectionHint,
+  resetNetworkHealthForAccountSwitch,
+} from "./network-monitor.js";
 import {
   checkForAppUpdates,
   confirmBootedWebBundleReady,
@@ -1791,8 +1799,10 @@ export async function switchAccount(accountId: string, opts: any = {}) {
   }
   runtimeRefs.accountAbortController = new AbortController();
   runtimeRefs.wsHasOpenedInEpoch = false;
+  runtimeRefs.wsReconnectAttempt = 0;
   runtimeRefs.inflightReconnectSync = null;
   disconnectRealtimeTransport();
+  resetNetworkHealthForAccountSwitch();
 
   setState({
     accountEpoch: epoch,
@@ -2256,7 +2266,59 @@ export async function bootstrapApp() {
   };
   setInterval(() => maybePollComputerStatus(18_000), 20_000);
   window.addEventListener("focus", () => maybePollComputerStatus(5_000));
+
+  const onForegroundResume = () => {
+    const hiddenMs = runtimeRefs.lastHiddenAt ? Date.now() - runtimeRefs.lastHiddenAt : 0;
+    runtimeRefs.lastHiddenAt = 0;
+    const { resumeBgThresholdMs } = getNetworkThresholds();
+    if (hiddenMs >= resumeBgThresholdMs) {
+      probeActiveTransportOnResume();
+    }
+    maybePollComputerStatus(5_000);
+  };
+
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") maybePollComputerStatus(5_000);
+    if (document.visibilityState === "hidden") {
+      runtimeRefs.lastHiddenAt = Date.now();
+    } else if (document.visibilityState === "visible") {
+      onForegroundResume();
+    }
   });
+
+  window.addEventListener("offline", () => {
+    handleBrowserOnlineChange(false);
+    disconnectRealtimeTransport();
+  });
+
+  window.addEventListener("online", () => {
+    handleBrowserOnlineChange(true);
+    void reconnectRealtimeNow();
+  });
+
+  const navConn = (navigator as any)?.connection;
+  if (navConn && typeof navConn.addEventListener === "function") {
+    navConn.addEventListener("change", () => {
+      inspectNavigatorConnectionHint();
+      probeActiveTransportOnResume();
+    });
+  }
+
+  const capApp = (window as any)?.Capacitor?.Plugins?.App;
+  if (capApp && typeof capApp.addListener === "function") {
+    try {
+      capApp.addListener("appStateChange", (state: { isActive?: boolean }) => {
+        if (state?.isActive) {
+          onForegroundResume();
+        } else {
+          runtimeRefs.lastHiddenAt = Date.now();
+        }
+      });
+    } catch {}
+  }
+
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    handleBrowserOnlineChange(false);
+  } else {
+    inspectNavigatorConnectionHint();
+  }
 }

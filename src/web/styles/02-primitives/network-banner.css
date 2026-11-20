@@ -1,0 +1,190 @@
+/* Unified Non-Blocking Network Status Banner (Desktop + Mobile + Modals) */
+
+@keyframes network-banner-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes network-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+  }
+}
+
+.network-status-banner-wrap {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  z-index: 25;
+}
+
+.network-status-banner-wrap.is-placement-stage {
+  padding: 6px 14px 2px;
+}
+
+.network-status-banner-wrap.is-placement-mobile-list {
+  display: none;
+  padding: 6px 12px 2px;
+}
+
+.network-status-banner-wrap.is-placement-modal {
+  padding: 0 0 12px;
+}
+
+.network-status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 7px 11px;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  font-size: 12.5px;
+  line-height: 1.38;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  animation: network-banner-slide-in 170ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.network-status-banner[data-network-status="weak"] {
+  background: light-dark(#fffbeb, rgba(245, 158, 11, 0.14));
+  border-color: light-dark(rgba(217, 119, 6, 0.28), rgba(245, 158, 11, 0.32));
+  color: light-dark(#b45309, #fbbf24);
+}
+
+.network-status-banner[data-network-status="reconnecting"] {
+  background: light-dark(#fff7ed, rgba(249, 115, 22, 0.15));
+  border-color: light-dark(rgba(234, 88, 12, 0.28), rgba(249, 115, 22, 0.34));
+  color: light-dark(#c2410c, #fb923c);
+}
+
+.network-status-banner[data-network-status="offline"] {
+  background: light-dark(#fff1f2, rgba(251, 43, 62, 0.15));
+  border-color: light-dark(rgba(225, 29, 72, 0.26), rgba(251, 43, 62, 0.36));
+  color: light-dark(#be123c, #ff6b78);
+}
+
+.network-status-banner[data-network-status="recovered"] {
+  background: light-dark(#ecfdf5, rgba(20, 193, 111, 0.14));
+  border-color: light-dark(rgba(5, 150, 105, 0.28), rgba(20, 193, 111, 0.32));
+  color: light-dark(#047857, #34d399);
+}
+
+.network-status-banner-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+
+.network-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.network-status-dot.is-pulsing {
+  animation: network-dot-pulse 1.3s ease-in-out infinite;
+}
+
+.network-status-banner-text {
+  font-weight: 500;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.network-status-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.network-status-pill-btn {
+  appearance: none;
+  border: none;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  cursor: pointer;
+  color: inherit;
+  background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.10));
+  transition: background-color 140ms ease, opacity 140ms ease;
+}
+
+.network-status-pill-btn:hover:not(:disabled) {
+  background: light-dark(rgba(0, 0, 0, 0.12), rgba(255, 255, 255, 0.18));
+}
+
+.network-status-pill-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Unified dot color sync for mobile node dot & desktop account indicator */
+.mobile-node-dot[data-net-status="weak"],
+.mobile-node-dot[data-net-status="reconnecting"] {
+  background: var(--accent-orange) !important;
+  animation: network-dot-pulse 1.3s ease-in-out infinite;
+}
+
+.mobile-node-dot[data-net-status="offline"] {
+  background: var(--accent-red) !important;
+}
+
+/* Tiered Offline Read-Only Protection for Settings & Skills Store remote sections */
+.remote-offline-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  width: 100%;
+  display: contents;
+}
+
+.remote-offline-fieldset:disabled {
+  display: block;
+  opacity: 0.54;
+  transition: opacity 180ms ease;
+}
+
+.remote-offline-fieldset:disabled button,
+.remote-offline-fieldset:disabled input,
+.remote-offline-fieldset:disabled select,
+.remote-offline-fieldset:disabled textarea {
+  cursor: not-allowed;
+}
+
+@media (hover: none) and (pointer: coarse) and (max-width: 1024px) {
+  .network-status-banner-wrap.is-placement-mobile-list {
+    display: block;
+  }
+
+  .network-status-banner-wrap.is-placement-stage {
+    padding: 4px 10px 2px;
+  }
+}

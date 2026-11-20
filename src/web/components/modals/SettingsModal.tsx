@@ -61,7 +61,9 @@ import {
   parseModelsCsv,
 } from "../../state/helpers.js";
 import { setState, useStore } from "../../state/store.js";
+import { isRemoteAccountOffline } from "../../services/network-monitor.js";
 import { StatusText, UiIcon } from "../common/Icon.js";
+import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
 import { TraceEventsList } from "../common/SharedPanels.js";
 
 const SETTINGS_PROVIDER_KEYS = [
@@ -916,6 +918,14 @@ export function SettingsModal() {
   const matchedScreenPreset = matchScreenPoolPreset(screenPoolEffective, screenBudget);
   const multiDisplaySupported = hasConnectedNodeCapability("multi-display-v1", { diagnostics });
   const vaultSecretSupported = hasConnectedNodeCapability("vault-secret-v1", { diagnostics });
+  const networkHealth = useStore((s) => s.networkHealth);
+  const lanNodeOffline = useStore((s) => s.lanNodeOffline);
+  const accountsState = useStore((s) => s.accountsState);
+  const remoteAccountOffline = isRemoteAccountOffline({
+    accountsState,
+    networkHealth,
+    lanNodeOffline,
+  } as any);
 
   // Global Memory form
   const [memFormOpen, setMemFormOpen] = useState(false);
@@ -2043,6 +2053,12 @@ export function SettingsModal() {
           onTouchEnd={handleContentTouchEnd}
           onTouchCancel={handleContentTouchEnd}
         >
+          <NetworkStatusBanner
+            placement="modal"
+            contextHint="远端配置暂为只读（外观与账号切换仍可用）"
+            onlyWhenOffline
+          />
+
           {/* ==================== PANE 1: 通用 ==================== */}
           <div
             className="settings-pane"
@@ -2051,6 +2067,11 @@ export function SettingsModal() {
           >
             <h2 className="settings-pane-title">通用</h2>
 
+            <fieldset
+              className="remote-offline-fieldset"
+              data-remote-offline-guard="profile"
+              disabled={remoteAccountOffline}
+            >
             <div className="settings-group-label">个人资料（本机工作台）</div>
             <div className="settings-card">
               <div className="settings-account-row">
@@ -2129,6 +2150,7 @@ export function SettingsModal() {
                 </div>
               </div>
             </div>
+            </fieldset>
 
             <div className="settings-group-label">外观</div>
             <div className="settings-card">
@@ -2185,6 +2207,11 @@ export function SettingsModal() {
               </div>
             </div>
 
+            <fieldset
+              className="remote-offline-fieldset"
+              data-remote-offline-guard="general-remote"
+              disabled={remoteAccountOffline}
+            >
             <div className="settings-group-label">智能模型路由</div>
             <div className="settings-card">
               <div className="settings-item-row">
@@ -2558,6 +2585,7 @@ export function SettingsModal() {
                 })
               )}
             </div>
+            </fieldset>
           </div>
 
           {/* ==================== PANE 2: 模型接入与路由 ==================== */}
@@ -2566,6 +2594,11 @@ export function SettingsModal() {
             data-settings-pane="models"
             hidden={activeTab !== "models"}
           >
+            <fieldset
+              className="remote-offline-fieldset"
+              data-remote-offline-guard="models"
+              disabled={remoteAccountOffline}
+            >
             <div className="vault-header-row">
               <h2 className="settings-pane-title">模型接入与路由</h2>
               <button
@@ -2855,6 +2888,7 @@ export function SettingsModal() {
                 })
               )}
             </div>
+            </fieldset>
           </div>
 
           {/* ==================== PANE 3: 电脑 ==================== */}
@@ -2863,6 +2897,11 @@ export function SettingsModal() {
             data-settings-pane="computer"
             hidden={activeTab !== "computer"}
           >
+            <fieldset
+              className="remote-offline-fieldset"
+              data-remote-offline-guard="computer"
+              disabled={remoteAccountOffline}
+            >
             <h2 className="settings-pane-title">电脑</h2>
 
             <div className="settings-group-label">你的电脑</div>
@@ -3237,6 +3276,7 @@ export function SettingsModal() {
                 </>
               )}
             </div>
+            </fieldset>
           </div>
 
           {/* ==================== PANE 4: 权限 ==================== */}
@@ -3245,6 +3285,11 @@ export function SettingsModal() {
             data-settings-pane="permissions"
             hidden={activeTab !== "permissions"}
           >
+            <fieldset
+              className="remote-offline-fieldset"
+              data-remote-offline-guard="permissions"
+              disabled={remoteAccountOffline}
+            >
             <h2 className="settings-pane-title">权限</h2>
 
             <div className="settings-card">
@@ -3629,6 +3674,7 @@ export function SettingsModal() {
                 })}
               </div>
             </div>
+            </fieldset>
           </div>
 
           {/* ==================== PANE 5: 保险库 ==================== */}
@@ -3637,6 +3683,11 @@ export function SettingsModal() {
             data-settings-pane="vault"
             hidden={activeTab !== "vault"}
           >
+            <fieldset
+              className="remote-offline-fieldset"
+              data-remote-offline-guard="vault"
+              disabled={remoteAccountOffline}
+            >
             <div className="vault-header-row">
               <h2 className="settings-pane-title">保险库</h2>
               <button
@@ -3808,6 +3859,7 @@ export function SettingsModal() {
             <p className="vault-footnote">
               本机 AES-256-GCM 加密存储于 data/vault.json（密钥受系统钥匙串/本机安全存储保护），明文密码绝不会发送给大模型。
             </p>
+            </fieldset>
           </div>
 
           {/* ==================== PANE 6: 用量与账单 ==================== */}
@@ -3816,6 +3868,11 @@ export function SettingsModal() {
             data-settings-pane="usage"
             hidden={activeTab !== "usage"}
           >
+            <fieldset
+              className="remote-offline-fieldset"
+              data-remote-offline-guard="usage"
+              disabled={remoteAccountOffline}
+            >
             <div className="vault-header-row">
               <h2 className="settings-pane-title" id="usage-pane-title">
                 {isSessionScope
@@ -4334,6 +4391,7 @@ export function SettingsModal() {
             >
               {usageTraceActive && <TraceEventsList id="usage-inline-trace-list" />}
             </div>
+            </fieldset>
           </div>
 
           {/* ==================== PANE 7: 关于与系统诊断 ==================== */}

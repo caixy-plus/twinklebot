@@ -19,11 +19,13 @@ import {
   parseMcpConfigJsonInput,
 } from "../../state/helpers.js";
 import { getState, setState, useStore } from "../../state/store.js";
+import { isRemoteAccountOffline } from "../../services/network-monitor.js";
 import {
   resolveSkillIconName,
   StatusText,
   UiIcon,
 } from "../common/Icon.js";
+import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
 
 function SkillIconGraphic({
   skillId,
@@ -128,6 +130,14 @@ export function SkillsStoreModal() {
   const mcpStatusByServer = useStore((s) => s.mcpStatusByServer);
   const mcpFeedback = useStore((s) => s.mcpFeedback);
   const settings = useStore((s) => s.settings);
+  const networkHealth = useStore((s) => s.networkHealth);
+  const lanNodeOffline = useStore((s) => s.lanNodeOffline);
+  const accountsState = useStore((s) => s.accountsState);
+  const remoteAccountOffline = isRemoteAccountOffline({
+    accountsState,
+    networkHealth,
+    lanNodeOffline,
+  } as any);
 
   const catalog = getSkillsCatalogFromSettings(settings);
   const customSkills: any[] = Array.isArray(settings?.customSkills) ? settings.customSkills : [];
@@ -1675,6 +1685,12 @@ export function SkillsStoreModal() {
           </svg>
         </button>
 
+        <NetworkStatusBanner
+          placement="modal"
+          contextHint="技能配置暂为只读"
+          onlyWhenOffline
+        />
+
         {/* ==================== SUB-VIEW 1: 技能商店 ==================== */}
         <div
           id="skills-store-view"
@@ -1752,6 +1768,7 @@ export function SkillsStoreModal() {
               id="bot-templates-btn"
               type="button"
               className="bot-templates-pill"
+              disabled={remoteAccountOffline}
               title="创建专属「邮箱管家」Bot"
               onClick={async () => {
                 const tpl = await apiJson("/api/sessions", {
@@ -1812,6 +1829,11 @@ export function SkillsStoreModal() {
             })}
           </div>
 
+          <fieldset
+            className="remote-offline-fieldset"
+            data-remote-offline-guard="skills-store"
+            disabled={remoteAccountOffline}
+          >
           <div id="skills-store-sections" className="apps-sections-scroll skills-sections">
             {filteredOffice.length === 0 && filteredPlatform.length === 0 ? (
               <div className="skills-empty">没有找到与「{searchTrim}」相关的技能</div>
@@ -1926,6 +1948,7 @@ export function SkillsStoreModal() {
               </span>
             </button>
           </div>
+          </fieldset>
         </div>
 
         {/* ==================== SUB-VIEW 2: 管理技能 ==================== */}

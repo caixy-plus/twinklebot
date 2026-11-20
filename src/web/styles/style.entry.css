@@ -8,6 +8,7 @@
 @import "./02-primitives/cards.css" layer(primitives);
 @import "./02-primitives/dialogs.css" layer(primitives);
 @import "./02-primitives/forms.css" layer(primitives);
+@import "./02-primitives/network-banner.css" layer(primitives);
 
 @import "./03-layout/app-shell.css" layer(layout);
 @import "./03-layout/sidebar.css" layer(layout);

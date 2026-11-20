@@ -127,7 +127,7 @@ test("LAN unreachable offline modal does not re-pop repeatedly after dismissal o
     accountEpoch: 1,
   });
 
-  // 1) Initial network failure opens the offline modal once
+  // 1) Initial network failure marks LAN offline and shows non-blocking banner (no jarring blocking modal on first glitch)
   let fetchUrls: string[] = [];
   globalThis.fetch = (async (url: string) => {
     fetchUrls.push(String(url));
@@ -135,12 +135,14 @@ test("LAN unreachable offline modal does not re-pop repeatedly after dismissal o
   }) as any;
 
   await ssr.reloadWorkspaceForActiveAccount(1);
-  assert.equal(ssr.getState().lanOfflineModalShown, true);
+  assert.equal(ssr.getState().lanOfflineModalShown, false, "first disconnect must use non-blocking banner instead of blocking modal");
   assert.equal(ssr.getState().lanNodeOffline, true);
   // Early-exit stops reload cascade right after /api/config fails instead of firing settings/sessions/schedules/usage
   assert.deepEqual(fetchUrls, ["http://192.168.1.99:3230/api/config"]);
 
-  // 2) Dismissing modal (hardware back / close btn / backdrop) keeps offline dot red without re-opening on subsequent failures
+  // 2) Forced legacy modal still opens when explicitly requested, and dismissing keeps offline dot red
+  ssr.triggerLanUnreachableFallback(new TypeError("Failed to fetch"), { forceModal: true });
+  assert.equal(ssr.getState().lanOfflineModalShown, true);
   ssr.dismissLanOfflineModal();
   assert.equal(ssr.getState().lanOfflineModalShown, false);
   assert.equal(ssr.getState().lanOfflineDismissed, true);
@@ -158,7 +160,7 @@ test("LAN unreachable offline modal does not re-pop repeatedly after dismissal o
   ssr.triggerLanUnreachableFallback(new TypeError("Failed to fetch"));
   assert.equal(ssr.getState().lanOfflineModalShown, false, "background trigger after dismiss must not re-open modal");
 
-  // 3) Deliberate AbortError from caller signal must not open offline modal even before dismissal
+  // 3) Deliberate AbortError from caller signal must not open offline modal or mark offline
   ssr.resetStoreForTest({
     accountsState: lanAccountsState,
     activeBaseUrl: "http://192.168.1.99:3230",
@@ -186,7 +188,7 @@ test("LAN unreachable offline modal does not re-pop repeatedly after dismissal o
   assert.equal(ssr.getState().lanOfflineDismissed, true);
   assert.equal(ssr.getState().lanNodeOffline, true);
 
-  // 5) Once LAN becomes reachable again, offline & dismissal flags reset cleanly so a later disconnect can surface once
+  // 5) Once LAN becomes reachable again, offline & dismissal flags reset cleanly
   globalThis.fetch = (async (url: string) => {
     if (String(url).endsWith("/api/system/health")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -202,5 +204,6 @@ test("LAN unreachable offline modal does not re-pop repeatedly after dismissal o
   assert.equal(ssr.getState().lanOfflineModalShown, false);
 
   ssr.triggerLanUnreachableFallback(new TypeError("Failed to fetch"));
-  assert.equal(ssr.getState().lanOfflineModalShown, true, "new disconnect after recovery may notify once");
+  assert.equal(ssr.getState().lanNodeOffline, true);
+  assert.equal(ssr.getState().lanOfflineModalShown, false, "non-blocking banner handles subsequent disconnects without modal interruption");
 });

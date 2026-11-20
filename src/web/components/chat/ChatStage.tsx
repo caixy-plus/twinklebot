@@ -41,6 +41,7 @@ import {
 } from "../../state/store.js";
 import { AvatarNode, MascotSvg, SessionAvatar } from "../common/AvatarView.js";
 import { UiIcon } from "../common/Icon.js";
+import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
 import { TraceEventsList } from "../common/SharedPanels.js";
 import { Composer } from "./Composer.js";
 import {
@@ -504,6 +505,8 @@ export function ChatStage({
           </div>
         </div>
       </header>
+
+      <NetworkStatusBanner placement="stage" />
 
       {/* iMessage-Style New Chat / Group Compose Bar (`收件人:`) */}
       <div id="new-chat-bar" className="new-chat-bar" hidden={!newChatBarOpen}>
