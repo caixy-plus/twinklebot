@@ -203,6 +203,43 @@ export async function createE2EWorkspace(opts: E2EWorkspaceOptions = {}) {
     executor,
     model,
     scheduler,
+    probeBotComputerFn: async () => {
+      try {
+        const h = await executor.health({ timeoutMs: 2500, skipWake: true });
+        if (h && h.ok !== false) {
+          return {
+            state: "ready",
+            provider: config.deployEnv === "cloud" ? "cloud-linux" : "orbstack",
+            platform: process.platform,
+            online: true,
+            vmInstalled: true,
+            vmRunning: true,
+            screen: h.screen || { width: 1440, height: 900 },
+            detail: "E2E Sandbox Ready",
+          };
+        }
+      } catch (err: any) {
+        const msg = String(err?.message || "executor offline");
+        const unauth = err?.status === 401 || /\bunauthorized\b|401/i.test(msg);
+        return {
+          state: "error",
+          provider: config.deployEnv === "cloud" ? "cloud-linux" : "orbstack",
+          platform: process.platform,
+          online: false,
+          errorCode: unauth ? "unauthorized" : "unreachable",
+          healthError: msg,
+          detail: msg,
+        };
+      }
+      return {
+        state: "error",
+        provider: config.deployEnv === "cloud" ? "cloud-linux" : "orbstack",
+        platform: process.platform,
+        online: false,
+        errorCode: "unreachable",
+        detail: "executor offline",
+      };
+    },
     ...(opts.getEffectivePublicDir ? { getEffectivePublicDir: opts.getEffectivePublicDir } : {}),
     ...(opts.otaController ? { otaController: opts.otaController } : {}),
     ...(opts.env ? { env: opts.env } : {}),
