@@ -1491,6 +1491,7 @@ export async function refreshComputerDisplays() {
 }
 
 let inflightComputerStatusPromise: Promise<void> | null = null;
+let computerStatusSeq = 0;
 
 function applyComputerStatusPayload(c: any) {
   if (!c || typeof c !== "object") return;
@@ -1519,16 +1520,22 @@ export async function refreshComputerStatus(
     return inflightComputerStatusPromise;
   }
   const epoch = getState().accountEpoch;
+  const reqSeq = ++computerStatusSeq;
   const promise = (async () => {
     try {
       const c = await apiJson("/api/computer/status", {
         suppressLanOfflineModal: opts.suppressLanOfflineModal,
       });
-      if (epoch !== getState().accountEpoch) return getState().computerStatus;
+      if (epoch !== getState().accountEpoch || reqSeq !== computerStatusSeq) {
+        return getState().computerStatus;
+      }
       if (opts.force) {
         applyComputerStatusPayload(c);
       } else {
-        runWhenSettingsScrollIdle("computer-status", () => applyComputerStatusPayload(c));
+        runWhenSettingsScrollIdle("computer-status", () => {
+          if (epoch !== getState().accountEpoch || reqSeq !== computerStatusSeq) return;
+          applyComputerStatusPayload(c);
+        });
       }
       if (c.online && hasConnectedNodeCapability("multi-display-v1")) {
         void refreshComputerDisplays();
@@ -1553,6 +1560,7 @@ export async function resetBotComputerConnection() {
   }));
   const res = await apiJson("/api/computer/reset", { method: "POST", body: "{}" });
   if (res?.status && typeof res.status === "object") {
+    computerStatusSeq += 1;
     applyComputerStatusPayload(res.status);
   }
   const latest = await refreshComputerStatus({ force: true, suppressLanOfflineModal: true });
@@ -1562,6 +1570,7 @@ export async function resetBotComputerConnection() {
 export async function updateBotComputerComponents() {
   const res = await apiJson("/api/computer/update", { method: "POST", body: "{}" });
   if (res?.status && typeof res.status === "object") {
+    computerStatusSeq += 1;
     applyComputerStatusPayload(res.status);
   }
   const latest = await refreshComputerStatus({ force: true, suppressLanOfflineModal: true });

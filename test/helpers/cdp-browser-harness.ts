@@ -869,13 +869,21 @@ export async function launchHeadlessChrome(opts: {
     (Number.isFinite(envSlow) && envSlow >= 0 ? envSlow : headed ? 110 : 0);
 
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-ui-chrome-"));
+  const headlessLinux = !headed && process.platform === "linux";
   const chromeArgs = [
     ...(headed ? [] : ["--headless=new"]),
     "--no-sandbox",
     "--disable-dev-shm-usage",
-    "--use-gl=angle",
-    "--use-angle=swiftshader",
-    "--enable-unsafe-swiftshader",
+    ...(headlessLinux
+      ? [
+          "--disable-gpu",
+          "--disable-background-networking",
+          "--disable-extensions",
+          "--disable-sync",
+          "--metrics-recording-only",
+          "--mute-audio",
+        ]
+      : ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]),
     "--remote-debugging-port=0",
     "--remote-allow-origins=*",
     `--user-data-dir=${userDataDir}`,
@@ -886,9 +894,16 @@ export async function launchHeadlessChrome(opts: {
     "about:blank",
   ];
 
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (headlessLinux) {
+    // Prevent xvfb-run DISPLAY from slowing down or interfering with headless Chrome on Linux CI
+    delete childEnv.DISPLAY;
+  }
+
   const proc: ChildProcess = spawn(chromeBin, chromeArgs, {
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
+    env: childEnv,
   });
 
   let stderrBuf = "";
@@ -898,7 +913,7 @@ export async function launchHeadlessChrome(opts: {
 
   const devToolsFile = path.join(userDataDir, "DevToolsActivePort");
   let cdpPort = 0;
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     if (proc.exitCode !== null) {
       throw new Error(`Chrome exited early (${proc.exitCode}): ${stderrBuf}`);
@@ -919,6 +934,13 @@ export async function launchHeadlessChrome(opts: {
     await new Promise((r) => setTimeout(r, 80));
   }
   if (!cdpPort) {
+    try {
+      if (proc.pid && process.platform !== "win32") process.kill(-proc.pid, "SIGKILL");
+      else proc.kill("SIGKILL");
+    } catch {}
+    try {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    } catch {}
     throw new Error(`Timed out waiting for Chrome DevToolsActivePort: ${stderrBuf}`);
   }
 

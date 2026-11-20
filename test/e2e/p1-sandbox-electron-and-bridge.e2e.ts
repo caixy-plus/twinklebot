@@ -161,7 +161,7 @@ async function spawnRealSandboxExecutor(token: string) {
 
   const info = await new Promise<{ exec_port: number; cdp_port: number; tmp_dir: string }>((resolve, reject) => {
     let buf = "";
-    const timer = setTimeout(() => reject(new Error(`Real sandbox executor boot timeout: ${stderr}`)), 20_000);
+    const timer = setTimeout(() => reject(new Error(`Real sandbox executor boot timeout: ${stderr}`)), 35_000);
     proc.stdout?.on("data", (d) => {
       buf += d.toString("utf8");
       const nl = buf.indexOf("\n");
@@ -756,7 +756,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       const elecArgs = [
         ".",
         ...(process.platform === "linux"
-          ? ["--no-sandbox", "--disable-dev-shm-usage", "--use-gl=angle", "--use-angle=swiftshader"]
+          ? ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
           : []),
         `--user-data-dir=${path.join(elecTmp, "userdata")}`,
         `--remote-debugging-port=${dbgPort}`,
@@ -778,7 +778,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
 
       // Wait for Electron renderer CDP page target
       let pageWs = "";
-      const deadline = Date.now() + 18_000;
+      const deadline = Date.now() + 35_000;
       while (Date.now() < deadline) {
         if (elecProc.exitCode !== null) {
           throw new Error(`Electron exited early (${elecProc.exitCode}): ${elecStderr}`);
