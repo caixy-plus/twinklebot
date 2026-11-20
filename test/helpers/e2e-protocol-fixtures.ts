@@ -6,9 +6,9 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { createTarGzFromDir } from "../../src/lib/tar-gzip.js";
 
-// Valid 2x2 PNG (base64)
+// Valid 2x2 RGB PNG (verified CRC with zlib + ImageMagick/libpng)
 export const SAMPLE_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR42mP8z8BQz0AEwMhAAAwACf8BAf+J6T8AAAAASUVORK5CYII=";
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGMQ2NkIRAwQCgAiYgUp/KP16gAAAABJRU5ErkJggg==";
 export const SAMPLE_PNG_BUFFER = Buffer.from(SAMPLE_PNG_BASE64, "base64");
 
 export function isThinkingSummaryPrompt(payload: unknown): boolean {

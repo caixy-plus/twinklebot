@@ -332,11 +332,13 @@ async function attachPageTarget(
   const navigate = async (url: string): Promise<void> => {
     const navNonce = `nav-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     let shouldAwaitDocSwap = false;
+    let isAboutBlank = false;
     try {
       const curHref = await evalJs<string>(`(() => {
         window.__tbNavGuard = ${JSON.stringify(navNonce)};
         return String(window.location.href || "");
       })()`);
+      isAboutBlank = curHref === "about:blank";
       if (curHref) {
         try {
           const curUrl = new URL(curHref);
@@ -352,7 +354,13 @@ async function attachPageTarget(
         }
       }
     } catch {}
-    await cdpCall("Page.navigate", { url });
+    if (isAboutBlank && /^https?:\/\//i.test(url)) {
+      // Replace initial about:blank in-place so history.length stays 1 and Linux Chrome
+      // touch swipe-right gestures cannot accidentally navigate back to about:blank.
+      await evalJs(`window.location.replace(${JSON.stringify(url)})`);
+    } else {
+      await cdpCall("Page.navigate", { url });
+    }
     await waitFor(
       shouldAwaitDocSwap
         ? `window.__tbNavGuard !== ${JSON.stringify(navNonce)} && document.readyState === "complete"`
@@ -580,6 +588,9 @@ async function attachPageTarget(
     toY: number,
     steps = 8
   ): Promise<void> => {
+    try {
+      await cdpCall("Page.bringToFront");
+    } catch {}
     await cdpCall("Input.dispatchTouchEvent", {
       type: "touchStart",
       touchPoints: [{ x: fromX, y: fromY, id: 1, radiusX: 10, radiusY: 10, force: 1 }],
@@ -874,16 +885,19 @@ export async function launchHeadlessChrome(opts: {
     ...(headed ? [] : ["--headless=new"]),
     "--no-sandbox",
     "--disable-dev-shm-usage",
+    "--overscroll-history-navigation=0",
+    "--use-gl=angle",
+    "--use-angle=swiftshader",
+    "--enable-unsafe-swiftshader",
     ...(headlessLinux
       ? [
-          "--disable-gpu",
           "--disable-background-networking",
           "--disable-extensions",
           "--disable-sync",
           "--metrics-recording-only",
           "--mute-audio",
         ]
-      : ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]),
+      : []),
     "--remote-debugging-port=0",
     "--remote-allow-origins=*",
     `--user-data-dir=${userDataDir}`,
@@ -990,6 +1004,9 @@ export async function launchHeadlessChrome(opts: {
       sharedErrors,
       label
     );
+    try {
+      await session.cdpCall("Page.bringToFront");
+    } catch {}
     if (url && url !== "about:blank") {
       await session.waitFor(`document.readyState === "complete"`, 15_000);
     }

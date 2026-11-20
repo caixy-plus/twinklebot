@@ -40,6 +40,11 @@
 }
 
 
+html,
+body {
+  overscroll-behavior-x: none;
+}
+
 body {
   position: fixed;
   inset: 0;

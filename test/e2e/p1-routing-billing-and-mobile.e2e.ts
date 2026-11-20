@@ -714,6 +714,10 @@ test("P1 Suite 6: Multi-Provider Routing Failover, Image/SVG Fallback, Context C
       await mobTab.waitFor(`document.querySelector('#mobile-inspector-sheet')?.hidden`, 6000);
 
       // 3. REAL left-edge swipe right gesture (x: 12 -> 240) returns from chat -> list!
+      await mobTab.waitFor(
+        `Math.abs(document.querySelector('.chat-stage')?.getBoundingClientRect()?.x ?? 999) < 8`,
+        4000
+      );
       await mobTab.touchSwipe(12, 420, 240, 420, 8);
       await mobTab.waitFor(`document.querySelector('#app-shell')?.dataset?.mobileView === 'list'`, 4000);
 
