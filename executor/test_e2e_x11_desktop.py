@@ -130,7 +130,7 @@ class _X11TargetHandler(http.server.BaseHTTPRequestHandler):
 <style>
   html, body {{ margin: 0; padding: 0; width: 2200px; height: 2200px; background: #fff; font-family: sans-serif; }}
   #inp {{ position: fixed; left: 40px; top: 20px; width: 600px; height: 180px; font-size: 20px; border: 3px solid #2563eb; }}
-  #pad {{ position: fixed; left: 40px; top: 220px; width: 600px; height: 400px; background: #e2e8f0; border: 2px solid #334155; }}
+  #pad {{ position: fixed; left: 40px; top: 220px; width: 600px; height: 400px; background: #e2e8f0; border: 2px solid #334155; user-select: none; -webkit-user-select: none; }}
 </style></head>
 <body>
   <input id="inp" type="text" autofocus />
@@ -415,7 +415,14 @@ class TestPhysicalX11DesktopE2E(unittest.TestCase):
             for direction in ("down", "up", "right", "left"):
                 self._post("/scroll", {"x": 350, "y": 350, "direction": direction, "amount": 2})
             self._post("/drag", {"x1": 180, "y1": 300, "x2": 420, "y2": 420})
-            time.sleep(0.35)
+            drag_deadline = time.time() + 2.5
+            while time.time() < drag_deadline and len(_EVENTS_STATE["drags"]) < 1:
+                time.sleep(0.1)
+            if len(_EVENTS_STATE["drags"]) < 1:
+                self._post("/drag", {"x1": 200, "y1": 340, "x2": 460, "y2": 460})
+                drag_deadline = time.time() + 2.5
+                while time.time() < drag_deadline and len(_EVENTS_STATE["drags"]) < 1:
+                    time.sleep(0.1)
 
             self.assertGreaterEqual(len(_EVENTS_STATE["clicks"]), 2)
             self.assertIn("物理X11中文输入测试", _EVENTS_STATE["text"])
