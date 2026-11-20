@@ -175,6 +175,50 @@ export async function handleSystemBotTool(
         };
       }
 
+      const normalizeMemText = (s: unknown) =>
+        String(s || "")
+          .toLowerCase()
+          .replace(/[\s\p{P}\p{S}]+/gu, "")
+          .trim();
+
+      const bigramJaccard = (a: string, b: string): number => {
+        if (!a || !b) return 0;
+        if (a === b) return 1;
+        if (a.length < 2 || b.length < 2) return 0;
+        const gramsA = new Set<string>();
+        const gramsB = new Set<string>();
+        for (let i = 0; i < a.length - 1; i++) gramsA.add(a.slice(i, i + 2));
+        for (let i = 0; i < b.length - 1; i++) gramsB.add(b.slice(i, i + 2));
+        let inter = 0;
+        for (const g of gramsA) {
+          if (gramsB.has(g)) inter += 1;
+        }
+        const union = gramsA.size + gramsB.size - inter;
+        return union > 0 ? inter / union : 0;
+      };
+
+      const findDuplicateMemory = (list: any[], candidateContent: string) => {
+        const normCand = normalizeMemText(candidateContent);
+        if (!normCand) return null;
+        for (const item of list) {
+          const existingText = item?.instruction || item?.content || item?.desc || "";
+          const normExist = normalizeMemText(existingText);
+          if (!normExist) continue;
+          if (normCand === normExist) return item;
+          if (
+            normCand.length >= 8 &&
+            normExist.length >= 8 &&
+            (normCand.includes(normExist) || normExist.includes(normCand))
+          ) {
+            return item;
+          }
+          if (bigramJaccard(normCand, normExist) >= 0.75) {
+            return item;
+          }
+        }
+        return null;
+      };
+
       if (action === "save") {
         const rawContent = String(args.content || args.instruction || "").trim();
         if (!rawContent) {
@@ -200,6 +244,49 @@ export async function handleSystemBotTool(
           : activeList.findIndex(
               (m) => String(m.name || "").trim().toLowerCase() === rawName.toLowerCase()
             );
+
+        // Server-side deduplication against existing memories in both bot & global scope
+        if (targetIdx < 0 && !args.memory) {
+          const dupInTarget = findDuplicateMemory(activeList, rawContent);
+          const dupInOther =
+            !dupInTarget && targetScope === "bot"
+              ? findDuplicateMemory(globalList, rawContent)
+              : null;
+          const dup = dupInTarget || dupInOther;
+          if (dup) {
+            return {
+              ok: true,
+              action: "save",
+              deduplicated: true,
+              scope: dupInTarget ? targetScope : "global",
+              memory: slimMemory(dup, dupInTarget ? targetScope : "global"),
+              totalCount: activeList.length,
+            };
+          }
+        }
+
+        // Dual-track PI-016: model-inferred ("auto") memories emit a non-blocking suggestion card
+        if (args.trigger === "auto" && targetIdx < 0 && typeof emit === "function") {
+          const suggestionId = `memsug-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          emit({
+            type: "memory_suggestion",
+            suggestionId,
+            sessionId: targetBotId || "",
+            scope: targetScope,
+            name: rawName,
+            content: rawContent,
+            status: "pending",
+          });
+          return {
+            ok: true,
+            action: "suggest",
+            pendingUserConfirm: true,
+            suggestionId,
+            scope: targetScope,
+            name: rawName,
+            content: rawContent,
+          };
+        }
 
         let savedItem: any;
         let created = false;

@@ -492,7 +492,7 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "memory_manage",
     description:
-      "Manage your own dedicated Bot Memory (`scope: 'bot'`, 专属记忆 shown in the right sidebar) or the user's Global Memory (`scope: 'global'`, 全局记忆 shared across all Bots): list, save (add or update), remove (delete), or toggle entries. Each Bot manages its own memory (`scope: 'bot'`) by default whenever learning task-specific context, contacts, rules, or preferences for this Bot; use `scope: 'global'` when the user asks to remember something globally across all Bots.",
+      "Manage your own dedicated Bot Memory (`scope: 'bot'`, 专属记忆 shown in the right sidebar) or the user's Global Memory (`scope: 'global'`, 全局记忆 shared across all Bots): list, save (add or update), remove (delete), or toggle entries. Set `trigger: 'explicit'` ONLY when the user explicitly asked to remember/save something; set `trigger: 'auto'` when you proactively spot a durable long-term preference so the user receives a lightweight non-blocking Save/Ignore suggestion card instead of silent auto-saving.",
     parameters: {
       type: "object",
       properties: {
@@ -506,6 +506,12 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
           enum: ["bot", "global"],
           description:
             "Memory target: 'bot' for this Bot's own dedicated memory (专属记忆, default), or 'global' for cross-Bot Global Memory (全局记忆).",
+        },
+        trigger: {
+          type: "string",
+          enum: ["explicit", "auto"],
+          description:
+            "When action is 'save': use 'explicit' when the user explicitly asked to remember something (saves immediately), or 'auto' when model-inferred (emits a lightweight user-confirmable suggestion card instead of silent write).",
         },
         memory: {
           type: "string",

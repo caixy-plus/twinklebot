@@ -267,6 +267,7 @@ test("evaluateUpdateCompatibility decouples Desktop/Android/iOS shells, selects 
   assert.deepEqual(lanStatus.missingLatestCapabilities, [
     "multi-display-v1",
     "vault-secret-v1",
+    "memory-suggest-v1",
     "swarm-v2",
   ]);
   // v1.2.0 baseline features stay 100% enabled on LAN 1.2.0 while 1.3.0-only feature gracefully gates!

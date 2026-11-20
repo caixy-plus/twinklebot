@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { assessToolCall } from "../src/agent/policy.js";
 
 const cfg = {
+  sandboxMode: "restricted",
   writeRoots: [
     "/Users/YOUR_USERNAME/TwinkleBot/workspace",
     "/Users/YOUR_USERNAME/Downloads",
@@ -378,7 +379,7 @@ test("hostExecutionMode ask allows read-only host/MCP inspection but confirms mu
   );
 });
 
-test("hostExecutionMode always allows normal host/MCP actions and confirms risky or out-of-root mutations", () => {
+test("hostExecutionMode always allows normal host actions and non-sensitive host_write_file while confirming risky shell/high-risk actions", () => {
   const alwaysCfg = { ...cfg, hostExecutionMode: "always" };
   assert.equal(
     assessToolCall("host_run_shell", { command: "git status" }, alwaysCfg).decision,
@@ -412,12 +413,42 @@ test("hostExecutionMode always allows normal host/MCP actions and confirms risky
     ).decision,
     "allow"
   );
+  // PI-010: hostExecutionMode="always" allows non-sensitive host_write_file outside writeRoots
   assert.equal(
     assessToolCall(
       "host_write_file",
       { path: "/Users/YOUR_USERNAME/Desktop/outside.txt", content: "1" },
       alwaysCfg
     ).decision,
+    "allow"
+  );
+  // Sensitive paths remain strictly denied even under hostExecutionMode="always"
+  assert.equal(
+    assessToolCall(
+      "host_write_file",
+      { path: "/Users/YOUR_USERNAME/.ssh/config", content: "1" },
+      alwaysCfg
+    ).decision,
+    "deny"
+  );
+});
+
+test("default sandboxMode is full: Bot Computer sandbox tools auto-allow while preserving sensitive path & high-risk guardrails", () => {
+  const defaultCfg = { writeRoots: ["/tmp/ws"] };
+  assert.equal(
+    assessToolCall("run_shell", { command: "rm -rf /tmp/scratch" }, defaultCfg).decision,
+    "allow"
+  );
+  assert.equal(
+    assessToolCall("write_file", { path: "/opt/sandbox/app.txt", content: "ok" }, defaultCfg).decision,
+    "allow"
+  );
+  assert.equal(
+    assessToolCall("write_file", { path: "/opt/sandbox/.env", content: "SECRET=1" }, defaultCfg).decision,
+    "deny"
+  );
+  assert.equal(
+    assessToolCall("click", { x: 10, y: 20, risk: "high" }, defaultCfg).decision,
     "confirm"
   );
 });

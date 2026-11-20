@@ -2871,7 +2871,7 @@ export function SettingsModal() {
                 <div>
                   <div className="settings-row-title">在这台电脑上执行</div>
                   <div className="settings-row-sub">
-                    允许 TwinkleBot 在你的电脑上打开文件并运行任务。自动审核仍会先检查所有操作。
+                    控制 TwinkleBot 对你本机（宿主机）的权限：选「始终允许」时普通命令与非敏感文件读写自动放行（仍拦截敏感凭据目录并确认高危命令）；隔离沙箱「Bot 的电脑」默认免确认运行。
                   </div>
                 </div>
                 <select

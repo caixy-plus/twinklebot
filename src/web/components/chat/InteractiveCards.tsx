@@ -656,6 +656,94 @@ export function CredentialCard({
   );
 }
 
+export function MemorySuggestionCard({
+  item,
+}: {
+  item: Extract<StreamItem, { kind: "memory_suggestion" }>;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+
+  const scopeLabel = item.scope === "global" ? "全局记忆" : "专属记忆";
+
+  const handleResolve = async (action: "accept" | "dismiss") => {
+    setSubmitting(true);
+    try {
+      await apiJson(
+        `/api/memories/suggestions/${encodeURIComponent(item.suggestionId)}/resolve`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            action,
+            sessionId: item.sessionId || "",
+            scope: item.scope,
+            name: item.name,
+            content: item.content,
+          }),
+        }
+      );
+      setState((prev) => ({
+        streamItems: prev.streamItems.map((it) =>
+          it.kind === "memory_suggestion" && it.suggestionId === item.suggestionId
+            ? { ...it, status: action === "accept" ? "accepted" : "dismissed" }
+            : it
+        ),
+      }));
+      if (action === "accept") {
+        refreshSettingsFromServer();
+        showToast(`✓ 已保存至${scopeLabel}`);
+      }
+    } catch (err: any) {
+      setSubmitting(false);
+      showToast(`处理记忆建议失败: ${err?.message || "请重试"}`);
+    }
+  };
+
+  if (item.status !== "pending") {
+    const label =
+      item.status === "accepted"
+        ? `✓ 已存入${scopeLabel}：${item.name}`
+        : `已忽略记忆建议：${item.name}`;
+    return (
+      <div className="draft-card memory-suggestion-card is-collapsed" role="status">
+        <ReceiptStatusText
+          text={label}
+          forceTone={item.status === "accepted" ? "ok" : undefined}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="draft-card memory-suggestion-card" data-suggestion-id={item.suggestionId}>
+      <div className="confirm-header">
+        <UiIcon name="lightbulb" className="inline-ui-icon" size={14} /> 建议记住（{scopeLabel}）
+      </div>
+      <div className="memory-suggestion-body">
+        <strong>{item.name}</strong>
+        {item.content && item.content !== item.name ? `：${item.content}` : ""}
+      </div>
+      <div className="confirm-actions">
+        <button
+          type="button"
+          className="btn-approve"
+          disabled={submitting}
+          onClick={() => handleResolve("accept")}
+        >
+          保存记忆
+        </button>
+        <button
+          type="button"
+          className="btn-deny"
+          disabled={submitting}
+          onClick={() => handleResolve("dismiss")}
+        >
+          忽略
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function BotExchangePill({
   item,
 }: {

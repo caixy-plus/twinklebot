@@ -1833,7 +1833,7 @@ async function runTaskInner({
         const policyConfig = {
           ...scopedRuntimeConfig,
           hostExecutionMode,
-          sandboxMode: config?.sandboxMode || settings?.sandboxMode || "restricted",
+          sandboxMode: config?.sandboxMode || settings?.sandboxMode || "full",
           isAdminBot: Boolean(speakerBot?.isAdmin || store?.getSession?.(sessionId)?.isAdmin),
           policy: settings.policy || config.policy,
         };

@@ -39,6 +39,104 @@ export async function handleSkillsRoutes(
           return sendJson(res, 200, ctx.getMergedSettings());
         }
 
+        // Resolve non-blocking Memory Suggestion Card (PI-016)
+        const memSugMatch = pathname.match(/^\/api\/memories\/suggestions\/([^/]+)\/resolve$/);
+        if (method === "POST" && memSugMatch) {
+          const suggestionId = decodeURIComponent(memSugMatch[1]);
+          let body: any;
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            return sendJson(res, 400, { error: "invalid json" });
+          }
+          const decision = body?.action === "accept" ? "accept" : "dismiss";
+          const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+          const scope = body?.scope === "global" ? "global" : "bot";
+          const rawContent = String(body?.content || "").trim();
+          const rawName =
+            String(body?.name || "").trim() || rawContent.replace(/\s+/g, " ").slice(0, 18);
+
+          let savedMemory: any = null;
+          if (decision === "accept") {
+            if (!rawContent) {
+              return sendJson(res, 400, { error: "content is required" });
+            }
+            const botSession =
+              scope === "bot" && sessionId ? ctx.store?.getSession?.(sessionId) : null;
+            const effectiveScope = scope === "bot" && botSession ? "bot" : "global";
+            const item = {
+              id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              name: rawName,
+              desc: rawContent,
+              instruction: rawContent,
+              content: rawContent,
+              enabled: true,
+              updatedAt: new Date().toISOString(),
+            };
+            if (effectiveScope === "bot" && botSession) {
+              const prevList = Array.isArray(botSession.memories) ? [...botSession.memories] : [];
+              const exists = prevList.some(
+                (m: any) =>
+                  String(m?.instruction || m?.content || m?.desc || "").trim().toLowerCase() ===
+                  rawContent.toLowerCase()
+              );
+              if (!exists) {
+                prevList.unshift(item);
+                const updatedSession = ctx.store?.updateSession?.(botSession.id, {
+                  memories: prevList,
+                  touch: false,
+                });
+                ctx.broadcastEvent?.({
+                  type: "session_updated",
+                  sessionId: botSession.id,
+                  session: updatedSession || { ...botSession, memories: prevList },
+                });
+              }
+              savedMemory = item;
+            } else {
+              const settings = ctx.store?.readSettings?.() || {};
+              const prevGlobal = Array.isArray(settings.globalMemories)
+                ? [...settings.globalMemories]
+                : Array.isArray(settings.privateSkills)
+                  ? [...settings.privateSkills]
+                  : [];
+              const exists = prevGlobal.some(
+                (m: any) =>
+                  String(m?.instruction || m?.content || m?.desc || "").trim().toLowerCase() ===
+                  rawContent.toLowerCase()
+              );
+              if (!exists) {
+                prevGlobal.unshift(item);
+                ctx.store?.writeSettings?.({
+                  globalMemories: prevGlobal,
+                  privateSkills: prevGlobal,
+                });
+                ctx.broadcastSkillsUpdated();
+              }
+              savedMemory = item;
+            }
+          }
+
+          const resolvedEvent = {
+            type: "memory_suggestion_resolved",
+            suggestionId,
+            status: decision === "accept" ? "accepted" : "dismissed",
+            scope,
+            name: rawName,
+            content: rawContent,
+          };
+          if (sessionId && ctx.store?.getSession?.(sessionId)) {
+            ctx.store?.appendEvent?.(sessionId, resolvedEvent);
+            ctx.broadcastEvent?.({ ...resolvedEvent, sessionId });
+          }
+          return sendJson(res, 200, {
+            ok: true,
+            suggestionId,
+            status: resolvedEvent.status,
+            ...(savedMemory ? { memory: savedMemory } : {}),
+          });
+        }
+
         // Custom Skills CRUD (shared across all Bots, kept separate from Skills Store)
         if (method === "GET" && pathname === "/api/custom-skills") {
           return sendJson(res, 200, {

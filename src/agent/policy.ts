@@ -246,12 +246,18 @@ export function assessToolCall(
     };
   }
 
-  // 4. Sandbox high-privilege mode: Bot Computer tools run freely inside isolated sandbox
-  const sandboxMode = config?.sandboxMode || "restricted";
+  // 4. Sandbox high-privilege mode (default "full"): Bot Computer tools run freely inside isolated sandbox
+  const sandboxMode = config?.sandboxMode || "full";
   if (sandboxMode === "full" && SANDBOX_TOOLS.has(name) && !isLocalHostAction) {
+    if (name === "write_file" && !normalizeCandidatePath(safeArgs.path)) {
+      return {
+        decision: "confirm",
+        reason: `Missing or invalid file path for ${name}`,
+      };
+    }
     return {
       decision: "allow",
-      reason: "Bot Computer sandbox high-privilege mode",
+      reason: "Bot Computer sandbox auto-allowed",
     };
   }
 
@@ -275,7 +281,7 @@ export function assessToolCall(
     };
   }
 
-  // 6. Shell dangerous command confirmation
+  // 6. Shell dangerous command confirmation (host_run_shell, or restricted sandbox run_shell)
   if (name === "run_shell" || name === "host_run_shell") {
     const command = typeof safeArgs.command === "string" ? safeArgs.command : "";
     if (CONFIRM_SHELL_RE.test(command)) {
@@ -286,10 +292,9 @@ export function assessToolCall(
     }
   }
 
-  // 6. File write outside writeRoots confirmation
+  // 7. File write path validation & writeRoots boundary
   if (name === "write_file" || name === "host_write_file") {
     const filePath = safeArgs.path;
-    const writeRoots = Array.isArray(config?.writeRoots) ? config.writeRoots : [];
     const resolvedPath = normalizeCandidatePath(filePath);
     if (!resolvedPath) {
       return {
@@ -297,6 +302,15 @@ export function assessToolCall(
         reason: `Missing or invalid file path for ${name}`,
       };
     }
+    // When "你的电脑" is set to "始终允许" ("always"), allow non-sensitive host file writes
+    // outside writeRoots without prompting (hardcoded sensitive paths remain denied in step 1).
+    if (name === "host_write_file" && hostExecutionMode === "always") {
+      return {
+        decision: "allow",
+        reason: "Host file write allowed under hostExecutionMode=always",
+      };
+    }
+    const writeRoots = Array.isArray(config?.writeRoots) ? config.writeRoots : [];
     const isInsideRoots = writeRoots.some((root: unknown) => {
       const resolvedRoot = normalizeCandidatePath(root);
       if (!resolvedRoot) return false;

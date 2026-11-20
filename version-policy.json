@@ -30,7 +30,8 @@
       "gemini-vertex-gate-v1",
       "ota-v1",
       "multi-display-v1",
-      "vault-secret-v1"
+      "vault-secret-v1",
+      "memory-suggest-v1"
     ]
   }
 }

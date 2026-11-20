@@ -17,7 +17,7 @@
     "build:ota": "npm run build:ts && node scripts/build-ota-packages.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "typecheck": "tsc -p tsconfig.shared.json && npm run build:web && tsc -p tsconfig.web.json && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.landing.json --noEmit",
-    "build:ts": "tsc -p tsconfig.shared.json && npm run build:web && tsc -p tsconfig.json && tsc -p tsconfig.landing.json",
+    "build:ts": "tsc -p tsconfig.shared.json && npm run build:web && tsc -p tsconfig.json && node scripts/copy-prompts.mjs && tsc -p tsconfig.landing.json",
     "prestart": "npm run build:ts",
     "start": "node --env-file=.env dist-server/src/server/index.js",
     "cli": "node --env-file=.env dist-server/src/cli/index.js",
