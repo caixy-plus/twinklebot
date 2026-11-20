@@ -971,8 +971,8 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
       priority: "P0",
       featureTier: "F1",
       difficulty: "D2",
-      title: "双轨记忆系统(PI-016/memory-suggest-v1)：显式意图护栏、静默降级卡片、异步快模型提炼、MemorySuggestionCard 接受/忽略与 /resolve 编辑校验",
-      module: "Dual-Track Memory & Extractor",
+      title: "自动与显式双路径记忆系统(PI-016)：显式「记住」直存、自动触发静默落库(零推荐卡片)、异步快模型提炼去重/防密钥与兼容 /resolve 校验",
+      module: "Auto & Explicit Memory System",
     },
     async ({ setEvidence }) => {
       await ensureNavigated();
@@ -988,8 +988,8 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
       })()`);
       await chrome!.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('DualTrackMemoryBot')`, 6000);
 
-      // 1. Implicit user prompt + model calls memory_manage(save) -> server explicit-intent guard downgrades to MemorySuggestionCard!
-      let phase: "implicit" | "explicit" | "extractor" = "implicit";
+      // 1. Auto-triggered save, explicit save, and post-turn fast-tier extractor ALL write silently & directly (zero suggestion cards!)
+      let phase: "auto" | "explicit" | "extractor" = "auto";
       let step = 0;
       mockLlm.setHandler(async ({ body }) => {
         const msgStr = JSON.stringify(body?.messages || "");
@@ -1000,6 +1000,7 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
               text: JSON.stringify({
                 candidates: [
                   { scope: "global", name: "报告偏好", content: "周报统一使用 Markdown 三段式格式", confidence: 0.92 },
+                  { scope: "bot", name: "密钥过滤", content: "密码: sk-secret999999999999", confidence: 0.98 },
                 ],
               }),
             };
@@ -1008,19 +1009,19 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
         }
         if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "整理记忆" };
         step += 1;
-        if (phase === "implicit" && step === 1) {
+        if (phase === "auto" && step === 1) {
           return {
             toolCalls: [
               {
-                id: "mem-imp-1",
+                id: "mem-auto-1",
                 name: "memory_manage",
-                args: { action: "save", scope: "bot", name: "语言习惯", content: "回答保持极简中文风格", trigger: "explicit" },
+                args: { action: "save", scope: "bot", name: "语言习惯", content: "回答保持极简中文风格", trigger: "auto" },
               },
             ],
           };
         }
-        if (phase === "implicit") {
-          return { text: "已发送记忆建议卡供你确认" };
+        if (phase === "auto") {
+          return { text: "好的，接口性能优化重点如下" };
         }
         if (phase === "explicit" && step === 1) {
           return {
@@ -1040,26 +1041,25 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
       });
 
       try {
-        // Turn 1: No explicit "记住" keyword -> downgraded to pending MemorySuggestionCard (NOT auto-saved!)
+        // Turn 1: Auto-triggered memory_manage(save) persists silently directly to Bot memories with ZERO suggestion cards!
         await chrome!.typeText("#message-input", "今天帮我看看接口性能就行", { clear: true });
         await chrome!.pressKey("Enter");
-        await chrome!.waitFor(`Boolean(document.querySelector('.memory-suggestion-card:not(.is-collapsed)'))`, 8000);
-        assert.equal(
-          (ws.store.getSession(memBot.id)?.memories || []).length,
-          0,
-          "Implicit memory_manage(save) must be downgraded to suggestion card, NOT silently saved"
+        await chrome!.waitFor(
+          `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('接口性能优化重点如下'))`,
+          8000
         );
-
-        // Accept the suggestion card via UI .btn-approve ("记住")
-        await chrome!.click(".memory-suggestion-card:not(.is-collapsed) .btn-approve");
-        await chrome!.waitFor(`!document.querySelector('.memory-suggestion-card:not(.is-collapsed)')`, 6000);
         await ws.waitUntil(
           () => (ws.store.getSession(memBot.id)?.memories || []).some((m: any) => /极简中文/.test(m.content || m.instruction || "")),
           5000,
-          "Accepted memory suggestion must persist to Bot memories"
+          "Auto-triggered memory_manage(save) must persist directly to Bot memories"
+        );
+        assert.equal(
+          await chrome!.evalJs<number>(`document.querySelectorAll('.memory-suggestion-card').length`),
+          0,
+          "Zero memory suggestion cards should be rendered in chat"
         );
 
-        // Turn 2: Explicit "请记住..." -> writes directly without suggestion card!
+        // Turn 2: Explicit "请记住..." writes directly to Bot memories without any suggestion card!
         phase = "explicit";
         step = 0;
         await chrome!.typeText("#message-input", "请记住：以后始终使用严格 TypeScript 类型", { clear: true });
@@ -1074,16 +1074,28 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
           "Explicit user intent must persist directly to Bot memories"
         );
 
-        // Turn 3: Async post-turn fast-tier extractor emits a global MemorySuggestionCard -> dismiss via .btn-deny
+        // Turn 3: Async post-turn fast-tier extractor silently saves global memory & filters secrets (zero cards!)
         phase = "extractor";
         step = 0;
         await chrome!.typeText("#message-input", "我习惯周报统一使用 Markdown 三段式格式发给团队", { clear: true });
         await chrome!.pressKey("Enter");
-        await chrome!.waitFor(`Boolean(document.querySelector('.memory-suggestion-card:not(.is-collapsed)'))`, 10_000);
-        await chrome!.click(".memory-suggestion-card:not(.is-collapsed) .btn-deny");
-        await chrome!.waitFor(`!document.querySelector('.memory-suggestion-card:not(.is-collapsed)')`, 6000);
+        await ws.waitUntil(
+          () => (ws.store.readSettings().globalMemories || []).some((m: any) => /Markdown 三段式/.test(m.content || m.instruction || "")),
+          10_000,
+          "Post-turn fast-tier extractor must silently persist global memory"
+        );
+        assert.equal(
+          (ws.store.getSession(memBot.id)?.memories || []).some((m: any) => /sk-secret/.test(m.content || "")),
+          false,
+          "Post-turn extractor must never persist secret-like values"
+        );
+        assert.equal(
+          await chrome!.evalJs<number>(`document.querySelectorAll('.memory-suggestion-card').length`),
+          0,
+          "Post-turn extractor must render zero suggestion cards"
+        );
 
-        // 4. Direct API contract on POST /api/memories/suggestions/:id/resolve: empty content 400 + edit content/scope
+        // 4. Backward-compatible HTTP contract on POST /api/memories/suggestions/:id/resolve for older clients
         const badResolve = await fetch(`${ws.baseUrl}/api/memories/suggestions/sug-bad/resolve`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

@@ -6,7 +6,6 @@ import {
   ChoiceCard,
   CredentialCard,
   DraftCard,
-  MemorySuggestionCard,
 } from "./components/chat/InteractiveCards.js";
 import { MarkdownRenderer } from "./components/chat/MarkdownRenderer.js";
 import { MarkupPreviewCard } from "./components/chat/MarkupPreviewCard.js";
@@ -110,8 +109,6 @@ export function renderStreamItemToStaticMarkup(
       return renderToStaticMarkup(<CredentialCard item={item} />);
     case "bot_exchange":
       return renderToStaticMarkup(<BotExchangePill item={item} />);
-    case "memory_suggestion":
-      return renderToStaticMarkup(<MemorySuggestionCard item={item} />);
     case "route_notice":
       if (item.level === "max_steps") {
         return renderToStaticMarkup(

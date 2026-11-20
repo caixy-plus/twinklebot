@@ -54,7 +54,7 @@
 | **P0** | `P0-BOT-03` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Workspace Isolation | 单 Bot 私有工作区目录隔离：跨 Bot 文件读取 403 与资料库隔离 |
 | **P0** | `P0-BOT-04` | `F1×D2` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Group Chat / Mention | 多选拉群、#mention-popover @Bot 自动补全点名路由与群聊发言者头部渲染 |
 | **P0** | `P0-PAIR-01` | `F1×D2` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | LAN Device Auth & Pairing | 真实非回环局域网 IPv4 401 鉴权拦截 + 双标签 6 位配对码握手换取 deviceToken |
-| **P0** | `P0-MEM-01` | `F1×D2` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Dual-Track Memory & Extractor | 双轨记忆系统(PI-016/memory-suggest-v1)：显式意图护栏、静默降级卡片、异步快模型提炼、MemorySuggestionCard 接受/忽略与 /resolve 编辑校验 |
+| **P0** | `P0-MEM-01` | `F1×D2` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Auto & Explicit Memory System | 自动与显式双路径记忆系统(PI-016)：显式「记住」直存、自动触发静默落库(零推荐卡片)、异步快模型提炼去重/防密钥与兼容 /resolve 校验 |
 | **P1** | `P1-SBOX-01` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Fullstack Sandbox | 全栈真沙盒闭环：Web UI → Node Agent → 真实 Python executor.py → 真实 Chrome 登录 + send_file 投递卡片 |
 | **P1** | `P1-SBOX-02` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Sandbox Shared Profile | 共享 Chrome Profile 跨 Bot 登录态(Cookie + localStorage)与双标签并发 DOM 操作隔离 |
 | **P1** | `P1-SBOX-03` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Screen Lease Pool | 屏幕并发池 FIFO 排队、纯 CLI 零阻塞、调大上限实时唤醒与右侧排队状态徽章 |
@@ -110,7 +110,7 @@
 | **P2** | `P2-SET-07` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Diagnostics & Capability Gate | 设置·关于与诊断(/api/system/diagnostics & /api/system/updates/check) + 连接 v1.0.0 旧节点动态隐藏 multi-display-v1 屏幕池控件 |
 | **P2** | `P2-SET-08` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | LAN Toggle & Admin Provision Gate | LAN 开关读写(GET/POST /api/lan/settings)停用局域网发现 + 非管理员 Bot 调用 POST /api/computer/provision 返回 403 |
 | **P2** | `P2-SET-09` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings Shell, ConfirmDialog & Toast | 设置弹窗交互外壳(遮罩点击关闭/切 Tab 滚动复位/滚轮边界) + ConfirmDialog 取消/Escape 与 Toast 提示组件 |
-| **P2** | `P2-SSR-01` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | SSR Static Markup & Render Parity | SSR 静态渲染入口(ssr-entry.js)全量校验：整页 App + 全部 10 种 StreamItem(含 memory_suggestion/max_steps/unread_divider) 与弱网横幅 |
+| **P2** | `P2-SSR-01` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | SSR Static Markup & Render Parity | SSR 静态渲染入口(ssr-entry.js)全量校验：整页 App + 全部 StreamItem(含 max_steps/budget_warning/error/unread_divider) 与弱网横幅 |
 | **P2** | `P2-UI-01` | `F3×D1` | `test/e2e/p2-micro-ui-markdown-and-shortcuts.e2e.ts` | Avatar Editor / Preset | 右侧头像编辑器：13形状×11颜色切换、恢复默认与名称输入框回车保存 |
 | **P2** | `P2-UI-02` | `F3×D2` | `test/e2e/p2-micro-ui-markdown-and-shortcuts.e2e.ts` | Avatar Editor / AI & Upload | 右侧头像编辑器：AI 生成头像(含 SVG 降级)与本地上传大图 Canvas 裁剪 128×128 PNG |
 | **P2** | `P2-UI-03` | `F3×D1` | `test/e2e/p2-micro-ui-markdown-and-shortcuts.e2e.ts` | Sidebar Badges & Header Share | 侧边栏微状态：未读蓝点累加/切入清零(touch:false)+.unread-divider 分割线、清空历史(.empty-state)与顶部分享克隆 |

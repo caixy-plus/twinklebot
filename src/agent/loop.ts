@@ -1710,7 +1710,7 @@ async function runTaskInner({
             userText: latestUserText,
             assistantText: answerText,
             config: { ...config, routing: postRouting },
-            emit: emitTagged,
+            broadcastGlobal,
           }).catch(() => {});
         }
         return { status: "done", text: answerText };

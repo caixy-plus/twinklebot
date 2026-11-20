@@ -510,7 +510,7 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "SSR 静态渲染入口(ssr-entry.js)全量校验：整页 App + 全部 10 种 StreamItem(含 memory_suggestion/max_steps/unread_divider) 与弱网横幅",
+      title: "SSR 静态渲染入口(ssr-entry.js)全量校验：整页 App + 全部 StreamItem(含 max_steps/budget_warning/error/unread_divider) 与弱网横幅",
       module: "SSR Static Markup & Render Parity",
     },
     async () => {
@@ -529,7 +529,6 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
         { kind: "draft", id: "d1", callId: "c2", draftKind: "email", title: "发送邮件", fields: { to: "a@b.com", subject: "Hi", body: "Body" }, status: "pending" },
         { kind: "choice", id: "ch1", callId: "c3", question: "选哪个？", options: ["A", "B"], status: "pending" },
         { kind: "credential", id: "cr1", callId: "c4", title: "登录", service: "corp", status: "pending" },
-        { kind: "memory_suggestion", id: "ms1", suggestionId: "sug1", scope: "bot", name: "记住喜好", content: "喜欢简洁", status: "pending" },
         { kind: "route_notice", id: "rn1", level: "max_steps", maxSteps: 12, toolCount: 12, text: "已达到单轮最大步数上限" },
         { kind: "route_notice", id: "rn2", level: "budget_warning", text: "预算提醒" },
         { kind: "error", id: "er1", text: "发生错误" },
@@ -540,8 +539,7 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
         const html = ssrMod.renderStreamItemToStaticMarkup(sample);
         assert.ok(html.length > 20, `SSR renderStreamItemToStaticMarkup(${sample.kind}) must produce non-empty HTML`);
       }
-      assert.match(ssrMod.renderStreamItemToStaticMarkup(streamSamples[5]), /memory-suggestion-card/);
-      assert.match(ssrMod.renderStreamItemToStaticMarkup(streamSamples[6]), /max-steps-card/);
+      assert.match(ssrMod.renderStreamItemToStaticMarkup(streamSamples[5]), /max-steps-card/);
     }
   );
 });

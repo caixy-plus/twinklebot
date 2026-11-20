@@ -90,8 +90,9 @@ test("PI-016: memory_manage deduplicates explicit saves and emits non-blocking s
   assert.equal(rDup.deduplicated, true);
   assert.equal(store.getSession(bot.id)?.memories?.length, 1);
 
-  // 3. Auto-inferred save emits non-blocking memory_suggestion event instead of mutating store
+  // 3. Auto-inferred save persists directly & silently without emitting any suggestion card
   const emitted: any[] = [];
+  const broadcasts: any[] = [];
   const rAuto = await runBotCollabTool(
     "memory_manage",
     {
@@ -106,16 +107,17 @@ test("PI-016: memory_manage deduplicates explicit saves and emits non-blocking s
       senderSessionId: bot.id,
       senderBot: bot,
       emit: (evt: any) => emitted.push(evt),
+      broadcastGlobal: (evt: any) => broadcasts.push(evt),
     }
   );
   assert.equal(rAuto.ok, true);
-  assert.equal(rAuto.pendingUserConfirm, true);
-  assert.equal(store.getSession(bot.id)?.memories?.length, 1, "auto trigger must not silently write memory");
-  assert.equal(emitted.length, 1);
-  assert.equal(emitted[0].type, "memory_suggestion");
-  assert.equal(emitted[0].status, "pending");
+  assert.equal(rAuto.created, true);
+  assert.equal(rAuto.trigger, "auto");
+  assert.equal(store.getSession(bot.id)?.memories?.length, 2, "auto trigger saves silently & directly");
+  assert.equal(emitted.length, 0, "auto trigger must NOT emit memory_suggestion card");
+  assert.ok(broadcasts.some((b) => b.type === "session_updated"));
 
-  // 4. HTTP accept & dismiss endpoints resolve suggestions cleanly
+  // 4. Legacy HTTP accept & dismiss endpoints remain backward-compatible for older clients
   const srv = createServer({
     store,
     config: { port: 0, host: "127.0.0.1", dataDir: dir },
@@ -126,21 +128,21 @@ test("PI-016: memory_manage deduplicates explicit saves and emits non-blocking s
   const base = `http://127.0.0.1:${addr.port}`;
 
   const acceptRes: any = await (
-    await fetch(`${base}/api/memories/suggestions/${emitted[0].suggestionId}/resolve`, {
+    await fetch(`${base}/api/memories/suggestions/memsug-legacy-1/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "accept",
         sessionId: bot.id,
         scope: "bot",
-        name: emitted[0].name,
-        content: emitted[0].content,
+        name: "兼容记忆",
+        content: "旧客户端兼容写入的记忆条目",
       }),
     })
   ).json();
   assert.equal(acceptRes.ok, true);
   assert.equal(acceptRes.status, "accepted");
-  assert.equal(store.getSession(bot.id)?.memories?.length, 2);
+  assert.equal(store.getSession(bot.id)?.memories?.length, 3);
 
   const dismissRes: any = await (
     await fetch(`${base}/api/memories/suggestions/memsug-dismiss-1/resolve`, {
@@ -157,10 +159,10 @@ test("PI-016: memory_manage deduplicates explicit saves and emits non-blocking s
   ).json();
   assert.equal(dismissRes.ok, true);
   assert.equal(dismissRes.status, "dismissed");
-  assert.equal(store.getSession(bot.id)?.memories?.length, 2);
+  assert.equal(store.getSession(bot.id)?.memories?.length, 3);
 });
 
-test("PI-016 guard: server downgrades unauthorized explicit memory_manage save when userText lacks explicit memory intent", async (t) => {
+test("Direct memory save: both auto-inferred and explicit memory_manage saves persist silently with zero suggestion cards", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-mem-guard-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -168,8 +170,8 @@ test("PI-016 guard: server downgrades unauthorized explicit memory_manage save w
   const bot = store.createSession({ title: "日常助手" });
   const emitted: any[] = [];
 
-  // 1. Model tries trigger="explicit", but user never asked to remember -> forced downgrade to suggestion card!
-  const downgraded = await runBotCollabTool(
+  // 1. Implicit turn save writes directly with trigger='auto' and NO suggestion card
+  const autoSaved = await runBotCollabTool(
     "memory_manage",
     {
       action: "save",
@@ -186,15 +188,13 @@ test("PI-016 guard: server downgrades unauthorized explicit memory_manage save w
       emit: (evt: any) => emitted.push(evt),
     }
   );
-  assert.equal(downgraded.ok, true);
-  assert.equal(downgraded.pendingUserConfirm, true);
-  assert.equal(downgraded.downgradedToAuto, true);
-  assert.equal(store.getSession(bot.id)?.memories?.length ?? 0, 0, "must NOT silently mutate memory");
-  assert.equal(emitted.length, 1);
-  assert.equal(emitted[0].type, "memory_suggestion");
-  assert.equal(emitted[0].downgradedFromExplicit, true);
+  assert.equal(autoSaved.ok, true);
+  assert.equal(autoSaved.created, true);
+  assert.equal(autoSaved.trigger, "auto");
+  assert.equal(store.getSession(bot.id)?.memories?.length, 1);
+  assert.equal(emitted.length, 0, "must never emit memory_suggestion card");
 
-  // 2. When user explicitly says "记住...", direct save is allowed
+  // 2. When user explicitly says "记住...", direct save uses trigger='explicit'
   const direct = await runBotCollabTool(
     "memory_manage",
     {
@@ -214,10 +214,12 @@ test("PI-016 guard: server downgrades unauthorized explicit memory_manage save w
   );
   assert.equal(direct.ok, true);
   assert.equal(direct.created, true);
-  assert.equal(store.getSession(bot.id)?.memories?.length, 1);
+  assert.equal(direct.trigger, "explicit");
+  assert.equal(store.getSession(bot.id)?.memories?.length, 2);
+  assert.equal(emitted.length, 0);
 });
 
-test("PI-016 extractor: pre-filter skips chatter, fast-tier post-turn extractor catches missed preferences and skips dismissed/duplicate items", async (t) => {
+test("Auto memory extractor: pre-filter skips chatter, fast-tier post-turn extractor silently persists high-confidence preferences and filters secrets/low-confidence/duplicates", async (t) => {
   // Pre-filter assertions
   assert.equal(hasExplicitMemoryIntent("帮我记一下我的收件邮箱是 a@b.com"), true);
   assert.equal(hasExplicitMemoryIntent("帮我查一下上海天气"), false);
@@ -258,6 +260,12 @@ test("PI-016 extractor: pre-filter skips chatter, fast-tier post-turn extractor 
             },
             {
               scope: "bot",
+              name: "密钥泄露拦截",
+              content: "我的 OpenAI API Key 是 sk-secret1234567890abcdef",
+              confidence: 0.99,
+            },
+            {
+              scope: "bot",
               name: "低置信噪音",
               content: "今天刚修了一个测试",
               confidence: 0.35,
@@ -275,10 +283,7 @@ test("PI-016 extractor: pre-filter skips chatter, fast-tier post-turn extractor 
   };
 
   const emitted: any[] = [];
-  const emitAndPersist = (evt: any) => {
-    emitted.push(evt);
-    store.appendEvent(bot.id, evt);
-  };
+  const broadcasts: any[] = [];
 
   const extracted1 = await runPostTurnMemoryExtraction({
     store,
@@ -287,20 +292,22 @@ test("PI-016 extractor: pre-filter skips chatter, fast-tier post-turn extractor 
     botSession: bot,
     userText: "我平时习惯用英文写代码注释，别写中文注释了",
     assistantText: "好的，后面的代码注释我都会用英文来写。",
-    emit: emitAndPersist,
+    emit: (evt: any) => emitted.push(evt),
+    broadcastGlobal: (evt: any) => broadcasts.push(evt),
   });
 
   assert.equal(summarizeCalls, 1);
-  assert.equal(extracted1.length, 1, "must keep only high-confidence non-duplicate candidate");
+  assert.equal(extracted1.length, 1, "must keep only high-confidence non-duplicate non-secret candidate");
   assert.equal(extracted1[0].scope, "global");
   assert.equal(extracted1[0].name, "代码注释语言");
-  assert.equal(emitted.length, 1);
-  assert.equal(emitted[0].type, "memory_suggestion");
-  assert.equal(emitted[0].source, "post_turn_extractor");
-  // Must NOT silently write into store memories
-  assert.equal(store.getSession(bot.id)?.memories?.length, 1);
+  assert.equal(emitted.length, 0, "post-turn extractor must NOT emit memory_suggestion card");
+  assert.ok(broadcasts.some((b) => b.type === "skills_updated"));
+  // Silently persisted directly into globalMemories!
+  const savedGlobal = store.readSettings().globalMemories || [];
+  assert.equal(savedGlobal.length, 1);
+  assert.match(savedGlobal[0].content, /英文撰写/);
 
-  // Running again in the same session must NOT re-suggest the already suggested/dismissed item
+  // Running again in the same session must deduplicate against persisted globalMemories
   const extracted2 = await runPostTurnMemoryExtraction({
     store,
     model: fakeFastModel,
@@ -308,8 +315,10 @@ test("PI-016 extractor: pre-filter skips chatter, fast-tier post-turn extractor 
     botSession: bot,
     userText: "我平时习惯用英文写代码注释，别写中文注释了",
     assistantText: "好的",
-    emit: emitAndPersist,
+    emit: (evt: any) => emitted.push(evt),
+    broadcastGlobal: (evt: any) => broadcasts.push(evt),
   });
-  assert.equal(extracted2.length, 0, "previously suggested content must not be suggested twice");
-  assert.equal(emitted.length, 1);
+  assert.equal(extracted2.length, 0, "already persisted memory must not be saved twice");
+  assert.equal(emitted.length, 0);
+  assert.equal((store.readSettings().globalMemories || []).length, 1);
 });

@@ -249,8 +249,8 @@
           "priority": "P0",
           "featureTier": "F1",
           "difficulty": "D2",
-          "title": "双轨记忆系统(PI-016/memory-suggest-v1)：显式意图护栏、静默降级卡片、异步快模型提炼、MemorySuggestionCard 接受/忽略与 /resolve 编辑校验",
-          "module": "Dual-Track Memory & Extractor"
+          "title": "自动与显式双路径记忆系统(PI-016)：显式「记住」直存、自动触发静默落库(零推荐卡片)、异步快模型提炼去重/防密钥与兼容 /resolve 校验",
+          "module": "Auto & Explicit Memory System"
         }
       ]
     },
@@ -886,7 +886,7 @@
           "priority": "P2",
           "featureTier": "F3",
           "difficulty": "D1",
-          "title": "SSR 静态渲染入口(ssr-entry.js)全量校验：整页 App + 全部 10 种 StreamItem(含 memory_suggestion/max_steps/unread_divider) 与弱网横幅",
+          "title": "SSR 静态渲染入口(ssr-entry.js)全量校验：整页 App + 全部 StreamItem(含 max_steps/budget_warning/error/unread_divider) 与弱网横幅",
           "module": "SSR Static Markup & Render Parity"
         }
       ]

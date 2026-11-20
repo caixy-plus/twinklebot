@@ -117,16 +117,6 @@ export type StreamItem =
       resolvedText?: string;
     }
   | {
-      kind: "memory_suggestion";
-      id: string;
-      suggestionId: string;
-      sessionId?: string;
-      scope: "bot" | "global";
-      name: string;
-      content: string;
-      status: "pending" | "accepted" | "dismissed";
-    }
-  | {
       kind: "route_notice";
       id: string;
       level?: string;
@@ -1278,40 +1268,9 @@ export function reduceSessionEvent(
       break;
     }
 
-    case "memory_suggestion": {
-      const sugId = String(evt.suggestionId || nextStreamItemId("memsug"));
-      const existingIdx = streamItems.findIndex(
-        (it) => it.kind === "memory_suggestion" && it.suggestionId === sugId
-      );
-      if (existingIdx === -1) {
-        streamItems = [
-          ...streamItems,
-          {
-            kind: "memory_suggestion",
-            id: nextStreamItemId("memsug-item"),
-            suggestionId: sugId,
-            sessionId: evt.sessionId || prev.activeSessionId || "",
-            scope: evt.scope === "global" ? "global" : "bot",
-            name: String(evt.name || "记忆建议"),
-            content: String(evt.content || ""),
-            status:
-              evt.status === "accepted" || evt.status === "dismissed"
-                ? evt.status
-                : "pending",
-          },
-        ];
-      }
-      break;
-    }
-
+    case "memory_suggestion":
     case "memory_suggestion_resolved": {
-      const sugId = String(evt.suggestionId || "");
-      const nextStatus = evt.status === "accepted" ? "accepted" : "dismissed";
-      streamItems = streamItems.map((it) =>
-        it.kind === "memory_suggestion" && it.suggestionId === sugId
-          ? { ...it, status: nextStatus }
-          : it
-      );
+      // Legacy suggestion card events are intentionally ignored; memories save silently & directly.
       break;
     }
 

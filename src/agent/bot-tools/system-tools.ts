@@ -222,40 +222,13 @@ export async function handleSystemBotTool(
           }
         }
 
-        // Server-side guard for PI-016:
-        // Only allow direct silent write when the user's actual message explicitly requested remembering
-        // (or in direct tool tests where ctx.userText is omitted). Otherwise downgrade to non-blocking suggestion card!
+        // Direct silent persistence for both explicit ("记住…") and auto-triggered durable memories.
+        // Never pops suggestion cards in chat; deduplication above protects against duplicates.
         const turnUserText = typeof ctx.userText === "string" ? ctx.userText.trim() : "";
-        const downgradedToAuto =
-          args.trigger !== "auto" &&
-          turnUserText.length > 0 &&
-          !hasExplicitMemoryIntent(turnUserText);
         const effectiveTrigger =
-          args.trigger === "auto" || downgradedToAuto ? "auto" : "explicit";
-
-        if (effectiveTrigger === "auto" && targetIdx < 0 && typeof emit === "function") {
-          const suggestionId = `memsug-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-          emit({
-            type: "memory_suggestion",
-            suggestionId,
-            sessionId: targetBotId || "",
-            scope: targetScope,
-            name: rawName,
-            content: rawContent,
-            status: "pending",
-            ...(downgradedToAuto ? { downgradedFromExplicit: true } : {}),
-          });
-          return {
-            ok: true,
-            action: "suggest",
-            pendingUserConfirm: true,
-            downgradedToAuto,
-            suggestionId,
-            scope: targetScope,
-            name: rawName,
-            content: rawContent,
-          };
-        }
+          args.trigger === "auto" || (turnUserText.length > 0 && !hasExplicitMemoryIntent(turnUserText))
+            ? "auto"
+            : "explicit";
 
         let savedItem: any;
         let created = false;
@@ -280,6 +253,7 @@ export async function handleSystemBotTool(
             instruction: rawContent,
             content: rawContent,
             enabled: args.enabled !== false,
+            source: effectiveTrigger,
             updatedAt: new Date().toISOString(),
           };
           activeList.unshift(savedItem);
@@ -290,6 +264,7 @@ export async function handleSystemBotTool(
           ok: true,
           action: "save",
           scope: targetScope,
+          trigger: effectiveTrigger,
           created,
           memory: slimMemory(savedItem, targetScope),
           totalCount: activeList.length,

@@ -11,10 +11,10 @@ Memory vs. Shared Custom Skills (Dual-Track Memory Trigger):
     - `scope: "bot"` (default, shown in the right sidebar under "专属记忆"): context or rules specific to your role.
     - `scope: "global"` (shown under "全局记忆", shared across all Bots): universal personal preferences.
     - Deleting/forgetting a memory: `memory_manage(action: "remove")` (searches your Bot memory first, then Global Memory).
-  - **DUAL-TRACK SAVE DISCIPLINE (`trigger`)**:
-    1. **Explicit User Request (`trigger: "explicit"`)**: ONLY when the user explicitly asks you to remember/save/update a preference or rule (e.g., "记住…", "以后都…", "帮我记下…", "remember that..."), call `memory_manage(action: "save", trigger: "explicit", ...)` to save immediately and summarize what was saved.
-    2. **Model-Inferred Candidate (`trigger: "auto"`)**: When the user did NOT explicitly ask to remember, ONLY call `memory_manage(action: "save", trigger: "auto", ...)` if you observe a high-value, long-term, cross-session stable preference or identity fact. This renders a lightweight non-blocking **"建议记住" (Save / Ignore)** suggestion card for the user to approve with one click — it never silently pollutes memory.
-    3. **STRICT DO-NOT-SAVE LIST**: NEVER save transient one-off task parameters, single-session file paths, temporary debugging errors, greetings, or facts already present in your current memories.
+  - **DIRECT SAVE DISCIPLINE (`trigger`)**:
+    1. **Explicit User Request (`trigger: "explicit"`)**: When the user explicitly asks you to remember/save/update a preference or rule (e.g., "记住…", "以后都…", "帮我记下…", "remember that..."), call `memory_manage(action: "save", trigger: "explicit", ...)` immediately and briefly confirm what was saved.
+    2. **Silent Auto-Trigger (`trigger: "auto"`)**: When the user did NOT explicitly say "remember", ONLY call `memory_manage(action: "save", trigger: "auto", ...)` for genuinely high-value, long-term, cross-session stable preferences, identity facts, or recurring formatting/workflow rules. It saves silently into memory in the background without popping any confirmation card.
+    3. **STRICT DO-NOT-SAVE LIST**: NEVER save transient one-off task parameters, single-session file paths, temporary debugging errors, greetings, secrets/passwords/API keys, or facts already present in your current memories.
   - **Shared Custom Workflow Skills (`custom_skill_manage`)**: reusable **multi-step workflows, SOPs, structured templates, automation pipelines, or script recipes** shared globally across ALL Bots in `custom-skills/*.md` (e.g. "create a ... skill", "turn that workflow into a custom skill", "update/delete this skill").
   - Never save multi-step SOP workflows into memory, and never create a custom skill for a simple 1-line preference/fact.
 

@@ -51,7 +51,6 @@ import {
   ChoiceCard,
   CredentialCard,
   DraftCard,
-  MemorySuggestionCard,
 } from "./InteractiveCards.js";
 import { MarkdownRenderer } from "./MarkdownRenderer.js";
 import { MessageGroup } from "./MessageGroup.js";
@@ -694,8 +693,6 @@ export function ChatStage({
                 return <DraftCard key={item.id} item={item} />;
               case "credential":
                 return <CredentialCard key={item.id} item={item} />;
-              case "memory_suggestion":
-                return <MemorySuggestionCard key={item.id} item={item} />;
               case "route_notice": {
                 if (item.level === "max_steps") {
                   const hasFollowUp = streamItems

@@ -21,6 +21,13 @@ const SIGNAL_MEMORY_EN_RE =
 const TRIVIAL_UTTERANCE_RE =
   /^(你好|您好|嗨|哈喽|在吗|好的|好|行|ok|okay|yes|no|thanks|thank you|谢谢|收到|嗯|嗯嗯|明白了|继续|开始|可以|没问题)[！!。.?？\s]*$/i;
 
+const SECRET_LIKE_RE =
+  /(?:sk-[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{20,}|-----BEGIN\s+[A-Z ]*PRIVATE KEY-----|Bearer\s+[A-Za-z0-9._-]{16,}|(?:password|passwd|api[_-]?key|secret[_-]?key|授权码|密码)\s*[:：=]\s*\S{6,})/i;
+
+export function looksLikeSecretMemory(text: unknown): boolean {
+  return SECRET_LIKE_RE.test(String(text || ""));
+}
+
 export function hasExplicitMemoryIntent(userText: unknown): boolean {
   const text = String(userText || "").trim();
   if (!text) return false;
@@ -232,14 +239,15 @@ export async function extractMemoryCandidates({
       const scope: "bot" | "global" = item.scope === "global" ? "global" : "bot";
       const confidence = Number(item.confidence);
       if (!content || content.length < 4 || content.length > 260) continue;
-      if (Number.isFinite(confidence) && confidence < 0.75) continue;
+      if (looksLikeSecretMemory(content) || looksLikeSecretMemory(name)) continue;
+      if (Number.isFinite(confidence) && confidence < 0.8) continue;
       if (findDuplicateMemory(dedupPool, content)) continue;
       dedupPool.push({ content });
       accepted.push({
         scope,
         name,
         content,
-        confidence: Number.isFinite(confidence) ? confidence : 0.8,
+        confidence: Number.isFinite(confidence) ? confidence : 0.85,
       });
     }
 
@@ -257,7 +265,7 @@ export async function runPostTurnMemoryExtraction({
   userText,
   assistantText,
   config = {},
-  emit,
+  broadcastGlobal,
 }: {
   store: any;
   model?: ModelAdapter | null;
@@ -267,25 +275,17 @@ export async function runPostTurnMemoryExtraction({
   assistantText: string;
   config?: Record<string, any>;
   emit?: (evt: Record<string, any>) => void;
+  broadcastGlobal?: (evt: Record<string, any>) => void;
 }): Promise<ExtractedMemoryCandidate[]> {
-  if (!store || !emit || !sessionId) return [];
+  if (!store || !sessionId) return [];
   const latestSession = store.getSession?.(sessionId) || botSession || null;
   const settings = store.readSettings?.() || {};
-  const botMemories = Array.isArray(latestSession?.memories) ? latestSession.memories : [];
+  const botMemories = Array.isArray(latestSession?.memories) ? [...latestSession.memories] : [];
   const globalMemories = Array.isArray(settings.globalMemories)
-    ? settings.globalMemories
+    ? [...settings.globalMemories]
     : Array.isArray(settings.privateSkills)
-      ? settings.privateSkills
+      ? [...settings.privateSkills]
       : [];
-
-  // Collect previously suggested / resolved contents in this session so dismissed items are never re-suggested
-  const recentEvents = Array.isArray(store.readEvents?.(sessionId))
-    ? store.readEvents(sessionId).slice(-80)
-    : [];
-  const recentSuggestedContents = recentEvents
-    .filter((e: any) => e && (e.type === "memory_suggestion" || e.type === "memory_suggestion_resolved"))
-    .map((e: any) => String(e.content || ""))
-    .filter(Boolean);
 
   const candidates = await extractMemoryCandidates({
     model,
@@ -294,24 +294,70 @@ export async function runPostTurnMemoryExtraction({
     botName: latestSession?.title || "Twinkle",
     botMemories,
     globalMemories,
-    recentSuggestedContents,
     config,
   });
 
+  if (candidates.length === 0) return [];
+
+  // Re-read freshest store state before persisting silently to prevent races or duplicates
+  const freshSession = store.getSession?.(sessionId) || null;
+  if (store.getSession && !freshSession) return [];
+  const freshSettings = store.readSettings?.() || {};
+  const nextBotList = Array.isArray(freshSession?.memories) ? [...freshSession.memories] : [];
+  const nextGlobalList = Array.isArray(freshSettings.globalMemories)
+    ? [...freshSettings.globalMemories]
+    : Array.isArray(freshSettings.privateSkills)
+      ? [...freshSettings.privateSkills]
+      : [];
+
+  const saved: ExtractedMemoryCandidate[] = [];
+  let botChanged = false;
+  let globalChanged = false;
+
   for (const cand of candidates) {
-    if (store.getSession && !store.getSession(sessionId)) break;
-    const suggestionId = `memsug-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    emit({
-      type: "memory_suggestion",
-      suggestionId,
-      sessionId,
-      scope: cand.scope,
+    if (findDuplicateMemory([...nextBotList, ...nextGlobalList], cand.content)) {
+      continue;
+    }
+    const targetScope: "bot" | "global" =
+      cand.scope === "global" || !freshSession ? "global" : "bot";
+    const entry = {
+      id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name: cand.name,
+      desc: cand.content,
+      instruction: cand.content,
       content: cand.content,
-      status: "pending",
-      source: "post_turn_extractor",
-    });
+      enabled: true,
+      source: "auto",
+      updatedAt: new Date().toISOString(),
+    };
+    if (targetScope === "bot") {
+      nextBotList.unshift(entry);
+      botChanged = true;
+    } else {
+      nextGlobalList.unshift(entry);
+      globalChanged = true;
+    }
+    saved.push({ ...cand, scope: targetScope });
   }
 
-  return candidates;
+  if (botChanged && freshSession) {
+    const updatedSession = store.updateSession?.(freshSession.id, {
+      memories: nextBotList,
+      touch: false,
+    });
+    broadcastGlobal?.({
+      type: "session_updated",
+      sessionId: freshSession.id,
+      session: updatedSession || { ...freshSession, memories: nextBotList },
+    });
+  }
+  if (globalChanged) {
+    store.writeSettings?.({
+      globalMemories: nextGlobalList,
+      privateSkills: nextGlobalList,
+    });
+    broadcastGlobal?.({ type: "skills_updated" });
+  }
+
+  return saved;
 }
