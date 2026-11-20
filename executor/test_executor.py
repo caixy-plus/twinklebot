@@ -103,6 +103,14 @@ class TestActions(unittest.TestCase):
         Actions(run).type_text("你好🙂")
         self.assertEqual(run.calls[0], (["xclip", "-selection", "clipboard"], "你好🙂".encode("utf-8")))
         self.assertEqual(run.calls[1][0], ["xdotool", "key", "--clearmodifiers", "ctrl+v"])
+        self.assertEqual(len(run.calls), 2)
+
+    def test_type_text_sensitive_wipes_clipboard(self):
+        run = FakeRun()
+        Actions(run).type_text("S3cr3t!", sensitive=True)
+        self.assertEqual(run.calls[0], (["xclip", "-selection", "clipboard"], b"S3cr3t!"))
+        self.assertEqual(run.calls[1][0], ["xdotool", "key", "--clearmodifiers", "ctrl+v"])
+        self.assertEqual(run.calls[2], (["xclip", "-selection", "clipboard"], b""))
 
     def test_type_text_rejects_non_string(self):
         with self.assertRaises((ValueError, TypeError)):

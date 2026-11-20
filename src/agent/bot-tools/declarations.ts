@@ -247,7 +247,7 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "request_credential",
     description:
-      "Render an inline encrypted Credential / OTP input card when login, password, or 2FA verification code is needed to continue a task. Returns an opaque `secret_ref` handle (`{{secret:cred_...}}`) that is resolved in host memory ONLY when passed directly as the `text` argument of `browser_type` (never `type_text` or `run_shell`) without ever exposing plaintext credentials in logs.",
+      "Render an inline encrypted Credential / OTP input card when login, password, or 2FA verification code is needed to continue a task. Returns an opaque `secret_ref` handle (`{{secret:cred_...}}`) that is resolved in host memory ONLY when passed directly as the `text` argument of `browser_type` or OS-level `type_text` (never `run_shell`, `key`, or URLs) without ever exposing plaintext credentials in logs.",
     parameters: {
       type: "object",
       properties: {
@@ -820,23 +820,23 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "vault_manage",
     description:
-      "Manage the user's Contacts & Account Notes Vault (`vault.json`, shown in 设置 → 保险箱): list saved contacts/emails/account notes (`action: 'list'`), save or update a contact/account note (`action: 'save'`), or remove an entry (`action: 'remove'`). Never stores or returns plaintext passwords.",
+      "Manage the user's Encrypted Local Vault (`vault.json`, shown in 设置 → 保险箱): list saved contacts/accounts/credentials (`action: 'list'`, includes `hasPassword` flag, never plaintext), obtain an opaque `secret_ref` handle (`{{secret:cred_...}}`) for a saved credential's encrypted password (`action: 'get_secret'`) to inject via `browser_type` or `type_text`, save or update non-secret metadata (`action: 'save'`), or remove an entry (`action: 'remove'`). Never returns plaintext passwords.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "save", "remove"],
+          enum: ["list", "get_secret", "save", "remove"],
           description: "Operation to perform on the Vault.",
         },
         item: {
           type: "string",
           description:
-            "Selector for an existing vault item (ID, title, or email/subtitle substring) when updating or removing.",
+            "Selector for an existing vault item (ID, title, or email/subtitle substring) when retrieving a secret handle, updating, or removing.",
         },
         category: {
           type: "string",
-          enum: ["contact", "account", "note"],
+          enum: ["contact", "account", "credential", "login", "note"],
           description: "Item category when action is 'save' (default: 'contact').",
         },
         title: {

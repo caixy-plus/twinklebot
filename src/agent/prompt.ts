@@ -95,14 +95,14 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
 - BOT SELF-MANAGEMENT & CLONING (bot_manage): Call \`bot_manage\` to update a Bot's name, role_prompt, avatar_shape, or avatar_color (\`action: "update_profile"\`), clone an existing Bot with its memories into a new Bot (\`action: "clone"\`, corresponding to "派生专职新 Bot 并交接" in the right sidebar), or update members of a Bot group (\`action: "update_group_members"\`).
 - CROSS-BOT WORKSPACE SEARCH (workspace_search): Call \`workspace_search\` (\`action: "search" | "read_exchange" | "recent_messages"\`) to search historical messages across all Bots or read another Bot's recent conversation and step details without disturbing that Bot via \`send_bot_message\`.
 - ARTIFACT LIBRARY & NOTES (library_manage): Call \`library_manage\` (\`action: "list" | "save_note"\`) to browse the right-sidebar Library ("资料库": all generated images, drafts, files, and notes) or save a reusable Markdown deliverable/report directly into the Library.
-- CONTACTS & ACCOUNT NOTES DIRECTORY (vault_manage): Call \`vault_manage\` (\`action: "list" | "save" | "remove"\`) to look up or save recipient emails, contact addresses, server aliases, and non-password account metadata (never store plaintext passwords here).
+- ENCRYPTED LOCAL VAULT (vault_manage): Call \`vault_manage\` (\`action: "list" | "get_secret" | "save" | "remove"\`) to look up contacts, accounts, or saved encrypted credentials. For any vault entry with a saved password, call \`vault_manage(action: "get_secret", item: "...")\` to obtain an opaque \`secret_ref\` handle (\`{{secret:cred_...}}\`) without ever viewing plaintext passwords.
 - SELF-DIAGNOSTICS & REPAIR (system_diagnostics): Call \`system_diagnostics\` (\`action: "status" | "reconnect_mcp" | "update_bot_computer"\`) to inspect token/cost stats, Ubuntu executor health, or KimiCU MCP status, and to self-heal KimiCU MCP or update the Bot's Computer container when requested.
 ${imageGenPromptLine}
 - WEB SEARCH & FETCH (web_search / web_fetch): Whenever you need up-to-date online facts, documentation, news, or to read a public webpage, call \`web_search(query)\` and \`web_fetch(url)\` FIRST — they run in <1s without launching a browser or taking screenshots.
 - FILE DELIVERY (send_file): Chat natively supports sending ANY document or binary file (.docx, .pdf, .xlsx, .pptx, .csv, .md, .html, .zip, etc.) directly as an interactive file card in the message stream (Open / Reveal in Finder / Download). Whenever you create, export, or locate a file for the user (e.g. a Word \`.docx\` report in \`~/Downloads/\` or workspace), call \`send_file\` with its \`path\` (and optional \`title\`), and include the returned \`markdown\` line on its own line in your final reply. Never claim the chat window cannot send \`.docx\` or binary files.
 - QUESTION CARDS: When you need clarification or next-step choices, call ask_user_choice (supports single question or batched multi-step \`questions[]\`, \`multi_select\`, and a built-in "Your own answer" custom input box) instead of plain-text ping-pong.
 - DRAFT CARDS: Before sending external emails, posts, or important outbound messages, call propose_draft so the user can review/edit the draft inline inside a Draft Card.
-- CREDENTIAL CARDS: If a login wall, password, or 2FA OTP blocks progress, call request_credential to prompt securely via an inline encrypted card. It returns an opaque \`secret_ref\` token (\`{{secret:cred_...}}\`) — pass \`secret_ref\` directly as the \`text\` argument of \`browser_type\` ONLY (call \`browser_snapshot\` first to get the exact input \`ref\`; NEVER pass \`secret_ref\` to \`type_text\`, \`run_shell\`, URLs, or echo it).`);
+- CREDENTIAL CARDS: If a login wall, password, or 2FA OTP blocks progress (and no saved password exists in the Vault via \`vault_manage(action: "get_secret")\`), call \`request_credential\` to prompt securely via an inline encrypted card. It returns an opaque \`secret_ref\` token (\`{{secret:cred_...}}\`) — pass \`secret_ref\` directly as the \`text\` argument of \`browser_type\` (preferred for normal web inputs) or OS-level \`type_text\` (for cross-origin iframes or native desktop inputs after clicking focus). NEVER pass \`secret_ref\` to \`run_shell\`, \`key\`, URLs, or echo it.`);
 
     const installedSkills: string[] = Array.isArray(config.installedSkills)
       ? config.installedSkills
@@ -218,11 +218,12 @@ Scheduled Tasks & Routines ("即将进行" — schedule_manage):
           const title = v.title || v.label || v.subtitle || v.account || "";
           const sub = v.subtitle || v.account || "";
           const note = v.notes || v.note || "";
-          return `- ${title}${sub && sub !== title ? `: \`${sub}\`` : ""}${note ? ` (${note})` : ""}`;
+          const pwdTag = v.hasPassword ? " [encrypted password saved; use vault_manage get_secret]" : "";
+          return `- ${title}${sub && sub !== title ? `: \`${sub}\`` : ""}${note ? ` (${note})` : ""}${pwdTag}`;
         })
         .join("\n");
       sections.push(
-        `Saved Contacts & Account Notes (Managed via \`vault_manage\`):\n${vaultLines}`
+        `Saved Vault Contacts & Credentials (Managed via \`vault_manage\`):\n${vaultLines}`
       );
     }
   }

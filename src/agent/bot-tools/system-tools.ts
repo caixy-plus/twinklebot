@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { inferImageMimeType } from "../model.js";
+import { registerEphemeralSecret } from "../tools.js";
 import { computeInitialNextRun } from "../scheduler.js";
 import { buildSessionCostSummary } from "../pricing.js";
 import { updateBotComputer } from "../../lib/bot-computer-updater.js";
@@ -694,6 +695,7 @@ export async function handleSystemBotTool(
         title: v.title || "",
         subtitle: v.subtitle || "",
         notes: v.notes || "",
+        hasPassword: typeof v.password === "string" && v.password.length > 0,
       });
 
       const findVaultIdx = (selector: string) => {
@@ -725,6 +727,36 @@ export async function handleSystemBotTool(
         };
       }
 
+      if (action === "get_secret") {
+        const selector = args.item || args.title || args.subtitle || "";
+        const idx = findVaultIdx(selector);
+        if (idx < 0) {
+          return {
+            ok: false,
+            error: selector
+              ? `未找到匹配的保险箱条目「${selector}」`
+              : "请通过 item 指定要读取密码句柄的保险箱条目（ID、标题或账号）",
+          };
+        }
+        const entry = items[idx];
+        if (typeof entry.password !== "string" || entry.password.length === 0) {
+          return {
+            ok: false,
+            error: `保险箱条目「${entry.title || entry.id}」未保存密码；如需用户输入请调用 request_credential`,
+            item: slimVaultItem(entry),
+          };
+        }
+        const secretRef = registerEphemeralSecret(entry.password);
+        return {
+          ok: true,
+          action: "get_secret",
+          item: slimVaultItem(entry),
+          secret_ref: secretRef,
+          usage_hint:
+            "Pass secret_ref directly as the `text` argument of `browser_type` or OS-level `type_text` ONLY. Never pass it to `run_shell`, `key`, URLs, or echo it.",
+        };
+      }
+
       if (action === "save") {
         const rawTitle = String(args.title || "").trim();
         const rawSubtitle = String(args.subtitle || "").trim();
@@ -735,7 +767,9 @@ export async function handleSystemBotTool(
             error: "save 需要提供 title（名称）或 subtitle（邮箱/账号标识）",
           };
         }
-        const category = ["contact", "account", "note"].includes(args.category)
+        const category = ["contact", "account", "credential", "login", "note"].includes(
+          args.category
+        )
           ? args.category
           : "contact";
         const hitIdx = args.item

@@ -915,6 +915,7 @@ export function SettingsModal() {
   );
   const matchedScreenPreset = matchScreenPoolPreset(screenPoolEffective, screenBudget);
   const multiDisplaySupported = hasConnectedNodeCapability("multi-display-v1", { diagnostics });
+  const vaultSecretSupported = hasConnectedNodeCapability("vault-secret-v1", { diagnostics });
 
   // Global Memory form
   const [memFormOpen, setMemFormOpen] = useState(false);
@@ -1001,6 +1002,11 @@ export function SettingsModal() {
   const [vaultCat, setVaultCat] = useState("contact");
   const [vaultTitle, setVaultTitle] = useState("");
   const [vaultSub, setVaultSub] = useState("");
+  const [vaultPassword, setVaultPassword] = useState("");
+  const [vaultPasswordTouched, setVaultPasswordTouched] = useState(false);
+  const [vaultHasPassword, setVaultHasPassword] = useState(false);
+  const [vaultPasswordVisible, setVaultPasswordVisible] = useState(false);
+  const [vaultRevealing, setVaultRevealing] = useState(false);
   const [pendingDeleteVaultId, setPendingDeleteVaultId] = useState<string | null>(null);
   const vaultTitleRef = useRef<HTMLInputElement | null>(null);
 
@@ -1022,12 +1028,18 @@ export function SettingsModal() {
       setVaultCat(item.category || "contact");
       setVaultTitle(String(item.title || ""));
       setVaultSub(String(item.subtitle || ""));
+      setVaultHasPassword(Boolean(item.hasPassword));
     } else {
       setEditingVaultId(null);
       setVaultCat("contact");
       setVaultTitle("");
       setVaultSub("");
+      setVaultHasPassword(false);
     }
+    setVaultPassword("");
+    setVaultPasswordTouched(false);
+    setVaultPasswordVisible(false);
+    setVaultRevealing(false);
     setPendingDeleteVaultId(null);
     setVaultFormOpen(true);
     requestAnimationFrame(() => vaultTitleRef.current?.focus());
@@ -1226,7 +1238,11 @@ export function SettingsModal() {
   // Vault filtered items
   const vQuery = vaultSearch.trim().toLowerCase();
   const filteredVault = vaultItems.filter((it: any) => {
-    const tabOk = vaultTab === "all" || it.category === vaultTab;
+    const isAccountLike =
+      it.category === "login" || it.category === "credential" || it.category === "account";
+    const tabOk =
+      vaultTab === "all" ||
+      (vaultTab === "login" ? isAccountLike : it.category === vaultTab);
     const searchOk =
       !vQuery ||
       String(it.title || "").toLowerCase().includes(vQuery) ||
@@ -1679,6 +1695,7 @@ export function SettingsModal() {
               onChange={(e) => setVaultCat(e.target.value)}
             >
               <option value="contact">联系信息</option>
+              <option value="credential">登录凭据（账号 + 密码）</option>
               <option value="login">账号备注</option>
             </select>
           </label>
@@ -1699,11 +1716,82 @@ export function SettingsModal() {
           <input
             id="vault-sub-input"
             type="text"
-            placeholder="邮箱 / 用户名 / 备注内容（请勿存真实银行卡安全码）"
+            placeholder="邮箱 / 用户名 / 备注内容"
             value={vaultSub}
             onChange={(e) => setVaultSub(e.target.value)}
           />
         </label>
+        {vaultSecretSupported && (
+          <label className="field-group">
+            <span>密码 / 授权码（可选 · 本机 AES-256-GCM 加密）</span>
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <input
+                id="vault-password-input"
+                type={vaultPasswordVisible ? "text" : "password"}
+                autoComplete="new-password"
+                style={{ flex: 1, minWidth: 0 }}
+                placeholder={
+                  editingVaultId && vaultHasPassword && !vaultPasswordTouched
+                    ? "••••••••（已加密保存，留空则保持不变）"
+                    : "输入密码或授权码，留空表示不存密码"
+                }
+                value={vaultPassword}
+                onChange={(e) => {
+                  setVaultPassword(e.target.value);
+                  setVaultPasswordTouched(true);
+                }}
+              />
+              {editingVaultId && vaultHasPassword && (
+                <button
+                  type="button"
+                  id="vault-reveal-password-btn"
+                  className="skill-pill-btn"
+                  disabled={vaultRevealing}
+                  onClick={async () => {
+                    if (vaultPasswordVisible) {
+                      setVaultPasswordVisible(false);
+                      return;
+                    }
+                    if (!vaultPasswordTouched && !vaultPassword) {
+                      setVaultRevealing(true);
+                      try {
+                        const res = await apiJson(
+                          `/api/vault/${encodeURIComponent(editingVaultId)}/reveal`,
+                          { method: "POST" }
+                        );
+                        setVaultPassword(String(res?.password || ""));
+                        setVaultPasswordVisible(true);
+                      } catch (err: any) {
+                        showToast(`读取密码失败: ${err?.message || "请重试"}`);
+                      } finally {
+                        setVaultRevealing(false);
+                      }
+                    } else {
+                      setVaultPasswordVisible(true);
+                    }
+                  }}
+                >
+                  {vaultRevealing ? "解密中…" : vaultPasswordVisible ? "隐藏" : "查看"}
+                </button>
+              )}
+              {editingVaultId && vaultHasPassword && (
+                <button
+                  type="button"
+                  id="vault-clear-password-btn"
+                  className="skill-pill-btn is-danger-text"
+                  onClick={() => {
+                    setVaultPassword("");
+                    setVaultPasswordTouched(true);
+                    setVaultHasPassword(false);
+                    setVaultPasswordVisible(false);
+                  }}
+                >
+                  清除
+                </button>
+              )}
+            </div>
+          </label>
+        )}
       </div>
       <div className="inline-form-actions">
         <button
@@ -1713,6 +1801,9 @@ export function SettingsModal() {
           onClick={() => {
             setVaultFormOpen(false);
             setEditingVaultId(null);
+            setVaultPassword("");
+            setVaultPasswordTouched(false);
+            setVaultPasswordVisible(false);
           }}
         >
           取消
@@ -1727,27 +1818,37 @@ export function SettingsModal() {
               showToast("请输入条目名称");
               return;
             }
+            const payload: Record<string, any> = {
+              category: vaultCat,
+              title,
+              subtitle: vaultSub.trim(),
+            };
+            if (vaultSecretSupported) {
+              if (editingVaultId) {
+                if (vaultPasswordTouched) {
+                  payload.password = vaultPassword;
+                }
+              } else if (vaultPassword) {
+                payload.password = vaultPassword;
+              }
+            }
             if (editingVaultId) {
               await apiJson(`/api/vault/${encodeURIComponent(editingVaultId)}`, {
                 method: "PATCH",
-                body: JSON.stringify({
-                  category: vaultCat,
-                  title,
-                  subtitle: vaultSub.trim(),
-                }),
+                body: JSON.stringify(payload),
               });
             } else {
               await apiJson("/api/vault", {
                 method: "POST",
-                body: JSON.stringify({
-                  category: vaultCat,
-                  title,
-                  subtitle: vaultSub.trim(),
-                }),
+                body: JSON.stringify(payload),
               });
             }
             setVaultTitle("");
             setVaultSub("");
+            setVaultPassword("");
+            setVaultPasswordTouched(false);
+            setVaultHasPassword(false);
+            setVaultPasswordVisible(false);
             setEditingVaultId(null);
             setVaultFormOpen(false);
             refreshVault();
@@ -3553,7 +3654,7 @@ export function SettingsModal() {
                 {(
                   [
                     ["all", "全部"],
-                    ["login", "账号备注"],
+                    ["login", "账号与凭据"],
                     ["contact", "联系信息"],
                   ] as const
                 ).map(([vKey, vLabel]) => (
@@ -3610,12 +3711,29 @@ export function SettingsModal() {
                           <div className="settings-account-left">
                             <span className="vault-row-icon" aria-hidden="true">
                               <UiIcon
-                                name={it.category === "login" ? "key" : "user"}
+                                name={
+                                  it.category === "login" ||
+                                  it.category === "credential" ||
+                                  it.category === "account" ||
+                                  it.hasPassword
+                                    ? "key"
+                                    : "user"
+                                }
                                 size={15}
                               />
                             </span>
                             <div>
-                              <div className="settings-row-title">{it.title}</div>
+                              <div className="settings-row-title">
+                                {it.title}
+                                {it.hasPassword && (
+                                  <span
+                                    className="settings-row-sub"
+                                    style={{ marginLeft: "6px", fontWeight: 500 }}
+                                  >
+                                    · 已存加密密码
+                                  </span>
+                                )}
+                              </div>
                               <div className="settings-row-sub">{it.subtitle || ""}</div>
                             </div>
                           </div>
@@ -3688,7 +3806,7 @@ export function SettingsModal() {
               )}
             </div>
             <p className="vault-footnote">
-              本地轻量资料库：保存在本机 data/vault.json，供日常查阅常用联系信息与测试备注。
+              本机 AES-256-GCM 加密存储于 data/vault.json（密钥受系统钥匙串/本机安全存储保护），明文密码绝不会发送给大模型。
             </p>
           </div>
 

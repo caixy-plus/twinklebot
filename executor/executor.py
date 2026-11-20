@@ -1357,11 +1357,20 @@ class Actions:
         self.run(cmd)
         return {"ok": True}
 
-    def type_text(self, text):
+    def type_text(self, text, sensitive=False):
         if not isinstance(text, str):
             raise TypeError("text must be a string")
         self.run(["xclip", "-selection", "clipboard"], input=text.encode("utf-8"))
-        self.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"])
+        try:
+            self.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"])
+        finally:
+            if sensitive:
+                # Give target app a brief moment to read the clipboard on paste, then wipe X11 clipboard
+                time.sleep(0.08)
+                try:
+                    self.run(["xclip", "-selection", "clipboard"], input=b"")
+                except Exception:
+                    pass
         return {"ok": True}
 
     def key(self, combo):
@@ -2012,7 +2021,7 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                 elif path == "/type":
                     if "text" not in body:
                         raise ValueError("missing text")
-                    res = actions.type_text(body["text"])
+                    res = actions.type_text(body["text"], sensitive=bool(body.get("sensitive", False)))
                 elif path == "/key":
                     if "combo" not in body:
                         raise ValueError("missing combo")

@@ -332,10 +332,13 @@ test("P1 Suite 5: Skills Store, Custom SKILL.md, Loopback Mail (IMAP/POP3/SMTP) 
       const qqAccountId = qqAdded.account?.id;
       assert.ok(qqAccountId);
 
-      // Uninstall qqmail WITHOUT purge -> credentials stay dormant on disk
+      // Uninstall qqmail WITHOUT purge -> credentials stay dormant on disk (encrypted at rest)
       assert.equal((await fetch(`${ws.baseUrl}/api/skills/qqmail`, { method: "DELETE" })).status, 200);
-      const authAfterKeep = fs.readFileSync(path.join(ws.dataDir, "mail-auth.json"), "utf8");
-      assert.ok(authAfterKeep.includes(qqAccountId), "Uninstall without purge must keep dormant account");
+      const authAfterKeepRaw = fs.readFileSync(path.join(ws.dataDir, "mail-auth.json"), "utf8");
+      assert.ok(authAfterKeepRaw.includes("__twinklebot_encrypted__"), "mail-auth.json must be encrypted at rest");
+      assert.ok(!authAfterKeepRaw.includes(mailSrv.validPassword), "mail-auth.json must never store plaintext password");
+      const authAfterKeepDecrypted = JSON.stringify(ws.store.readMailAuth());
+      assert.ok(authAfterKeepDecrypted.includes(qqAccountId), "Uninstall without purge must keep dormant account");
 
       // Fixed UX-03: DELETE /api/integrations/mail/accounts/:id while skill uninstalled cleans up dormant account (200)
       const delWhileUninstalled = await fetch(`${ws.baseUrl}/api/integrations/mail/accounts/${qqAccountId}`, {
@@ -371,8 +374,10 @@ test("P1 Suite 5: Skills Store, Custom SKILL.md, Loopback Mail (IMAP/POP3/SMTP) 
         (await fetch(`${ws.baseUrl}/api/skills/qqmail?purgeCredentials=true`, { method: "DELETE" })).status,
         200
       );
-      const authAfterPurge = fs.readFileSync(path.join(ws.dataDir, "mail-auth.json"), "utf8");
-      assert.ok(!authAfterPurge.includes(qqAccountId2), "Uninstall with purgeCredentials=true must delete qqmail credentials");
+      const authAfterPurgeRaw = fs.readFileSync(path.join(ws.dataDir, "mail-auth.json"), "utf8");
+      assert.ok(authAfterPurgeRaw.includes("__twinklebot_encrypted__"), "mail-auth.json must stay encrypted after purge");
+      const authAfterPurgeDecrypted = JSON.stringify(ws.store.readMailAuth());
+      assert.ok(!authAfterPurgeDecrypted.includes(qqAccountId2), "Uninstall with purgeCredentials=true must delete qqmail credentials");
 
       // Conversational skill_configure_mail omitting secret -> pops CredentialCard with hideVaultCheckbox=true!
       await fetch(`${ws.baseUrl}/api/skills/qqmail/install`, { method: "POST" });

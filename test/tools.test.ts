@@ -270,9 +270,23 @@ test("runTool resolves ephemeral credential secret_ref in host memory for browse
   const expired = await runTool("browser_type", { ref: "e1", text: ref }, client, { settleMs: 0 });
   assert.match(expired.result.error || "", /expired or not found/);
 
-  const blindRef = registerEphemeralSecret("TopSecret!1");
+  const osSecretRef = registerEphemeralSecret("TopSecret!1");
+  const osClient = fakeClient({
+    "/type": { ok: true },
+    "/screenshot": { png_base64: Buffer.from("fake-png").toString("base64") },
+  });
+  const osCallerArgs = { text: osSecretRef };
+  const osRes = await runTool("type_text", osCallerArgs, osClient, { settleMs: 0 });
+  assert.equal(osRes.result.ok, true);
+  assert.equal(osClient.calls[0].route, "/type");
+  assert.equal(osClient.calls[0].body.text, "TopSecret!1");
+  assert.equal(osClient.calls[0].body.sensitive, true, "OS-level type_text secret injection must mark sensitive=true");
+  assert.equal(osCallerArgs.text, osSecretRef, "caller args for type_text must stay redacted");
+
   const prevCalls = client.calls.length;
-  const blockedTypeText = await runTool("type_text", { text: blindRef }, client, { settleMs: 0 });
-  assert.match(blockedTypeText.result.error || "", /Refusing to inject credential secret_ref/);
-  assert.equal(client.calls.length, prevCalls, "type_text with secret_ref must not reach executor");
+  const blockedShell = await runTool("run_shell", { command: `echo ${osSecretRef}` }, client, { settleMs: 0 });
+  assert.match(blockedShell.result.error || "", /Refusing to inject credential secret_ref/);
+  const blockedKey = await runTool("key", { combo: osSecretRef }, client, { settleMs: 0 });
+  assert.match(blockedKey.result.error || "", /Refusing to inject credential secret_ref/);
+  assert.equal(client.calls.length, prevCalls, "disallowed tools with secret_ref must not reach executor");
 });

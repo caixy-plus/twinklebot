@@ -29,7 +29,8 @@
       "vault-patch-v1",
       "gemini-vertex-gate-v1",
       "ota-v1",
-      "multi-display-v1"
+      "multi-display-v1",
+      "vault-secret-v1"
     ]
   }
 }

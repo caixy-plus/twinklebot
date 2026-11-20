@@ -102,6 +102,9 @@ function isPathDenied(filePath: unknown): boolean {
     base === "accounts.json" ||
     base === "desktop-config.json" ||
     base === "devices.json" ||
+    base === "vault.json" ||
+    base === ".vault.key" ||
+    base === ".vault.dpapi" ||
     /.*auth.*\.json$/i.test(base)
   ) {
     return true;

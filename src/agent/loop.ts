@@ -1342,7 +1342,17 @@ async function runTaskInner({
           config.globalMemories ||
           config.privateSkills,
         mailAccounts,
-        vaultItems: store?.readVault?.() || config.vaultItems || [],
+        vaultItems:
+          store?.readVaultPublic?.() ||
+          (Array.isArray(store?.readVault?.())
+            ? store.readVault().map((v: any) => {
+                if (!v || typeof v !== "object") return v;
+                const { password, ...rest } = v;
+                return { ...rest, hasPassword: Boolean(password) };
+              })
+            : null) ||
+          config.vaultItems ||
+          [],
         installedSkills,
         customSkills: store?.listCustomSkills?.({ enabledOnly: true }) || config.customSkills || [],
         skillsSummary: OFFICE_SKILLS.filter((s) => installedSkills.includes(s.id)).map((s) => ({

@@ -5,6 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import type { ServerContext } from "../context.js";
+import { stripVaultItemSecret } from "../../store/index.js";
 import {
   DEFAULT_POLICY,
   DEFAULT_PRIVATE_SKILLS,
@@ -139,7 +140,10 @@ export async function handleSchedulesVaultRoutes(
         // GET / POST / DELETE /api/vault
         if (pathname === "/api/vault") {
           if (method === "GET") {
-            return sendJson(res, 200, { items: ctx.store?.readVault?.() || [] });
+            const items =
+              ctx.store?.readVaultPublic?.() ||
+              (ctx.store?.readVault?.() || []).map(stripVaultItemSecret);
+            return sendJson(res, 200, { items });
           }
           if (method === "POST") {
             let body;
@@ -153,10 +157,18 @@ export async function handleSchedulesVaultRoutes(
             }
             const items = ctx.store?.readVault?.() || [];
             const incomingId = typeof body.id === "string" ? body.id.trim() : "";
+            const hasIncomingPassword = body.password !== undefined;
+            const normalizedPassword =
+              body.password === null || body.password === ""
+                ? undefined
+                : typeof body.password === "string"
+                  ? body.password
+                  : undefined;
+
             if (incomingId) {
               const idx = items.findIndex((x: any) => x.id === incomingId);
               if (idx !== -1) {
-                const updated = {
+                const updated: Record<string, any> = {
                   ...items[idx],
                   category: body.category || items[idx].category || "contact",
                   title: String(body.title).trim(),
@@ -169,22 +181,46 @@ export async function handleSchedulesVaultRoutes(
                       ? String(body.notes || "").trim()
                       : items[idx].notes || "",
                 };
+                if (hasIncomingPassword) {
+                  if (normalizedPassword) {
+                    updated.password = normalizedPassword;
+                  } else {
+                    delete updated.password;
+                  }
+                }
                 items[idx] = updated;
                 ctx.store?.writeVault?.(items);
-                return sendJson(res, 200, updated);
+                return sendJson(res, 200, stripVaultItemSecret(updated));
               }
             }
-            const created = {
+            const created: Record<string, any> = {
               id: crypto.randomUUID(),
               category: body.category || "contact",
               title: String(body.title).trim(),
               subtitle: String(body.subtitle || "").trim(),
               notes: String(body.notes || "").trim(),
+              ...(normalizedPassword ? { password: normalizedPassword } : {}),
             };
             items.unshift(created);
             ctx.store?.writeVault?.(items);
-            return sendJson(res, 201, created);
+            return sendJson(res, 201, stripVaultItemSecret(created));
           }
+        }
+
+        const vaultRevealMatch = pathname.match(/^\/api\/vault\/([^/]+)\/reveal$/);
+        if (method === "POST" && vaultRevealMatch) {
+          const vid = decodeURIComponent(vaultRevealMatch[1]);
+          const items = ctx.store?.readVault?.() || [];
+          const found = items.find((x: any) => x.id === vid);
+          if (!found) {
+            return sendJson(res, 404, { error: "vault item not found" });
+          }
+          const password = typeof found.password === "string" ? found.password : "";
+          return sendJson(res, 200, {
+            id: found.id,
+            hasPassword: password.length > 0,
+            password,
+          });
         }
 
         const vaultIdMatch = pathname.match(/^\/api\/vault\/([^/]+)$/);
@@ -206,7 +242,7 @@ export async function handleSchedulesVaultRoutes(
           if (!nextTitle) {
             return sendJson(res, 400, { error: "title is required" });
           }
-          const updated = {
+          const updated: Record<string, any> = {
             ...items[idx],
             category: body?.category || items[idx].category || "contact",
             title: nextTitle,
@@ -219,9 +255,16 @@ export async function handleSchedulesVaultRoutes(
                 ? String(body.notes || "").trim()
                 : items[idx].notes || "",
           };
+          if (body?.password !== undefined) {
+            if (typeof body.password === "string" && body.password.length > 0) {
+              updated.password = body.password;
+            } else {
+              delete updated.password;
+            }
+          }
           items[idx] = updated;
           ctx.store?.writeVault?.(items);
-          return sendJson(res, 200, updated);
+          return sendJson(res, 200, stripVaultItemSecret(updated));
         }
 
         if (method === "DELETE" && vaultIdMatch) {

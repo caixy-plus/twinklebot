@@ -2,6 +2,17 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { createCustomSkillsRepo } from "../lib/custom-skills.js";
+import { createLocalCrypto } from "../lib/local-crypto.js";
+
+export function stripVaultItemSecret(item: any): Record<string, any> {
+  if (!item || typeof item !== "object") return {};
+  const { password, ...rest } = item;
+  const hasPassword = typeof password === "string" && password.length > 0;
+  return {
+    ...rest,
+    hasPassword,
+  };
+}
 
 export interface SessionRecord {
   id: string;
@@ -103,6 +114,7 @@ export function createStore(dataDir: string) {
   const customSkillsRepo = createCustomSkillsRepo(customSkillsDir, {
     getIsoNow: () => getMonotonicIso(),
   });
+  const localCrypto = createLocalCrypto(rootDir);
 
   const seqMap = new Map<string, number>();
   let lastTimestamp = 0;
@@ -780,17 +792,17 @@ export function createStore(dataDir: string) {
         },
       ];
     }
-    try {
-      const parsed = JSON.parse(fs.readFileSync(vaultFile, "utf-8"));
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
+    const parsed = localCrypto.readEncryptedJsonFile<unknown>(vaultFile, []);
+    return Array.isArray(parsed) ? parsed : [];
+  }
+
+  function readVaultPublic(): any[] {
+    return readVault().map(stripVaultItemSecret);
   }
 
   function writeVault(items: any[]): any[] {
     const list = Array.isArray(items) ? items : [];
-    writeJsonAtomic(vaultFile, list);
+    localCrypto.writeEncryptedJsonFile(vaultFile, list);
     return list;
   }
 
@@ -821,14 +833,10 @@ export function createStore(dataDir: string) {
 
   function readMailAuth(): Record<string, any> {
     if (!fs.existsSync(mailAuthFile)) return {};
-    try {
-      const parsed = JSON.parse(fs.readFileSync(mailAuthFile, "utf-8"));
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? parsed
-        : {};
-    } catch {
-      return {};
-    }
+    const parsed = localCrypto.readEncryptedJsonFile<unknown>(mailAuthFile, {});
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : {};
   }
 
   function writeMailAuth(nextData: unknown): Record<string, any> {
@@ -836,7 +844,7 @@ export function createStore(dataDir: string) {
       nextData && typeof nextData === "object" && !Array.isArray(nextData)
         ? (nextData as Record<string, any>)
         : {};
-    writeJsonAtomic(mailAuthFile, clean, { mode: 0o600 });
+    localCrypto.writeEncryptedJsonFile(mailAuthFile, clean);
     return clean;
   }
 
@@ -880,6 +888,7 @@ export function createStore(dataDir: string) {
     readSchedules,
     writeSchedules,
     readVault,
+    readVaultPublic,
     writeVault,
     appendRouteStat,
     readRouteStats,

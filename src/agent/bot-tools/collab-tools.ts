@@ -558,15 +558,37 @@ export async function handleCollabBotTool(
       const saveToVault = Boolean(credRes?.saveToVault);
 
       if (saveToVault && submittedValue && store?.readVault && store?.writeVault) {
-        const items = store.readVault();
-        items.unshift({
-          id: `v-${Date.now()}`,
-          category: "credential",
-          title: `${service} 登录凭据`,
-          subtitle: credRes?.account || service,
-          notes: "已通过对话安全卡片保存",
-        });
+        const items = [...store.readVault()];
+        const vaultTitle = `${service} 登录凭据`;
+        const vaultSubtitle = String(credRes?.account || service).trim();
+        const existingIdx = items.findIndex(
+          (v: any) =>
+            v &&
+            (String(v.title || "").trim().toLowerCase() === vaultTitle.toLowerCase() ||
+              (v.category === "credential" &&
+                String(v.subtitle || "").trim().toLowerCase() === vaultSubtitle.toLowerCase()))
+        );
+        if (existingIdx >= 0) {
+          items[existingIdx] = {
+            ...items[existingIdx],
+            category: "credential",
+            title: items[existingIdx].title || vaultTitle,
+            subtitle: vaultSubtitle || items[existingIdx].subtitle || service,
+            notes: items[existingIdx].notes || "已通过对话安全卡片加密保存",
+            password: submittedValue,
+          };
+        } else {
+          items.unshift({
+            id: `v-${Date.now()}`,
+            category: "credential",
+            title: vaultTitle,
+            subtitle: vaultSubtitle,
+            notes: "已通过对话安全卡片加密保存",
+            password: submittedValue,
+          });
+        }
         store.writeVault(items);
+        broadcastGlobal?.({ type: "vault_updated" });
       }
 
       emit?.({
@@ -588,7 +610,7 @@ export async function handleCollabBotTool(
         secret_ref: secretRef,
         savedToVault: saveToVault,
         usage_hint:
-          "Pass secret_ref directly as the `text` argument of `browser_type` ONLY (call `browser_snapshot` first to locate the target input `ref`). Never pass it to `type_text`, `run_shell`, or echo it.",
+          "Pass secret_ref directly as the `text` argument of `browser_type` (preferred for normal web inputs) or OS-level `type_text` (for cross-origin iframes / native windows after clicking the input). Never pass it to `run_shell`, `key`, URLs, or echo it.",
       };
     }
 

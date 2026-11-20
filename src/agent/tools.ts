@@ -8,7 +8,7 @@ const RISK_PROPERTY = {
 };
 
 const SECRET_PLACEHOLDER_RE = /\{\{secret:(cred_[a-f0-9]+)\}\}/g;
-const SECRET_INJECTABLE_TOOLS = new Set(["browser_type"]);
+const SECRET_INJECTABLE_TOOLS = new Set(["browser_type", "type_text"]);
 const MAX_EPHEMERAL_SECRETS = 256;
 const ephemeralSecrets = new Map<string, { value: string; expiresAt: number }>();
 
@@ -430,7 +430,7 @@ export async function runTool(
     return {
       result: {
         error:
-          "Refusing to inject credential secret_ref outside browser_type; call browser_snapshot to locate the target DOM input [ref] and pass secret_ref to browser_type(ref, text) instead.",
+          "Refusing to inject credential secret_ref outside browser_type / type_text; pass secret_ref directly as `text` to browser_type(ref, text) or OS-level type_text(text) instead.",
       },
       screenshot: null,
     };
@@ -451,7 +451,10 @@ export async function runTool(
         screenshot: null,
       };
     }
-    execArgs = { ...cleanArgs, text: resolved };
+    execArgs =
+      name === "type_text"
+        ? { ...cleanArgs, text: resolved, sensitive: true }
+        : { ...cleanArgs, text: resolved };
   }
   const callOptions = signal ? { signal } : undefined;
 

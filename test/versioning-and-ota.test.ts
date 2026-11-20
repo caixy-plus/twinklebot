@@ -264,7 +264,11 @@ test("evaluateUpdateCompatibility decouples Desktop/Android/iOS shells, selects 
   assert.equal(lanStatus.nodeOutdated, true);
   assert.equal(lanStatus.nodeVersion, "1.2.0");
   assert.equal(lanStatus.latestBackendVersion, "1.3.0");
-  assert.deepEqual(lanStatus.missingLatestCapabilities, ["multi-display-v1", "swarm-v2"]);
+  assert.deepEqual(lanStatus.missingLatestCapabilities, [
+    "multi-display-v1",
+    "vault-secret-v1",
+    "swarm-v2",
+  ]);
   // v1.2.0 baseline features stay 100% enabled on LAN 1.2.0 while 1.3.0-only feature gracefully gates!
   assert.equal(nodeSupportsCapability("vault-patch-v1", lanDiag), true);
   assert.equal(nodeSupportsCapability("swarm-v2", lanDiag), false);
