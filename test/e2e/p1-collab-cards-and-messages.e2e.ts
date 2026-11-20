@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { selectGroupSpeakers, MAX_GROUP_TURNS } from "../../src/agent/group-coordinator.js";
+import { buildSystemInstruction } from "../../src/agent/prompt.js";
 import { launchHeadlessChrome, type HeadlessChromeSession } from "../helpers/cdp-browser-harness.js";
 import { SAMPLE_PNG_BASE64, SAMPLE_PNG_BUFFER } from "../helpers/e2e-protocol-fixtures.js";
 import { createSuiteCollector } from "../helpers/e2e-report-collector.js";
 import { createE2EWorkspace } from "../helpers/e2e-workspace-harness.js";
 
-test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandboxed Preview, Multi-Tab/SSE & Inspector/Scheduler", async (t) => {
+test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular Prompts, Cards, Message Ops, Sandboxed Preview, Multi-Tab/SSE & Inspector/Scheduler", async (t) => {
   const collector = createSuiteCollector("p1-collab-cards-and-messages");
   let chrome: HeadlessChromeSession | null = await launchHeadlessChrome();
   t.after(async () => {
@@ -21,6 +22,17 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
     startScheduler: true,
   });
   t.after(() => ws.close());
+
+  const ensureAtWorkspace = async () => {
+    const url = await chrome!.evalJs<string>(`window.location.href`).catch(() => "");
+    if (!url.startsWith(ws.baseUrl)) {
+      await chrome!.navigate(ws.baseUrl);
+      await chrome!.waitFor(
+        `document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`,
+        10_000
+      );
+    }
+  };
 
   // ---------- P1-GRP-01 ----------
   await collector.runCase(
@@ -64,53 +76,255 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       priority: "P1",
       featureTier: "F2",
       difficulty: "D2",
-      title: "Agent 跨 Bot 工具链(create_bot/send_bot_message/4跳防环/create_bot_group) + 交流胶囊与抽屉",
+      title: "Agent 跨 Bot 工具链全实测(list_bots/create_bot/send_bot_message/4跳防环/create_bot_group/bot_manage) + 交流胶囊与抽屉",
       module: "Multi-Bot Collaboration",
     },
     async () => {
-      await chrome!.navigate(ws.baseUrl);
-      await chrome!.waitFor(
-        `document.querySelector('#header-bot-name')?.textContent?.includes('Twinkle') &&
-         document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`
-      );
+      await ensureAtWorkspace();
+      await chrome!.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('Twinkle')`, 8000);
 
       let step = 0;
+      let createdBotId = "";
+      let createdGroupId = "";
+      let hopBlocked = false;
+      let selfSendBlocked = false;
+
       ws.mockLlm.setHandler(async ({ body }) => {
         if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "跨Bot协作" };
+        const sys = String(body?.messages?.[0]?.content || "");
         const s = JSON.stringify(body?.messages || "");
-        if (s.includes("请帮我核对数据") && !s.includes("创建数据分析师并请他核对数据")) {
+        const isMainTwinkle = !sys.includes("数据分析师") && !sys.includes("协作接力B");
+
+        // Sub-bot handlers
+        if (!isMainTwinkle) {
+          if (s.includes("PING_HOP_CHAIN")) {
+            if (s.includes("已达最大") || s.includes("跳数") || s.includes("MAX_BOT_HOPS") || s.includes("hop")) {
+              hopBlocked = true;
+              return { text: "检测到防环限制已停止转发" };
+            }
+            const target = sys.includes("数据分析师") ? "协作接力B" : "数据分析师";
+            return {
+              toolCalls: [{ id: `hop-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, name: "send_bot_message", args: { target_bot: target, message: "PING_HOP_CHAIN" } }],
+            };
+          }
+          if (s.includes("群聊初始议题")) return { text: "收到群聊初始议题！" };
           return { text: "数据分析师回复：数据已核对无误！" };
+        }
+
+        step += 1;
+        if (step === 1) {
+          return { toolCalls: [{ id: "cb-0", name: "list_bots", args: {} }] };
+        }
+        if (step === 2) {
+          return {
+            toolCalls: [{
+              id: "cb-1",
+              name: "create_bot",
+              args: { name: "数据分析师", role_prompt: "专注数据核对", initial_message: "请帮我核对数据" },
+            }],
+          };
+        }
+        if (step === 3) {
+          const found = ws.store.listSessions().find((x: any) => x.title === "数据分析师");
+          createdBotId = found?.id || "";
+          return {
+            toolCalls: [{
+              id: "cb-2",
+              name: "create_bot",
+              args: { name: "协作接力B", role_prompt: "接力测试" },
+            }],
+          };
+        }
+        if (step === 4) {
+          return {
+            toolCalls: [
+              { id: "cb-self", name: "send_bot_message", args: { target_bot: "Twinkle", message: "self test" } },
+              { id: "cb-hop", name: "send_bot_message", args: { target_bot: "数据分析师", message: "PING_HOP_CHAIN" } },
+            ],
+          };
+        }
+        if (step === 5) {
+          if (s.includes("不能给自己发送") || s.includes("自身") || s.includes("self")) selfSendBlocked = true;
+          return {
+            toolCalls: [{
+              id: "cb-grp",
+              name: "create_bot_group",
+              args: { title: "全栈协作群", member_bots: ["数据分析师", "协作接力B"], initial_message: "群聊初始议题" },
+            }],
+          };
+        }
+        if (step === 6) {
+          const g = ws.store.listSessions().find((x: any) => x.title === "全栈协作群");
+          createdGroupId = g?.id || "";
+          return {
+            toolCalls: [
+              { id: "cb-bm1", name: "bot_manage", args: { action: "update_profile", target_bot: createdBotId || "数据分析师", name: "资深数据分析师" } },
+              { id: "cb-bm2", name: "bot_manage", args: { action: "clone", target_bot: "协作接力B", name: "协作接力B克隆" } },
+            ],
+          };
+        }
+        if (step === 7 && createdGroupId) {
+          return {
+            toolCalls: [{
+              id: "cb-bm3",
+              name: "bot_manage",
+              args: { action: "update_group_members", group: createdGroupId, add_bots: ["协作接力B克隆"] },
+            }],
+          };
+        }
+        return { text: "全套跨Bot协作工具链验证完成" };
+      });
+
+      await chrome!.typeText("#message-input", "创建数据分析师并完成全套跨Bot协作", { clear: true });
+      await chrome!.pressKey("Enter");
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('全套跨Bot协作工具链验证完成'))`,
+        15_000
+      );
+      ws.mockLlm.setHandler(undefined);
+
+      assert.equal(selfSendBlocked, true, "send_bot_message to self must be blocked");
+      assert.equal(hopBlocked, true, "MAX_BOT_HOPS=4 anti-loop guard must halt infinite relay");
+      assert.ok(ws.store.listSessions().some((x: any) => x.title === "资深数据分析师"), "bot_manage update_profile must rename bot");
+      assert.ok(ws.store.listSessions().some((x: any) => x.title === "协作接力B克隆"), "bot_manage clone must create clone");
+      const grpAfter = ws.store.getSession(createdGroupId);
+      assert.ok((grpAfter?.memberBotIds || []).length >= 3, "bot_manage update_group_members must add 3rd member");
+
+      // Verify exchange pill, GET /api/exchanges/:id & #bot-exchange-sheet UI
+      await chrome!.waitFor(`Boolean(document.querySelector('.bot-exchange-pill'))`, 8000);
+      const exId = await chrome!.evalJs<string>(
+        `document.querySelector('.bot-exchange-pill')?.getAttribute('data-exchange-id') || ''`
+      );
+      if (exId) {
+        const exRes = await fetch(`${ws.baseUrl}/api/exchanges/${encodeURIComponent(exId)}`);
+        assert.equal(exRes.status, 200);
+      } else {
+        assert.equal((await fetch(`${ws.baseUrl}/api/exchanges/nonexistent-ex`)).status, 404);
+      }
+      await chrome!.click(".bot-exchange-pill");
+      await chrome!.waitFor(`!document.querySelector('#bot-exchange-sheet')?.hidden`, 6000);
+      const sheetTxt = await chrome!.evalJs<string>(`document.querySelector('#exchange-messages-list')?.textContent || ''`);
+      assert.match(sheetTxt, /请帮我核对数据|PING_HOP_CHAIN/);
+      await chrome!.click("#close-exchange-sheet-btn");
+      await chrome!.waitFor(`document.querySelector('#bot-exchange-sheet')?.hidden`);
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P1-TOOL-01 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P1-TOOL-01",
+      priority: "P1",
+      featureTier: "F2",
+      difficulty: "D2",
+      title: "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / skill_list",
+      module: "Built-in System Bot Tools",
+    },
+    async () => {
+      const workerBot = ws.store.createSession({ title: "SystemToolsWorkerBot" });
+      let step = 0;
+      const toolResults: string[] = [];
+
+      ws.mockLlm.setHandler(async ({ body }) => {
+        if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "执行工具" };
+        const msgs = body?.messages || [];
+        const lastToolMsgs = msgs.filter((m: any) => m.role === "tool").map((m: any) => String(m.content || ""));
+        if (lastToolMsgs.length > toolResults.length) {
+          toolResults.push(...lastToolMsgs.slice(toolResults.length));
         }
         step += 1;
         if (step === 1) {
           return {
             toolCalls: [
-              {
-                id: "cb-1",
-                name: "create_bot",
-                args: { name: "数据分析师", role_prompt: "专注数据核对", initial_message: "请帮我核对数据" },
-              },
+              { id: "st-1", name: "skill_list", args: {} },
+              { id: "st-2", name: "memory_manage", args: { action: "save", scope: "bot", name: "工具测试记忆", content: "记住工具测试要点", trigger: "explicit" } },
+              { id: "st-3", name: "vault_manage", args: { action: "save", category: "contact", title: "测试联系人", subtitle: "contact@test.local", notes: "重要伙伴" } },
             ],
           };
         }
-        return { text: "已委派数据分析师完成协作" };
+        if (step === 2) {
+          return {
+            toolCalls: [
+              { id: "st-4", name: "memory_manage", args: { action: "list" } },
+              { id: "st-5", name: "vault_manage", args: { action: "list" } },
+              { id: "st-6", name: "schedule_manage", args: { action: "create", title: "每日早报", prompt: "汇总早报", repeat: "daily", time: "09:00" } },
+              { id: "st-7", name: "library_manage", args: { action: "save_note", title: "架构纪要", content: "LIBRARY_NOTE_BODY_OK" } },
+            ],
+          };
+        }
+        if (step === 3) {
+          return {
+            toolCalls: [
+              { id: "st-8", name: "schedule_manage", args: { action: "list" } },
+              { id: "st-9", name: "library_manage", args: { action: "list", filter: "all" } },
+              { id: "st-10", name: "workspace_search", args: { action: "recent_messages", limit: 5 } },
+              { id: "st-11", name: "workspace_search", args: { action: "search", query: "记住工具测试" } },
+              { id: "st-12", name: "system_diagnostics", args: { action: "status" } },
+              { id: "st-13", name: "computer_provision", args: { action: "probe" } },
+              // Non-admin bot trying computer_provision(install) must be denied cleanly!
+              { id: "st-14", name: "computer_provision", args: { action: "install" } },
+            ],
+          };
+        }
+        return { text: "全部 8 项系统级 Bot 工具实测完成" };
       });
 
-      await chrome!.typeText("#message-input", "创建数据分析师并请他核对数据", { clear: true });
-      await chrome!.pressKey("Enter");
-      await chrome!.waitFor(
-        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('已委派数据分析师完成协作'))`,
-        12_000
-      );
+      await fetch(`${ws.baseUrl}/api/sessions/${workerBot.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "请记住工具测试要点，并测试所有内置系统工具" }),
+      });
+      await ws.waitUntil(() => !ws.runner.isSessionBusy(workerBot.id), 12_000, "system tools turn finishes");
       ws.mockLlm.setHandler(undefined);
 
-      await chrome!.waitFor(`Boolean(document.querySelector('.bot-exchange-pill'))`, 8000);
-      await chrome!.click(".bot-exchange-pill");
-      await chrome!.waitFor(`!document.querySelector('#bot-exchange-sheet')?.hidden`, 6000);
-      const sheetTxt = await chrome!.evalJs<string>(`document.querySelector('#exchange-messages-list')?.textContent || ''`);
-      assert.match(sheetTxt, /请帮我核对数据/);
-      await chrome!.click("#close-exchange-sheet-btn");
-      await chrome!.waitFor(`document.querySelector('#bot-exchange-sheet')?.hidden`);
+      const joined = toolResults.join("\n");
+      assert.match(joined, /测试联系人/, "vault_manage must save & list items");
+      assert.match(joined, /每日早报/, "schedule_manage must create & list schedules");
+      assert.match(joined, /架构纪要|saved|path/i, "library_manage must save note & list library");
+      assert.match(joined, /仅管理员|管理员|admin/i, "Non-admin computer_provision(install) must be denied");
+      assert.ok(ws.store.readSchedules().some((s: any) => s.title === "每日早报"));
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P1-PROMPT-01 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P1-PROMPT-01",
+      priority: "P1",
+      featureTier: "F2",
+      difficulty: "D1",
+      title: "模块化 Markdown 系统提示词(PI-001/002/011/014)：5 份模板装配、UI 自认知、跨域 iframe 兜底与动态注入校验",
+      module: "Modular Prompts & Prompt Loader",
+    },
+    async () => {
+      const assembled = buildSystemInstruction({
+        botIdentity: {
+          name: "PromptAuditBot",
+          schedules: [{ id: "s1", title: "晨报", repeat: "daily", scheduleLabel: "08:30", prompt: "生成晨报", enabled: true }],
+        },
+        enableBotTools: true,
+        isAdminBot: true,
+        sandboxMode: "full",
+        hostExecutionMode: "always",
+        kimiCuActive: true,
+        vaultItems: [{ id: "v1", category: "credential", title: "CorpSSO", subtitle: "a@b.com", hasPassword: true }],
+        mailAccounts: [{ id: "m1", email: "a@b.com", provider: "custom-mail", isDefault: true }],
+      });
+      // PI-001 app self-awareness (Bot's Computer panel, never raw VNC URL)
+      assert.match(assembled, /Bot 的电脑|Bot's Computer/i, "Prompt must include app-capabilities.md self-awareness");
+      // PI-002 cross-origin iframe OS-level fallback
+      assert.match(assembled, /iframe|screenshot|type_text/i, "Prompt must include web-grounding.md cross-origin fallback");
+      // PI-011 dual-computer semantics
+      assert.match(assembled, /Bot's Computer|Your Computer|宿主机|沙盒/i, "Prompt must include dual-computer.md rules");
+      // Dynamic injections
+      assert.match(assembled, /CorpSSO/, "Prompt must inject vault item summary");
+      assert.match(assembled, /晨报/, "Prompt must inject active schedules");
+      assert.match(assembled, /a@b\.com/, "Prompt must inject configured mail accounts");
+      assert.match(assembled, /KimiCU|kimi_cu/i, "Prompt must inject KimiCU active section");
     },
     { getChrome: () => chrome }
   );
@@ -127,6 +341,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       module: "Interactive ChoiceCard",
     },
     async () => {
+      await ensureAtWorkspace();
       const cardBot = ws.store.createSession({ title: "CardTestBot" });
       await chrome!.reload(true);
       await chrome!.waitFor(
@@ -139,7 +354,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       })()`);
       await chrome!.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('CardTestBot')`);
 
-      // Multi-step choice card (2 questions: Q1 single, Q2 custom input)
+      // Multi-step choice card (3 questions: Q1 single, Q2 REAL multi_select=true, Q3 custom input!)
       let step = 0;
       let capturedAnswer = "";
       ws.mockLlm.setHandler(async ({ body }) => {
@@ -155,6 +370,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
                 args: {
                   questions: [
                     { question: "选择部署环境", options: ["本地", "云端"], multi_select: false },
+                    { question: "选择启用能力(多选)", options: ["邮件", "沙盒", "定时任务"], multi_select: true },
                     { question: "填写自定义备注", options: ["默认", "跳过"], allow_custom: true },
                   ],
                 },
@@ -163,30 +379,45 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
           };
         }
         capturedAnswer = s;
-        return { text: "多步选择已全部收到" };
+        return { text: "多步单选多选自定义已全部收到" };
       });
 
-      await chrome!.typeText("#message-input", "发起多步选择卡", { clear: true });
+      await chrome!.typeText("#message-input", "发起三步单选多选提问卡", { clear: true });
       await chrome!.pressKey("Enter");
       await chrome!.waitFor(`Boolean(document.querySelector('.choice-stepper-pill'))`, 8000);
       assert.match(
         await chrome!.evalJs<string>(`document.querySelector('.choice-stepper-pill')?.textContent || ''`),
-        /1\s*\/\s*2/
+        /1\s*\/\s*3/
       );
-      // Answer Q1 -> advances to 2 / 2
+      // Answer Q1 (single) -> advances to 2 / 3 (multi_select!)
       await chrome!.click(`.choice-card:not(.is-resolved) [data-choice-index="1"]`);
       await chrome!.waitFor(`document.querySelector('.choice-stepper-pill')?.textContent?.includes('2')`);
-      // Answer Q2 via custom input
+      await chrome!.click(`.choice-card:not(.is-resolved) [data-choice-index="0"]`);
+      await chrome!.click(`.choice-card:not(.is-resolved) [data-choice-index="2"]`);
+      await chrome!.waitFor(`document.querySelectorAll('.choice-card:not(.is-resolved) .is-checked').length === 2`, 4000);
+      await chrome!.click(`.choice-card:not(.is-resolved) .choice-multi-footer .settings-blue-pill`);
+      await chrome!.waitFor(`document.querySelector('.choice-stepper-pill')?.textContent?.includes('3')`, 4000);
+      // Answer Q3 via custom input
       await chrome!.click(".choice-custom-trigger");
       await chrome!.waitFor(`Boolean(document.querySelector('.choice-custom-input'))`);
       await chrome!.fill(".choice-custom-input", "自定义灰度发布");
       await chrome!.click(".choice-custom-submit");
       await chrome!.waitFor(
-        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('多步选择已全部收到'))`,
+        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('多步单选多选自定义已全部收到'))`,
         8000
       );
       assert.match(capturedAnswer, /云端/);
+      assert.match(capturedAnswer, /邮件/);
+      assert.match(capturedAnswer, /定时任务/);
       assert.match(capturedAnswer, /自定义灰度发布/);
+
+      // Direct POST /api/choices/:id missing selected payload must return 400
+      const missingChoice = await fetch(`${ws.baseUrl}/api/choices/nonexistent-choice`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assert.equal(missingChoice.status, 400);
 
       // Superseded choice card when user sends a new message mid-choice
       step = 0;
@@ -229,6 +460,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       module: "Approval Rule Editor / DraftCard",
     },
     async () => {
+      await ensureAtWorkspace();
       // 1. DraftCard inline edit & approve
       let step = 0;
       let seenDraftResult = "";
@@ -267,6 +499,31 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
         8000
       );
       assert.match(seenDraftResult, /用户修订后的最终正文内容/);
+
+      // 1b. DraftCard CANCEL (.btn-deny "取消草稿") + collapsed cancel receipt!
+      step = 0;
+      let cancelResult = "";
+      ws.mockLlm.setHandler(async ({ body }) => {
+        if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "等待确认草稿" };
+        const s = JSON.stringify(body?.messages || "");
+        step += 1;
+        if (step === 1) {
+          return {
+            toolCalls: [{ id: "dr-cancel", name: "propose_draft", args: { title: "待取消草稿", recipient: "x@test.com", content: "测试取消", kind: "email" } }],
+          };
+        }
+        cancelResult = s;
+        return { text: "已收到用户取消草稿指令" };
+      });
+      await chrome!.typeText("#message-input", "起草一份待取消的草稿", { clear: true });
+      await chrome!.pressKey("Enter");
+      await chrome!.waitFor(`Boolean(document.querySelector('.draft-card:not(.is-collapsed) .btn-deny'))`, 8000);
+      await chrome!.click(".draft-card:not(.is-collapsed) .btn-deny");
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('已收到用户取消草稿指令'))`,
+        8000
+      );
+      assert.match(cancelResult, /cancel|取消|false|rejected/i);
 
       // 2. ApprovalCard inline custom rule editor
       step = 0;
@@ -363,6 +620,15 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       assert.ok(!pageText.includes("原始旧答案_MUST_BE_TRUNCATED"), "Old answer must be rewound from DOM");
       const rawNdjson = fs.readFileSync(path.join(ws.dataDir, "sessions", `${editBot.id}.ndjson`), "utf8");
       assert.ok(!rawNdjson.includes("原始旧答案_MUST_BE_TRUNCATED"), "Old answer must be truncated from NDJSON");
+
+      // Also verify hover Copy action button & POST /api/sessions/:id/edit-message 400 validation
+      await chrome!.click(`.msg-group.is-bot .msg-action-icon[title="复制文本"]`).catch(() => {});
+      const badEdit = await fetch(`${ws.baseUrl}/api/sessions/${editBot.id}/edit-message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seq: 99999, text: "" }),
+      });
+      assert.equal(badEdit.status, 400);
       ws.mockLlm.setHandler(undefined);
     },
     { getChrome: () => chrome }
@@ -376,19 +642,43 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       priority: "P1",
       featureTier: "F2",
       difficulty: "D1",
-      title: "消息悬停「回复此消息」锚点定位闪烁 + 正文划词浮窗(#selection-quote-toolbar)多条引用筹码",
+      title: "消息悬停「回复此消息」锚点定位闪烁 + 正文划词浮窗(#selection-quote-toolbar)复制与多条引用筹码",
       module: "Reply Anchor & Selection Quote",
     },
     async () => {
-      // Reply to existing bot message
+      await ensureAtWorkspace();
+      // Ensure at least one bot message exists if run standalone via --case=P1-MSG-02
+      const hasBotBubble = await chrome!.evalJs<boolean>(`Boolean(document.querySelector('.msg-group.is-bot .bot-bubble'))`);
+      if (!hasBotBubble) {
+        ws.mockLlm.setHandler(async () => ({ text: "第一段引用样本内容用于多条划词测试" }));
+        await chrome!.typeText("#message-input", "生成一段文本用于引用", { clear: true });
+        await chrome!.pressKey("Enter");
+        await chrome!.waitFor(`Boolean(document.querySelector('.msg-group.is-bot .bot-bubble'))`, 8000);
+        ws.mockLlm.setHandler(undefined);
+      }
+
+      // Reply to existing bot message -> test #reply-quote-clear then re-attach reply
+      await chrome!.click(`.msg-group.is-bot .msg-action-icon[title="回复此消息"]`);
+      await chrome!.waitFor(`!document.querySelector('#reply-quote-bar')?.hidden`);
+      await chrome!.click("#reply-quote-clear");
+      await chrome!.waitFor(`document.querySelector('#reply-quote-bar')?.hidden`);
       await chrome!.click(`.msg-group.is-bot .msg-action-icon[title="回复此消息"]`);
       await chrome!.waitFor(`!document.querySelector('#reply-quote-bar')?.hidden`);
 
-      // Select text inside bot bubble -> triggers #selection-quote-toolbar
-      await chrome!.selectText(".msg-group.is-bot .bot-bubble", 0, 6);
+      // Select TWO distinct text spans inside bot bubble -> stage >= 2 quote chips!
+      await chrome!.selectText(".msg-group.is-bot .bot-bubble", 0, 4);
       await chrome!.waitFor(`!document.querySelector('#selection-quote-toolbar')?.hidden`, 6000);
       await chrome!.click("#selection-quote-btn");
       await chrome!.waitFor(`document.querySelectorAll('#composer-quotes-bar .quote-staging-chip').length >= 1`);
+
+      await chrome!.selectText(".msg-group.is-bot .bot-bubble", 4, 8);
+      await chrome!.waitFor(`!document.querySelector('#selection-quote-toolbar')?.hidden`, 6000);
+      await chrome!.click("#selection-quote-btn");
+      await chrome!.waitFor(`document.querySelectorAll('#composer-quotes-bar .quote-staging-chip').length >= 2`, 4000);
+
+      // Remove 1 chip -> leaves 1 chip
+      await chrome!.click("#composer-quotes-bar .quote-staging-chip button");
+      await chrome!.waitFor(`document.querySelectorAll('#composer-quotes-bar .quote-staging-chip').length === 1`, 4000);
 
       ws.mockLlm.setHandler(async ({ body }) => {
         if (
@@ -471,10 +761,44 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
 
       const metaRes: any = await (await fetch(`${ws.baseUrl}/api/files/meta?path=${encodeURIComponent(delivFile)}`)).json();
       assert.equal(metaRes.exists, true);
+      const missingPath = path.join(ws.workspaceDir, "nonexistent.pdf");
       const missingRes: any = await (
-        await fetch(`${ws.baseUrl}/api/files/meta?path=${encodeURIComponent(path.join(ws.workspaceDir, "nonexistent.pdf"))}`)
+        await fetch(`${ws.baseUrl}/api/files/meta?path=${encodeURIComponent(missingPath)}`)
       ).json();
       assert.equal(missingRes.exists, false);
+
+      // Verify actual download Content-Disposition + POST /api/files/open 403/404 security boundaries!
+      const dlRes = await fetch(
+        `${ws.baseUrl}/api/workspace/file?path=${encodeURIComponent(delivFile)}&download=1&name=demo.txt`
+      );
+      assert.equal(dlRes.status, 200);
+      assert.match(dlRes.headers.get("content-disposition") || "", /attachment/i);
+
+      const openSensitive = await fetch(`${ws.baseUrl}/api/files/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path.join(ws.workspaceDir, ".env") }),
+      });
+      assert.equal(openSensitive.status, 403, "POST /api/files/open must block sensitive .env with 403");
+      const openMissing = await fetch(`${ws.baseUrl}/api/files/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: missingPath }),
+      });
+      assert.equal(openMissing.status, 404, "POST /api/files/open must return 404 for nonexistent file");
+
+      // Delete BOTH the original deliverable file and any staged copy inside Bot workspace & reload to verify FileAttachmentCard renders disabled state (.msg-file-btn.is-disabled)!
+      const stagedPath = await chrome!.evalJs<string>(
+        `(() => {
+          const btn = document.querySelector('.msg-file-card .msg-file-btn');
+          const href = btn?.getAttribute('href') || '';
+          try { return new URL(href, location.origin).searchParams.get('path') || ''; } catch { return ''; }
+        })()`
+      );
+      if (fs.existsSync(delivFile)) fs.unlinkSync(delivFile);
+      if (stagedPath && fs.existsSync(stagedPath)) fs.unlinkSync(stagedPath);
+      await chrome!.reload(true);
+      await chrome!.waitFor(`Boolean(document.querySelector('.msg-file-card .msg-file-btn.is-disabled'))`, 8000);
     },
     { getChrome: () => chrome }
   );
@@ -615,6 +939,23 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       });
       setEvidence("sseReceivedBillingUpdated", sseProbe.includes("billing_updated"));
       assert.ok(sseProbe.includes("billing_updated"), "/api/events SSE fallback must receive billing_updated events");
+
+      // Verify OPTIONS CORS preflight 204, malformed URI 400, and GET /api/screens/:id/:file 200 PNG serving!
+      const corsRes = await fetch(`${ws.baseUrl}/api/sessions`, {
+        method: "OPTIONS",
+        headers: { Origin: "http://127.0.0.1:9999" },
+      });
+      assert.equal(corsRes.status, 204);
+      assert.ok(corsRes.headers.get("access-control-allow-origin"));
+
+      const badUri = await fetch(`${ws.baseUrl}/api/sessions/%E0%A4%A`);
+      assert.equal(badUri.status, 400);
+
+      const scrSession = ws.store.createSession({ title: "ScreenServeBot" });
+      const savedFile = ws.store.saveScreenshot(scrSession.id, 1, SAMPLE_PNG_BUFFER);
+      const scrRes = await fetch(`${ws.baseUrl}/api/screens/${scrSession.id}/${encodeURIComponent(savedFile)}`);
+      assert.equal(scrRes.status, 200);
+      assert.match(scrRes.headers.get("content-type") || "", /image\/png/);
     },
     { getChrome: () => chrome }
   );
@@ -627,10 +968,11 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       priority: "P1",
       featureTier: "F2",
       difficulty: "D2",
-      title: "右侧人设保存、Bot 专属记忆启停注入 Prompt 与例行定时任务到期自动唤醒执行",
+      title: "右侧人设保存、Bot 专属记忆 UI 启停开关注入/剥离 Prompt、例行定时任务 UI 弹窗 CRUD 与到期自动唤醒执行",
       module: "RightInspector / Memories / Scheduler",
     },
     async () => {
+      await ensureAtWorkspace();
       const inspBot = ws.store.createSession({ title: "InspSchedBot" });
       await chrome!.reload(true);
       await chrome!.waitFor(
@@ -675,6 +1017,44 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Cards, Message Ops, Sandb
       );
       assert.match(sysPrompt, /MARKER_99/, "Persona must be injected into system prompt");
       assert.match(sysPrompt, /MEM_TAG_ALPHA/, "Enabled bot memory must be injected into system prompt");
+
+      // Toggle Bot memory switch OFF via RightInspector UI -> verify MEM_TAG_ALPHA is NO LONGER injected!
+      await chrome!.click("#bot-memories-list .ios-switch input");
+      await ws.waitUntil(() => ws.store.getSession(inspBot.id)?.memories?.[0]?.enabled === false, 5000, "bot memory toggled off");
+      ws.mockLlm.clearRequests();
+      await chrome!.typeText("#message-input", "再次检查停用记忆后的提示词", { clear: true });
+      await chrome!.pressKey("Enter");
+      await chrome!.waitFor(`document.querySelectorAll('.bot-bubble').length >= 2`, 8000);
+      const sysAfterOff = String(
+        ws.mockLlm.capturedRequests.find((r) => String(r.body?.messages?.[0]?.content || "").includes("MARKER_99"))?.body
+          ?.messages?.[0]?.content || ""
+      );
+      assert.ok(!sysAfterOff.includes("MEM_TAG_ALPHA"), "Disabled bot memory must NOT be injected into prompt");
+
+      // Create & toggle & delete a daily schedule via RightInspector #new-schedule-btn -> #schedule-modal-backdrop UI!
+      await chrome!.click("#new-schedule-btn");
+      await chrome!.waitFor(`!document.querySelector('#schedule-modal-backdrop')?.hidden`, 4000);
+      await chrome!.fill("#sched-title-input", "UI创建每日任务");
+      await chrome!.fill("#sched-prompt-input", "发送日报提醒");
+      await chrome!.selectOption("#sched-repeat-select", "daily");
+      await chrome!.fill("#sched-label-input", "09:30");
+      await chrome!.click("#save-sched-modal-btn");
+      await chrome!.waitFor(`document.querySelector('#schedule-modal-backdrop')?.hidden`, 5000);
+      await chrome!.waitFor(`document.querySelector('#upcoming-schedules-list')?.textContent?.includes('UI创建每日任务')`, 5000);
+
+      // Verify GET /api/schedules, PATCH /api/schedules/:id, DELETE /api/schedules/:id
+      const listSch: any = await (await fetch(`${ws.baseUrl}/api/schedules`)).json();
+      const uiSch = (listSch.schedules || listSch || []).find((x: any) => x.title === "UI创建每日任务");
+      assert.ok(uiSch?.id);
+      assert.equal(
+        (await fetch(`${ws.baseUrl}/api/schedules/${uiSch.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        })).status,
+        200
+      );
+      assert.equal((await fetch(`${ws.baseUrl}/api/schedules/${uiSch.id}`, { method: "DELETE" })).status, 200);
 
       // Create an already-due 'once' schedule -> scheduler ticks every 120ms and fires it automatically!
       const schedRes = await fetch(`${ws.baseUrl}/api/schedules`, {

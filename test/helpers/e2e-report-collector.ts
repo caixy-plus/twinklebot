@@ -32,12 +32,33 @@ export interface AtomicCaseRecord extends AtomicCaseMeta {
   durationMs: number;
   error?: string;
   stack?: string;
+  reproCommand?: string;
   evidenceDir?: string;
   screenshotPath?: string;
   pageErrors?: string[];
   consoleErrors?: string[];
   extraEvidence?: Record<string, any>;
   recordedAt: string;
+}
+
+function parseCaseFilter(): string[] {
+  const raw = String(process.env.TWINKLEBOT_E2E_CASES || "").trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+export function matchesCaseFilter(caseId: string): boolean {
+  const filters = parseCaseFilter();
+  if (filters.length === 0) return true;
+  const upper = caseId.toUpperCase();
+  return filters.some((pat) => {
+    if (!pat.includes("*")) return upper === pat;
+    const escaped = pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    return new RegExp(`^${escaped}$`).test(upper);
+  });
 }
 
 export class EnvSkipSignal extends Error {
@@ -66,6 +87,14 @@ export function saveSuiteRecords(suiteName: string, records: AtomicCaseRecord[])
 
 export function createSuiteCollector(suiteName: string) {
   const records: AtomicCaseRecord[] = [];
+  // Wipe stale per-suite JSON upfront so setup crashes never leave yesterday's PASS behind
+  try {
+    const safeName = suiteName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const stalePath = path.join(CASES_DIR, `${safeName}.json`);
+    if (fs.existsSync(stalePath)) fs.unlinkSync(stalePath);
+  } catch {}
+
+  const shouldRun = (caseId: string): boolean => matchesCaseFilter(caseId);
 
   async function runCase(
     t: any,
@@ -76,6 +105,9 @@ export function createSuiteCollector(suiteName: string) {
     }) => Promise<void>,
     opts: { getChrome?: () => HeadlessChromeSession | null } = {}
   ): Promise<void> {
+    if (!matchesCaseFilter(meta.id)) {
+      return;
+    }
     const fullMeta: AtomicCaseMeta = { ...meta, suite: suiteName };
     const extraEvidence: Record<string, any> = {};
     const label = `${fullMeta.id} [${fullMeta.featureTier}×${fullMeta.difficulty}] ${fullMeta.title}`;
@@ -83,8 +115,10 @@ export function createSuiteCollector(suiteName: string) {
     await t.test(label, async (subT: any) => {
       const start = Date.now();
       const chrome = opts.getChrome?.() || null;
-      const prevPageErrLen = chrome ? chrome.pageErrors.length : 0;
-      const prevConsoleErrLen = chrome ? chrome.consoleErrors.length : 0;
+      const pageErrArr = chrome ? (chrome.allPageErrors || chrome.pageErrors) : null;
+      const consoleErrArr = chrome ? (chrome.allConsoleErrors || chrome.consoleErrors) : null;
+      const prevPageErrLen = pageErrArr ? pageErrArr.length : 0;
+      const prevConsoleErrLen = consoleErrArr ? consoleErrArr.length : 0;
       if (chrome) {
         await chrome.setHudStatus({
           id: fullMeta.id,
@@ -102,13 +136,16 @@ export function createSuiteCollector(suiteName: string) {
           getChrome: opts.getChrome,
         });
 
-        const newPageErrors = chrome ? chrome.pageErrors.slice(prevPageErrLen) : [];
-        const newConsoleErrors = chrome ? chrome.consoleErrors.slice(prevConsoleErrLen) : [];
+        const activeChrome = opts.getChrome?.() || chrome || null;
+        const activePageErrs = activeChrome ? (activeChrome.allPageErrors || activeChrome.pageErrors) : pageErrArr;
+        const activeConsoleErrs = activeChrome ? (activeChrome.allConsoleErrors || activeChrome.consoleErrors) : consoleErrArr;
+        const newPageErrors = activePageErrs ? activePageErrs.slice(prevPageErrLen) : [];
+        const newConsoleErrors = activeConsoleErrs ? activeConsoleErrs.slice(prevConsoleErrLen) : [];
         if (newPageErrors.length > 0) {
           throw new Error(`Uncaught browser pageErrors: ${newPageErrors.join(" | ")}`);
         }
-        if (chrome) {
-          await chrome.setHudStatus({
+        if (activeChrome) {
+          await activeChrome.setHudStatus({
             id: fullMeta.id,
             priority: fullMeta.priority,
             title: fullMeta.title,
@@ -120,6 +157,7 @@ export function createSuiteCollector(suiteName: string) {
           ...fullMeta,
           status: "PASS",
           durationMs: Date.now() - start,
+          reproCommand: `node scripts/run-e2e.mjs --case=${fullMeta.id}`,
           ...(newConsoleErrors.length > 0 ? { consoleErrors: newConsoleErrors } : {}),
           ...(Object.keys(extraEvidence).length > 0 ? { extraEvidence } : {}),
           recordedAt: new Date().toISOString(),
@@ -134,6 +172,7 @@ export function createSuiteCollector(suiteName: string) {
             status: "ENV_SKIP",
             durationMs,
             error: err.message,
+            reproCommand: `node scripts/run-e2e.mjs --case=${fullMeta.id}`,
             recordedAt: new Date().toISOString(),
           };
           records.push(rec);
@@ -148,7 +187,7 @@ export function createSuiteCollector(suiteName: string) {
 
         let screenshotPath: string | undefined;
         let domExcerpt: string | undefined;
-        const activeChrome = opts.getChrome?.() || null;
+        const activeChrome = opts.getChrome?.() || chrome || null;
         if (activeChrome) {
           await activeChrome.setHudStatus({
             id: fullMeta.id,
@@ -168,8 +207,10 @@ export function createSuiteCollector(suiteName: string) {
           } catch {}
         }
 
-        const newPageErrors = activeChrome ? activeChrome.pageErrors.slice(prevPageErrLen) : [];
-        const newConsoleErrors = activeChrome ? activeChrome.consoleErrors.slice(prevConsoleErrLen) : [];
+        const activePageErrs = activeChrome ? (activeChrome.allPageErrors || activeChrome.pageErrors) : pageErrArr;
+        const activeConsoleErrs = activeChrome ? (activeChrome.allConsoleErrors || activeChrome.consoleErrors) : consoleErrArr;
+        const newPageErrors = activePageErrs ? activePageErrs.slice(prevPageErrLen) : [];
+        const newConsoleErrors = activeConsoleErrs ? activeConsoleErrs.slice(prevConsoleErrLen) : [];
 
         const rec: AtomicCaseRecord = {
           ...fullMeta,
@@ -177,6 +218,7 @@ export function createSuiteCollector(suiteName: string) {
           durationMs,
           error: String(err?.message || err),
           stack: String(err?.stack || ""),
+          reproCommand: `node scripts/run-e2e.mjs --case=${fullMeta.id}`,
           evidenceDir: evDir,
           ...(screenshotPath ? { screenshotPath } : {}),
           ...(newPageErrors.length > 0 ? { pageErrors: newPageErrors } : {}),
@@ -196,5 +238,5 @@ export function createSuiteCollector(suiteName: string) {
     });
   }
 
-  return { records, runCase };
+  return { records, runCase, shouldRun };
 }

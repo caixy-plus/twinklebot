@@ -4,6 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { searchWeb, fetchWebPage } from "../../src/lib/web-search.js";
+import {
+  buildMacOrbExecutorDeployScript,
+  probeBotComputerState,
+} from "../../src/lib/bot-computer-provisioner.js";
+import { updateBotComputer } from "../../src/lib/bot-computer-updater.js";
 import { launchHeadlessChrome, type HeadlessChromeSession } from "../helpers/cdp-browser-harness.js";
 import { createSuiteCollector, PROJECT_ROOT } from "../helpers/e2e-report-collector.js";
 import { createE2EWorkspace } from "../helpers/e2e-workspace-harness.js";
@@ -17,7 +22,7 @@ function findLocalLanIpv4(): string {
   return "";
 }
 
-test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos Security Redteam", async (t) => {
+test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers, Provisioner/Updater & Chaos Security Redteam", async (t) => {
   const collector = createSuiteCollector("p3-tray-resilience-and-chaos");
   let chrome: HeadlessChromeSession | null = await launchHeadlessChrome();
   t.after(async () => {
@@ -39,11 +44,11 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       priority: "P3",
       featureTier: "F3",
       difficulty: "D2",
-      title: "Electron 托盘 UI(electron/tray.html)全状态与按钮交互 + 8 项原生菜单指令联动渲染层",
+      title: "Electron 托盘 UI(electron/tray.html)实时状态推送/全按钮交互 + 全部 8 项原生菜单指令联动渲染层",
       module: "Electron Tray & Menu Commands",
     },
     async () => {
-      // 1. Load real electron/tray.html in Chrome with simulated window.twinklebotTray bridge
+      // 1. Load real electron/tray.html with exact twinklebotTray preload contract (onStateUpdate, NOT onState!)
       const trayTab = await chrome!.openNewTab("about:blank");
       t.after(() => trayTab.close());
       await trayTab.addInitScript(`
@@ -53,18 +58,18 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
         window.__trayStateCb = null;
         window.twinklebotTray = {
           getState: async () => ({
-            appVersion: '1.0.0',
+            appVersion: '1.0.1',
             backendUrl: 'http://127.0.0.1:3230',
             port: 3230,
             botCount: 5,
             groupCount: 2,
             scheduleCount: 3,
-            activeRunCount: 1,
+            activeRunCount: 0,
             windowVisible: true,
             keepRunningInBackground: true,
             relayConfigured: false,
           }),
-          onState: (cb) => { window.__trayStateCb = cb; return () => {}; },
+          onStateUpdate: (cb) => { window.__trayStateCb = cb; return () => {}; },
           runAction: async (action) => { window.__trayActions.push(action); },
           setKeepInBackground: async (val) => { window.__trayBgValues.push(val); return { keepRunningInBackground: val }; },
           copyText: async (text) => { window.__trayCopied.push(text); },
@@ -73,18 +78,40 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       `);
       const trayUrl = `file://${path.join(PROJECT_ROOT, "electron", "tray.html")}`;
       await trayTab.navigate(trayUrl);
-      await trayTab.waitFor(`document.body.innerText.includes('1.0.0') && document.body.innerText.includes('3230')`, 5000);
+      await trayTab.waitFor(`document.body.innerText.includes('1.0.1') && document.body.innerText.includes(':3230')`, 5000);
+      assert.equal(await trayTab.evalJs<string>(`document.querySelector('#bot-count-val')?.textContent?.trim()`), "5 个");
+      assert.equal(await trayTab.evalJs<string>(`document.querySelector('#schedule-count-val')?.textContent?.trim()`), "3 个");
 
-      // Click tray quick actions
-      await trayTab.evalJs(`(() => {
-        document.querySelectorAll('[data-action]').forEach(btn => btn.click());
-        const sw = document.querySelector('input[type="checkbox"]');
-        if (sw) sw.click();
-      })()`);
-      const actions = await trayTab.evalJs<string[]>(`window.__trayActions`);
-      assert.ok(actions.length >= 2, `Tray quick action buttons must invoke runAction, got ${actions.join(",")}`);
+      // Push live state update via onStateUpdate -> busy badge + hidden window + relay footer!
+      await trayTab.evalJs(`window.__trayStateCb({
+        appVersion: '1.0.1', backendUrl: 'http://127.0.0.1:3230', port: 3230,
+        botCount: 7, groupCount: 2, scheduleCount: 4, activeRunCount: 2,
+        windowVisible: false, keepRunningInBackground: true, relayConfigured: true
+      })`);
+      await trayTab.waitFor(`document.querySelector('#status-pill')?.classList.contains('is-busy')`, 3000);
+      assert.match(await trayTab.evalJs<string>(`document.querySelector('#status-text')?.textContent || ''`), /2 个执行中/);
+      assert.match(await trayTab.evalJs<string>(`document.querySelector('#footer-hint')?.textContent || ''`), /外网中继/);
 
-      // 2. Test Electron menu commands dispatched into main web app!
+      // Exercise EVERY tray button: #open-window-btn, #copy-endpoint-btn, all 4 [data-action], #keep-bg-toggle, #quit-app-btn!
+      await trayTab.click("#open-window-btn");
+      await trayTab.click("#copy-endpoint-btn");
+      await trayTab.waitFor(`document.querySelector('#endpoint-label')?.textContent?.includes('已复制')`, 3000);
+      await trayTab.evalJs(`document.querySelectorAll('[data-action]').forEach(btn => btn.click())`);
+      await trayTab.evalJs(`document.querySelector('#keep-bg-toggle').click()`);
+      await trayTab.click("#quit-app-btn");
+
+      const trayOut = await trayTab.evalJs<{ actions: string[]; bg: boolean[]; copied: string[] }>(`({
+        actions: window.__trayActions,
+        bg: window.__trayBgValues,
+        copied: window.__trayCopied,
+      })`);
+      for (const expected of ["show-window", "new-bot", "open-search", "open-settings", "open-browser", "quit"]) {
+        assert.ok(trayOut.actions.includes(expected), `Tray must dispatch '${expected}', got ${trayOut.actions.join(",")}`);
+      }
+      assert.deepEqual(trayOut.bg, [false]);
+      assert.deepEqual(trayOut.copied, ["http://127.0.0.1:3230"]);
+
+      // 2. Test ALL 8 Electron menu commands dispatched into main web app with exact preload contract (loadAccounts/saveAccounts)!
       const menuTab = await chrome!.openNewTab("about:blank");
       t.after(() => menuTab.close());
       await menuTab.addInitScript(`
@@ -92,24 +119,49 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
         window.twinklebotDesktop = {
           isElectron: true,
           platform: 'darwin',
-          getDesktopInfo: async () => ({ platform: 'darwin', appVersion: '1.0.0', backendUrl: ${JSON.stringify(ws.baseUrl)} }),
-          accountsLoad: async () => ({ activeAccountId: 'local', accounts: [] }),
-          accountsSave: async (s) => s,
+          arch: 'arm64',
+          getDesktopInfo: async () => ({ platform: 'darwin', appVersion: '1.0.1', backendUrl: ${JSON.stringify(ws.baseUrl)} }),
+          loadAccounts: async () => ({ activeAccountId: 'local', accounts: [{ id: 'local', type: 'local', name: '本地账号', baseUrl: '' }] }),
+          saveAccounts: async (s) => s,
           onMenuCommand: (cb) => { window.__menuCb = cb; return () => {}; },
           onOtaProgress: () => () => {},
           getOtaStatus: async () => ({ usingBuiltIn: true, activeBuild: 'built-in' }),
+          confirmWebOta: async () => ({ ok: true }),
         };
       `);
       await menuTab.navigate(ws.baseUrl);
       await menuTab.waitFor(`typeof window.__menuCb === 'function'`, 8000);
 
-      // Dispatch menu commands and verify UI reacts!
+      // 1) open-search
       await menuTab.evalJs(`window.__menuCb('open-search', {})`);
       await menuTab.waitFor(`!document.querySelector('#search-modal-backdrop')?.hidden`, 4000);
+      await menuTab.pressKey("Escape");
+      // 2) open-settings
       await menuTab.evalJs(`window.__menuCb('open-settings', { tab: 'vault' })`);
       await menuTab.waitFor(`!document.querySelector('#settings-modal-backdrop')?.hidden`, 4000);
+      await menuTab.pressKey("Escape");
+      // 3) toggle-compact-sidebar
       await menuTab.evalJs(`window.__menuCb('toggle-compact-sidebar', {})`);
       await menuTab.waitFor(`document.querySelector('#app-shell')?.dataset?.sidebarCompact === 'true'`, 4000);
+      await menuTab.evalJs(`window.__menuCb('toggle-compact-sidebar', {})`);
+      // 4) toggle-inspector
+      const prevInsp = await menuTab.evalJs<string>(`document.querySelector('#app-shell')?.dataset?.inspectorOpen`);
+      await menuTab.evalJs(`window.__menuCb('toggle-inspector', {})`);
+      await menuTab.waitFor(`document.querySelector('#app-shell')?.dataset?.inspectorOpen !== '${prevInsp}'`, 4000);
+      // 5) new-bot & 6) new-group
+      await menuTab.evalJs(`window.__menuCb('new-bot', {})`);
+      await menuTab.waitFor(`!document.querySelector('#new-chat-bar')?.hidden`, 4000);
+      await menuTab.evalJs(`window.__menuCb('new-group', {})`);
+      await menuTab.waitFor(`!document.querySelector('#new-chat-bar')?.hidden`, 4000);
+      await menuTab.pressKey("Escape");
+      // 7) open-computer
+      await menuTab.evalJs(`window.__menuCb('open-computer', {})`);
+      await menuTab.waitFor(`!document.querySelector('#bot-screen-overlay')?.hidden`, 4000);
+      await menuTab.click("#exit-fullscreen-btn");
+      // 8) set-theme
+      await menuTab.evalJs(`window.__menuCb('set-theme', { theme: 'dark' })`);
+      await menuTab.waitFor(`localStorage.getItem('color-scheme') === 'dark'`, 4000);
+      await menuTab.evalJs(`window.__menuCb('set-theme', { theme: 'system' })`);
     },
     { getChrome: () => chrome }
   );
@@ -122,12 +174,11 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       priority: "P3",
       featureTier: "F2",
       difficulty: "D2",
-      title: "Agent 死循环重复检测告警、finishReason='length' 截断工具拦截重试、markInterrupted 与孤立调用清洗",
+      title: "Agent 死循环重复检测告警(repeatCount>=2)、finishReason='length' 截断工具拦截重试、markInterrupted 与孤立调用清洗",
       module: "Agent Loop Resilience",
     },
     async () => {
       const resBot = ws.store.createSession({ title: "ResilienceBot" });
-      // Seed interrupted status & orphaned function_call
       ws.store.updateSession(resBot.id, { status: "running" });
       ws.store.markInterrupted();
       assert.equal(ws.store.getSession(resBot.id)?.status, "interrupted", "markInterrupted must recover stranded running state");
@@ -137,9 +188,9 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
         { type: "function_call", id: "orphan-999", name: "run_shell", arguments: { command: "pwd" } },
       ]);
 
-      // Simulate truncated tool call (finish_reason: "length") followed by clean completion!
       let callIdx = 0;
       let shellExecCount = 0;
+      let sawRepeatWarning = false;
       const origCall = ws.executor.call;
       ws.executor.call = async (route: string, body?: any, opts?: any) => {
         if (route === "/shell" && String(body?.command || "").includes("TRUNCATED_CMD")) shellExecCount += 1;
@@ -156,28 +207,39 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
             s.includes("概括")
           )
             return { text: "异常自愈" };
-          if (s.includes("route_plan") || s.includes("base_tier")) return { text: JSON.stringify({ base_tier: "fast" }) };
+          if (s.includes("route_plan") || s.includes("base_tier") || s.includes("needs_visual")) {
+            return { text: JSON.stringify({ category: "general", complexity: "simple", needs_visual: false, open_with_deep_steps: 0 }) };
+          }
+          if (s.includes("重复") || s.includes("repeat") || s.includes("loop") || s.includes("identical")) {
+            sawRepeatWarning = true;
+          }
           callIdx += 1;
           if (callIdx === 1) {
-            // Confirm orphaned call was stripped before reaching model!
             assert.ok(!s.includes("orphan-999"), "Orphaned function_call must be sanitized before reaching model");
             return {
               finishReason: "length",
               toolCalls: [{ id: "trunc-1", name: "run_shell", args: { command: "echo TRUNCATED_CMD", risk: "low" } }],
             };
           }
-          return { text: "截断拦截后安全重试完成" };
+          // Repeat identical action 3 times in a row to trigger dead-loop repeat detector!
+          if (callIdx >= 2 && callIdx <= 4) {
+            return {
+              toolCalls: [{ id: `rep-${callIdx}`, name: "list_bots", args: {} }],
+            };
+          }
+          return { text: "截断拦截与死循环告警自愈完成" };
         });
 
         await fetch(`${ws.baseUrl}/api/sessions/${resBot.id}/messages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: "测试截断保护与脏历史恢复" }),
+          body: JSON.stringify({ text: "测试截断保护与死循环检测" }),
         });
-        await ws.waitUntil(() => !ws.runner.isSessionBusy(resBot.id), 10_000, "resilience turn finishes");
+        await ws.waitUntil(() => !ws.runner.isSessionBusy(resBot.id), 12_000, "resilience turn finishes");
         assert.equal(shellExecCount, 0, "Tool call on finish_reason=length MUST NOT execute");
+        assert.equal(sawRepeatWarning, true, "Repeated identical tool calls must inject dead-loop warning");
         const evs = ws.store.readEvents(resBot.id);
-        assert.ok(evs.some((e: any) => e.type === "answer" && /截断拦截后安全重试完成/.test(e.text || "")));
+        assert.ok(evs.some((e: any) => e.type === "answer" && /截断拦截与死循环告警自愈完成/.test(e.text || "")));
       } finally {
         ws.executor.call = origCall;
         ws.mockLlm.setHandler(undefined);
@@ -194,11 +256,11 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       priority: "P3",
       featureTier: "F2",
       difficulty: "D2",
-      title: "web_search(DDG→Bing 回退)、workspace_search / library_manage(save_note) 及 /api/workspace/file 安全响应头",
+      title: "web_search(DDG→Bing 回退)、web_fetch 正文抽取、workspace_search / library_manage 及 /api/workspace/file(.html/.svg/download)安全响应头",
       module: "Built-in Tools & Security Headers",
     },
     async () => {
-      // 1. DDG error -> automatic fallback to Bing
+      // 1. DDG 503 -> automatic fallback to Bing
       const sr = await searchWeb("twinklebot test", {
         maxResults: 3,
         fetchImpl: async (url) => {
@@ -216,13 +278,37 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       assert.equal(sr.engine, "bing");
       assert.equal(sr.results?.[0]?.url, "https://example.org/twinkle");
 
-      // 2. /api/workspace/file security headers for inline .html vs download=1
+      // 2. Public web_fetch HTML extraction (with injected fetchImpl)
+      const fetched = await fetchWebPage("https://example.org/article", {
+        fetchImpl: async () =>
+          new Response(
+            `<!doctype html><html><head><title>Article Title</title></head><body><script>bad()</script><main><p>TwinkleBot clean text extraction.</p></main></body></html>`,
+            { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } }
+          ),
+      });
+      assert.equal(fetched.ok, true);
+      assert.match(String(fetched.content || ""), /TwinkleBot clean text extraction/);
+      assert.ok(!String(fetched.content || "").includes("bad()"));
+
+      // 3. /api/workspace/file security headers for inline .html, .svg AND ?download=1!
       const htmlPath = path.join(ws.workspaceDir, "preview-sec.html");
+      const svgPath = path.join(ws.workspaceDir, "preview-sec.svg");
       fs.writeFileSync(htmlPath, "<html><body><script>alert(1)</script></body></html>", "utf8");
+      fs.writeFileSync(svgPath, `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`, "utf8");
+
       const inlineRes = await fetch(`${ws.baseUrl}/api/workspace/file?path=${encodeURIComponent(htmlPath)}`);
       assert.equal(inlineRes.status, 200);
       assert.equal(inlineRes.headers.get("x-content-type-options"), "nosniff");
       assert.match(inlineRes.headers.get("content-security-policy") || "", /sandbox/);
+
+      const svgRes = await fetch(`${ws.baseUrl}/api/workspace/file?path=${encodeURIComponent(svgPath)}`);
+      assert.equal(svgRes.status, 200);
+      assert.equal(svgRes.headers.get("x-content-type-options"), "nosniff");
+      assert.match(svgRes.headers.get("content-security-policy") || "", /sandbox/);
+
+      const dlRes = await fetch(`${ws.baseUrl}/api/workspace/file?path=${encodeURIComponent(htmlPath)}&download=1`);
+      assert.equal(dlRes.status, 200);
+      assert.match(dlRes.headers.get("content-disposition") || "", /attachment/i);
     },
     { getChrome: () => chrome }
   );
@@ -251,7 +337,6 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
         assert.equal(res.ok, false, `SSRF URL must be blocked: ${badUrl}`);
       }
 
-      // Null-byte & traversal checks on HTTP server
       assert.equal((await fetch(`${ws.baseUrl}/api/sessions%00bad`)).status, 404);
       assert.equal((await fetch(`${ws.baseUrl}/../package.json`)).status, 404);
       assert.equal((await fetch(`${ws.baseUrl}/api/screens/not-a-uuid/0001.png`)).status, 404);
@@ -268,7 +353,7 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       priority: "P3",
       featureTier: "F3",
       difficulty: "D2",
-      title: "认证红队：配对码 5 次输错销毁锁定 403、设备吊销即时 401 与非 GCP 伪造 Vertex 强制阻断",
+      title: "认证红队：配对码 5 次输错销毁锁定 403、已配对设备吊销即时 401 与非 GCP 伪造 Vertex 强制阻断",
       module: "Auth Redteam & Vertex Gate",
     },
     async () => {
@@ -276,7 +361,7 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       assert.ok(lanIp && lanIp !== "127.0.0.1");
       const lanOrigin = `http://${lanIp}:${ws.port}`;
 
-      // 1. 5 failed pairing attempts destroy challenge and return 403
+      // 1. 5 failed pairing attempts destroy challenge and return 403/404
       const pr: any = await (
         await fetch(`${lanOrigin}/api/lan/pair/request`, {
           method: "POST",
@@ -295,7 +380,45 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       }
       assert.ok(lastStatus === 403 || lastStatus === 404, `Expected lock/destroy after 5 wrong guesses, got ${lastStatus}`);
 
-      // 2. Non-GCP Vertex spoofing must be blocked with blockedVertexReason!
+      // 2. Real paired device -> works (200) -> DELETE /api/lan/devices/:id -> immediate 401!
+      await chrome!.navigate(ws.baseUrl);
+      await chrome!.waitFor(
+        `document.querySelector('#account-usage-pct')?.textContent?.includes('tok') &&
+         document.documentElement.dataset.realtimeConnected === '1'`,
+        8000
+      );
+      const pr2: any = await (
+        await fetch(`${lanOrigin}/api/lan/pair/request`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ deviceName: "RevokePhone", platform: "ios" }),
+        })
+      ).json();
+      await chrome!.waitFor(`!document.querySelector('#desktop-pairing-modal')?.hidden`, 5000);
+      const code = await chrome!.evalJs<string>(
+        `document.querySelector('#desktop-pairing-code-display')?.textContent?.trim() || ''`
+      );
+      assert.match(code, /^\d{6}$/, "Desktop pairing modal must display 6-digit PIN");
+      const v2: any = await (
+        await fetch(`${lanOrigin}/api/lan/pair/verify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pairingId: pr2.pairingId, code }),
+        })
+      ).json();
+      assert.ok(v2.deviceToken);
+      assert.equal((await fetch(`${lanOrigin}/api/sessions`, { headers: { Authorization: `Bearer ${v2.deviceToken}` } })).status, 200);
+      const devs: any = await (await fetch(`${ws.baseUrl}/api/lan/devices`)).json();
+      const devEntry = (devs.devices || []).find((d: any) => d.name === "RevokePhone" || d.deviceName === "RevokePhone");
+      assert.ok(devEntry?.id);
+      assert.equal((await fetch(`${ws.baseUrl}/api/lan/devices/${encodeURIComponent(devEntry.id)}`, { method: "DELETE" })).status, 200);
+      assert.equal(
+        (await fetch(`${lanOrigin}/api/sessions`, { headers: { Authorization: `Bearer ${v2.deviceToken}` } })).status,
+        401,
+        "Revoked LAN device token must immediately fail with 401"
+      );
+
+      // 3. Non-GCP Vertex spoofing must be blocked with blockedVertexReason!
       const spoofWs = await createE2EWorkspace({
         deployEnv: "local",
         env: { GOOGLE_GENAI_USE_VERTEXAI: "true", GOOGLE_CLOUD_PROJECT: "fake-proj", GOOGLE_CLOUD_LOCATION: "global" },
@@ -316,15 +439,14 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       priority: "P3",
       featureTier: "F3",
       difficulty: "D2",
-      title: "存储损坏容错(.ndjson 混入半截非法行跳过不丢数据) + 超大 JSON 请求体拦截返回 400",
+      title: "存储损坏容错(.ndjson 混入半截非法行跳过不丢数据) + 超大 JSON 请求体拦截返回 413",
       module: "Storage Resilience & Body Limits",
     },
     async () => {
       const corruptBot = ws.store.createSession({ title: "CorruptNdjsonBot" });
       ws.store.appendEvent(corruptBot.id, { type: "user", text: "valid-before" });
       const ndjsonPath = path.join(ws.dataDir, "sessions", `${corruptBot.id}.ndjson`);
-      fs.appendFileSync(ndjsonPath, `{"seq":999,"broken_json":`, "utf8");
-      fs.appendFileSync(ndjsonPath, `\n`, "utf8");
+      fs.appendFileSync(ndjsonPath, `{"seq":999,"broken_json":\n`, "utf8");
       const appended = ws.store.appendEvent(corruptBot.id, { type: "answer", text: "valid-after" });
       const evs = ws.store.readEvents(corruptBot.id);
       assert.equal(evs.length, 2, "Corrupted NDJSON line must be skipped cleanly");
@@ -332,7 +454,6 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       assert.equal(evs[1].text, "valid-after");
       assert.ok(appended.seq > evs[0].seq);
 
-      // Oversized body (>8MB) to /api/images/generate must return 413 cleanly without ECONNRESET or crashing server!
       const hugePayload = JSON.stringify({ prompt: "x".repeat(8.5 * 1024 * 1024) });
       const bigRes = await fetch(`${ws.baseUrl}/api/images/generate`, {
         method: "POST",
@@ -355,7 +476,7 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       priority: "P3",
       featureTier: "F3",
       difficulty: "D2",
-      title: "WebSocket 强制断线 2s 自动重连并无损追平断线期间产生的新消息",
+      title: "WebSocket 强制断线自动重连并无损追平断线期间产生的新消息",
       module: "WebSocket Reconnect Sync",
     },
     async () => {
@@ -383,7 +504,6 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       })()`);
       await reconTab.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('ReconnectBot')`);
 
-      // Force-close active WebSocket, append a message while offline, wait for 2s auto-reconnect sync!
       const countBefore = await reconTab.evalJs<number>(`window.__openedWs.length`);
       await reconTab.evalJs(`window.__openedWs.forEach(s => { try { s.close(); } catch {} })`);
       ws.store.appendEvent(reconBot.id, { type: "answer", text: "断线期间服务端生成的新回复_SYNC_OK" });
@@ -395,5 +515,95 @@ test("P3 Suite 11: Electron Tray UI, Agent Resilience, WebSearch/Headers & Chaos
       );
     },
     { getChrome: () => chrome }
+  );
+
+  // ---------- P3-CHAOS-05 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P3-CHAOS-05",
+      priority: "P3",
+      featureTier: "F3",
+      difficulty: "D2",
+      title: "Bot 电脑环境探针与一键热更新状态机(probeBotComputerState / buildMacOrbExecutorDeployScript / updateBotComputer)",
+      module: "Bot Computer Provisioner & Updater",
+    },
+    async () => {
+      // 1. probeBotComputerState across cloud, linux(unsupported), creating, darwin ready, darwin 401 unauthorized, win32 uncreated
+      const cloudRes = await probeBotComputerState({ deployEnv: "cloud", platform: "linux" });
+      assert.equal(cloudRes.state, "ready");
+      assert.equal(cloudRes.provider, "cloud-linux");
+
+      const linuxRes = await probeBotComputerState({ deployEnv: "local", platform: "linux" });
+      assert.equal(linuxRes.state, "unsupported");
+      assert.equal(linuxRes.errorCode, "unsupported");
+
+      const creatingRes = await probeBotComputerState({
+        deployEnv: "local",
+        platform: "darwin",
+        store: { readSettings: () => ({ botComputer: { state: "creating" } }) },
+      });
+      assert.equal(creatingRes.state, "creating");
+
+      const readyRes = await probeBotComputerState({
+        deployEnv: "local",
+        platform: "darwin",
+        executor: { health: async () => ({ ok: true, screen: { width: 1440, height: 900 } }) },
+      });
+      assert.equal(readyRes.state, "ready");
+      assert.equal(readyRes.online, true);
+
+      const authErrRes = await probeBotComputerState({
+        deployEnv: "local",
+        platform: "darwin",
+        executor: {
+          health: async () => {
+            const e: any = new Error("unauthorized");
+            e.status = 401;
+            throw e;
+          },
+        },
+        execFileFn: async () => ({ stdout: "NAME STATE\nubuntu running\n" }),
+      });
+      assert.equal(authErrRes.state, "error");
+      assert.equal(authErrRes.errorCode, "unauthorized");
+
+      const uncreatedWin = await probeBotComputerState({
+        deployEnv: "local",
+        platform: "win32",
+        execFileFn: async () => ({ stdout: "" }),
+      });
+      assert.equal(uncreatedWin.state, "uncreated");
+
+      // 2. buildMacOrbExecutorDeployScript includes token sync & Chrome wrapper & systemd restart
+      const script = buildMacOrbExecutorDeployScript({ executorToken: "tok-e2e-xyz" });
+      assert.match(script, /twinklebot-executor\.service/);
+      assert.match(script, /TWINKLEBOT_EXECUTOR_TOKEN=/);
+
+      // 3. updateBotComputer with mocked execFileFn + executor.health retry recovery (fails once then recovers!)
+      const execCalls: string[] = [];
+      let healthAttempts = 0;
+      const updRes = await updateBotComputer({
+        platform: "darwin",
+        projectRoot: PROJECT_ROOT,
+        executorToken: "tok-upd-123",
+        execFileFn: async (cmd, args) => {
+          execCalls.push(`${cmd} ${args.slice(0, 4).join(" ")}`);
+          return { stdout: "ok", stderr: "" };
+        },
+        executor: {
+          health: async () => {
+            healthAttempts += 1;
+            if (healthAttempts === 1) throw new Error("starting up");
+            return { ok: true, screen: { width: 1440, height: 900 } };
+          },
+        },
+        maxHealthRetries: 4,
+        retryDelayMs: 20,
+      });
+      assert.equal(updRes.ok, true);
+      assert.equal(healthAttempts, 2);
+      assert.ok(execCalls.length >= 2);
+    }
   );
 });

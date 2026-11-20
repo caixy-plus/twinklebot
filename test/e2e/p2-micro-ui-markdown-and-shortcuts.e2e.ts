@@ -7,7 +7,7 @@ import { SAMPLE_PNG_BUFFER } from "../helpers/e2e-protocol-fixtures.js";
 import { createSuiteCollector } from "../helpers/e2e-report-collector.js";
 import { createE2EWorkspace } from "../helpers/e2e-workspace-harness.js";
 
-test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Interactions, IME, Splitters & Shortcuts", async (t) => {
+test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Interactions, IME, Splitters, Compact Rail & Shortcuts", async (t) => {
   const collector = createSuiteCollector("p2-micro-ui-markdown-and-shortcuts");
   let chrome: HeadlessChromeSession | null = await launchHeadlessChrome();
   t.after(async () => {
@@ -18,12 +18,14 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
   await chrome!.addInitScript(`
     window.__e2eClipboard = [];
     try {
-      Object.defineProperty(navigator, 'clipboard', {
-        configurable: true,
-        value: {
-          writeText: async (txt) => { window.__e2eClipboard.push(String(txt)); }
-        }
-      });
+      if (window === window.top) {
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: {
+            writeText: async (txt) => { window.__e2eClipboard.push(String(txt)); }
+          }
+        });
+      }
     } catch {}
   `);
 
@@ -62,6 +64,12 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
         await chrome!.click("#edit-avatar-btn");
       }
       await chrome!.waitFor(`!document.querySelector('#avatar-editor-popover')?.hidden`);
+      const counts = await chrome!.evalJs<{ shapes: number; colors: number }>(`({
+        shapes: document.querySelectorAll('.avatar-shape-btn').length,
+        colors: document.querySelectorAll('.avatar-color-btn').length,
+      })`);
+      assert.ok(counts.shapes >= 13 && counts.colors >= 11, `Expected 13x11 avatar editor, got ${JSON.stringify(counts)}`);
+
       await chrome!.click(`.avatar-shape-btn[data-shape-key="star"]`);
       await chrome!.click(`.avatar-color-btn[data-color-key="violet"]`);
       await ws.waitUntil(() => {
@@ -70,7 +78,7 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       }, 4000, "avatar preset persisted");
 
       await chrome!.click("#reset-avatar-btn");
-      await chrome!.click("#edit-avatar-btn"); // close popover
+      await chrome!.click("#edit-avatar-btn");
 
       await chrome!.fill("#inspector-bot-name-input", "MicroUiBot改名");
       await new Promise((r) => setTimeout(r, 60));
@@ -100,7 +108,6 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       }
       await chrome!.waitFor(`!document.querySelector('#avatar-editor-popover')?.hidden`);
 
-      // AI generate tab
       await chrome!.click(`.avatar-source-tab[data-avatar-tab="generate"]`);
       await chrome!.fill("#avatar-prompt-input", "极简赛博小狐狸");
       await chrome!.click("#avatar-generate-submit");
@@ -109,7 +116,6 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
         return Boolean(av?.imageDataUrl || av?.imageUrl || av?.dataUrl);
       }, 8000, "AI avatar saved");
 
-      // Upload tab
       const imgFile = path.join(ws.tmpDir, "avatar-upload.png");
       fs.writeFileSync(imgFile, SAMPLE_PNG_BUFFER);
       await chrome!.click(`.avatar-source-tab[data-avatar-tab="upload"]`);
@@ -132,13 +138,15 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "侧边栏微状态：未读蓝点累加/切入清零(touch:false)+未读分割线、空状态与顶部分享克隆",
+      title: "侧边栏微状态：未读蓝点累加/切入清零(touch:false)+.unread-divider 分割线、清空历史(.empty-state)与顶部分享克隆",
       module: "Sidebar Badges & Header Share",
     },
     async () => {
       const bgBot = ws.store.createSession({ title: "UnreadBgBot" });
-      ws.store.updateSession(bgBot.id, { unreadCount: 3 });
-      ws.store.appendEvent(bgBot.id, { type: "answer", text: "你在后台时收到的新消息" });
+      ws.store.appendEvent(bgBot.id, { type: "user", text: "之前已读的消息" });
+      ws.store.appendEvent(bgBot.id, { type: "answer", text: "你在后台时收到的新消息 1" });
+      ws.store.appendEvent(bgBot.id, { type: "answer", text: "你在后台时收到的新消息 2" });
+      ws.store.updateSession(bgBot.id, { unreadCount: 2 });
       await chrome!.reload(true);
       await chrome!.waitFor(
         `document.querySelector('#account-usage-pct')?.textContent?.includes('tok') &&
@@ -146,12 +154,19 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
         8000
       );
 
-      // Click into bgBot -> clears unread dot and renders .unread-divider
+      // Click into bgBot -> clears unread dot AND renders .unread-divider!
       await chrome!.evalJs(`(() => {
         const el = Array.from(document.querySelectorAll('#session-list .session-item')).find(x => x.textContent?.includes('UnreadBgBot'));
         el && el.click();
       })()`);
       await ws.waitUntil(() => (ws.store.getSession(bgBot.id)?.unreadCount || 0) === 0, 4000, "unread cleared");
+      await chrome!.waitFor(`Boolean(document.querySelector('.unread-divider'))`, 4000);
+
+      // Clear session history via #clear-session-btn + ConfirmDialog -> renders .empty-state!
+      await chrome!.click("#clear-session-btn");
+      await chrome!.waitFor(`document.querySelector('#app-confirm-dialog')?.open`, 4000);
+      await chrome!.click("#app-confirm-ok-btn");
+      await chrome!.waitFor(`Boolean(document.querySelector('.empty-state'))`, 5000);
 
       // Header share popover -> clone
       await chrome!.click("#share-btn");
@@ -170,7 +185,7 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "Markdown 语法细节与安全：标题/引用/嵌套列表/任务复选框/snake_case 保护与 javascript: 危险链接拦截",
+      title: "Markdown 全语法细节与安全：H1~H6/引用/嵌套列表(.msg-sublist)/有序起始/删除线/分隔线/复选框/snake_case 保护与 javascript: 拦截",
       module: "MarkdownRenderer",
     },
     async () => {
@@ -182,10 +197,16 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
           return { text: "排版输出" };
         return {
           text: [
+            "# 一级标题",
             "## 二级标题",
+            "### 三级标题",
             "> 引用说明",
             "- [x] 已完成任务",
             "- [ ] 待办任务",
+            "  - 嵌套子项 alpha",
+            "3. 有序起始项",
+            "~~废弃删除线~~",
+            "---",
             "标识符 `my_var_name` 与裸变量 foo_bar_baz 不应斜体。",
             "[安全链接](https://example.com) 和 [危险链接](javascript:alert(1))",
           ].join("\n"),
@@ -196,8 +217,11 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       await chrome!.waitFor(`Boolean(document.querySelector('.msg-heading.msg-h2'))`, 8000);
       ws.mockLlm.setHandler(undefined);
 
-      const hasTaskCheckbox = await chrome!.evalJs<boolean>(`Boolean(document.querySelector('.msg-task-checkbox'))`);
-      assert.equal(hasTaskCheckbox, true);
+      assert.equal(await chrome!.evalJs<boolean>(`Boolean(document.querySelector('.msg-heading.msg-h1'))`), true);
+      assert.equal(await chrome!.evalJs<boolean>(`Boolean(document.querySelector('.msg-task-checkbox'))`), true);
+      assert.equal(await chrome!.evalJs<boolean>(`Boolean(document.querySelector('del'))`), true, "Strikethrough <del> must render");
+      assert.equal(await chrome!.evalJs<boolean>(`Boolean(document.querySelector('hr, .msg-hr'))`), true, "Horizontal rule must render");
+      assert.equal(await chrome!.evalJs<boolean>(`Boolean(document.querySelector('ol[start="3"], ol'))`), true);
       const hasJsHref = await chrome!.evalJs<boolean>(
         `Array.from(document.querySelectorAll('a')).some(a => (a.getAttribute('href') || '').toLowerCase().startsWith('javascript:'))`
       );
@@ -263,7 +287,7 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "HTML/SVG 预览卡微交互：浅色/透明格/深色三态底色循环、刷新与切源码",
+      title: "HTML/SVG 预览卡全套微交互：浅色/透明格/深色三态底色循环、刷新、复制源码与切源码视图",
       module: "MarkupPreviewCard Micro",
     },
     async () => {
@@ -282,13 +306,33 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       await chrome!.waitFor(`Boolean(document.querySelector('.msg-preview-card[data-preview-kind="svg"]'))`, 8000);
       ws.mockLlm.setHandler(undefined);
 
-      // Cycle bg button & toggle source code tab
+      // Cycle bg 3 times (light -> checker -> dark -> light) via first .msg-preview-btn & click Refresh & Copy
+      const bgStates = await chrome!.evalJs<string[]>(`(() => {
+        const card = document.querySelector('.msg-preview-card[data-preview-kind="svg"]');
+        const btns = Array.from(card.querySelectorAll('.msg-preview-btn'));
+        const bgBtn = btns[0];
+        const out = [];
+        if (bgBtn) {
+          for (let i = 0; i < 3; i++) {
+            out.push(bgBtn.textContent?.trim() || 'bg');
+            bgBtn.click();
+          }
+        }
+        const refBtn = card.querySelector('.msg-preview-btn[aria-label="刷新预览"]');
+        refBtn?.click();
+        window.__e2eClipboard = [];
+        const cpBtn = btns.find(b => b.textContent?.includes('复制'));
+        cpBtn?.click();
+        return out;
+      })()`);
+      assert.ok(bgStates.length >= 3, `Expected 3 bg cycle transitions, got ${JSON.stringify(bgStates)}`);
+
+      // Toggle source code tab & back to preview
       await chrome!.evalJs(`(() => {
         const card = document.querySelector('.msg-preview-card[data-preview-kind="svg"]');
-        const tabs = Array.from(card.querySelectorAll('.msg-preview-tab'));
-        tabs.find(t => t.textContent?.includes('源码'))?.click();
+        Array.from(card.querySelectorAll('.msg-preview-tab')).find(t => t.textContent?.includes('源码'))?.click();
       })()`);
-      await chrome!.waitFor(`Boolean(document.querySelector('.msg-preview-card[data-preview-kind="svg"] .msg-preview-code-pre'))`);
+      await chrome!.waitFor(`Boolean(document.querySelector('.msg-preview-card[data-preview-kind="svg"] .msg-preview-code-pre:not([hidden])'))`);
     },
     { getChrome: () => chrome }
   );
@@ -301,15 +345,13 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "右侧资料库 all/media/file 筛选、超 5 项展开收起(#library-expand-btn)与大图灯箱",
+      title: "右侧资料库 all/media/file 全筛选、超 5 项展开/收起(#library-expand-btn)与真实大图灯箱(#image-lightbox-modal)开关",
       module: "Library & Lightbox",
     },
     async () => {
-      const curSid = await chrome!.evalJs<string>(
-        `document.querySelector('#session-select')?.value || ''`
-      );
+      const curSid = await chrome!.evalJs<string>(`document.querySelector('#session-select')?.value || ''`);
       const targetSid = curSid || testBot.id;
-      for (let i = 1; i <= 6; i++) {
+      for (let i = 1; i <= 5; i++) {
         await fetch(`${ws.baseUrl}/api/attachments`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -320,12 +362,36 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
           }),
         });
       }
+      // Also upload a real PNG media item so 'media' filter & #image-lightbox-modal work!
+      await fetch(`${ws.baseUrl}/api/attachments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: targetSid,
+          name: "lib-photo.png",
+          dataBase64: SAMPLE_PNG_BUFFER.toString("base64"),
+        }),
+      });
+
       await chrome!.click("#tab-library");
       await chrome!.click("#refresh-library-btn");
       await chrome!.waitFor(`!document.querySelector('#library-expand-btn')?.hidden`, 6000);
       await chrome!.click("#library-expand-btn");
       await chrome!.waitFor(`document.querySelectorAll('#library-list .library-row').length >= 6`, 4000);
+      // Collapse back to <=5
+      await chrome!.click("#library-expand-btn");
+      await chrome!.waitFor(`document.querySelectorAll('#library-list .library-row').length <= 5`, 4000);
+
+      // Filter 'file' then 'media' -> click image item to open #image-lightbox-modal -> close!
       await chrome!.click(`.filter-pill[data-lib-filter="file"]`);
+      await chrome!.click(`.filter-pill[data-lib-filter="media"]`);
+      await chrome!.waitFor(`document.querySelectorAll('#library-list .library-row').length >= 1`, 4000);
+      await chrome!.click(`#library-list .library-row`);
+      await chrome!.waitFor(`!document.querySelector('#image-lightbox-modal')?.hidden`, 4000);
+      assert.equal(await chrome!.evalJs<boolean>(`Boolean(document.querySelector('#download-lightbox-btn'))`), true);
+      await chrome!.click("#close-lightbox-btn");
+      await chrome!.waitFor(`document.querySelector('#image-lightbox-modal')?.hidden`, 4000);
+
       await chrome!.click(`.filter-pill[data-lib-filter="all"]`);
       await chrome!.click("#tab-activity");
     },
@@ -344,7 +410,6 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       module: "useChatScrollPin",
     },
     async () => {
-      // Force long scrollable container & simulate real user wheel-up to clear auto-scroll pin guard
       try {
         const scrollMoved = await chrome!.evalJs<boolean>(`(() => {
           const el = document.querySelector('#event-stream');
@@ -390,7 +455,6 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       assert.equal(afterMsgCount, beforeMsgCount, "Enter immediately after compositionend must NOT send message");
       await chrome!.fill("#message-input", "");
 
-      // Trigger >10MB file drop -> frontend rejects with Toast
       await chrome!.evalJs(`(() => {
         const big = new File([new Uint8Array(11 * 1024 * 1024)], 'huge.bin', { type: 'application/octet-stream' });
         const dt = new DataTransfer();
@@ -410,7 +474,7 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "左右分栏拖拽调宽(#left-splitter / #right-splitter 边界限制) + 窄屏 <720px/<920px 自动折叠恢复",
+      title: "左右双分栏拖拽调宽(#left-splitter & #right-splitter 边界限制) + 窄屏 <920px 折叠检查器与 <720px 自动紧凑侧栏恢复",
       module: "Splitters & Responsive Collapse",
     },
     async () => {
@@ -418,11 +482,25 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
         const r = document.querySelector('#left-splitter').getBoundingClientRect();
         return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
       })()`);
-      await chrome!.drag(leftRect.x, leftRect.y, 360, leftRect.y, 6);
+      await chrome!.drag(leftRect.x, leftRect.y, 340, leftRect.y, 6);
       const leftW = await chrome!.evalJs<string>(`getComputedStyle(document.documentElement).getPropertyValue('--left-sidebar-w').trim()`);
       assert.match(leftW, /^\d+px$/);
 
-      // Narrow viewport < 720px -> auto compact sidebar & collapse inspector
+      const rightRect = await chrome!.evalJs<{ x: number; y: number } | null>(`(() => {
+        const el = document.querySelector('#right-splitter');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      })()`);
+      if (rightRect && rightRect.x > 0) {
+        await chrome!.drag(rightRect.x, rightRect.y, rightRect.x - 40, rightRect.y, 6);
+        const rightW = await chrome!.evalJs<string>(`getComputedStyle(document.documentElement).getPropertyValue('--right-inspector-w').trim()`);
+        assert.match(rightW, /^\d+px$/);
+      }
+
+      // Narrow viewport < 920px -> auto collapse right inspector; < 720px -> auto compact sidebar!
+      await chrome!.setViewport({ width: 880, height: 800 });
+      await chrome!.waitFor(`document.querySelector('#app-shell')?.dataset?.inspectorOpen === 'false'`, 4000);
       await chrome!.setViewport({ width: 680, height: 800 });
       await chrome!.waitFor(`document.querySelector('#app-shell')?.dataset?.sidebarCompact === 'true'`, 4000);
       await chrome!.setViewport({ width: 1440, height: 900 });
@@ -439,16 +517,22 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "⌘K 全局搜索命令面板(搜 Bot / 历史消息 / 快捷导航)与快捷键帮助弹窗(#shortcuts-help-dialog)",
+      title: "⌘K 全局搜索命令面板(快捷键呼出 + GET /api/search + 点击 Bot/消息结果跳转)与快捷键帮助弹窗(#shortcuts-help-dialog)",
       module: "Search Palette & Help Dialog",
     },
     async () => {
-      await chrome!.click("#open-search-modal-btn");
-      await chrome!.waitFor(`!document.querySelector('#search-modal-backdrop')?.hidden`);
+      // Direct GET /api/search API contract
+      const srRes: any = await (await fetch(`${ws.baseUrl}/api/search?q=MicroUiBot`)).json();
+      assert.ok(Array.isArray(srRes.sessions || srRes.results || []));
+
+      // Open via Meta+K keyboard shortcut and click matching Bot result!
+      await chrome!.evalJs(`document.activeElement?.blur()`);
+      await chrome!.pressKey("k", { meta: true });
+      await chrome!.waitFor(`!document.querySelector('#search-modal-backdrop')?.hidden`, 4000);
       await chrome!.fill("#palette-search-input", "MicroUiBot");
       await chrome!.waitFor(`document.querySelector('#palette-results-list')?.textContent?.includes('MicroUiBot')`, 5000);
-      await chrome!.pressKey("Escape");
-      await chrome!.waitFor(`document.querySelector('#search-modal-backdrop')?.hidden`);
+      await chrome!.click("#palette-results-list .palette-item, #palette-results-list button");
+      await chrome!.waitFor(`document.querySelector('#search-modal-backdrop')?.hidden`, 4000);
 
       await chrome!.click("#account-menu-btn");
       await chrome!.click(`[data-account-action="shortcuts"]`);
@@ -466,50 +550,123 @@ test("P2 Suite 8: Avatars, Micro UI States, Markdown/Tables/Preview Micro-Intera
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "全局快捷键(⌘, / ⌘\\ / ⌘I / 无焦点 1~6 秒选提问卡)与 Escape 优先关闭栈",
+      title: "全局快捷键(⌘, / ⌘\\ / ⌘I / 无焦点 1~6 & A~F 秒选提问卡)与完整 Escape 优先关闭栈",
       module: "useGlobalShortcuts",
     },
     async () => {
-      // Focus body so shortcuts trigger cleanly
       await chrome!.evalJs(`document.activeElement?.blur()`);
-      // Toggle compact sidebar with Meta+\
       await chrome!.pressKey("\\", { meta: true });
       await chrome!.waitFor(`document.querySelector('#app-shell')?.dataset?.sidebarCompact === 'true'`, 3000);
       await chrome!.pressKey("\\", { meta: true });
       await chrome!.waitFor(`document.querySelector('#app-shell')?.dataset?.sidebarCompact === 'false'`, 3000);
 
-      // Toggle right inspector with Meta+I
       const prevInsp = await chrome!.evalJs<string>(`document.querySelector('#app-shell')?.dataset?.inspectorOpen`);
       await chrome!.pressKey("i", { meta: true });
       await chrome!.waitFor(`document.querySelector('#app-shell')?.dataset?.inspectorOpen !== '${prevInsp}'`, 3000);
       await chrome!.pressKey("i", { meta: true });
 
-      // Open Settings with Meta+, and close with Escape
       await chrome!.pressKey(",", { meta: true });
       await chrome!.waitFor(`!document.querySelector('#settings-modal-backdrop')?.hidden`, 3000);
       await chrome!.pressKey("Escape");
       await chrome!.waitFor(`document.querySelector('#settings-modal-backdrop')?.hidden`, 3000);
 
-      // ChoiceCard quick-select via digit '1' without focus in inputs!
+      // ChoiceCard quick-select via letter 'B' (tests A-F shortcut too!)
       let step = 0;
       ws.mockLlm.setHandler(async ({ body }) => {
         if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "快捷选择" };
         step += 1;
         if (step === 1) {
-          return { toolCalls: [{ id: "qk-1", name: "ask_user_choice", args: { question: "按1秒选", options: ["选项一", "选项二"] } }] };
+          return { toolCalls: [{ id: "qk-1", name: "ask_user_choice", args: { question: "按B秒选", options: ["选项一", "选项二"] } }] };
         }
-        return { text: "快捷键1选中生效" };
+        return { text: "快捷键B选中生效" };
       });
       await chrome!.typeText("#message-input", "测快捷键选卡", { clear: true });
       await chrome!.pressKey("Enter");
       await chrome!.waitFor(`Boolean(document.querySelector('.choice-card:not(.is-resolved)'))`, 8000);
       await chrome!.evalJs(`document.activeElement?.blur()`);
-      await chrome!.pressKey("1");
+      await chrome!.pressKey("b");
       await chrome!.waitFor(
-        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('快捷键1选中生效'))`,
+        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('快捷键B选中生效'))`,
         8000
       );
       ws.mockLlm.setHandler(undefined);
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P2-UI-13 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P2-UI-13",
+      priority: "P2",
+      featureTier: "F3",
+      difficulty: "D1",
+      title: "紧凑侧边栏底部轨道(.compact-rail-footer 全部按钮)与 #account-popover 多账号列表/云端弹窗交互",
+      module: "Compact Rail & Account Popover",
+    },
+    async () => {
+      // Switch to compact sidebar and verify compact rail footer buttons work!
+      await chrome!.click("#compact-sidebar-btn");
+      await chrome!.waitFor(`document.querySelector('#app-shell')?.dataset?.sidebarCompact === 'true'`, 4000);
+
+      await chrome!.click("#compact-apps-btn");
+      await chrome!.waitFor(`!document.querySelector('#apps-modal-backdrop')?.hidden`, 4000);
+      await chrome!.pressKey("Escape");
+      await chrome!.waitFor(`document.querySelector('#apps-modal-backdrop')?.hidden`, 4000);
+
+      await chrome!.click("#compact-account-btn");
+      await chrome!.waitFor(`!document.querySelector('#account-popover')?.hidden`, 4000);
+      await chrome!.click("#add-cloud-account-btn");
+      await chrome!.waitFor(`!document.querySelector('#cloud-account-modal')?.hidden`, 4000);
+      await chrome!.pressKey("Escape");
+      await chrome!.waitFor(`document.querySelector('#cloud-account-modal')?.hidden`, 4000);
+
+      await chrome!.click("#compact-expand-btn");
+      await chrome!.waitFor(`document.querySelector('#app-shell')?.dataset?.sidebarCompact === 'false'`, 4000);
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P2-UI-14 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P2-UI-14",
+      priority: "P2",
+      featureTier: "F3",
+      difficulty: "D1",
+      title: "右侧 #bot-computer-card 状态展示与执行追踪列表 TraceEventsList(<details class='trace-pill'>)展开",
+      module: "Bot Computer Card & Trace Pills",
+    },
+    async () => {
+      const cardPresent = await chrome!.evalJs<boolean>(`Boolean(document.querySelector('#bot-computer-card'))`);
+      assert.equal(cardPresent, true, "#bot-computer-card must render in RightInspector");
+
+      // Open single-bot usage trace view and inspect trace pills after running a tool turn!
+      let step = 0;
+      ws.mockLlm.setHandler(async ({ body }) => {
+        if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "执行追踪" };
+        step += 1;
+        if (step === 1) {
+          return { toolCalls: [{ id: "tr-1", name: "list_bots", args: {} }] };
+        }
+        return { text: "追踪记录完成" };
+      });
+      await chrome!.typeText("#message-input", "记录一条工具追踪", { clear: true });
+      await chrome!.pressKey("Enter");
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('追踪记录完成'))`,
+        8000
+      );
+      ws.mockLlm.setHandler(undefined);
+
+      await chrome!.click("#open-trace-drawer-row");
+      await chrome!.waitFor(`!document.querySelector('#settings-modal-backdrop')?.hidden`, 5000);
+      await chrome!.click("#usage-open-trace-btn");
+      await chrome!.waitFor(`document.querySelectorAll('#usage-inline-trace-view details.trace-pill').length >= 1`, 5000);
+      await chrome!.evalJs(`document.querySelector('#usage-inline-trace-view details.trace-pill')?.setAttribute('open', 'true')`);
+      await chrome!.click("#close-settings-modal-btn");
     },
     { getChrome: () => chrome }
   );

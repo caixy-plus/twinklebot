@@ -50,10 +50,27 @@ function statusBadge(status) {
   }
 }
 
+function loadCatalogCases(projectRoot) {
+  const catPath = path.join(projectRoot, ".agents", "skills", "twinklebot-e2e", "references", "catalog.json");
+  if (!fs.existsSync(catPath)) return null;
+  try {
+    const cat = JSON.parse(fs.readFileSync(catPath, "utf8"));
+    const cases = [];
+    for (const s of cat.suites || []) {
+      for (const c of s.cases || []) {
+        cases.push({ ...c, suite: s.id, suiteFile: s.file, liveOnly: Boolean(s.liveOnly) });
+      }
+    }
+    return { suites: cat.suites || [], cases };
+  } catch {
+    return null;
+  }
+}
+
 export function generateMarkdownReport(summary, opts = {}) {
   const projectRoot = opts.projectRoot || DEFAULT_PROJECT_ROOT;
   const isArchive = Boolean(opts.isArchive);
-  const tierLabel = opts.tier || "all / aggregated";
+  const tierLabel = opts.tier || summary?.tier || "all / aggregated";
   const git = opts.git || gitInfo(projectRoot);
   const ts = formatTimestamps(opts.now ? new Date(opts.now) : new Date());
 
@@ -66,12 +83,27 @@ export function generateMarkdownReport(summary, opts = {}) {
     ENV_SKIP: records.filter((r) => r.status === "ENV_SKIP").length,
   };
 
+  const catalogInfo = loadCatalogCases(projectRoot);
+  const executedIds = new Set(records.map((r) => r.id));
+  const missingFullCases =
+    catalogInfo && tierLabel === "all"
+      ? catalogInfo.cases.filter((c) => !executedIds.has(c.id))
+      : [];
+
+  const totalDurationMs = records.reduce(
+    (acc, r) => acc + (typeof r.durationMs === "number" ? r.durationMs : 0),
+    0
+  );
+
   const lines = [
     "# TwinkleBot 分级 E2E 测试与缺陷诊断报告",
     "",
     `- **生成时间**: \`${ts.human}\``,
     `- **Git 提交**: \`${git.branch}\` @ \`${git.sha}\``,
     `- **执行范围**: \`${tierLabel}\``,
+    ...(catalogInfo
+      ? [`- **用例目录基线**: 共登记 \`${catalogInfo.suites.length}\` 套件 / \`${catalogInfo.cases.length}\` 项原子用例（本轮实测 \`${records.length}\` 项，总耗时 \`${(totalDurationMs / 1000).toFixed(1)}s\`）`]
+      : [`- **总耗时**: \`${(totalDurationMs / 1000).toFixed(1)}s\``]),
     `- **报告类型**: ${isArchive ? "归档快照（docs/e2e-reports，已剥离本机临时截图路径依赖）" : "工作区运行报告（详细截图与 JSON 现场位于 `test-results/evidence/<case-id>/`）"}`,
     "",
     "---",
@@ -99,6 +131,44 @@ export function generateMarkdownReport(summary, opts = {}) {
   );
   lines.push("");
 
+  // Per-suite breakdown table
+  const suiteMap = new Map();
+  for (const r of records) {
+    const key = r.suite || "unknown";
+    const entry = suiteMap.get(key) || {
+      suite: key,
+      priority: r.priority || "-",
+      total: 0,
+      PASS: 0,
+      BUG: 0,
+      UX_DESIGN: 0,
+      ENV_SKIP: 0,
+      durationMs: 0,
+    };
+    entry.total += 1;
+    if (entry[r.status] !== undefined) entry[r.status] += 1;
+    entry.durationMs += typeof r.durationMs === "number" ? r.durationMs : 0;
+    suiteMap.set(key, entry);
+  }
+  if (suiteMap.size > 0) {
+    lines.push("### 套件分项汇总", "");
+    lines.push("| 套件 | 级别 | 总数 | ✅ | 🐞 | 💡 | ⏭️ | 耗时 |");
+    lines.push("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |");
+    for (const s of suiteMap.values()) {
+      lines.push(
+        `| \`${s.suite}\` | **${s.priority}** | ${s.total} | ${s.PASS} | ${s.BUG} | ${s.UX_DESIGN} | ${s.ENV_SKIP} | ${(s.durationMs / 1000).toFixed(1)}s |`
+      );
+    }
+    lines.push("");
+  }
+
+  if (missingFullCases.length > 0) {
+    lines.push(
+      `> ⚠️ **目录完整性提示**：全量目录共 ${catalogInfo.cases.length} 项，本轮未产出记录 ${missingFullCases.length} 项：${missingFullCases.map((c) => `\`${c.id}\``).join(", ")}`,
+      ""
+    );
+  }
+
   const bugRecords = records.filter((r) => r.status === "BUG");
   const uxRecords = records.filter((r) => r.status === "UX_DESIGN");
 
@@ -109,7 +179,11 @@ export function generateMarkdownReport(summary, opts = {}) {
     bugRecords.forEach((r, idx) => {
       lines.push(`### \`[BUG-${pad2(idx + 1)}]\` ${r.id} — ${r.title}`);
       lines.push(`- **维度 / 套件**：\`${r.priority}\` · \`${r.featureTier}×${r.difficulty}\` · \`${r.suite || r.module}\``);
+      lines.push(`- **单测复现命令**：\`${r.reproCommand || `node scripts/run-e2e.mjs --case=${r.id}`}\``);
       lines.push(`- **错误信息**：\`${String(r.error || "Unknown error").split("\n")[0]}\``);
+      if (Array.isArray(r.pageErrors) && r.pageErrors.length > 0) {
+        lines.push(`- **浏览器未捕获异常 (` + r.pageErrors.length + `)**：\`${r.pageErrors[0].slice(0, 240)}\``);
+      }
       if (!isArchive && r.evidenceDir) {
         const relEv = path.relative(projectRoot, r.evidenceDir).replace(/\\/g, "/");
         lines.push(`- **证据目录**：\`${relEv}/\``);

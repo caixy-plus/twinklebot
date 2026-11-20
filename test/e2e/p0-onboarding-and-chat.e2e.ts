@@ -1,13 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { createLocalCrypto, isEncryptedEnvelope } from "../../src/lib/local-crypto.js";
+import { createStore } from "../../src/store/index.js";
 import { launchHeadlessChrome, type HeadlessChromeSession } from "../helpers/cdp-browser-harness.js";
 import { startMockLlmServer } from "../helpers/e2e-protocol-fixtures.js";
 import { createSuiteCollector } from "../helpers/e2e-report-collector.js";
 import { createE2EWorkspace } from "../helpers/e2e-workspace-harness.js";
 
-test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Stop & F5 Recovery", async (t) => {
+test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Stop, MaxSteps, F5 & Local Crypto", async (t) => {
   const collector = createSuiteCollector("p0-onboarding-and-chat");
   const mockLlm = await startMockLlmServer();
   t.after(() => mockLlm.close());
@@ -24,6 +27,42 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
     smartRouter: true,
   });
   t.after(() => ws.close());
+
+  const ensureProviderReady = async () => {
+    const s = ws.store.readSettings();
+    if (!s.onboardingCompleted || !Array.isArray(s.providers) || s.providers.length === 0) {
+      ws.store.writeSettings({
+        onboardingCompleted: true,
+        routing: {
+          smartRouter: true,
+          mode: "balanced",
+          tiers: {
+            fast: { providerId: "openai-compatible-primary", model: "e2e-fast" },
+            medium: { providerId: "openai-compatible-primary", model: "e2e-medium" },
+            advanced: { providerId: "openai-compatible-primary", model: "e2e-advanced" },
+          },
+        },
+        providers: [
+          {
+            id: "openai-compatible-primary",
+            type: "openai-compatible",
+            name: "E2E OpenAI Compat",
+            apiKey: "sk-e2e-secret-987654",
+            baseUrl: mockLlm.openaiBaseUrl,
+            models: ["e2e-fast", "e2e-medium", "e2e-advanced"],
+            imageModels: [],
+            billingCurrency: "USD",
+            enabled: true,
+          },
+        ],
+      });
+    }
+    const url = await chrome!.evalJs<string>(`window.location.href`).catch(() => "");
+    if (!url.startsWith(ws.baseUrl)) {
+      await chrome!.navigate(ws.baseUrl);
+      await chrome!.waitFor(`document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`, 10_000);
+    }
+  };
 
   // ---------- P0-ONB-01 ----------
   await collector.runCase(
@@ -78,11 +117,24 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       await chrome!.fill("#onboarding-api-key", "sk-e2e-secret-987654");
       await chrome!.fill("#onboarding-models-input", "e2e-fast, e2e-medium, e2e-fast, e2e-advanced");
 
-      // Verify deduplicated models populate all 3 tier selects
+      // Verify deduplicated models populate all 3 tier selects & tier selection works
       const tierOpts = await chrome!.evalJs<string[]>(
         `Array.from(document.querySelectorAll('#onboarding-tier-fast option')).map(o => o.value)`
       );
       assert.deepEqual(tierOpts, ["e2e-fast", "e2e-medium", "e2e-advanced"]);
+      await chrome!.selectOption("#onboarding-tier-fast", "e2e-fast");
+      await chrome!.selectOption("#onboarding-tier-medium", "e2e-medium");
+      await chrome!.selectOption("#onboarding-tier-advanced", "e2e-advanced");
+
+      // Empty models validation on /api/onboarding/complete & /api/config contract
+      const badOnb = await fetch(`${ws.baseUrl}/api/onboarding/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: { type: "openai-compatible", apiKey: "", baseUrl: "" } }),
+      });
+      assert.equal(badOnb.status, 400, "Incomplete onboarding payload must return 400");
+      const cfgRes: any = await (await fetch(`${ws.baseUrl}/api/config`)).json();
+      assert.ok(cfgRes && Array.isArray(cfgRes.models) && cfgRes.autoRouter === true, "GET /api/config must return runtime config");
 
       // Test connection failure first
       mockLlm.enqueue({ status: 401, text: "bad mock key" });
@@ -108,6 +160,9 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       assert.equal(settingsOnDisk.providers.length, 1);
       assert.equal(settingsOnDisk.providers[0].id, "openai-compatible-primary");
 
+      const provListRes: any = await (await fetch(`${ws.baseUrl}/api/providers`)).json();
+      assert.equal(provListRes.onboardingRequired, false);
+      assert.ok(Array.isArray(provListRes.providers) && provListRes.providers.length === 1);
       const apiSettings: any = await (await fetch(`${ws.baseUrl}/api/settings`)).json();
       const rawJsonStr = JSON.stringify(apiSettings);
       assert.ok(!rawJsonStr.includes("sk-e2e-secret-987654"), "Raw API key must never be returned to client");
@@ -128,6 +183,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       module: "Gemini Driver",
     },
     async ({ setEvidence }) => {
+      await ensureProviderReady();
       // Add a Gemini provider pointing baseUrl to mockLlm and run a session turn
       const gemProvider = {
         id: "gemini-e2e",
@@ -260,6 +316,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       module: "Chat / Composer",
     },
     async () => {
+      await ensureProviderReady();
       const created = ws.store.createSession({ title: "New Session" });
       chatSessionId = created.id;
       await chrome!.reload(true);
@@ -326,6 +383,21 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       }
       const hist = ws.store.loadHistory(chatSessionId);
       assert.ok(hist.length >= 2, "History JSON must persist turns");
+
+      // Also verify #send-btn click sends message & /api/sessions/:id/library responds 200
+      mockLlm.setHandler(async ({ body }) => {
+        if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "发送按钮" };
+        return { text: "按钮点击发送成功" };
+      });
+      await chrome!.typeText("#message-input", "用发送按钮发送", { clear: true });
+      await chrome!.click("#send-btn");
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('按钮点击发送成功'))`,
+        8000
+      );
+      mockLlm.setHandler(undefined);
+      const libRes = await fetch(`${ws.baseUrl}/api/sessions/${chatSessionId}/library`);
+      assert.equal(libRes.status, 200);
     },
     { getChrome: () => chrome }
   );
@@ -342,6 +414,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       module: "Thinking Summarizer",
     },
     async () => {
+      await ensureProviderReady();
       let releaseTurn!: () => void;
       const gate = new Promise<void>((r) => {
         releaseTurn = r;
@@ -395,6 +468,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       module: "Agent Loop / Live Steering",
     },
     async ({ setEvidence }) => {
+      await ensureProviderReady();
       let stepCallCount = 0;
       let holdSecondTool = false;
       let releaseHold!: () => void;
@@ -494,6 +568,15 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       module: "Stop Detector / Control",
     },
     async () => {
+      await ensureProviderReady();
+      // Validate POST /api/control rejects invalid action with 400
+      const badCtrl = await fetch(`${ws.baseUrl}/api/control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "invalid_action" }),
+      });
+      assert.equal(badCtrl.status, 400, "POST /api/control invalid action must return 400");
+
       let releaseSlow!: () => void;
       let slowGate = new Promise<void>((r) => {
         releaseSlow = r;
@@ -581,6 +664,19 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       module: "Session Persistence / Reload Recovery",
     },
     async ({ setEvidence }) => {
+      await ensureProviderReady();
+      const reloadBot = ws.store.createSession({ title: "ReloadRecoveryBot" });
+      await chrome!.reload(true);
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('#session-list .session-item')).some(x => x.textContent?.includes('ReloadRecoveryBot'))`,
+        8000
+      );
+      await chrome!.evalJs(`(() => {
+        const el = Array.from(document.querySelectorAll('#session-list .session-item')).find(x => x.textContent?.includes('ReloadRecoveryBot'));
+        el && el.click();
+      })()`);
+      await chrome!.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('ReloadRecoveryBot')`, 6000);
+
       let step = 0;
       mockLlm.setHandler(async ({ body }) => {
         if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "等待确认" };
@@ -607,8 +703,8 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       );
       setEvidence("activeBotAfterF5Reload", activeAfterReload);
       assert.ok(
-        activeAfterReload.includes("ParallelSteerBot"),
-        `F5 reload must restore last active session ParallelSteerBot, got ${activeAfterReload}`
+        activeAfterReload.includes("ReloadRecoveryBot"),
+        `F5 reload must restore last active session ReloadRecoveryBot, got ${activeAfterReload}`
       );
       await chrome!.click(".confirm-card:not(.is-collapsed) .btn-approve");
       await chrome!.waitFor(
@@ -616,6 +712,154 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
         8000
       );
       mockLlm.setHandler(undefined);
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P0-CHAT-05 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P0-CHAT-05",
+      priority: "P0",
+      featureTier: "F1",
+      difficulty: "D2",
+      title: "单轮最大步数上限暂停(.max-steps-card)、尾步提醒、历史封口与点击「继续执行」无缝接续",
+      module: "Agent Loop / Max Steps Continue",
+    },
+    async ({ setEvidence }) => {
+      await ensureProviderReady();
+      const prevMaxSteps = ws.config.maxSteps;
+      ws.config.maxSteps = 4;
+      const msBot = ws.store.createSession({ title: "MaxStepsContinueBot" });
+      await chrome!.reload(true);
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('#session-list .session-item')).some(x => x.textContent?.includes('MaxStepsContinueBot'))`,
+        8000
+      );
+      await chrome!.evalJs(`(() => {
+        const el = Array.from(document.querySelectorAll('#session-list .session-item')).find(x => x.textContent?.includes('MaxStepsContinueBot'));
+        el && el.click();
+      })()`);
+      await chrome!.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('MaxStepsContinueBot')`, 6000);
+
+      let seenFinalStepNotice = false;
+      let turnPhase: "first" | "continued" = "first";
+      let stepIdx = 0;
+
+      mockLlm.setHandler(async ({ body }) => {
+        if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "执行步骤" };
+        const msgStr = JSON.stringify(body?.messages || "");
+        if (msgStr.includes("This is step 4/4")) {
+          seenFinalStepNotice = true;
+        }
+        if (turnPhase === "first") {
+          stepIdx += 1;
+          return {
+            toolCalls: [{ id: `ms-call-${stepIdx}`, name: "run_shell", args: { command: `echo step-${stepIdx}`, risk: "low" } }],
+          };
+        }
+        return { text: "已从步数上限暂停处接续完成全部任务！" };
+      });
+
+      try {
+        await chrome!.typeText("#message-input", "执行多步骤长任务", { clear: true });
+        await chrome!.pressKey("Enter");
+        await chrome!.waitFor(`Boolean(document.querySelector('.max-steps-card .max-steps-continue-btn'))`, 12_000);
+
+        assert.equal(seenFinalStepNotice, true, "Final step 4/4 must inject system wrap-up notice into LLM prompt");
+        const events = ws.store.readEvents(msBot.id);
+        const msNotice = events.find((e: any) => e.type === "route_notice" && e.level === "max_steps");
+        assert.ok(msNotice, "route_notice with level='max_steps' must be persisted");
+        assert.ok((msNotice.toolCount || 0) >= 4, `Expected toolCount >= 4, got ${msNotice.toolCount}`);
+
+        const sessAfterPause = ws.store.getSession(msBot.id);
+        assert.match(sessAfterPause?.subtitle || "", /最大步数上限/, "Session subtitle must reflect max_steps pause");
+
+        const hist = ws.store.loadHistory(msBot.id);
+        assert.equal(hist[hist.length - 1]?.type, "model_output", "History must be cleanly sealed with model_output on max_steps");
+
+        // Click "继续执行" button inside .max-steps-card
+        turnPhase = "continued";
+        await chrome!.click(".max-steps-card .max-steps-continue-btn");
+        await chrome!.waitFor(
+          `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('已从步数上限暂停处接续完成全部任务'))`,
+          10_000
+        );
+        await chrome!.waitFor(`Boolean(document.querySelector('.max-steps-card .max-steps-continued-hint'))`, 5000);
+        setEvidence("maxStepsToolCount", msNotice.toolCount);
+      } finally {
+        ws.config.maxSteps = prevMaxSteps;
+        mockLlm.setHandler(undefined);
+      }
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P0-CRYPTO-01 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P0-CRYPTO-01",
+      priority: "P0",
+      featureTier: "F1",
+      difficulty: "D1",
+      title: "本地 AES-256-GCM 静态加密落盘、明文自动迁移、篡改容错与 7 项 backend apiCapabilities 宣告",
+      module: "Local Crypto & Capabilities",
+    },
+    async ({ setEvidence }) => {
+      const cryptoDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-e2e-crypto-"));
+      try {
+        // 1. Legacy plaintext vault.json auto-migrates to AES-256-GCM envelope on first read
+        const vaultFile = path.join(cryptoDir, "vault.json");
+        const legacyItems = [
+          { id: "v-mig-1", category: "credential", title: "LegacyBank", subtitle: "u@test.com", password: "LegacyPlainPassword#99" },
+        ];
+        fs.writeFileSync(vaultFile, JSON.stringify(legacyItems, null, 2), "utf8");
+
+        const tmpStore = createStore(cryptoDir);
+        const loaded = tmpStore.readVault();
+        assert.equal(loaded.length, 1);
+        assert.equal(loaded[0].password, "LegacyPlainPassword#99");
+
+        const migratedRaw = fs.readFileSync(vaultFile, "utf8");
+        assert.ok(!migratedRaw.includes("LegacyPlainPassword#99"), "Migrated vault.json must not contain plaintext password");
+        const parsedEnv = JSON.parse(migratedRaw);
+        assert.equal(isEncryptedEnvelope(parsedEnv), true, "Migrated vault.json must be an AES-256-GCM envelope");
+
+        const keyFile = path.join(cryptoDir, ".vault.key");
+        assert.ok(fs.existsSync(keyFile), ".vault.key must be created");
+        if (process.platform !== "win32") {
+          const mode = fs.statSync(keyFile).mode & 0o777;
+          assert.equal(mode, 0o600, `.vault.key mode must be 0600, got ${mode.toString(8)}`);
+        }
+
+        // 2. Tampered ciphertext/tag fails decryption cleanly & returns fallback without crashing
+        const cryptoInst = createLocalCrypto(cryptoDir, { forceKeyfile: true });
+        const tampered = { ...parsedEnv, ciphertext: Buffer.from("tampered-bytes").toString("base64") };
+        const tamperFile = path.join(cryptoDir, "tamper-test.json");
+        fs.writeFileSync(tamperFile, JSON.stringify(tampered), "utf8");
+        const fallback = cryptoInst.readEncryptedJsonFile(tamperFile, [{ ok: "fallback" }]);
+        assert.deepEqual(fallback, [{ ok: "fallback" }], "Tampered ciphertext must return fallback safely");
+
+        // 3. Verify GET /api/system/diagnostics advertises all 7 current backend apiCapabilities
+        const diag: any = await (await fetch(`${ws.baseUrl}/api/system/diagnostics`)).json();
+        const caps: string[] = diag?.apiCapabilities || [];
+        for (const expectedCap of [
+          "core-v1",
+          "vault-patch-v1",
+          "gemini-vertex-gate-v1",
+          "ota-v1",
+          "multi-display-v1",
+          "vault-secret-v1",
+          "memory-suggest-v1",
+        ]) {
+          assert.ok(caps.includes(expectedCap), `Diagnostics must advertise capability '${expectedCap}', got ${caps.join(",")}`);
+        }
+        setEvidence("capabilitiesCount", caps.length);
+      } finally {
+        fs.rmSync(cryptoDir, { recursive: true, force: true });
+      }
     },
     { getChrome: () => chrome }
   );

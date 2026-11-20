@@ -61,11 +61,20 @@ export interface HudBannerState {
   progress?: string;
 }
 
+export interface NetworkConditionsOptions {
+  offline: boolean;
+  latencyMs?: number;
+  downloadThroughput?: number;
+  uploadThroughput?: number;
+}
+
 export interface HeadlessChromeSession {
   cdpPort: number;
   headed: boolean;
   pageErrors: string[];
   consoleErrors: string[];
+  allPageErrors: string[];
+  allConsoleErrors: string[];
   cdpCall: (method: string, params?: Record<string, any>) => Promise<any>;
   navigate: (url: string) => Promise<void>;
   reload: (ignoreCache?: boolean) => Promise<void>;
@@ -78,6 +87,9 @@ export interface HeadlessChromeSession {
   pressKey: (key: string, modifiers?: KeyModifiers) => Promise<void>;
   simulateImeComposition: (selector: string, text: string, pressEnterInWindow?: boolean) => Promise<void>;
   drag: (fromX: number, fromY: number, toX: number, toY: number, steps?: number) => Promise<void>;
+  touchSwipe: (fromX: number, fromY: number, toX: number, toY: number, steps?: number) => Promise<void>;
+  wheel: (x: number, y: number, deltaX: number, deltaY: number) => Promise<void>;
+  setNetworkConditions: (opts: NetworkConditionsOptions) => Promise<void>;
   selectText: (selector: string, startOffset?: number, endOffset?: number) => Promise<void>;
   setFileInputFiles: (selector: string, filePaths: string[]) => Promise<void>;
   pasteFile: (selector: string, opts: { name: string; mimeType: string; bytesBase64: string }) => Promise<void>;
@@ -136,7 +148,9 @@ async function attachPageTarget(
   headed: boolean,
   slowMoMs: number,
   onCloseCleanup: () => Promise<void>,
-  openTabFn: (url?: string) => Promise<HeadlessChromeSession>
+  openTabFn: (url?: string) => Promise<HeadlessChromeSession>,
+  sharedErrors: { pageErrors: string[]; consoleErrors: string[] } = { pageErrors: [], consoleErrors: [] },
+  tabLabel = "main"
 ): Promise<HeadlessChromeSession> {
   const ws = new WebSocket(pageWsUrl);
   await new Promise<void>((resolve, reject) => {
@@ -156,6 +170,7 @@ async function attachPageTarget(
   const pageErrors: string[] = [];
   const consoleErrors: string[] = [];
   let currentHud: HudBannerState | null = null;
+  let networkEnabled = false;
 
   ws.addEventListener("message", (ev) => {
     let msg: any;
@@ -179,10 +194,16 @@ async function attachPageTarget(
         msg.params?.exceptionDetails?.exception?.description ||
         msg.params?.exceptionDetails?.text ||
         "Uncaught page exception";
-      pageErrors.push(String(desc));
+      const text = String(desc);
+      pageErrors.push(text);
+      sharedErrors.pageErrors.push(tabLabel === "main" ? text : `[${tabLabel}] ${text}`);
     } else if (msg.method === "Runtime.consoleAPICalled" && msg.params?.type === "error") {
       const parts = (msg.params?.args || []).map((a: any) => a?.value ?? a?.description ?? "").filter(Boolean);
-      if (parts.length > 0) consoleErrors.push(parts.join(" "));
+      if (parts.length > 0) {
+        const text = parts.join(" ");
+        consoleErrors.push(text);
+        sharedErrors.consoleErrors.push(tabLabel === "main" ? text : `[${tabLabel}] ${text}`);
+      }
     }
   });
 
@@ -552,6 +573,59 @@ async function attachPageTarget(
     await pace();
   };
 
+  const touchSwipe = async (
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    steps = 8
+  ): Promise<void> => {
+    await cdpCall("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: fromX, y: fromY, id: 1, radiusX: 10, radiusY: 10, force: 1 }],
+    });
+    const n = Math.max(2, steps);
+    for (let i = 1; i <= n; i += 1) {
+      const x = fromX + ((toX - fromX) * i) / n;
+      const y = fromY + ((toY - fromY) * i) / n;
+      await cdpCall("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [{ x, y, id: 1, radiusX: 10, radiusY: 10, force: 1 }],
+      });
+      await new Promise((r) => setTimeout(r, 16));
+    }
+    await cdpCall("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await pace();
+  };
+
+  const wheel = async (x: number, y: number, deltaX: number, deltaY: number): Promise<void> => {
+    await cdpCall("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x,
+      y,
+      deltaX,
+      deltaY,
+    });
+    await pace();
+  };
+
+  const setNetworkConditions = async (opts: NetworkConditionsOptions): Promise<void> => {
+    if (!networkEnabled) {
+      await cdpCall("Network.enable");
+      networkEnabled = true;
+    }
+    await cdpCall("Network.emulateNetworkConditions", {
+      offline: Boolean(opts.offline),
+      latency: opts.latencyMs ?? 0,
+      downloadThroughput: opts.downloadThroughput ?? -1,
+      uploadThroughput: opts.uploadThroughput ?? -1,
+    });
+    await pace();
+  };
+
   const selectText = async (
     selector: string,
     startOffset = 0,
@@ -740,6 +814,8 @@ async function attachPageTarget(
     headed,
     pageErrors,
     consoleErrors,
+    allPageErrors: sharedErrors.pageErrors,
+    allConsoleErrors: sharedErrors.consoleErrors,
     cdpCall,
     navigate,
     reload,
@@ -752,6 +828,9 @@ async function attachPageTarget(
     pressKey,
     simulateImeComposition,
     drag,
+    touchSwipe,
+    wheel,
+    setNetworkConditions,
     selectText,
     setFileInputFiles,
     pasteFile,
@@ -861,6 +940,9 @@ export async function launchHeadlessChrome(opts: {
     throw new Error("No CDP page target found in Chrome");
   }
 
+  const sharedErrors = { pageErrors: [] as string[], consoleErrors: [] as string[] };
+  let tabSeq = 0;
+
   const openNewTab = async (url = "about:blank"): Promise<HeadlessChromeSession> => {
     const resp = await fetch(
       `http://127.0.0.1:${cdpPort}/json/new?${encodeURIComponent(url)}`,
@@ -871,6 +953,7 @@ export async function launchHeadlessChrome(opts: {
     if (!tabWs) {
       throw new Error(`Failed to open new CDP tab: ${JSON.stringify(created)}`);
     }
+    const label = `tab#${++tabSeq}`;
     const session = await attachPageTarget(
       cdpPort,
       tabWs,
@@ -881,7 +964,9 @@ export async function launchHeadlessChrome(opts: {
           await fetch(`http://127.0.0.1:${cdpPort}/json/close/${created.id}`);
         } catch {}
       },
-      openNewTab
+      openNewTab,
+      sharedErrors,
+      label
     );
     if (url && url !== "about:blank") {
       await session.waitFor(`document.readyState === "complete"`, 15_000);
@@ -906,5 +991,14 @@ export async function launchHeadlessChrome(opts: {
     } catch {}
   };
 
-  return attachPageTarget(cdpPort, pageWsUrl, headed, slowMoMs, closeBrowser, openNewTab);
+  return attachPageTarget(
+    cdpPort,
+    pageWsUrl,
+    headed,
+    slowMoMs,
+    closeBrowser,
+    openNewTab,
+    sharedErrors,
+    "main"
+  );
 }

@@ -31,8 +31,79 @@ export function matchGlob(filePath, pattern) {
   return new RegExp(`^${escaped}$`).test(normFile);
 }
 
+function normalizeRouteRegex(rawRegex) {
+  return rawRegex
+    .replace(/^\^/, "")
+    .replace(/\$$/, "")
+    .replace(/\\\//g, "/")
+    .replace(/\(\[\^\/\]\+\)/g, ":id")
+    .replace(/\(\[\^\/\]\*\)/g, ":id")
+    .replace(/\(\?:([^)]+)\)/g, "($1)")
+    .replace(/\(\/([^)]+)\)\?/g, "[/$1]")
+    .replace(/\\\./g, ".");
+}
+
 /**
- * Validates that every suite file and every atomic case ID in catalog.json exists in source.
+ * Extracts all HTTP API routes declared in a server source file (===, startsWith, .match).
+ */
+export function extractServerRoutesFromSource(relFile, content) {
+  const routes = new Set();
+  const lines = String(content || "").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+
+    // 1. pathname === "/api/..."
+    for (const m of line.matchAll(/pathname\s*===\s*["'`](\/api\/[^"'`]+)["'`]/g)) {
+      routes.add(m[1]);
+    }
+    // 2. pathname.startsWith("/api/...") — ignore broad "/api/" auth guard
+    for (const m of line.matchAll(/pathname\.startsWith\(\s*["'`](\/api\/[^"'`]+)["'`]\s*\)/g)) {
+      if (m[1] !== "/api/") {
+        routes.add(m[1].endsWith("/") ? `${m[1]}:id` : m[1]);
+      }
+    }
+    // 3. pathname.match(/^\/api\/.../) or multi-line /^\/api\/.../
+    const regexPat = /\/(\^\\\/api\\\/(?:\\.|\[[^\]]*\]|[^/\n])+)\/[a-z]*/g;
+    for (const m of line.matchAll(regexPat)) {
+      routes.add(normalizeRouteRegex(m[1]));
+    }
+  }
+  return Array.from(routes).sort();
+}
+
+/**
+ * Extracts declared LLM tool names accurately from tools.ts, host-tools.ts, declarations.ts.
+ */
+export function extractToolsFromSource(relFile, content) {
+  const tools = new Set();
+  const text = String(content || "");
+  // Match declaration objects where `name: "snake_case"` is followed shortly by `description:`
+  const declRe = /\bname:\s*["'`]([a-z][a-z0-9_]{2,})["'`]\s*,\s*(?:\/\/[^\n]*\n\s*)?description:/g;
+  for (const m of text.matchAll(declRe)) {
+    tools.add(m[1]);
+  }
+  return Array.from(tools).sort();
+}
+
+/**
+ * Extracts all GET and POST endpoints from executor/executor.py.
+ */
+export function extractExecutorEndpointsFromSource(content) {
+  const endpoints = new Set();
+  const lines = String(content || "").split(/\r?\n/);
+  for (const line of lines) {
+    const m = line.match(/\b(?:if|elif)\s+(?:parsed\.)?path\s*==\s*["'](\/[^"']+)["']/);
+    if (m) endpoints.add(m[1]);
+    const m2 = line.match(/\b(?:if|elif)\s+(?:parsed\.)?path\.startswith\(\s*["'](\/[^"']+)["']\s*\)/);
+    if (m2) endpoints.add(m2[1]);
+  }
+  return Array.from(endpoints).sort();
+}
+
+/**
+ * Validates bidirectional consistency between catalog.json, test/e2e/*.e2e.ts,
+ * executor/test_e2e_x11_desktop.py, and references/test-plan.md.
  */
 export function validateCatalog(catalog, projectRoot = DEFAULT_PROJECT_ROOT) {
   const errors = [];
@@ -43,9 +114,11 @@ export function validateCatalog(catalog, projectRoot = DEFAULT_PROJECT_ROOT) {
   }
 
   const seenIds = new Set();
+  const registeredFiles = new Set();
   let caseCount = 0;
 
   for (const suite of suites) {
+    registeredFiles.add(String(suite.file || "").replace(/\\/g, "/"));
     const absFile = path.join(projectRoot, suite.file);
     if (!fs.existsSync(absFile)) {
       errors.push(`Missing suite file: ${suite.file} (suite ${suite.id})`);
@@ -53,8 +126,10 @@ export function validateCatalog(catalog, projectRoot = DEFAULT_PROJECT_ROOT) {
     }
     const content = fs.readFileSync(absFile, "utf8");
     const lowerContent = content.toLowerCase();
+    const suiteCatalogIds = new Set();
     for (const c of suite.cases || []) {
       caseCount += 1;
+      suiteCatalogIds.add(c.id);
       if (seenIds.has(c.id)) {
         errors.push(`Duplicate case ID in catalog: ${c.id}`);
       }
@@ -62,6 +137,38 @@ export function validateCatalog(catalog, projectRoot = DEFAULT_PROJECT_ROOT) {
       const snakeId = c.id.toLowerCase().replace(/-/g, "_");
       if (!content.includes(c.id) && !lowerContent.includes(snakeId)) {
         errors.push(`Case ID '${c.id}' not found in ${suite.file}`);
+      }
+    }
+
+    // Reverse check: every collector.runCase({ id: "P..." }) in TS suites must be in catalog.json
+    if (suite.file.endsWith(".e2e.ts")) {
+      for (const m of content.matchAll(/\bid:\s*["'`](P[0-3]-[A-Z0-9]+-\d+)["'`]/g)) {
+        if (!suiteCatalogIds.has(m[1])) {
+          errors.push(`Unregistered case ID '${m[1]}' in ${suite.file} (missing from catalog.json)`);
+        }
+      }
+    }
+  }
+
+  // Reverse check: every test/e2e/*.e2e.ts file on disk must be registered in catalog.json
+  const e2eDir = path.join(projectRoot, "test", "e2e");
+  if (fs.existsSync(e2eDir)) {
+    for (const f of fs.readdirSync(e2eDir)) {
+      if (!f.endsWith(".e2e.ts")) continue;
+      const rel = `test/e2e/${f}`;
+      if (!registeredFiles.has(rel)) {
+        errors.push(`Orphan E2E suite file not in catalog.json: ${rel}`);
+      }
+    }
+  }
+
+  // Sync check against references/test-plan.md if present in projectRoot
+  const planPath = path.join(projectRoot, ".agents", "skills", "twinklebot-e2e", "references", "test-plan.md");
+  if (fs.existsSync(planPath)) {
+    const planText = fs.readFileSync(planPath, "utf8");
+    for (const id of seenIds) {
+      if (!planText.includes(id)) {
+        errors.push(`references/test-plan.md is missing case ID '${id}'`);
       }
     }
   }
@@ -74,6 +181,196 @@ export function validateCatalog(catalog, projectRoot = DEFAULT_PROJECT_ROOT) {
   };
 }
 
+function walkFiles(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (
+      ent.name === "node_modules" ||
+      ent.name === "dist" ||
+      ent.name === "dist-server" ||
+      ent.name === "dist-web" ||
+      ent.name === "__pycache__" ||
+      ent.name.startsWith(".")
+    ) {
+      continue;
+    }
+    const p = path.join(dir, ent.name);
+    if (ent.isDirectory()) walkFiles(p, out);
+    else out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Full-codebase 6-dimension static coverage audit:
+ *   1. Source files mapped by catalog.json sourceGlobs
+ *   2. Server HTTP API routes covered by E2E suites / catalog
+ *   3. Agent / Host / Sandbox / Router tools covered by E2E suites / catalog
+ *   4. Executor (executor.py) GET/POST endpoints covered by E2E suites / catalog
+ *   5. Web React component files mapped & referenced
+ *   6. Backend API capabilities (version-policy.json) covered by E2E suites
+ */
+export function runFullCoverageAudit(catalog, projectRoot = DEFAULT_PROJECT_ROOT) {
+  const suites = Array.isArray(catalog?.suites) ? catalog.suites : [];
+  const activeSuites = suites.filter((s) => !s.liveOnly);
+  const allGlobs = activeSuites.flatMap((s) => s.sourceGlobs || []);
+
+  // Load combined E2E corpus (all registered E2E test files + helpers + catalog metadata)
+  const corpusParts = [JSON.stringify(catalog)];
+  for (const s of suites) {
+    const abs = path.join(projectRoot, s.file);
+    if (fs.existsSync(abs)) corpusParts.push(fs.readFileSync(abs, "utf8"));
+  }
+  const helperDir = path.join(projectRoot, "test", "helpers");
+  if (fs.existsSync(helperDir)) {
+    for (const f of fs.readdirSync(helperDir)) {
+      if (f.endsWith(".ts")) corpusParts.push(fs.readFileSync(path.join(helperDir, f), "utf8"));
+    }
+  }
+  const corpus = corpusParts.join("\n");
+
+  // 1. Source files
+  const rel = (abs) => path.relative(projectRoot, abs).replace(/\\/g, "/");
+  const allSourceFiles = [
+    ...walkFiles(path.join(projectRoot, "src")),
+    ...walkFiles(path.join(projectRoot, "electron")),
+    ...walkFiles(path.join(projectRoot, "executor")).filter(
+      (f) => f.endsWith(".py") && !path.basename(f).startsWith("test_")
+    ),
+    ...walkFiles(path.join(projectRoot, "landing")).filter(
+      (f) => !f.endsWith(".png") && !f.includes(`${path.sep}dist${path.sep}`)
+    ),
+  ]
+    .map(rel)
+    .sort();
+  const unmappedSourceFiles = allSourceFiles.filter((f) => !allGlobs.some((g) => matchGlob(f, g)));
+
+  // 2. Server HTTP API routes
+  const serverRouteFiles = [
+    path.join(projectRoot, "src", "server", "index.ts"),
+    ...walkFiles(path.join(projectRoot, "src", "server", "routes")).filter((f) => f.endsWith(".ts")),
+  ].filter((f) => fs.existsSync(f));
+  const routeSet = new Set();
+  for (const f of serverRouteFiles) {
+    const content = fs.readFileSync(f, "utf8");
+    for (const r of extractServerRoutesFromSource(rel(f), content)) {
+      routeSet.add(r);
+    }
+  }
+  const allRoutes = Array.from(routeSet).sort();
+  const uncoveredRoutes = allRoutes.filter((r) => {
+    if (corpus.includes(r)) return false;
+    // Strip optional suffix notation like [/(test)] -> base path
+    const cleaned = r.replace(/\[[^\]]*\]/g, "");
+    const parts = cleaned.split(/:[a-zA-Z0-9_]+|\([^)]+\)/).filter((p) => p && p !== "/");
+    if (parts.length === 0) return true;
+    // Prefix must exist in E2E corpus, and if there's a trailing static segment (e.g. /reveal, /resolve, /clear),
+    // it must also appear near the prefix (as /prefix/.../suffix in a string/template literal).
+    const first = parts[0].replace(/\/$/, "");
+    if (first.length <= 4) return true;
+    if (parts.length === 1) {
+      return !corpus.includes(first);
+    }
+    const last = parts[parts.length - 1];
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const dynamicRe = new RegExp(`${esc(first)}[^\\n"'\\\`]{1,80}${esc(last)}`);
+    return !dynamicRe.test(corpus);
+  });
+
+  // 3. Tools (sandbox + host + bot + route_escalate)
+  const toolFiles = [
+    path.join(projectRoot, "src", "agent", "tools.ts"),
+    path.join(projectRoot, "src", "agent", "host-tools.ts"),
+    path.join(projectRoot, "src", "agent", "bot-tools", "declarations.ts"),
+  ].filter((f) => fs.existsSync(f));
+  const toolSet = new Set(["route_escalate"]);
+  for (const f of toolFiles) {
+    for (const t of extractToolsFromSource(rel(f), fs.readFileSync(f, "utf8"))) {
+      toolSet.add(t);
+    }
+  }
+  const allTools = Array.from(toolSet).sort();
+  const uncoveredTools = allTools.filter((t) => !corpus.includes(t));
+
+  // 4. Executor endpoints
+  const execFile = path.join(projectRoot, "executor", "executor.py");
+  const allExecutorEndpoints = fs.existsSync(execFile)
+    ? extractExecutorEndpointsFromSource(fs.readFileSync(execFile, "utf8"))
+    : [];
+  const uncoveredExecutorEndpoints = allExecutorEndpoints.filter((ep) => !corpus.includes(ep));
+
+  // 5. Web React components
+  const webComponentFiles = walkFiles(path.join(projectRoot, "src", "web", "components"))
+    .filter((f) => f.endsWith(".tsx"))
+    .map(rel)
+    .sort();
+  const unmappedWebComponents = webComponentFiles.filter(
+    (f) => !allGlobs.some((g) => matchGlob(f, g))
+  );
+
+  // 6. Backend API capabilities
+  const vpPath = path.join(projectRoot, "version-policy.json");
+  let allCapabilities = [];
+  if (fs.existsSync(vpPath)) {
+    try {
+      const vp = JSON.parse(fs.readFileSync(vpPath, "utf8"));
+      allCapabilities = Array.isArray(vp?.backend?.apiCapabilities) ? vp.backend.apiCapabilities : [];
+    } catch {}
+  }
+  const uncoveredCapabilities = allCapabilities.filter((cap) => !corpus.includes(cap));
+
+  const pct = (covered, total) => (total === 0 ? 100 : Math.round((covered / total) * 1000) / 10);
+
+  const dimensions = {
+    sourceFiles: {
+      total: allSourceFiles.length,
+      covered: allSourceFiles.length - unmappedSourceFiles.length,
+      pct: pct(allSourceFiles.length - unmappedSourceFiles.length, allSourceFiles.length),
+      uncovered: unmappedSourceFiles,
+    },
+    apiRoutes: {
+      total: allRoutes.length,
+      covered: allRoutes.length - uncoveredRoutes.length,
+      pct: pct(allRoutes.length - uncoveredRoutes.length, allRoutes.length),
+      uncovered: uncoveredRoutes,
+    },
+    tools: {
+      total: allTools.length,
+      covered: allTools.length - uncoveredTools.length,
+      pct: pct(allTools.length - uncoveredTools.length, allTools.length),
+      uncovered: uncoveredTools,
+    },
+    executorEndpoints: {
+      total: allExecutorEndpoints.length,
+      covered: allExecutorEndpoints.length - uncoveredExecutorEndpoints.length,
+      pct: pct(allExecutorEndpoints.length - uncoveredExecutorEndpoints.length, allExecutorEndpoints.length),
+      uncovered: uncoveredExecutorEndpoints,
+    },
+    webComponents: {
+      total: webComponentFiles.length,
+      covered: webComponentFiles.length - unmappedWebComponents.length,
+      pct: pct(webComponentFiles.length - unmappedWebComponents.length, webComponentFiles.length),
+      uncovered: unmappedWebComponents,
+    },
+    apiCapabilities: {
+      total: allCapabilities.length,
+      covered: allCapabilities.length - uncoveredCapabilities.length,
+      pct: pct(allCapabilities.length - uncoveredCapabilities.length, allCapabilities.length),
+      uncovered: uncoveredCapabilities,
+    },
+  };
+
+  const ok =
+    unmappedSourceFiles.length === 0 &&
+    uncoveredRoutes.length === 0 &&
+    uncoveredTools.length === 0 &&
+    uncoveredExecutorEndpoints.length === 0 &&
+    unmappedWebComponents.length === 0 &&
+    uncoveredCapabilities.length === 0;
+
+  return { ok, dimensions };
+}
+
 function runGit(args, cwd) {
   const r = spawnSync("git", args, { cwd, encoding: "utf8" });
   return {
@@ -84,7 +381,6 @@ function runGit(args, cwd) {
 }
 
 function resolvePreviousReleaseTag(cwd) {
-  // Find most recent v* or ota-* tag strictly before HEAD (so re-tagging HEAD still diffs against prior release)
   const prev = runGit(
     ["describe", "--tags", "--abbrev=0", "--match", "v*", "--match", "ota-*", "HEAD~1"],
     cwd
@@ -140,11 +436,20 @@ function collectGitChanges({ mode, baseRef }, cwd) {
     if (untracked.ok) {
       for (const line of untracked.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
         entries.push({ status: "A", file: line });
+        // Also synthesize unified-diff lines for untracked source files so added symbols are detected
+        if (/\.(ts|tsx|py|json)$/.test(line) && (line.startsWith("src/") || line.startsWith("executor/"))) {
+          try {
+            const abs = path.join(cwd, line);
+            if (fs.existsSync(abs) && fs.statSync(abs).size < 256 * 1024) {
+              const content = fs.readFileSync(abs, "utf8");
+              diffText += `\n+++ b/${line}\n` + content.split(/\r?\n/).map((l) => `+${l}`).join("\n") + "\n";
+            }
+          } catch {}
+        }
       }
     }
   }
 
-  // Deduplicate by file path
   const byFile = new Map();
   for (const e of entries) {
     const prev = byFile.get(e.file);
@@ -169,12 +474,15 @@ function parseNameStatus(stdout) {
 }
 
 /**
- * Extracts newly added API routes, bot tool names, and executor endpoints from unified diff text.
+ * Extracts newly added API routes (===, startsWith, .match), bot/host/sandbox tools,
+ * executor GET/POST endpoints, exported React components, and API capabilities from diff text.
  */
 export function extractAddedFeatureSymbols(diffText) {
   const addedRoutes = new Set();
   const addedTools = new Set();
   const addedExecutorRoutes = new Set();
+  const addedCapabilities = new Set();
+  const addedComponents = new Set();
 
   let currentFile = "";
   for (const line of String(diffText || "").split(/\r?\n/)) {
@@ -183,18 +491,33 @@ export function extractAddedFeatureSymbols(diffText) {
       continue;
     }
     if (!line.startsWith("+") || line.startsWith("+++")) continue;
+    const code = line.slice(1);
 
     if (currentFile.startsWith("src/server/routes/") || currentFile === "src/server/index.ts") {
-      const m1 = line.match(/pathname\s*===\s*["'`](\/api\/[^"'`]+)["'`]/);
-      if (m1) addedRoutes.add(`${currentFile}: ${m1[1]}`);
+      for (const r of extractServerRoutesFromSource(currentFile, code)) {
+        addedRoutes.add(`${currentFile}: ${r}`);
+      }
     }
-    if (currentFile === "src/agent/bot-tools/declarations.ts" || currentFile === "src/agent/tools.ts") {
-      const m2 = line.match(/\bname:\s*["'`]([a-z][a-z0-9_]{2,})["'`]/);
+    if (
+      currentFile === "src/agent/bot-tools/declarations.ts" ||
+      currentFile === "src/agent/tools.ts" ||
+      currentFile === "src/agent/host-tools.ts"
+    ) {
+      const m2 = code.match(/\bname:\s*["'`]([a-z][a-z0-9_]{2,})["'`]/);
       if (m2) addedTools.add(`${currentFile}: ${m2[1]}`);
     }
     if (currentFile === "executor/executor.py") {
-      const m3 = line.match(/\b(?:if|elif)\s+path\s*==\s*["'](\/[^"']+)["']/);
-      if (m3) addedExecutorRoutes.add(`executor/executor.py: ${m3[1]}`);
+      for (const ep of extractExecutorEndpointsFromSource(code)) {
+        addedExecutorRoutes.add(`executor/executor.py: ${ep}`);
+      }
+    }
+    if (currentFile === "src/shared/versioning.ts" || currentFile === "version-policy.json") {
+      const mCap = code.match(/["'`]([a-z][a-z0-9-]+-v\d+)["'`]/);
+      if (mCap) addedCapabilities.add(`${currentFile}: ${mCap[1]}`);
+    }
+    if (currentFile.startsWith("src/web/components/") && currentFile.endsWith(".tsx")) {
+      const mComp = code.match(/export\s+function\s+([A-Z][A-Za-z0-9]+)/);
+      if (mComp) addedComponents.add(`${currentFile}: ${mComp[1]}`);
     }
   }
 
@@ -202,14 +525,16 @@ export function extractAddedFeatureSymbols(diffText) {
     addedRoutes: Array.from(addedRoutes),
     addedTools: Array.from(addedTools),
     addedExecutorRoutes: Array.from(addedExecutorRoutes),
+    addedCapabilities: Array.from(addedCapabilities),
+    addedComponents: Array.from(addedComponents),
   };
 }
 
 function suggestPriorityForFile(filePath) {
-  if (/policy|device-auth|gemini-driver|loop\.ts|OnboardingOverlay|InteractiveCards/.test(filePath)) {
+  if (/policy|device-auth|local-crypto|memory-extractor|gemini-driver|loop\.ts|OnboardingOverlay|InteractiveCards/.test(filePath)) {
     return "P0 (F1×D1/D2)";
   }
-  if (/executor\.py|electron\/|mobile|mail|skills|route|billing/.test(filePath)) {
+  if (/executor\.py|electron\/|mobile|network-monitor|NetworkStatusBanner|mail|skills|route|billing/.test(filePath)) {
     return "P1 (F1/F2×D2/D3)";
   }
   return "P2 (F3×D1/D2)";
@@ -230,6 +555,7 @@ export function analyzeE2ESync({ catalog, changes, diffText = "", projectRoot = 
       c.file.endsWith("/catalog.json") ||
       c.file.endsWith("/test-plan.md")
   );
+  const touchedCatalog = changes.some((c) => c.file.endsWith("/catalog.json"));
 
   const affectedMap = new Map();
   const unmappedNewFiles = [];
@@ -273,9 +599,12 @@ export function analyzeE2ESync({ catalog, changes, diffText = "", projectRoot = 
     ...symbols.addedRoutes,
     ...symbols.addedTools,
     ...symbols.addedExecutorRoutes,
+    ...symbols.addedCapabilities,
+    ...symbols.addedComponents,
   ];
   const needsE2EUpdate =
     unmappedNewFiles.length > 0 || (newFeatureSymbols.length > 0 && !touchedE2E);
+  const needsCatalogReminder = newFeatureSymbols.length > 0 && touchedE2E && !touchedCatalog;
 
   const affectedSuites = Array.from(affectedMap.values()).sort((a, b) =>
     a.tier.localeCompare(b.tier) || a.id.localeCompare(b.id)
@@ -285,14 +614,45 @@ export function analyzeE2ESync({ catalog, changes, diffText = "", projectRoot = 
     integrity,
     changedFilesCount: changes.length,
     touchedE2E,
+    touchedCatalog,
     affectedSuites,
     unmappedNewFiles,
     addedSymbols: symbols,
     needsE2EUpdate,
+    needsCatalogReminder,
   };
 }
 
-function formatMarkdownSummary(report, modeLabel) {
+function formatAuditOutput(audit) {
+  const d = audit.dimensions;
+  const rows = [
+    ["Source Files (sourceGlobs)", d.sourceFiles],
+    ["HTTP API Routes", d.apiRoutes],
+    ["Bot / Host / Sandbox Tools", d.tools],
+    ["Executor Endpoints", d.executorEndpoints],
+    ["Web UI Components", d.webComponents],
+    ["API Capabilities", d.apiCapabilities],
+  ];
+  const lines = ["[e2e:audit] Full-Codebase 6-Dimension Static Coverage Audit:"];
+  for (const [label, stat] of rows) {
+    const mark = stat.uncovered.length === 0 ? "✅" : "⚠️";
+    lines.push(`  ${mark} ${label}: ${stat.covered}/${stat.total} (${stat.pct}%)`);
+    for (const u of stat.uncovered.slice(0, 20)) {
+      lines.push(`     - UNCOVERED: ${u}`);
+    }
+    if (stat.uncovered.length > 20) {
+      lines.push(`     - ... (+${stat.uncovered.length - 20} more)`);
+    }
+  }
+  lines.push(
+    audit.ok
+      ? "[e2e:audit] PASS — 100% static coverage across all 6 dimensions."
+      : "[e2e:audit] GAPS DETECTED — run '/twinklebot-e2e update' to register & cover missing items."
+  );
+  return lines.join("\n");
+}
+
+function formatMarkdownSummary(report, modeLabel, audit = null) {
   const lines = [
     `### TwinkleBot E2E Sync Check (\`${modeLabel}\`)`,
     "",
@@ -303,12 +663,32 @@ function formatMarkdownSummary(report, modeLabel) {
     "",
   ];
 
+  if (audit) {
+    const d = audit.dimensions;
+    lines.push("#### 6-Dimension Static Coverage Audit");
+    lines.push("| Dimension | Covered | Total | Coverage |");
+    lines.push("| :--- | :---: | :---: | :---: |");
+    for (const [label, st] of [
+      ["Source Files", d.sourceFiles],
+      ["HTTP API Routes", d.apiRoutes],
+      ["Tools (Bot/Host/Sandbox)", d.tools],
+      ["Executor Endpoints", d.executorEndpoints],
+      ["Web UI Components", d.webComponents],
+      ["API Capabilities", d.apiCapabilities],
+    ]) {
+      lines.push(`| ${label} | ${st.covered} | ${st.total} | **${st.pct}%** |`);
+    }
+    lines.push("");
+  }
+
   if (report.affectedSuites.length > 0) {
     lines.push("#### Recommended Targeted E2E Suites");
     lines.push("| Tier | Suite | Triggered By |");
     lines.push("| :---: | :--- | :--- |");
     for (const s of report.affectedSuites) {
-      lines.push(`| **${s.tier}** | \`${s.file}\` | ${s.matchedBy.slice(0, 4).map((f) => `\`${f}\``).join(", ")}${s.matchedBy.length > 4 ? ` (+${s.matchedBy.length - 4})` : ""} |`);
+      lines.push(
+        `| **${s.tier}** | \`${s.file}\` | ${s.matchedBy.slice(0, 4).map((f) => `\`${f}\``).join(", ")}${s.matchedBy.length > 4 ? ` (+${s.matchedBy.length - 4})` : ""} |`
+      );
     }
     lines.push("");
   }
@@ -318,17 +698,15 @@ function formatMarkdownSummary(report, modeLabel) {
     for (const item of report.unmappedNewFiles) {
       lines.push(`- New unmapped source file: \`${item.file}\` → suggested **${item.suggestedPriority}**`);
     }
-    for (const r of report.addedSymbols.addedRoutes) {
-      lines.push(`- New API route detected: \`${r}\``);
-    }
-    for (const t of report.addedSymbols.addedTools) {
-      lines.push(`- New Bot tool detected: \`${t}\``);
-    }
-    for (const e of report.addedSymbols.addedExecutorRoutes) {
-      lines.push(`- New Executor endpoint detected: \`${e}\``);
-    }
+    for (const r of report.addedSymbols.addedRoutes) lines.push(`- New API route detected: \`${r}\``);
+    for (const t of report.addedSymbols.addedTools) lines.push(`- New tool detected: \`${t}\``);
+    for (const e of report.addedSymbols.addedExecutorRoutes) lines.push(`- New Executor endpoint detected: \`${e}\``);
+    for (const c of report.addedSymbols.addedCapabilities) lines.push(`- New API capability detected: \`${c}\``);
+    for (const comp of report.addedSymbols.addedComponents) lines.push(`- New UI component detected: \`${comp}\``);
     lines.push("");
-    lines.push("Run `/twinklebot-e2e update` (update `catalog.json`, `test-plan.md`, and add an atomic E2E case), then run `npm run test:e2e:affected`.");
+    lines.push(
+      "Run `/twinklebot-e2e update` (update `catalog.json`, `test-plan.md`, and add an atomic E2E case), then run `npm run test:e2e:affected`."
+    );
   }
 
   return lines.join("\n") + "\n";
@@ -341,6 +719,7 @@ function main() {
   const isCi = argv.includes("--ci");
   const verbose = argv.includes("--verbose");
   const quietIfSynced = argv.includes("--quiet-if-synced");
+  const doAudit = argv.includes("--audit");
 
   const catalog = loadCatalog();
   const diffMode = resolveDiffMode(argv, DEFAULT_PROJECT_ROOT);
@@ -351,9 +730,16 @@ function main() {
     diffText,
     projectRoot: DEFAULT_PROJECT_ROOT,
   });
+  const audit = doAudit ? runFullCoverageAudit(catalog, DEFAULT_PROJECT_ROOT) : null;
 
   if (asJson) {
-    console.log(JSON.stringify({ mode: diffMode.mode, baseRef: diffMode.baseRef, ...report }, null, 2));
+    console.log(
+      JSON.stringify(
+        { mode: diffMode.mode, baseRef: diffMode.baseRef, ...report, ...(audit ? { audit } : {}) },
+        null,
+        2
+      )
+    );
   } else {
     if (!report.integrity.ok) {
       console.error("[e2e:sync] Catalog integrity check FAILED:");
@@ -361,6 +747,10 @@ function main() {
         console.error(`  - ${err}`);
       }
       process.exit(1);
+    }
+
+    if (audit) {
+      console.log(formatAuditOutput(audit));
     }
 
     if (quietIfSynced && !report.needsE2EUpdate) {
@@ -388,9 +778,13 @@ function main() {
           console.log(`  * New file: ${item.file}  [suggested ${item.suggestedPriority}]`);
         }
         for (const r of report.addedSymbols.addedRoutes) console.log(`  * New API route: ${r}`);
-        for (const t of report.addedSymbols.addedTools) console.log(`  * New Bot tool: ${t}`);
+        for (const t of report.addedSymbols.addedTools) console.log(`  * New tool: ${t}`);
         for (const e of report.addedSymbols.addedExecutorRoutes) console.log(`  * New Executor route: ${e}`);
+        for (const c of report.addedSymbols.addedCapabilities) console.log(`  * New capability: ${c}`);
+        for (const comp of report.addedSymbols.addedComponents) console.log(`  * New UI component: ${comp}`);
         console.log("  -> Run '/twinklebot-e2e update' to update references/catalog.json, references/test-plan.md & test/e2e/.");
+      } else if (report.needsCatalogReminder && !quietIfSynced) {
+        console.log("\n[e2e:sync] NOTE: New feature symbols detected with test/e2e/ edits, but references/catalog.json was not updated.");
       }
     }
 
@@ -398,7 +792,7 @@ function main() {
       try {
         fs.appendFileSync(
           process.env.GITHUB_STEP_SUMMARY,
-          formatMarkdownSummary(report, diffMode.baseRef ? `diff ${diffMode.baseRef}...HEAD` : diffMode.mode),
+          formatMarkdownSummary(report, diffMode.baseRef ? `diff ${diffMode.baseRef}...HEAD` : diffMode.mode, audit),
           "utf8"
         );
       } catch {}
@@ -407,6 +801,7 @@ function main() {
 
   if (!report.integrity.ok) process.exit(1);
   if (strict && report.needsE2EUpdate) process.exit(2);
+  if (strict && audit && !audit.ok) process.exit(3);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

@@ -173,7 +173,7 @@ jobs:
           TWINKLEBOT_E2E_HEADLESS: "1"
           E2E_LEVEL: ${{ needs.prepare.outputs.e2e_level }}
         run: |
-          xvfb-run -a -s "-screen 0 1440x900x24" node scripts/run-e2e.mjs --tier="$E2E_LEVEL" --since-last-tag
+          xvfb-run -a -s "-screen 0 1440x900x24" node scripts/run-e2e.mjs --clean --tier="$E2E_LEVEL" --since-last-tag
 
       - name: Publish E2E report to Job Summary
         if: always() && needs.prepare.outputs.e2e_level != 'skip'
@@ -181,6 +181,18 @@ jobs:
           if [ -f test-results/reports/latest.md ]; then
             cat test-results/reports/latest.md >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Upload E2E failure evidence & report
+        if: failure() && needs.prepare.outputs.e2e_level != 'skip'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-evidence
+          path: |
+            test-results/reports/latest.md
+            test-results/e2e-summary.json
+            test-results/evidence/
+          retention-days: 7
+          if-no-files-found: ignore
 
   publish-ota-only:
     name: Fast Pure-Frontend OTA Release

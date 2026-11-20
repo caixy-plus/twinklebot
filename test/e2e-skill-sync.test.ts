@@ -48,14 +48,14 @@ test("twinklebot-e2e skill complies with Agent Skills standard and multi-agent d
   assert.ok(fs.existsSync(preCommit), ".githooks/pre-commit must exist");
 });
 
-test("references/catalog.json stays 100% synchronized with all 12 E2E suites and 82 atomic cases", async () => {
-  const { loadCatalog, validateCatalog } = await loadSyncModule();
+test("references/catalog.json stays 100% synchronized with all 14 E2E suites, 108 atomic cases & 6-dimension audit", async () => {
+  const { loadCatalog, validateCatalog, runFullCoverageAudit } = await loadSyncModule();
   const catalog = loadCatalog();
   const check = validateCatalog(catalog, PROJECT_ROOT);
 
   assert.equal(check.ok, true, `Catalog validation failed: ${check.errors.join("; ")}`);
-  assert.equal(check.suiteCount, 12);
-  assert.ok(check.caseCount >= 82, `Expected >= 82 atomic cases, got ${check.caseCount}`);
+  assert.equal(check.suiteCount, 14);
+  assert.ok(check.caseCount >= 108, `Expected >= 108 atomic cases, got ${check.caseCount}`);
 
   // Also ensure test-plan.md mentions every case ID in catalog.json
   const planText = fs.readFileSync(path.join(SKILL_DIR, "references", "test-plan.md"), "utf8");
@@ -64,6 +64,24 @@ test("references/catalog.json stays 100% synchronized with all 12 E2E suites and
       assert.ok(planText.includes(c.id), `references/test-plan.md is missing case ID ${c.id}`);
     }
   }
+
+  // Enforce 100% static coverage across all 6 codebase dimensions!
+  const audit = runFullCoverageAudit(catalog, PROJECT_ROOT);
+  assert.equal(
+    audit.ok,
+    true,
+    `6-dimension E2E coverage audit failed: ${JSON.stringify(
+      Object.fromEntries(
+        Object.entries(audit.dimensions).map(([k, v]: any) => [k, `${v.covered}/${v.total} (${v.pct}%) uncovered=${JSON.stringify(v.uncovered)}`])
+      )
+    )}`
+  );
+  assert.equal(audit.dimensions.sourceFiles.pct, 100);
+  assert.equal(audit.dimensions.apiRoutes.pct, 100);
+  assert.equal(audit.dimensions.tools.pct, 100);
+  assert.equal(audit.dimensions.executorEndpoints.pct, 100);
+  assert.equal(audit.dimensions.webComponents.pct, 100);
+  assert.equal(audit.dimensions.apiCapabilities.pct, 100);
 });
 
 test("check-e2e-sync detects unmapped new features and resolves affected E2E suites accurately", async () => {
@@ -209,7 +227,7 @@ test("GitHub Release workflow and rules enforce interactive E2E level gate (defa
   assert.match(ruleText, /DO NOT/i);
   assert.ok(fs.existsSync(path.join(PROJECT_ROOT, ".githooks", "pre-push")), ".githooks/pre-push must exist");
 
-  // Verify scripts/run-e2e.mjs --tier=skip exits 0 immediately
+  // Verify scripts/run-e2e.mjs --tier=skip and --list work cleanly
   const skipRun = spawnSync(
     process.execPath,
     [path.join(PROJECT_ROOT, "scripts", "run-e2e.mjs"), "--tier=skip"],
@@ -217,4 +235,13 @@ test("GitHub Release workflow and rules enforce interactive E2E level gate (defa
   );
   assert.equal(skipRun.status, 0, `Expected --tier=skip to exit 0, got ${skipRun.status}: ${skipRun.stderr}`);
   assert.match(skipRun.stdout, /skipping automated E2E/i);
+
+  const listRun = spawnSync(
+    process.execPath,
+    [path.join(PROJECT_ROOT, "scripts", "run-e2e.mjs"), "--list"],
+    { cwd: PROJECT_ROOT, encoding: "utf8" }
+  );
+  assert.equal(listRun.status, 0, `Expected --list to exit 0, got ${listRun.status}: ${listRun.stderr}`);
+  assert.match(listRun.stdout, /p1-network-resilience-and-offline/);
+  assert.match(listRun.stdout, /P1-MOB-06/);
 });

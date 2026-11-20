@@ -1,10 +1,11 @@
 ---
 name: twinklebot-e2e
 description: >-
-  Run, maintain, and report TwinkleBot's tiered E2E test suite (P0–P3, 82+ atomic cases
-  across Web Desktop, OrbStack Ubuntu Sandbox, Mobile dist-web, Electron, CLI, and Landing).
-  Use when running targeted or full E2E verification, updating the E2E catalog and tests after
-  adding or modifying features, or generating standardized diagnostic test reports.
+  Run, maintain, and report TwinkleBot's tiered E2E test suite (P0–P3, 14 suites / 108 atomic cases
+  with 100% 6-dimension coverage across Web Desktop, OrbStack Ubuntu Sandbox, Mobile dist-web,
+  Electron, CLI, Landing, and SSR). Use when running targeted or full E2E verification, auditing
+  coverage, updating the E2E catalog and tests after adding or modifying features, or generating
+  standardized diagnostic test reports.
 compatibility: >-
   Requires Node.js >= 22.13, Google Chrome (CDP), and optionally Python 3 + OrbStack Ubuntu
   (or Linux Xvfb/Xtigervnc) for X11/sandbox suites. Follows the open Agent Skills standard and
@@ -23,7 +24,7 @@ This skill governs how coding agents **run**, **maintain**, and **report** Twink
 > **Core Principles**
 > 1. **Silent during small local edits**: Never auto-trigger E2E runs when the user is making small local tweaks or previewing locally. Only run E2E on explicit request (`/twinklebot-e2e ...`) or at the **GitHub Release / version build** boundary.
 > 2. **Interactive GitHub Release Gate (default `affected+p0`)**: Before any GitHub version build (`v*` / `ota-*` tag push or `release.yml` dispatch), auto-inspect impacted suites via `npm run e2e:sync-check -- --since-last-tag` and **actively ask the user** whether to run automated E2E tests and which level to use (`affected+p0` default, `all`, `p0+p1`, `p0`, `affected`, or `skip`).
-> 3. **Targeted first, full on demand**: Never blindly re-run all 82 cases when only a few files changed — use `npm run test:e2e:affected` (or `affected+p0` for releases) for fast, high-signal verification.
+> 3. **Targeted first, full on demand**: Never blindly re-run all 108 cases when only a few files changed — use `npm run test:e2e:affected` (or `--suite=<id>` / `--case=<ID>` / `affected+p0` for releases) for fast, high-signal verification.
 > 4. **Diagnose before modifying**: When asked to test/audit, keep business source code untouched until you produce the diagnostic report and the user confirms what to fix (unless the user explicitly invokes `fix`).
 > 5. **Deterministic offline by default**: All external LLM / IMAP / POP3 / SMTP / MCP / OTA / static site endpoints use local loopback fixtures (`test/helpers/e2e-protocol-fixtures.ts`). Never hit live public APIs unless `TWINKLEBOT_E2E_LIVE=1` is explicitly requested.
 > 6. **Security**: Never commit, print, or log `.env`, API keys, the executor token, or `data/`.
@@ -37,12 +38,15 @@ Determine the user's intent from their prompt or slash-command arguments:
 | Mode / Argument | Purpose | Primary Command(s) |
 | :--- | :--- | :--- |
 | *(default)* or `affected` | Detect `git diff` impact and run **only** affected E2E suites | `npm run e2e:sync-check` → `npm run test:e2e:affected` |
-| `release` or `affected+p0` | Pre-release smart gate: changed suites + P0 core (17 cases) | `npm run test:e2e:release` (`--tier=affected+p0 --since-last-tag`) |
-| `p0` / `p1` / `p2` / `p3` / `p0+p1` / `all` | Run a specific priority tier or the complete 82-case suite | `npm run test:e2e:<tier>` or `node scripts/run-e2e.mjs --tier=<tier>` |
+| `release` or `affected+p0` | Pre-release smart gate: changed suites + P0 core (21 cases) | `npm run test:e2e:release` (`--tier=affected+p0 --since-last-tag`) |
+| `p0` / `p1` / `p2` / `p3` / `p0+p1` / `all` | Run a specific priority tier or the complete 14-suite / 108-case suite | `npm run test:e2e:<tier>` or `node scripts/run-e2e.mjs --tier=<tier>` |
+| `--suite=<id>` / `--case=<ID>` | Precision filter for specific suite(s) or case ID(s)/wildcards (e.g. `P1-NET-*`) | `node scripts/run-e2e.mjs --suite=<id>` / `--case=<ID>` |
+| `list` | List all registered suites and atomic case IDs from `catalog.json` | `npm run test:e2e:list` (`node scripts/run-e2e.mjs --list`) |
+| `audit` | Run 6-dimension full-codebase static coverage audit (Files/Routes/Tools/Executor/UI/Capabilities) | `npm run e2e:audit` (`check-e2e-sync.mjs --audit`) |
 | `live` | Opt-in live public API smoke test (requires `.env`) | `npm run test:e2e:live` |
-| `update` / `sync` | Sync E2E catalog, test plan & test cases after adding new features | `npm run e2e:sync-check -- --verbose` (see **Update Workflow** below) |
+| `update` / `sync` | Sync E2E catalog, test plan & test cases after adding new features | `npm run e2e:sync-check -- --verbose --audit` (see **Update Workflow** below) |
 | `report` / `report --archive` | Generate standardized Markdown report from latest run | `npm run e2e:report` or `npm run e2e:report:archive` |
-| `fix` | White-box fix confirmed `BUG` items and run targeted re-test + unit baseline | Fix code → targeted suite → `npm run typecheck && npm run test:py && npm test` |
+| `fix` | White-box fix confirmed `BUG` items and run targeted re-test + unit baseline | Fix code → targeted `--case=` / `--suite=` → `npm run typecheck && npm run test:py && npm test` |
 
 ---
 

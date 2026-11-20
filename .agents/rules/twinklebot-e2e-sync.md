@@ -22,10 +22,10 @@ You MUST execute this automatic analysis + interactive confirmation flow **befor
    npm run e2e:sync-check -- --since-last-tag
    ```
 2. **Actively ask the user** (using a multiple-choice question tool if available, or a concise choice prompt) whether to trigger automated E2E testing and which **test level** to run, presenting the smart default first:
-   - **`affected+p0` (Recommended Default)**: 本次版本有动到的受影响套件 + P0 核心功能基线（17 项）
-   - **`all`**: 全量自动化测试（P0–P3 全部 82 项）
-   - **`p0+p1`**: P0 核心 + P1 跨栈与核心业务（48 项）
-   - **`p0`**: 仅 P0 核心主链路（17 项）
+   - **`affected+p0` (Recommended Default)**: 本次版本有动到的受影响套件 + P0 核心功能基线（21 项）
+   - **`all`**: 全量自动化测试（P0–P3 全部 14 套件 / 108 项）
+   - **`p0+p1`**: P0 核心 + P1 跨栈与核心业务（67 项）
+   - **`p0`**: 仅 P0 核心主链路（21 项）
    - **`affected`**: 仅本次版本改动涉及的受影响套件
    - **`skip`**: 跳过 E2E，直接进行 GitHub 版本构建
 3. **Honor the chosen level**:

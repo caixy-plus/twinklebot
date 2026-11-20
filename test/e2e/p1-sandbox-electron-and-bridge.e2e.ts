@@ -7,6 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createExecutorClient } from "../../src/agent/executor-client.js";
+import { loadDesktopPrefs, saveDesktopPrefs } from "../../src/electron/desktop-prefs.js";
 import { createWebOtaManager } from "../../src/electron/web-ota.js";
 import { createTarGzFromDir } from "../../src/lib/tar-gzip.js";
 import { launchHeadlessChrome, type HeadlessChromeSession } from "../helpers/cdp-browser-harness.js";
@@ -40,10 +41,29 @@ def find_free_port():
         return int(s.getsockname()[1])
 
 def find_free_display():
-    for d in range(96, 129):
-        if not os.path.exists(f"/tmp/.X{d}-lock") and not os.path.exists(f"/tmp/.X11-unix/X{d}"):
-            return d
-    raise RuntimeError("No free display in :96..:128")
+    for d in range(96, 220):
+        lock = f"/tmp/.X{d}-lock"
+        sock = f"/tmp/.X11-unix/X{d}"
+        if os.path.exists(lock):
+            try:
+                with open(lock, "r", encoding="utf-8", errors="ignore") as f:
+                    pid_str = "".join(c for c in f.read() if c.isdigit())
+                if pid_str:
+                    os.kill(int(pid_str), 0)
+                    continue
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                continue
+            except Exception:
+                pass
+            for p in (lock, sock):
+                try: os.unlink(p)
+                except Exception: pass
+        elif os.path.exists(sock):
+            continue
+        return d
+    raise RuntimeError("No free display in :96..:219")
 
 chrome_bin = next((c for c in ("/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", shutil.which("google-chrome-stable") or "", shutil.which("google-chrome") or "") if c and os.path.isfile(c)), "")
 if not chrome_bin:
@@ -109,6 +129,9 @@ def cleanup(*_):
     try: os.killpg(os.getpgid(x_proc.pid), signal.SIGKILL)
     except Exception:
         try: x_proc.kill()
+        except Exception: pass
+    for stale in (f"/tmp/.X{disp_num}-lock", f"/tmp/.X11-unix/X{disp_num}"):
+        try: os.unlink(stale)
         except Exception: pass
     shutil.rmtree(tmp_dir, ignore_errors=True)
     os._exit(0)
@@ -286,7 +309,11 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         }
         if (step === 6) {
           return {
-            toolCalls: [{ id: "sb6", name: "send_file", args: { path: reportFile, label: "沙盒导出报告" } }],
+            toolCalls: [
+              { id: "sb6a", name: "list_windows", args: {} },
+              { id: "sb6b", name: "focus_window", args: { id: "0x0" } },
+              { id: "sb6", name: "send_file", args: { path: reportFile, label: "沙盒导出报告" } },
+            ],
           };
         }
         return { text: "全栈真沙盒任务已完成并投递报告" };
@@ -431,13 +458,33 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       });
       await ws.waitUntil(() => !ws.runner.isSessionBusy(cliBot.id), 5000, "CLI bot finishes without waiting for screen");
 
-      // Raise screen pool limit live -> wakes queued b2 immediately!
-      await fetch(`${ws.baseUrl}/api/settings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ screenPool: { mode: "custom", maxConcurrentScreens: minLimit + 1 } }),
-      });
-      await ws.waitUntil(() => ws.runner.getScreenPoolStats().queuedCount === 0, 5000, "limit increase wakes queued bot");
+      // Verify queued status badge (#computer-card-status) & Settings screen-pool controls in real Chrome UI!
+      await chrome!.navigate(ws.baseUrl);
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('#session-list .session-item')).some(el => el.textContent?.includes('排队员2'))`,
+        8000
+      );
+      await chrome!.evalJs(`(() => {
+        const el = Array.from(document.querySelectorAll('#session-list .session-item')).find(x => x.textContent?.includes('排队员2'));
+        el && el.click();
+      })()`);
+      await chrome!.waitFor(
+        `/排队|屏幕/.test(document.querySelector('#computer-card-status')?.textContent || '')`,
+        6000
+      );
+
+      // Open Settings -> Computer and verify #settings-screen-pool-block presets & slider!
+      await chrome!.click("#account-menu-btn");
+      await chrome!.waitFor(`!document.querySelector('#account-popover')?.hidden`, 4000);
+      await chrome!.click('[data-account-action="settings"]');
+      await chrome!.waitFor(`!document.querySelector('#settings-modal-backdrop')?.hidden`, 5000);
+      await chrome!.click('.settings-nav-item[data-settings-tab="computer"]');
+      await chrome!.waitFor(`Boolean(document.querySelector('#settings-screen-pool-block'))`, 5000);
+      await chrome!.setRangeValue("#setting-max-concurrent-screens", minLimit + 1);
+      await chrome!.click("#close-settings-modal-btn");
+
+      // Confirm raising screen pool limit live woke queued b2!
+      await ws.waitUntil(() => ws.runner.getScreenPoolStats().queuedCount === 0, 6000, "limit increase wakes queued bot");
       releaseHold();
       await ws.waitUntil(() => ![...fillers, b2].some((x) => ws.runner.isSessionBusy(x.id)), 6000, "all drain");
     },
@@ -458,7 +505,9 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       const ws = await createE2EWorkspace({ smartRouter: false });
       t.after(() => ws.close());
 
-      // Verify /novnc/vnc.html injects CSS hiding native control bar
+      // Verify /novnc 302 redirect & /novnc/vnc.html injects CSS hiding native control bar
+      const redirRes = await fetch(`${ws.baseUrl}/novnc`, { redirect: "manual" });
+      assert.equal(redirRes.status, 302, "/novnc must 302 redirect to /novnc/vnc.html");
       const vncHtml = await (await fetch(`${ws.baseUrl}/novnc/vnc.html`)).text();
       assert.match(vncHtml, /#noVNC_control_bar.*display:\s*none/s, "/novnc/vnc.html must inject CSS hiding native bar");
 
@@ -547,18 +596,114 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         `document.querySelector('#screen-status-label')?.textContent?.includes('切屏成员A')`
       );
 
-      // Takeover (#pause-btn) -> view_only=0, Release (#resume-btn) -> view_only=1
+      // Takeover (#pause-btn) -> view_only=0, Release (#resume-btn) -> view_only=1 on live running task (verifies waitIfPaused + post-resume screenshot!)
+      let liveStep = 0;
+      let releaseFirstTool!: () => void;
+      const firstToolGate = new Promise<void>((r) => { releaseFirstTool = r; });
+      const origCall = ws.executor.call;
+      ws.executor.call = async (route: string, body?: any, callOpts?: any) => {
+        if (route === "/shell" && liveStep === 1) {
+          await firstToolGate;
+        }
+        return origCall(route, body, callOpts);
+      };
+      ws.mockLlm.setHandler(async ({ body }) => {
+        if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "执行中" };
+        liveStep += 1;
+        if (liveStep === 1) {
+          return { toolCalls: [{ id: "pause-1", name: "run_shell", args: { command: "echo step1", risk: "low" } }] };
+        }
+        return { text: "人工接管恢复并补拍截图完成" };
+      });
+      const shotsBeforeResume = ws.executorCalls.filter((c) => c.route === "/screenshot").length;
+      await fetch(`${ws.baseUrl}/api/sessions/${w1.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "执行并等待人工接管" }),
+      });
+      await ws.waitUntil(() => liveStep >= 1, 5000, "live step started");
+
       await chrome!.click("#pause-btn");
       await chrome!.waitFor(
         `document.querySelector('#screen-status-label')?.textContent?.includes('你正在独占控制') &&
          document.querySelector('#novnc-frame')?.getAttribute('src')?.includes('view_only=0')`
       );
+      // Also verify /api/control pause/resume on active w1 session triggers waitIfPaused + fresh post-resume screenshot!
+      await fetch(`${ws.baseUrl}/api/control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "pause", sessionId: w1.id }),
+      });
+      releaseFirstTool();
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(liveStep, 1, "Paused run must stay blocked in waitIfPaused() before step 2");
+
+      await fetch(`${ws.baseUrl}/api/control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resume", sessionId: w1.id }),
+      });
       await chrome!.click("#resume-btn");
       await chrome!.waitFor(
         `document.querySelector('#novnc-frame')?.getAttribute('src')?.includes('view_only=1')`
       );
+      await ws.waitUntil(() => !ws.runner.isSessionBusy(w1.id), 8000, "resumed run finishes");
+      const shotsAfterResume = ws.executorCalls.filter((c) => c.route === "/screenshot").length;
+      assert.ok(shotsAfterResume > shotsBeforeResume, "Resuming from human takeover must capture a fresh screenshot");
+      ws.executor.call = origCall;
+      ws.mockLlm.setHandler(undefined);
+
       await chrome!.click("#exit-fullscreen-btn");
       await chrome!.waitFor(`document.querySelector('#bot-screen-overlay')?.hidden`);
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P1-SBOX-05 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P1-SBOX-05",
+      priority: "P1",
+      featureTier: "F1",
+      difficulty: "D2",
+      title: "Bot 电脑生命周期接口与设置页控件：/api/computer/status、displays、provision(管理员)、update 与 reset 释放屏幕",
+      module: "Bot Computer Lifecycle Routes",
+    },
+    async () => {
+      const ws = await createE2EWorkspace({ smartRouter: false });
+      t.after(() => ws.close());
+
+      const statusRes: any = await (await fetch(`${ws.baseUrl}/api/computer/status`)).json();
+      assert.ok(typeof statusRes.online === "boolean" && typeof statusRes.state === "string");
+
+      const dispRes: any = await (await fetch(`${ws.baseUrl}/api/computer/displays`)).json();
+      assert.equal(dispRes.ok, true);
+
+      // POST /api/computer/reset stops running tasks & calls /displays/release cleanly
+      const resetRes = await fetch(`${ws.baseUrl}/api/computer/reset`, { method: "POST" });
+      assert.equal(resetRes.status, 200);
+      const resetJson: any = await resetRes.json();
+      assert.equal(resetJson.ok, true);
+
+      // POST /api/computer/update (exercises route & returns JSON status cleanly even when orb/wsl not running in stub)
+      const updRes = await fetch(`${ws.baseUrl}/api/computer/update`, { method: "POST" });
+      assert.ok([200, 400, 500].includes(updRes.status), `Expected handled status on /api/computer/update, got ${updRes.status}`);
+
+      // Verify Settings -> Computer tab health check & reset button UI
+      await chrome!.navigate(ws.baseUrl);
+      await chrome!.waitFor(`document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`, 8000);
+      await chrome!.click("#account-menu-btn");
+      await chrome!.waitFor(`!document.querySelector('#account-popover')?.hidden`, 4000);
+      await chrome!.click('[data-account-action="settings"]');
+      await chrome!.waitFor(`!document.querySelector('#settings-modal-backdrop')?.hidden`, 5000);
+      await chrome!.click('.settings-nav-item[data-settings-tab="computer"]');
+      await chrome!.waitFor(`Boolean(document.querySelector('#settings-check-computer-btn'))`, 4000);
+      await chrome!.click("#settings-check-computer-btn");
+      await chrome!.waitFor(`Boolean(document.querySelector('#computer-health-line')?.textContent?.trim())`, 5000);
+      await chrome!.click("#settings-reset-computer-btn");
+      await chrome!.waitFor(`Boolean(document.querySelector('#ui-toast')?.textContent?.trim())`, 5000);
+      await chrome!.click("#close-settings-modal-btn");
     },
     { getChrome: () => chrome }
   );
@@ -595,9 +740,10 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       const busyPort = (blocker.address() as net.AddressInfo).port;
 
       const envFile = path.join(elecTmp, ".env");
+      const elecDataDir = path.join(elecTmp, "data");
       fs.writeFileSync(
         envFile,
-        `PORT=${busyPort}\nHOST=127.0.0.1\nDATA_DIR=${path.join(elecTmp, "data")}\nTWINKLEBOT_LAN_ACCESS=false\n`,
+        `TWINKLEBOT_DESKTOP_PORT=${busyPort}\nTWINKLEBOT_HOST=127.0.0.1\nTWINKLEBOT_DATA_DIR=${elecDataDir}\nTWINKLEBOT_LAN_ACCESS=0\n`,
         "utf8"
       );
 
@@ -696,20 +842,33 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       const info = await evalInElectron(`window.twinklebotDesktop.getDesktopInfo()`);
       setEvidence("desktopInfo", info);
       assert.equal(await evalInElectron(`document.documentElement.dataset.electron`), "true");
+      assert.equal(await evalInElectron(`document.documentElement.dataset.platform`), process.platform);
       assert.ok(info?.backendUrl?.startsWith("http://127.0.0.1:"));
       assert.notEqual(
         Number(new URL(info.backendUrl).port),
         busyPort,
-        "Electron must fall back from occupied port to an ephemeral port"
+        "Electron must fall back from occupied TWINKLEBOT_DESKTOP_PORT to an ephemeral port"
+      );
+      assert.equal(
+        path.resolve(String(info?.dataDir || "")),
+        path.resolve(elecDataDir),
+        "Electron must use isolated TWINKLEBOT_DATA_DIR and never pollute repo data/"
       );
 
-      // Accounts load/save IPC roundtrip
+      // Accounts load/save IPC roundtrip + getOtaStatus + confirmWebOta
       const saved = await evalInElectron(
         `window.twinklebotDesktop.saveAccounts({ activeAccountId: 'local', accounts: [{ id: 'local', type: 'local', name: 'E2E Local', baseUrl: '' }] })`
       );
       assert.equal(saved.activeAccountId, "local");
+      const loaded = await evalInElectron(`window.twinklebotDesktop.loadAccounts()`);
+      assert.equal(loaded?.activeAccountId, "local");
 
-      // Production OTA security gate: untrusted loopback URL MUST be rejected!
+      const otaSt = await evalInElectron(`window.twinklebotDesktop.getOtaStatus()`);
+      assert.ok(otaSt && typeof otaSt.usingBuiltIn === "boolean", "getOtaStatus IPC must return status object");
+      const confirmRes = await evalInElectron(`window.twinklebotDesktop.confirmWebOta()`);
+      assert.ok(confirmRes && confirmRes.ok !== false);
+
+      // Production OTA security gate: untrusted loopback URL MUST be rejected on BOTH applyWebOta & downloadFullInstaller!
       const otaRejected = await evalInElectron(`(async () => {
         try {
           await window.twinklebotDesktop.applyWebOta({ bundleUrl: 'http://127.0.0.1:9999/evil.tar.gz', expectedSha256: '${"a".repeat(64)}', webBuild: '20990101.000000-aaaaaaaaaa' });
@@ -720,8 +879,38 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       })()`);
       assert.match(otaRejected, /未受信任的 GitHub|untrusted/i, "Production Electron must reject untrusted OTA URL");
 
-      // Cleanly quit Electron window via IPC
-      await evalInElectron(`window.twinklebotDesktop.quitApp()`).catch(() => {});
+      const dlRejected = await evalInElectron(`(async () => {
+        try {
+          await window.twinklebotDesktop.downloadFullInstaller({ url: 'http://127.0.0.1:9999/evil.dmg', fileName: 'evil.dmg', expectedSha256: '${"b".repeat(64)}' });
+          return 'ALLOWED';
+        } catch (e) {
+          return String(e.message || e);
+        }
+      })()`);
+      assert.match(dlRejected, /未受信任|untrusted/i, "Production Electron must reject untrusted installer URL");
+
+      // Verify /api/desktop/wake & /api/desktop/quit loopback auth gate (401 without token, 200 with valid localControlToken!)
+      assert.equal((await fetch(`${info.backendUrl}/api/desktop/wake`, { method: "POST" })).status, 401);
+      assert.equal((await fetch(`${info.backendUrl}/api/desktop/quit`, { method: "POST" })).status, 401);
+      const desktopCfgPath = path.join(elecTmp, "userdata", "desktop-config.json");
+      let localTok = info.localControlToken || "";
+      if (!localTok && fs.existsSync(desktopCfgPath)) {
+        try { localTok = JSON.parse(fs.readFileSync(desktopCfgPath, "utf8"))?.TWINKLEBOT_LOCAL_TOKEN || ""; } catch {}
+      }
+      if (localTok) {
+        const wakeOk = await fetch(`${info.backendUrl}/api/desktop/wake`, {
+          method: "POST",
+          headers: { "X-Local-Token": localTok },
+        });
+        assert.equal(wakeOk.status, 200, "/api/desktop/wake with valid local token must return 200");
+        const quitOk = await fetch(`${info.backendUrl}/api/desktop/quit`, {
+          method: "POST",
+          headers: { "X-Local-Token": localTok },
+        });
+        assert.equal(quitOk.status, 200, "/api/desktop/quit with valid local token must return 200");
+      } else {
+        await evalInElectron(`window.twinklebotDesktop.quitApp()`).catch(() => {});
+      }
       wsSock.close();
       await new Promise<void>((resolve) => {
         const tm = setTimeout(() => {
@@ -733,6 +922,48 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
           resolve();
         });
       });
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P1-ELEC-03 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P1-ELEC-03",
+      priority: "P1",
+      featureTier: "F1",
+      difficulty: "D2",
+      title: "Electron 桌面偏好持久化(keepRunningInBackground)、损坏恢复与 /api/desktop/wake|quit 路由契约",
+      module: "Electron Prefs & Desktop Control Routes",
+    },
+    async () => {
+      const prefDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-prefs-e2e-"));
+      t.after(() => fs.rmSync(prefDir, { recursive: true, force: true }));
+
+      // 1. Default prefs, write keepRunningInBackground=false, reload, and corrupt JSON graceful fallback
+      const def = loadDesktopPrefs(prefDir);
+      assert.equal(typeof def.keepRunningInBackground, "boolean");
+      saveDesktopPrefs(prefDir, { keepRunningInBackground: false });
+      assert.equal(loadDesktopPrefs(prefDir).keepRunningInBackground, false);
+      saveDesktopPrefs(prefDir, { keepRunningInBackground: true });
+      assert.equal(loadDesktopPrefs(prefDir).keepRunningInBackground, true);
+
+      fs.writeFileSync(path.join(prefDir, "desktop-prefs.json"), "{corrupt-json", "utf8");
+      assert.equal(loadDesktopPrefs(prefDir).keepRunningInBackground, true, "Corrupt desktop-prefs.json must recover safely");
+
+      // 2. Standalone server without desktopController returns 404 after valid token, 401 on bad token
+      const ws = await createE2EWorkspace({ localControlToken: "ctrl-e2e-tok", smartRouter: false });
+      t.after(() => ws.close());
+      assert.equal((await fetch(`${ws.baseUrl}/api/desktop/wake`, { method: "POST" })).status, 401);
+      assert.equal(
+        (await fetch(`${ws.baseUrl}/api/desktop/wake`, { method: "POST", headers: { "X-Local-Token": "wrong" } })).status,
+        401
+      );
+      assert.equal(
+        (await fetch(`${ws.baseUrl}/api/desktop/wake`, { method: "POST", headers: { "X-Local-Token": "ctrl-e2e-tok" } })).status,
+        404
+      );
     },
     { getChrome: () => chrome }
   );
@@ -774,7 +1005,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       });
       t.after(() => ws.close());
 
-      // 1. Tar-Slip malicious archive MUST be rejected
+      // 1. Tar-Slip malicious archive & SHA-256 mismatch MUST be rejected
       await assert.rejects(
         () =>
           otaMgr.applyFromUrl({
@@ -783,6 +1014,15 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
             webBuild: "20991119.140000-evil000000",
           }),
         /非法|traversal|\.\.|index\.html/i
+      );
+      await assert.rejects(
+        () =>
+          otaMgr.applyFromUrl({
+            bundleUrl: fixture.goodUrl,
+            expectedSha256: "0".repeat(64),
+            webBuild: fixture.goodBuild,
+          }),
+        /SHA-256|sha256|校验/i
       );
 
       // 2. Apply valid OTA bundle, reload Chrome, verify new marker + confirmReady!
@@ -814,6 +1054,19 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       const stAfterRollback = otaMgr.getStatus();
       assert.equal(stAfterRollback.activeBuild, fixture.goodBuild, "Watchdog must auto-rollback to lastGoodBuild");
       assert.ok(stAfterRollback.lastRollbackReason, "Watchdog rollback reason must be recorded");
+
+      // 4. rollbackToBuiltIn resets activeBuild to built-in; native appVersion upgrade wipes stale OTA cache
+      otaMgr.rollbackToBuiltIn();
+      assert.equal(otaMgr.getStatus().usingBuiltIn, true, "rollbackToBuiltIn must restore built-in bundle");
+
+      const upgradedMgr = createWebOtaManager({
+        userDataDir: path.join(otaTmp, "userdata"),
+        appVersion: "2.0.0",
+        builtInPublicDir: builtInPublic,
+        allowLoopbackForTest: true,
+      });
+      t.after(() => upgradedMgr.dispose());
+      assert.equal(upgradedMgr.getStatus().usingBuiltIn, true, "Native appVersion upgrade must clear stale OTA cache");
     },
     { getChrome: () => chrome }
   );
@@ -856,6 +1109,60 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         (await fetch(`${cloudWs.baseUrl}/api/sessions`, { headers: { Authorization: "Bearer cloud-secret-tok-888" } })).status,
         200
       );
+
+      // Verify GET /api/system/role, wrong token 401, invalid role 400
+      const roleGet: any = await (await fetch(`${localWs.baseUrl}/api/system/role`)).json();
+      assert.equal(roleGet.role, "master");
+      assert.equal(
+        (await fetch(`${localWs.baseUrl}/api/system/role`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Local-Token": "wrong-tok" },
+          body: JSON.stringify({ role: "host_executor" }),
+        })).status,
+        401
+      );
+      assert.equal(
+        (await fetch(`${localWs.baseUrl}/api/system/role`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Local-Token": "local-ctrl-tok-777" },
+          body: JSON.stringify({}),
+        })).status,
+        400
+      );
+
+      // Verify /api/host/execute auth 401, unsupported tool 400, sensitive path deny 403, and host_open missing-target 400/error
+      assert.equal(
+        (await fetch(`${localWs.baseUrl}/api/host/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tool: "host_run_shell", args: { command: "echo no-token" } }),
+        })).status,
+        401
+      );
+      assert.equal(
+        (await fetch(`${localWs.baseUrl}/api/host/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Local-Control-Token": "local-ctrl-tok-777" },
+          body: JSON.stringify({ tool: "not_a_host_tool", args: {} }),
+        })).status,
+        400
+      );
+      assert.equal(
+        (await fetch(`${localWs.baseUrl}/api/host/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Local-Control-Token": "local-ctrl-tok-777" },
+          body: JSON.stringify({ tool: "host_read_file", args: { path: path.join(localWs.workspaceDir, ".env") }, approved: true }),
+        })).status,
+        403
+      );
+      const hostOpenBad: any = await (
+        await fetch(`${localWs.baseUrl}/api/host/execute`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Local-Control-Token": "local-ctrl-tok-777" },
+          body: JSON.stringify({ tool: "host_open", args: { target: "" }, approved: true }),
+        })
+      ).json();
+      assert.ok(hostOpenBad.ok === false || Boolean(hostOpenBad.result?.error), "host_open with empty target must return error");
 
       // Local switches to host_executor -> non-host routes return 409, host routes allowed!
       const swRes = await fetch(`${localWs.baseUrl}/api/system/role`, {
