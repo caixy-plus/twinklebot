@@ -126,16 +126,45 @@ function normalizeTextParts(content: any): any[] {
   return out;
 }
 
-function summarizeFunctionCallForText(fc: any): string {
-  const name = String(fc?.name || "tool");
-  let argText = "";
-  try {
-    argText = JSON.stringify(fc?.arguments ?? {});
-  } catch {
-    argText = "{}";
+function formatPlainArgValue(val: unknown): string {
+  if (val === null) return "null";
+  if (val === undefined) return "undefined";
+  if (typeof val === "string") {
+    const clean = val.replace(/\s+/g, " ").trim();
+    return clean.length > 100 ? `"${clean.slice(0, 100)}…"` : `"${clean}"`;
   }
-  if (argText.length > 600) argText = `${argText.slice(0, 600)}…`;
-  return `[Tool call ${name}(${argText})]`;
+  if (typeof val === "number" || typeof val === "boolean") {
+    return String(val);
+  }
+  if (Array.isArray(val)) {
+    return `[${val.length} items]`;
+  }
+  if (typeof val === "object") {
+    const keys = Object.keys(val as Record<string, unknown>);
+    return `{${keys.slice(0, 4).join(", ")}${keys.length > 4 ? ", …" : ""}}`;
+  }
+  return String(val);
+}
+
+function summarizeFunctionCallForNote(fc: any): string {
+  const name = String(fc?.name || "tool");
+  const rawArgs = fc?.arguments;
+  let argSummary = "";
+  if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+    const entries = Object.entries(rawArgs);
+    if (entries.length > 0) {
+      const shown = entries.slice(0, 8).map(([k, v]) => `${k}=${formatPlainArgValue(v)}`);
+      if (entries.length > 8) shown.push(`+${entries.length - 8} more`);
+      argSummary = shown.join(", ");
+      if (argSummary.length > 360) argSummary = `${argSummary.slice(0, 360)}…`;
+    }
+  } else if (typeof rawArgs === "string" && rawArgs.trim()) {
+    const clean = rawArgs.replace(/\s+/g, " ").trim();
+    argSummary = clean.length > 200 ? `${clean.slice(0, 200)}…` : clean;
+  }
+  return argSummary
+    ? `Earlier step ran tool "${name}" (${argSummary}).`
+    : `Earlier step ran tool "${name}".`;
 }
 
 function extractFunctionResultParts(fr: any): any[] {
@@ -144,7 +173,7 @@ function extractFunctionResultParts(fr: any): any[] {
   const parts: any[] = [];
   if (typeof raw === "string") {
     const trimmed = raw.length > 8000 ? `${raw.slice(0, 8000)}…` : raw;
-    parts.push({ type: "text", text: `[Tool result ${name}]: ${trimmed || "(empty)"}` });
+    parts.push({ type: "text", text: `Output from "${name}": ${trimmed || "(empty)"}` });
     return parts;
   }
   if (Array.isArray(raw)) {
@@ -159,7 +188,7 @@ function extractFunctionResultParts(fr: any): any[] {
     }
     const joined = textChunks.join("\n");
     const clipped = joined.length > 8000 ? `${joined.slice(0, 8000)}…` : joined;
-    parts.unshift({ type: "text", text: `[Tool result ${name}]: ${clipped || "(ok)"}` });
+    parts.unshift({ type: "text", text: `Output from "${name}": ${clipped || "(ok)"}` });
     return parts;
   }
   let serialized = "";
@@ -169,7 +198,7 @@ function extractFunctionResultParts(fr: any): any[] {
     serialized = String(raw ?? "");
   }
   if (serialized.length > 8000) serialized = `${serialized.slice(0, 8000)}…`;
-  parts.push({ type: "text", text: `[Tool result ${name}]: ${serialized || "(ok)"}` });
+  parts.push({ type: "text", text: `Output from "${name}": ${serialized || "(ok)"}` });
   return parts;
 }
 
@@ -192,11 +221,12 @@ function pushMergedStep(out: any[], step: any): void {
 /**
  * Sanitize shared multi-provider history into a strictly valid Gemini Interactions API `input`:
  * 1. Drops unsigned `thought` steps (e.g. DeepSeek/OpenAI `reasoning_content`).
- * 2. Preserves Gemini-native signed tool turns (`[thought(sig), function_call..., function_result...]`)
+ * 2. Preserves Gemini-native signed tool turns (`[thought(sig), (optional model_output), function_call..., function_result...]`)
  *    intact so Prompt Cache & Gemini reasoning continuity are preserved.
  * 3. Folds cross-provider unsigned `function_call` + `function_result` turns (e.g. DeepSeek -> Gemini
- *    escalation, or `model_output` followed directly by `function_call`) into clean `model_output` /
- *    `user_input` turns so Gemini 3 never rejects them with `400 Request contains an invalid argument.`.
+ *    escalation) into plain-language `user_input` execution notes — NEVER injecting pseudo-syntax
+ *    `[Tool call ...({...}…)]` into `model_output`, which otherwise poisons Gemini into imitating
+ *    plain-text tool calls or emitting `malformed_tool_call` invalid JSON.
  * 4. Merges consecutive same-role text steps and drops empty content blocks.
  */
 export function sanitizeInputForGemini(
@@ -230,12 +260,23 @@ export function sanitizeInputForGemini(
     return filtered;
   }
 
-  // Step 2: walk steps; fold any function_call block that is NOT immediately preceded
-  // by a valid signed Gemini thought step (or when stripAllThoughts is active).
+  // Step 2: walk steps; preserve Gemini-native signed turns (including thought(sig) -> model_output -> function_call),
+  // and fold unsigned cross-provider tool turns cleanly into user_input execution notes.
   const out: any[] = [];
+  let turnHasSignedThought = false;
   let i = 0;
   while (i < filtered.length) {
     const step = filtered[i];
+
+    if (step.type === "thought") {
+      out.push(step);
+      turnHasSignedThought =
+        !stripAllThoughts &&
+        typeof step.signature === "string" &&
+        step.signature.trim().length > 0;
+      i += 1;
+      continue;
+    }
 
     if (step.type === "function_call") {
       // Collect consecutive function_call steps in this model turn
@@ -244,7 +285,7 @@ export function sanitizeInputForGemini(
         calls.push(filtered[i]);
         i += 1;
       }
-      // Collect immediately following function_result steps (plus any interleaved screenshot user_input)
+      // Collect immediately following function_result steps
       const results: any[] = [];
       const callIds = new Set(calls.map((c) => String(c.id || "")).filter(Boolean));
       while (
@@ -256,36 +297,28 @@ export function sanitizeInputForGemini(
         i += 1;
       }
 
-      const prevOut = out[out.length - 1];
-      const hasValidPrecedingSignedThought =
-        !stripAllThoughts &&
-        prevOut &&
-        prevOut.type === "thought" &&
-        typeof prevOut.signature === "string" &&
-        prevOut.signature.trim().length > 0;
-
-      if (hasValidPrecedingSignedThought) {
+      if (!stripAllThoughts && turnHasSignedThought) {
         for (const fc of calls) out.push(fc);
         for (const fr of results) out.push(fr);
       } else {
-        const callSummary = calls.map(summarizeFunctionCallForText).join("\n");
+        // Place folded tool call + result notes in user_input (never model_output) so Gemini
+        // never learns to mimic pseudo-tool-call syntax or truncated JSON from prior assistant turns.
+        const foldedParts: any[] = [];
+        const callSummary = calls.map(summarizeFunctionCallForNote).join("\n");
         if (callSummary) {
-          pushMergedStep(out, {
-            type: "model_output",
-            content: [{ type: "text", text: callSummary }],
-          });
+          foldedParts.push({ type: "text", text: callSummary });
         }
-        const resultParts: any[] = [];
         for (const fr of results) {
-          resultParts.push(...extractFunctionResultParts(fr));
+          foldedParts.push(...extractFunctionResultParts(fr));
         }
-        if (resultParts.length > 0) {
+        if (foldedParts.length > 0) {
           pushMergedStep(out, {
             type: "user_input",
-            content: resultParts,
+            content: foldedParts,
           });
         }
       }
+      turnHasSignedThought = false;
       continue;
     }
 
@@ -295,6 +328,7 @@ export function sanitizeInputForGemini(
         type: "user_input",
         content: extractFunctionResultParts(step),
       });
+      turnHasSignedThought = false;
       i += 1;
       continue;
     }
@@ -308,11 +342,98 @@ export function sanitizeInputForGemini(
       continue;
     }
 
+    if (step.type === "user_input") {
+      turnHasSignedThought = false;
+    }
+
     pushMergedStep(out, step);
     i += 1;
   }
 
   return out;
+}
+
+function extractInteractionErrors(res: any): Array<{ code: string; message: string }> {
+  if (!Array.isArray(res?.errors)) return [];
+  return res.errors
+    .filter((e: any) => e && typeof e === "object")
+    .map((e: any) => ({
+      code: String(e.code || "").trim(),
+      message: String(e.message || e.detail || "").trim(),
+    }))
+    .filter((e: { code: string; message: string }) => Boolean(e.code || e.message));
+}
+
+function formatInteractionErrors(res: any): string {
+  const errs = extractInteractionErrors(res);
+  if (errs.length === 0) return "";
+  return errs
+    .map((e) => (e.code && e.message ? `${e.code}: ${e.message}` : e.code || e.message))
+    .join("; ");
+}
+
+function mergeTokenUsage(a: TokenUsage | null | undefined, b: TokenUsage | null | undefined): TokenUsage {
+  const input = (a?.input ?? 0) + (b?.input ?? 0);
+  const output = (a?.output ?? 0) + (b?.output ?? 0);
+  const cached = (a?.cached ?? 0) + (b?.cached ?? 0);
+  const thoughts = (a?.thoughts ?? 0) + (b?.thoughts ?? 0);
+  return {
+    input,
+    output,
+    ...(cached > 0 ? { cached } : {}),
+    ...(thoughts > 0 ? { thoughts } : {}),
+  };
+}
+
+function appendRetryNoticeToInput(baseInput: any, noticeText: string): any {
+  const noticePart = { type: "text", text: noticeText };
+  if (typeof baseInput === "string") {
+    return `${baseInput}\n\n${noticeText}`;
+  }
+  if (!Array.isArray(baseInput)) {
+    return [{ type: "user_input", content: [noticePart] }];
+  }
+  const cloned = baseInput.map((step) =>
+    step && typeof step === "object" && Array.isArray(step.content)
+      ? { ...step, content: [...step.content] }
+      : step
+  );
+  pushMergedStep(cloned, { type: "user_input", content: [noticePart] });
+  return cloned;
+}
+
+function shouldRetryInteractionResponse(res: any): { retry: boolean; reason: string; isMalformedToolCall: boolean } {
+  const status = String(res?.status || "").trim().toLowerCase();
+  const steps = extractInteractionSteps(res);
+  const errs = extractInteractionErrors(res);
+  const hasOutputText = typeof res?.output_text === "string" && res.output_text.trim().length > 0;
+  const isMalformedToolCall = errs.some(
+    (e) =>
+      /malformed_tool_call/i.test(e.code) ||
+      /invalid\s+json\s+syntax|malformed.*tool|could\s+not\s+be\s+parsed/i.test(e.message)
+  );
+  if (isMalformedToolCall) {
+    return {
+      retry: true,
+      reason: formatInteractionErrors(res) || "malformed_tool_call",
+      isMalformedToolCall: true,
+    };
+  }
+  if (status === "failed" && steps.length === 0) {
+    return {
+      retry: true,
+      reason: formatInteractionErrors(res) || "interaction status failed with empty steps",
+      isMalformedToolCall: false,
+    };
+  }
+  if ((status === "" || status === "completed") && steps.length === 0 && !hasOutputText) {
+    return {
+      retry: true,
+      reason: "interaction completed with empty output",
+      isMalformedToolCall: false,
+    };
+  }
+  return { retry: false, reason: "", isMalformedToolCall: false };
 }
 
 export interface CreateGeminiDriverOptions {
@@ -404,13 +525,19 @@ export function createGeminiDriver({
         },
       });
 
-      const invokeWithSignatureRecovery = async (targetModel: string, perCallTimeoutMs: number) => {
+      const invokeWithRecovery = async (
+        targetModel: string,
+        perCallTimeoutMs: number
+      ): Promise<{ res: any; usage: TokenUsage }> => {
         const firstInput = sanitizeInputForGemini(input, {
           stripAllThoughts: false,
           foldUnsignedToolTurns: true,
         });
+        let activeInput = firstInput;
+        let usedStripped = false;
+        let res: any;
         try {
-          return await invokeCreate(
+          res = await invokeCreate(
             buildParams(targetModel, firstInput),
             signal,
             perCallTimeoutMs
@@ -430,12 +557,51 @@ export function createGeminiDriver({
           if (!changed) {
             throw err;
           }
-          return invokeCreate(
+          activeInput = strippedInput;
+          usedStripped = true;
+          res = await invokeCreate(
             buildParams(targetModel, strippedInput),
             signal,
             perCallTimeoutMs
           );
         }
+
+        let totalUsage = extractGeminiUsage(res);
+        const retryDecision = shouldRetryInteractionResponse(res);
+        if (retryDecision.retry && !signal?.aborted) {
+          const retryBase =
+            retryDecision.isMalformedToolCall && !usedStripped
+              ? sanitizeInputForGemini(input, {
+                  stripAllThoughts: true,
+                  foldUnsignedToolTurns: true,
+                })
+              : activeInput;
+          const retryNotice = retryDecision.isMalformedToolCall
+            ? `[System Retry Notice: The previous tool call failed because of invalid JSON syntax (${retryDecision.reason}). Retry now: either invoke a native function tool with strictly valid JSON arguments, or answer directly in plain text.]`
+            : `[System Retry Notice: The previous response produced no output (${retryDecision.reason}). Please continue and either invoke a valid native tool call or provide a direct answer.]`;
+          const retryInput = appendRetryNoticeToInput(retryBase, retryNotice);
+          res = await invokeCreate(
+            buildParams(targetModel, retryInput),
+            signal,
+            perCallTimeoutMs
+          );
+          totalUsage = mergeTokenUsage(totalUsage, extractGeminiUsage(res));
+        }
+
+        const finalStatus = String(res?.status || "").trim().toLowerCase();
+        const finalSteps = extractInteractionSteps(res);
+        const finalErrors = extractInteractionErrors(res);
+        if (
+          finalStatus === "failed" ||
+          finalStatus === "cancelled" ||
+          finalStatus === "budget_exceeded" ||
+          (finalErrors.length > 0 && finalSteps.length === 0)
+        ) {
+          const errSummary = formatInteractionErrors(res) || `status=${finalStatus || "failed"}`;
+          throw new Error(`Gemini interaction ${finalStatus || "failed"}: ${errSummary}`);
+        }
+
+        return { res, usage: totalUsage };
       };
 
       const effectiveTimeoutMs =
@@ -445,9 +611,9 @@ export function createGeminiDriver({
 
       const hasDistinctFallback = Boolean(fallbackModel && fallbackModel !== model);
       let usedModel = model;
-      let res: any;
+      let invocation: { res: any; usage: TokenUsage };
       try {
-        res = await invokeWithSignatureRecovery(
+        invocation = await invokeWithRecovery(
           model,
           hasDistinctFallback ? effectiveTimeoutMs : 0
         );
@@ -460,12 +626,13 @@ export function createGeminiDriver({
             permanent: isPermanentModelError(err),
           });
           usedModel = fallbackModel;
-          res = await invokeWithSignatureRecovery(fallbackModel, 0);
+          invocation = await invokeWithRecovery(fallbackModel, 0);
         } else {
           throw err;
         }
       }
 
+      const { res, usage } = invocation;
       const outputSteps = extractInteractionSteps(res);
       const thoughts: string[] = [];
       const textPieces: string[] = [];
@@ -523,13 +690,25 @@ export function createGeminiDriver({
         }
       }
 
+      const combinedText =
+        textPieces.join("\n").trim() ||
+        (calls.length === 0 && typeof res?.output_text === "string" ? res.output_text.trim() : "");
+      const resStatus = String(res?.status || "").trim().toLowerCase();
+      const finishReason =
+        resStatus === "incomplete"
+          ? "length"
+          : !combinedText && calls.length === 0
+            ? "empty"
+            : undefined;
+
       return {
         thoughts,
-        text: textPieces.join("\n").trim(),
+        text: combinedText,
         calls,
         outputSteps,
-        usage: extractGeminiUsage(res),
+        usage,
         usedModel,
+        ...(finishReason ? { finishReason } : {}),
       };
     },
 

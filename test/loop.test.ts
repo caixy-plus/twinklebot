@@ -1555,4 +1555,107 @@ test("runTask warns model on final step when maxSteps >= 4 and cleanly resumes o
   }
 });
 
+test("runTask retries empty model turns instead of silently finishing done, and surfaces error if empty repeats", async () => {
+  const { store, cleanup } = createTestStore();
+  try {
+    // 1. Transient empty turn recovers on the next step
+    const s1 = store.createSession({ title: "Empty Turn Recovery" });
+    const executor = createFakeExecutor();
+    const recoveringModel = createFakeModel([
+      { thoughts: [], text: "", calls: [], outputSteps: [] },
+      {
+        thoughts: [],
+        text: "重试后正常完成了任务。",
+        calls: [],
+        outputSteps: [{ type: "model_output", text: "重试后正常完成了任务。" }],
+      },
+    ]);
+    const res1 = await runTask({
+      sessionId: s1.id,
+      userText: "继续操作",
+      deps: {
+        model: recoveringModel,
+        executor,
+        store,
+        config: { maxSteps: 4, settleMs: 0 },
+        emit: () => {},
+      },
+    });
+    assert.equal(res1.status, "done");
+    assert.equal(res1.text, "重试后正常完成了任务。");
+    assert.equal(recoveringModel.historyCalls.length, 2);
+
+    // 2. Repeated empty turns MUST end with status=error (never silent done with blank answer)
+    const s2 = store.createSession({ title: "Repeated Empty Turn Error" });
+    const events: any[] = [];
+    const alwaysEmptyModel = createFakeModel([
+      { thoughts: [], text: "", calls: [], outputSteps: [] },
+      { thoughts: [], text: "", calls: [], outputSteps: [] },
+      { thoughts: [], text: "", calls: [], outputSteps: [] },
+    ]);
+    const res2 = await runTask({
+      sessionId: s2.id,
+      userText: "继续操作",
+      deps: {
+        model: alwaysEmptyModel,
+        executor,
+        store,
+        config: { maxSteps: 5, settleMs: 0 },
+        emit: (e: any) => events.push(e),
+      },
+    });
+    assert.equal(res2.status, "error");
+    assert.match(res2.text, /空响应/);
+    assert.equal(events.some((e) => e.type === "error"), true);
+    assert.equal(events.some((e) => e.type === "answer" && e.text === ""), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runTask recovers when model prints pseudo '[Tool call <name>(...)]' text instead of calling native tool", async () => {
+  const { store, cleanup } = createTestStore();
+  try {
+    const session = store.createSession({ title: "Pseudo Tool Call Recovery" });
+    const executor = createFakeExecutor();
+    const model = createFakeModel([
+      {
+        thoughts: [],
+        text: '我先截个图。[Tool call screenshot({})]',
+        calls: [],
+        outputSteps: [{ type: "model_output", text: '我先截个图。[Tool call screenshot({})]' }],
+      },
+      {
+        thoughts: [],
+        text: "",
+        calls: [{ id: "call_real_ss", name: "screenshot", args: {} }],
+        outputSteps: [{ type: "function_call", id: "call_real_ss", name: "screenshot", arguments: {} }],
+      },
+      {
+        thoughts: [],
+        text: "已截屏完成。",
+        calls: [],
+        outputSteps: [{ type: "model_output", text: "已截屏完成。" }],
+      },
+    ]);
+
+    const res = await runTask({
+      sessionId: session.id,
+      userText: "截个图看看",
+      deps: {
+        model,
+        executor,
+        store,
+        config: { maxSteps: 5, settleMs: 0 },
+        emit: () => {},
+      },
+    });
+    assert.equal(res.status, "done");
+    assert.equal(res.text, "已截屏完成。");
+    assert.equal(model.historyCalls.length, 3);
+  } finally {
+    cleanup();
+  }
+});
+
 

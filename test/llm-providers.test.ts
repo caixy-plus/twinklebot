@@ -390,11 +390,13 @@ test("gemini driver strips unsigned thoughts upfront and retries without foreign
 
 test("gemini driver folds unsigned cross-provider tool turns upfront and recovers from generic 400 invalid argument", async () => {
   // 1. DeepSeek/OpenAI history (thought without signature + model_output + function_call + function_result)
-  //    is cleanly folded into valid model_output / user_input turns while preserving Gemini signed tool turns!
+  //    is cleanly folded into user_input execution notes (never pseudo `[Tool call ...]` inside model_output)
+  //    while preserving Gemini signed tool turns (including thought(sig) -> model_output -> function_call)!
   const mixedHistory = [
     userStep("check page"),
-    // Gemini native signed tool turn -> preserved intact!
+    // Gemini native signed tool turn with interim model_output -> preserved intact!
     { type: "thought", signature: "gem-sig-1", summary: [{ type: "text", text: "plan" }] },
+    { type: "model_output", content: [{ type: "text", text: "先看下目录" }] },
     { type: "function_call", id: "call_gem_1", name: "run_shell", arguments: { command: "pwd" } },
     { type: "function_result", call_id: "call_gem_1", name: "run_shell", result: '{"stdout":"/tmp"}' },
     { type: "model_output", content: [{ type: "text", text: "done step 1" }] },
@@ -410,17 +412,23 @@ test("gemini driver folds unsigned cross-provider tool turns upfront and recover
     stripAllThoughts: false,
     foldUnsignedToolTurns: true,
   });
-  // Gemini native signed call preserved
+  // Gemini native signed call preserved even with interim model_output before function_call
   assert.ok(firstSanitized.some((s: any) => s.type === "function_call" && s.id === "call_gem_1"));
   // Foreign unsigned DeepSeek call folded (never sent as raw unsigned function_call!)
   assert.equal(
     firstSanitized.some((s: any) => s.type === "function_call" && s.id === "call_00_IuRG"),
     false
   );
-  // Folded context preserves tool call & result text
+  // Folded context preserves tool call & result text inside user_input and NEVER injects `[Tool call ...]` into model_output
   const serialized = JSON.stringify(firstSanitized);
   assert.ok(serialized.includes("browser_snapshot"));
   assert.ok(serialized.includes("Example"));
+  assert.equal(serialized.includes("[Tool call "), false);
+  const modelOutputs = firstSanitized.filter((s: any) => s.type === "model_output");
+  assert.ok(
+    modelOutputs.every((s: any) => !JSON.stringify(s).includes("browser_snapshot")),
+    "folded unsigned tool calls must live in user_input notes, never model_output"
+  );
 
   // 2. If Gemini still returns generic `400 Request contains an invalid argument.` (e.g. cross-version
   //    Gemini signature mismatch), driver automatically retries with all thoughts stripped & tool turns folded!
@@ -451,6 +459,108 @@ test("gemini driver folds unsigned cross-provider tool turns upfront and recover
   assert.equal(turn.text, "recovered-400");
   assert.equal(seen.length, 2);
   assert.equal(seen[1].some((s: any) => s.type === "thought" || s.type === "function_call"), false);
+});
+
+test("gemini driver retries malformed_tool_call failed interactions, merges usage, and throws if failure persists", async () => {
+  // 1. First call returns HTTP 200 status=failed + malformed_tool_call -> auto-retries once and succeeds
+  const calls: any[] = [];
+  const recoveringDriver = createGeminiDriver({
+    apiKey: "test-key",
+    client: {
+      interactions: {
+        async create(params: any) {
+          calls.push(params.input);
+          if (calls.length === 1) {
+            return {
+              status: "failed",
+              errors: [
+                {
+                  code: "malformed_tool_call",
+                  message: "Model generated invalid JSON syntax and the output could not be parsed.",
+                },
+              ],
+              usage: { total_input_tokens: 1000, total_output_tokens: 0 },
+              steps: [],
+            };
+          }
+          return {
+            status: "completed",
+            usage: { total_input_tokens: 1050, total_output_tokens: 120 },
+            steps: [
+              { type: "function_call", id: "fc_ok_1", name: "run_shell", arguments: { command: "ls" } },
+            ],
+          };
+        },
+      },
+    },
+  });
+
+  const recovered = await recoveringDriver.nextTurn({
+    model: "gemini-4-hydrogen",
+    systemInstruction: "sys",
+    input: [
+      userStep("list files"),
+      { type: "thought", signature: "sig-old", summary: [{ type: "text", text: "old" }] },
+      { type: "model_output", content: [{ type: "text", text: "checking" }] },
+    ],
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(recovered.calls!.length, 1);
+  assert.equal(recovered.calls![0].name, "run_shell");
+  assert.equal(recovered.usage!.input, 2050);
+  assert.equal(recovered.usage!.output, 120);
+  assert.match(JSON.stringify(calls[1]), /malformed_tool_call|invalid JSON syntax/i);
+
+  // 2. If status=failed persists after retry, driver MUST throw instead of returning empty done turn
+  let failAttempts = 0;
+  const failingDriver = createGeminiDriver({
+    apiKey: "test-key",
+    client: {
+      interactions: {
+        async create() {
+          failAttempts++;
+          return {
+            status: "failed",
+            errors: [{ code: "malformed_tool_call", message: "still malformed JSON" }],
+            usage: { total_input_tokens: 500, total_output_tokens: 0 },
+            steps: [],
+          };
+        },
+      },
+    },
+  });
+
+  await assert.rejects(
+    failingDriver.nextTurn({
+      model: "gemini-4-hydrogen",
+      systemInstruction: "sys",
+      input: [userStep("do work")],
+    }),
+    /Gemini interaction failed.*malformed_tool_call/i
+  );
+  assert.equal(failAttempts, 2);
+
+  // 3. status=incomplete propagates finishReason="length"
+  const incompleteDriver = createGeminiDriver({
+    apiKey: "test-key",
+    client: {
+      interactions: {
+        async create() {
+          return {
+            status: "incomplete",
+            usage: { total_input_tokens: 500, total_output_tokens: 400 },
+            steps: [{ type: "thought", text: "still thinking" }],
+          };
+        },
+      },
+    },
+  });
+  const incTurn = await incompleteDriver.nextTurn({
+    model: "gemini-4-hydrogen",
+    systemInstruction: "sys",
+    input: [userStep("think")],
+  });
+  assert.equal(incTurn.finishReason, "length");
 });
 
 test("openAiResponseToTurn extracts DeepSeek prompt_cache_hit_tokens and prompt_cache_miss_tokens accurately", () => {

@@ -1623,22 +1623,68 @@ async function runTaskInner({
           appendSteeredMessages(ctrl.consumeSteeredMessages());
           continue;
         }
-        // If a reasoning model exhausted max_tokens inside reasoning (finish_reason=length)
-        // and emitted neither text nor tool calls, recover once instead of finishing blank.
+        const trimmedTurnText = String(turn?.text || "").trim();
+        const hasPendingEmbeds =
+          generatedImageEmbeds.length > 0 || deliveredFileEmbeds.length > 0;
+
+        // Recover when a model emits neither text nor tool calls (e.g. length-truncated
+        // reasoning or an empty/malformed upstream response) instead of silently finishing blank.
+        if (!trimmedTurnText && !hasPendingEmbeds) {
+          if (consecutiveErrors < 2 && stepNo < maxSteps) {
+            consecutiveErrors += 1;
+            history.push(
+              userStep(
+                turn?.finishReason === "length"
+                  ? "[System Notice: The previous output hit the length limit and was truncated before producing visible text or tool calls. Provide a concise answer directly or issue tool calls in smaller steps.]"
+                  : "[System Notice: The previous model response was empty (produced neither visible text nor tool calls). Continue executing the task using native tool calls, or provide a clear final answer to the user.]",
+                null
+              )
+            );
+            continue;
+          }
+          const emptyErrMessage =
+            turn?.finishReason === "length"
+              ? "模型输出连续触达长度上限且未返回有效内容，任务已中止，请重试或切换模型。"
+              : "模型连续返回空响应（未输出文本或工具调用），任务未能继续，请重试或切换模型。";
+          if (!skipHistorySave && store?.saveHistory) {
+            history.push({
+              type: "model_output",
+              content: [
+                {
+                  type: "text",
+                  text: `[System Notice: This turn ended with an empty model response (${turn?.finishReason || "empty"}) without producing a valid reply.]`,
+                },
+              ],
+            });
+            store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
+          }
+          emitTagged({ type: "error", message: emptyErrMessage });
+          setStatus("error");
+          return { status: "error", text: emptyErrMessage };
+        }
+
+        // Recover if the model accidentally echoed a pseudo `[Tool call <toolName>(...)]`
+        // string as plain text instead of issuing a real native function_call.
         if (
-          turn?.finishReason === "length" &&
-          !String(turn?.text || "").trim() &&
+          trimmedTurnText &&
+          stepTools.length > 0 &&
           consecutiveErrors < 2 &&
           stepNo < maxSteps
         ) {
-          consecutiveErrors += 1;
-          history.push(
-            userStep(
-              "[System Notice: The previous output hit the length limit and was truncated before producing visible text or tool calls. Provide a concise answer directly or issue tool calls in smaller steps.]",
-              null
-            )
-          );
-          continue;
+          const pseudoCallMatch = trimmedTurnText.match(/\[Tool call\s+([a-zA-Z0-9_.:-]+)\s*\(/);
+          if (
+            pseudoCallMatch &&
+            stepTools.some((t: any) => t && t.name === pseudoCallMatch[1])
+          ) {
+            consecutiveErrors += 1;
+            history.push(
+              userStep(
+                `[System Notice: You wrote "[Tool call ${pseudoCallMatch[1]}(...)]" as plain text instead of invoking the native tool. Do not print pseudo tool-call syntax; invoke "${pseudoCallMatch[1]}" via native function calling now.]`,
+                null
+              )
+            );
+            continue;
+          }
         }
         const prunedFinal = pruneScreenshots(history, keepScreenshots);
         if (!skipHistorySave && store?.saveHistory) {
