@@ -53,6 +53,7 @@ function collectFilesForHash(dirPath, relBase = "") {
     if (
       ent.name === ".DS_Store" ||
       ent.name === "web-meta.json" ||
+      ent.name === "core-meta.json" ||
       ent.name.endsWith(".map") ||
       ent.name.startsWith(".env")
     ) {
@@ -148,6 +149,11 @@ export function readProjectShellMetadata() {
   return {
     desktopVersion,
     minDesktopVersionForOta: String(policy.shells?.desktop?.minVersionForOta || "1.0.0"),
+    minDesktopVersionForCoreOta: String(
+      policy.shells?.desktop?.minVersionForCoreOta ||
+        policy.shells?.desktop?.minVersionForOta ||
+        "1.0.4"
+    ),
     androidVersion,
     androidBuildCode,
     minAndroidVersionForOta: String(policy.shells?.android?.minVersionForOta || "1.0.0"),

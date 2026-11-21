@@ -29,9 +29,9 @@ function fakeClient(routes: any = {}) {
   };
 }
 
-test("TOOL_DECLARATIONS has expected shape and covers all 15 action tools", () => {
+test("TOOL_DECLARATIONS has expected shape and covers all 16 action tools", () => {
   assert.ok(Array.isArray(TOOL_DECLARATIONS), "TOOL_DECLARATIONS must be an array");
-  assert.equal(TOOL_DECLARATIONS.length, 15);
+  assert.equal(TOOL_DECLARATIONS.length, 16);
 
   const expectedTools = [
     "screenshot",
@@ -49,6 +49,7 @@ test("TOOL_DECLARATIONS has expected shape and covers all 15 action tools", () =
     "browser_snapshot",
     "browser_click",
     "browser_type",
+    "browser_tabs",
   ];
 
   const toolMap = new Map();
@@ -167,7 +168,7 @@ test("screenshot tool decodes png_base64 and avoids keeping huge base64 in resul
   assert.equal(r.screenshot.toString("base64"), pngBase64);
 });
 
-test("all 15 tools map to their correct executor routes", async () => {
+test("all 16 tools map to their correct executor routes", async () => {
   const routeExpectations = {
     screenshot: "/screenshot",
     click: "/click",
@@ -184,6 +185,7 @@ test("all 15 tools map to their correct executor routes", async () => {
     browser_snapshot: "/browser/snapshot",
     browser_click: "/browser/click",
     browser_type: "/browser/type",
+    browser_tabs: "/browser/tabs",
   };
 
   for (const [toolName, expectedRoute] of Object.entries(routeExpectations)) {
@@ -199,11 +201,12 @@ test("all 15 tools map to their correct executor routes", async () => {
   }
 });
 
-test("browser_snapshot, browser_click, and browser_type do NOT take screenshots", async () => {
+test("browser_snapshot, browser_click, browser_type, and browser_tabs do NOT take screenshots", async () => {
   const client = fakeClient({
     "/browser/snapshot": { ok: true, url: "https://example.com", elements: [{ ref: "e1" }] },
     "/browser/click": { ok: true, clicked: { ref: "e1" }, elements: [] },
     "/browser/type": { ok: true, typed: { ref: "e1", submit: true }, elements: [] },
+    "/browser/tabs": { ok: true, action: "list", tab_count: 2, tabs: [] },
   });
 
   const s = await runTool("browser_snapshot", { url: "https://example.com", risk: "low" }, client, { settleMs: 0 });
@@ -217,7 +220,11 @@ test("browser_snapshot, browser_click, and browser_type do NOT take screenshots"
   const t = await runTool("browser_type", { ref: "e1", text: "hi", submit: true, risk: "low" }, client, { settleMs: 0 });
   assert.equal(t.screenshot, null);
   assert.equal(t.result.ok, true);
-  assert.equal(client.calls.length, 3);
+
+  const tabs = await runTool("browser_tabs", { action: "list", risk: "low" }, client, { settleMs: 0 });
+  assert.equal(tabs.screenshot, null);
+  assert.equal(tabs.result.ok, true);
+  assert.equal(client.calls.length, 4);
 });
 
 test("screen_changed detection marks unchanged and changed desktop screenshots", async () => {

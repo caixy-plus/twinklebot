@@ -35,6 +35,7 @@ import {
   isSessionCurrentlyBusy,
 } from "../../state/helpers.js";
 import {
+  dismissErrorCard,
   getActiveSessionFromState,
   setState,
   useStore,
@@ -731,9 +732,20 @@ export function ChatStage({
               }
               case "error":
                 return (
-                  <div key={item.id} className="error-card">
-                    <div className="confirm-header">提示</div>
-                    <div>{item.message || "任务中断或遇到异常"}</div>
+                  <div key={item.id} className="error-card" role="alert">
+                    <div className="error-card-header">
+                      <div className="confirm-header">提示</div>
+                      <button
+                        type="button"
+                        className="error-card-close-btn"
+                        aria-label="关闭提示"
+                        title="关闭提示"
+                        onClick={() => dismissErrorCard(item.id, item.dismissKey)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="error-card-body">{item.message || "任务中断或遇到异常"}</div>
                   </div>
                 );
               default:

@@ -50,6 +50,7 @@ export interface ShellReleaseInfo {
   latestVersion: string;
   latestBuildCode?: number;
   minVersionForOta: string;
+  minVersionForCoreOta?: string;
   minBuildCodeForOta?: number;
   downloadUrl?: string;
   fileName?: string;
@@ -68,6 +69,20 @@ export interface WebOtaBundleInfo {
   requiredApiCapabilities?: string[];
 }
 
+export interface CoreOtaBundleInfo {
+  target: "desktop";
+  coreBuild: string;
+  coreVersion: string;
+  webBuild: string;
+  contentHash?: string;
+  executorSha256?: string;
+  bundleUrl: string;
+  sha256: string;
+  sizeBytes: number;
+  minShellVersion?: string;
+  apiCapabilities?: string[];
+}
+
 export interface BackendReleaseInfo {
   latestVersion: string;
   minCompatibleVersion: string;
@@ -81,6 +96,7 @@ export interface VersionManifest {
   releaseUrl?: string;
   releaseNotes?: string;
   webBuild: string;
+  coreBuild?: string;
   shells: {
     desktop?: ShellReleaseInfo;
     android?: ShellReleaseInfo;
@@ -89,6 +105,7 @@ export interface VersionManifest {
   backend?: BackendReleaseInfo;
   bundles?: {
     desktop?: WebOtaBundleInfo;
+    desktopCore?: CoreOtaBundleInfo;
     mobile?: WebOtaBundleInfo;
   };
 }
@@ -100,6 +117,8 @@ export interface LocalUpdateEnv {
   nativeBuildCode?: number;
   activeWebBuild: string;
   builtInWebBuild?: string;
+  supportsCoreOta?: boolean;
+  activeCoreBuild?: string;
 }
 
 export type CompatibilityDecisionStatus =
@@ -111,12 +130,15 @@ export type CompatibilityDecisionStatus =
 export interface CompatibilityDecision {
   status: CompatibilityDecisionStatus;
   sourceKind: "github";
+  otaKind?: "web" | "core";
   latestWebBuild: string;
+  latestCoreBuild?: string;
   releaseTag?: string;
   releaseUrl?: string;
   releaseNotes?: string;
   reason?: string;
   otaBundle?: WebOtaBundleInfo;
+  coreBundle?: CoreOtaBundleInfo;
   shellUpdate?: ShellReleaseInfo;
   resolvedAsset?: PlatformBinaryAsset;
   optionalShellUpdate?: ShellReleaseInfo;
@@ -415,6 +437,7 @@ export function evaluateUpdateCompatibility(
   const baseMeta = {
     sourceKind: "github" as const,
     latestWebBuild: manifest.webBuild || "",
+    ...(manifest.coreBuild ? { latestCoreBuild: manifest.coreBuild } : {}),
     releaseTag: manifest.releaseTag,
     releaseUrl: manifest.releaseUrl,
     releaseNotes: manifest.releaseNotes,
@@ -439,15 +462,89 @@ export function evaluateUpdateCompatibility(
     localEnv.nativeVersion,
     localEnv.nativeBuildCode
   );
-  const shellMeetsOtaMin = meetsMinimumShellForOta(
-    shellSpec,
-    localEnv.nativeVersion,
-    localEnv.nativeBuildCode
-  );
   const resolvedShell = withResolvedShellAsset(
     shellSpec,
     platform,
     localEnv.desktopArch
+  );
+
+  // Desktop Shell >= v1.0.4 with Core Runtime OTA support:
+  // Always prefer atomic no-reinstall Core OTA (Node backend + prompts + executor.py + Web UI)
+  // whenever the native shell meets minVersionForCoreOta, even across v* releases!
+  if (platform === "desktop" && localEnv.supportsCoreOta) {
+    const minCoreShell =
+      manifest.bundles?.desktopCore?.minShellVersion ||
+      shellSpec?.minVersionForCoreOta ||
+      shellSpec?.minVersionForOta ||
+      "1.0.0";
+    const shellMeetsCoreMin =
+      compareSemver(localEnv.nativeVersion || "0.0.0", minCoreShell) >= 0;
+
+    if (!shellMeetsCoreMin) {
+      return {
+        ...baseMeta,
+        status: "shell-update-required",
+        ...resolvedShell,
+        reason: `当前桌面原生壳版本（v${localEnv.nativeVersion}）低于 Core 热更新最低要求（v${minCoreShell}），请下载新版安装包`,
+      };
+    }
+
+    const coreBundle = manifest.bundles?.desktopCore;
+    const currentCoreBuild = localEnv.activeCoreBuild || localEnv.activeWebBuild;
+    const coreIsNewer = Boolean(
+      coreBundle &&
+        coreBundle.bundleUrl &&
+        coreBundle.sha256 &&
+        coreBundle.coreBuild &&
+        compareWebBuild(coreBundle.coreBuild, currentCoreBuild) > 0
+    );
+
+    if (coreBundle && coreIsNewer) {
+      return {
+        ...baseMeta,
+        status: "ota-available",
+        otaKind: "core",
+        otaBundle: {
+          target: "desktop",
+          webBuild: coreBundle.coreBuild,
+          contentHash: coreBundle.contentHash,
+          bundleUrl: coreBundle.bundleUrl,
+          sha256: coreBundle.sha256,
+          sizeBytes: coreBundle.sizeBytes,
+          requiredApiCapabilities: coreBundle.apiCapabilities,
+        },
+        coreBundle,
+        ...(newerShell && resolvedShell.shellUpdate
+          ? { optionalShellUpdate: resolvedShell.shellUpdate }
+          : {}),
+        reason: `发现兼容的免重装一体化热更新（含本地 Node 服务、前端与执行器${
+          coreBundle.coreVersion ? ` v${coreBundle.coreVersion}` : ""
+        }）`,
+      };
+    }
+
+    if (newerShell && resolvedShell.shellUpdate && !coreBundle) {
+      return {
+        ...baseMeta,
+        status: "shell-update-required",
+        ...resolvedShell,
+        reason: `发现新版桌面客户端 v${shellSpec?.latestVersion}`,
+      };
+    }
+
+    return {
+      ...baseMeta,
+      status: "up-to-date",
+      ...(newerShell && resolvedShell.shellUpdate
+        ? { optionalShellUpdate: resolvedShell.shellUpdate }
+        : {}),
+    };
+  }
+
+  const shellMeetsOtaMin = meetsMinimumShellForOta(
+    shellSpec,
+    localEnv.nativeVersion,
+    localEnv.nativeBuildCode
   );
 
   // 1. Current platform's native shell is below minimum OTA bound -> require shell reinstall
@@ -463,7 +560,7 @@ export function evaluateUpdateCompatibility(
     };
   }
 
-  // 2. Desktop embeds its own Node.js backend: if a newer desktop version exists, upgrade full installer
+  // 2. Legacy Desktop (< Core OTA): embeds Node.js backend statically -> newer shell triggers installer download
   if (platform === "desktop" && newerShell) {
     return {
       ...baseMeta,
@@ -487,6 +584,7 @@ export function evaluateUpdateCompatibility(
     return {
       ...baseMeta,
       status: "ota-available",
+      otaKind: "web",
       otaBundle: bundle,
       ...(newerShell && resolvedShell.shellUpdate
         ? { optionalShellUpdate: resolvedShell.shellUpdate }

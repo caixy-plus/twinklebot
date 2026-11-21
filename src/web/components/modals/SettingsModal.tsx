@@ -42,10 +42,12 @@ import {
 import { apiJson } from "../../services/api-client.js";
 import {
   applyAvailableOtaUpdate,
+  cancelDeferredCoreOta,
   checkForAppUpdates,
   computeUpdateDecisionKey,
   dismissCurrentUpdateNotice,
   downloadOrOpenFullShellUpdate,
+  forceSwitchCoreOtaNow,
   hasConnectedNodeCapability,
   rollbackOtaToBuiltIn,
 } from "../../services/ota-updater.js";
@@ -2910,7 +2912,7 @@ export function SettingsModal() {
                 <div>
                   <div className="settings-row-title">在这台电脑上执行</div>
                   <div className="settings-row-sub">
-                    控制 TwinkleBot 对你本机（宿主机）的权限：选「始终允许」时普通命令与非敏感文件读写自动放行（仍拦截敏感凭据目录并确认高危命令）；隔离沙箱「Bot 的电脑」默认免确认运行。
+                    允许 TwinkleBot 在你的电脑上打开文件并运行任务，自动审核仍会先检查所有操作：选「始终允许」时查文件、编辑普通文件、重命名移动与常规命令直接执行，仅删除、提权、改敏感配置或高危外发操作需要确认。
                   </div>
                 </div>
                 <select
@@ -3064,7 +3066,9 @@ export function SettingsModal() {
               <div className="settings-item-row">
                 <div>
                   <div className="settings-row-title">更新 Bot 的电脑</div>
-                  <div className="settings-row-sub">同步最新桌面执行器组件并重启服务</div>
+                  <div className="settings-row-sub">
+                    客户端升级后会在启动或使用 Bot 的电脑时自动同步；异常时可手动强制更新并重启服务
+                  </div>
                 </div>
                 <button
                   type="button"
@@ -3169,7 +3173,7 @@ export function SettingsModal() {
                       <div>
                         <div className="settings-row-title">同时运行屏幕上限</div>
                         <div className="settings-row-sub">
-                          Bot 数量不设上限；共享主 Google Chrome 登录态并在独立标签页并发运行，超出上限自动进入 FIFO 队列等待
+                          Bot 数量不设上限；共享主 Google Chrome 登录态并在独立浏览器窗口并发运行（每窗口支持自由多标签页），超出上限自动进入 FIFO 队列等待
                           {computerDisplays?.pool
                             ? `（当前活跃 ${computerDisplays.pool.activeCount} / ${computerDisplays.pool.maxConcurrentScreens} 屏${
                                 computerDisplays.pool.queuedCount > 0
@@ -3184,7 +3188,7 @@ export function SettingsModal() {
                       </span>
                     </div>
 
-                    <div className="ctx-preset-grid" style={{ marginTop: "10px" }}>
+                    <div className="ctx-presets-grid">
                       {[
                         {
                           id: "min" as const,
@@ -3233,7 +3237,7 @@ export function SettingsModal() {
                       ))}
                     </div>
 
-                    <div className="ctx-percent-control" style={{ marginTop: "10px" }}>
+                    <div className="ctx-percent-control">
                       <input
                         id="setting-max-concurrent-screens"
                         name="maxConcurrentScreens"
@@ -4432,7 +4436,7 @@ export function SettingsModal() {
               </button>
             </div>
 
-            <div className="settings-group-label">版本检测与纯前端热更新</div>
+            <div className="settings-group-label">版本检测与热更新</div>
             <div className="settings-card ota-update-card">
               <div className="settings-item-row">
                 <div>
@@ -4446,7 +4450,9 @@ export function SettingsModal() {
                           : plat === "android"
                             ? "Android 原生壳"
                             : plat === "desktop"
-                              ? "桌面端壳（含内嵌后端）"
+                              ? lm?.supportsCoreOta
+                                ? "桌面端原生壳（独立可升级架构）"
+                                : "桌面端壳（含内嵌后端）"
                               : "Web 浏览器端";
                       const verStr = lm?.nativeVersion || diagnostics?.appVersion || "1.0.0";
                       const codeSuffix = lm?.nativeBuildCode ? ` (Build ${lm.nativeBuildCode})` : "";
@@ -4457,7 +4463,11 @@ export function SettingsModal() {
                     {(() => {
                       const lm = updateState?.localMeta;
                       const wb = lm?.activeWebBuild || diagnostics?.webBuild || "builtin";
+                      const cb = lm?.activeCoreBuild || wb;
                       const tag = lm?.usingBuiltIn === false ? "热更新生效中" : "随包内置基线";
+                      if (lm?.supportsCoreOta) {
+                        return `核心运行时：${cb}（含本地 Node 服务、前端与执行器 · ${tag}）`;
+                      }
                       return `前端资源：${wb}（${tag}）`;
                     })()}
                   </div>
@@ -4479,7 +4489,11 @@ export function SettingsModal() {
                         if (res.status === "up-to-date") {
                           showToast("当前已是最新版本");
                         } else if (res.status === "ota-available") {
-                          showToast("发现纯前端热更新包，可一键生效");
+                          showToast(
+                            res.otaKind === "core"
+                              ? "发现 Core 运行时热更新包（本地服务 + 前端 + 执行器），可一键平滑升级"
+                              : "发现纯前端热更新包，可一键生效"
+                          );
                         }
                       });
                     }}
@@ -4514,20 +4528,75 @@ export function SettingsModal() {
                 </>
               )}
 
-              {Boolean(updateState?.applying && updateState?.progress) && (
+              {Boolean(
+                (updateState?.applying && updateState?.progress) ||
+                  updateState?.progress?.phase === "waiting_idle" ||
+                  updateState?.localMeta?.deferredSwitch
+              ) && (
                 <>
                   <div className="settings-divider" />
                   <div className="ota-progress-wrap">
                     <div className="ota-progress-meta">
-                      <span>{updateState.progress?.message || "正在更新…"}</span>
-                      <span>{Math.round(updateState.progress?.percent || 0)}%</span>
+                      <span>
+                        {updateState.progress?.message ||
+                          (updateState?.localMeta?.deferredSwitch
+                            ? `新版本 ${updateState.localMeta.deferredSwitch.buildId} 已下载就绪；当前有 ${updateState.localMeta.deferredSwitch.activeRunCount} 个 Bot 正在运行，空闲后将自动平滑切换`
+                            : "正在更新…")}
+                      </span>
+                      <span>
+                        {Math.round(
+                          updateState.progress?.percent ??
+                            (updateState?.localMeta?.deferredSwitch ? 90 : 0)
+                        )}
+                        %
+                      </span>
                     </div>
                     <div className="usage-progress-track">
                       <div
                         className="usage-progress-fill"
-                        style={{ width: `${Math.min(100, Math.max(5, updateState.progress?.percent || 0))}%` }}
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            Math.max(
+                              5,
+                              updateState.progress?.percent ??
+                                (updateState?.localMeta?.deferredSwitch ? 90 : 0)
+                            )
+                          )}%`,
+                        }}
                       />
                     </div>
+                    {(updateState?.progress?.phase === "waiting_idle" ||
+                      Boolean(updateState?.localMeta?.deferredSwitch)) && (
+                      <div className="ota-offer-actions" style={{ marginTop: 6 }}>
+                        <button
+                          type="button"
+                          id="force-switch-core-ota-btn"
+                          className="skill-pill-btn is-primary"
+                          disabled={Boolean(updateState?.applying)}
+                          onClick={() => {
+                            void forceSwitchCoreOtaNow().catch((err: any) => {
+                              showToast(`强制切换失败: ${err?.message || "未知错误"}`);
+                            });
+                          }}
+                        >
+                          立即强制重启切换
+                        </button>
+                        <button
+                          type="button"
+                          id="cancel-deferred-core-ota-btn"
+                          className="settings-pill-btn"
+                          disabled={Boolean(updateState?.applying)}
+                          onClick={() => {
+                            void cancelDeferredCoreOta().then(() => {
+                              showToast("已取消待切换的核心更新");
+                            });
+                          }}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
@@ -4540,7 +4609,9 @@ export function SettingsModal() {
                       <div className="ota-offer-title-row">
                         <span className="ota-offer-title">
                           {updateDecision.status === "ota-available"
-                            ? "发现兼容的纯前端热更新"
+                            ? updateDecision.otaKind === "core"
+                              ? "发现兼容的 Core 运行时热更新（本地服务 + 前端 + 执行器）"
+                              : "发现兼容的纯前端热更新"
                             : updateDecision.status === "reload-required"
                               ? "前端资源已更新"
                               : `发现新版安装包 v${updateDecision.shellUpdate?.latestVersion || ""}`}
@@ -4551,10 +4622,21 @@ export function SettingsModal() {
                             : "GitHub Releases"}
                         </span>
                       </div>
-                      {updateDecision.otaBundle && (
+                      {(updateDecision.coreBundle || updateDecision.otaBundle) && (
                         <span className="ota-offer-sub">
-                          目标构建：{updateDecision.otaBundle.webBuild} ·{" "}
-                          {Math.max(1, Math.round((updateDecision.otaBundle.sizeBytes || 0) / 1024))} KB
+                          目标构建：
+                          {updateDecision.coreBundle?.coreBuild ||
+                            updateDecision.otaBundle?.webBuild}{" "}
+                          ·{" "}
+                          {Math.max(
+                            1,
+                            Math.round(
+                              ((updateDecision.coreBundle?.sizeBytes ??
+                                updateDecision.otaBundle?.sizeBytes) ||
+                                0) / 1024
+                            )
+                          )}{" "}
+                          KB
                         </span>
                       )}
                       {updateDecision.resolvedAsset?.fileName && (
@@ -4575,14 +4657,33 @@ export function SettingsModal() {
                           type="button"
                           id="apply-web-ota-btn"
                           className="skill-pill-btn is-primary"
-                          disabled={Boolean(updateState?.applying)}
+                          disabled={Boolean(
+                            updateState?.applying ||
+                              updateState?.progress?.phase === "waiting_idle" ||
+                              updateState?.localMeta?.deferredSwitch
+                          )}
                           onClick={() => {
-                            void applyAvailableOtaUpdate().catch((err: any) => {
-                              showToast(`热更新失败: ${err?.message || "未知错误"}`);
-                            });
+                            void applyAvailableOtaUpdate()
+                              .then((res) => {
+                                if (res?.queuedForIdle) {
+                                  showToast(
+                                    "新版本已下载就绪，当前 Bot 任务结束后将自动平滑切换"
+                                  );
+                                }
+                              })
+                              .catch((err: any) => {
+                                showToast(`热更新失败: ${err?.message || "未知错误"}`);
+                              });
                           }}
                         >
-                          {updateState?.applying ? "热更新中…" : "立即热更新并生效"}
+                          {updateState?.applying
+                            ? "热更新中…"
+                            : updateState?.progress?.phase === "waiting_idle" ||
+                                updateState?.localMeta?.deferredSwitch
+                              ? "已就绪 · 等待空闲自动切换"
+                              : updateDecision.otaKind === "core"
+                                ? "立即热更新并平滑切换"
+                                : "立即热更新并生效"}
                         </button>
                       )}
                       {updateDecision.status === "reload-required" && (
@@ -4633,9 +4734,15 @@ export function SettingsModal() {
                   <div className="settings-divider" />
                   <div className="settings-item-row">
                     <div>
-                      <div className="settings-row-title">恢复随包内置前端界面</div>
+                      <div className="settings-row-title">
+                        {updateState?.localMeta?.supportsCoreOta
+                          ? "恢复随包内置基线版本"
+                          : "恢复随包内置前端界面"}
+                      </div>
                       <div className="settings-row-sub">
-                        若热更新后界面显示异常，可一键回退到安装包原版静态资源
+                        {updateState?.localMeta?.supportsCoreOta
+                          ? "若热更新后本地服务或界面异常，可一键回退到安装包原版核心运行时"
+                          : "若热更新后界面显示异常，可一键回退到安装包原版静态资源"}
                       </div>
                     </div>
                     <button

@@ -8,7 +8,12 @@ import {
   isHostTool,
   runHostTool,
 } from "../src/agent/host-tools.js";
-import { updateBotComputer } from "../src/lib/bot-computer-updater.js";
+import {
+  computeBundledExecutorSha256,
+  createExecutorAutoSyncController,
+  updateBotComputer,
+} from "../src/lib/bot-computer-updater.js";
+import { createLocalAwareExecutorClient } from "../src/lib/bot-computer-provisioner.js";
 
 test("HOST_TOOL_DECLARATIONS defines 5 host tools with risk parameter", () => {
   const names = HOST_TOOL_DECLARATIONS.map((t) => t.name);
@@ -190,4 +195,95 @@ test("updateBotComputer on win32 discovers Ubuntu-* distro via wsl, syncs execut
   assert.match(decodedScript, /\/opt\/twinklebot\/executor\.py/);
   assert.match(decodedScript, /twinklebot-desktop\.service/);
   assert.match(decodedScript, /twinklebot-executor\.service/);
+});
+
+test("createExecutorAutoSyncController & createLocalAwareExecutorClient auto-sync outdated executor.py once and skip when up-to-date", async () => {
+  const realSha = computeBundledExecutorSha256();
+  assert.match(realSha, /^[a-f0-9]{16}$/);
+
+  // 1. Already up-to-date -> 0 calls to updateBotComputerFn
+  let updCount1 = 0;
+  const ctrlUpToDate = createExecutorAutoSyncController({
+    platform: "darwin",
+    deployEnv: "local",
+    localShaOverride: "abcdef0123456789",
+    executor: {
+      async health() {
+        return { ok: true, executor_sha256: "abcdef0123456789" };
+      },
+    },
+    updateBotComputerFn: async () => {
+      updCount1 += 1;
+      return { ok: true, updatedAt: new Date().toISOString() };
+    },
+  });
+  const r1 = await ctrlUpToDate.syncIfOutdated("test");
+  assert.equal(r1.ok, true);
+  assert.equal(r1.synced, false);
+  assert.equal(updCount1, 0);
+  assert.equal(ctrlUpToDate.isSynced(), true);
+  ctrlUpToDate.dispose();
+
+  // 2. Legacy/outdated executor on first Bot Computer call -> auto-updates ONCE before executing call, then caches
+  let remoteSha = ""; // simulates legacy executor.py without executor_sha256
+  let updateCalls = 0;
+  const savedSettings: any[] = [];
+  const fakeFetch: typeof fetch = (async (input: any) => {
+    const u = String(input);
+    if (u.endsWith("/health")) {
+      return new Response(
+        JSON.stringify({ ok: true, width: 1440, height: 900, ...(remoteSha ? { executor_sha256: remoteSha } : {}) }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ ok: true, echoedSha: remoteSha }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as any;
+
+  const client = createLocalAwareExecutorClient({
+    url: "http://127.0.0.1:7300",
+    token: "tok-sync",
+    deployEnv: "local",
+    platform: "darwin",
+    autoSyncExecutor: true,
+    localShaOverride: "1122334455667788",
+    fetchImpl: fakeFetch,
+    store: {
+      readSettings: () => ({ botComputer: { state: "ready" } }),
+      writeSettings: (patch: any) => savedSettings.push(patch),
+    },
+    updateBotComputerFn: async () => {
+      updateCalls += 1;
+      remoteSha = "1122334455667788";
+      return { ok: true, updatedAt: "2026-11-21T03:00:00.000Z" };
+    },
+  });
+
+  const firstOut = await client.call("/displays/ensure", { bot_id: "b1" });
+  assert.equal(updateCalls, 1, "First call must auto-sync outdated executor.py before executing");
+  assert.equal(firstOut.echoedSha, "1122334455667788");
+  assert.equal(savedSettings.length, 1);
+
+  // Subsequent calls incur zero additional syncs
+  await client.call("/browser/snapshot", {});
+  assert.equal(updateCalls, 1);
+
+  // 3. Cloud mode or uncreated Bot Computer must never trigger local auto-sync
+  let cloudUpd = 0;
+  const cloudCtrl = createExecutorAutoSyncController({
+    platform: "darwin",
+    deployEnv: "cloud",
+    localShaOverride: "1122334455667788",
+    executor: { async health() { return { ok: true }; } },
+    updateBotComputerFn: async () => {
+      cloudUpd += 1;
+      return { ok: true, updatedAt: new Date().toISOString() };
+    },
+  });
+  const rCloud = await cloudCtrl.syncIfOutdated("test");
+  assert.equal(rCloud.synced, false);
+  assert.equal(cloudUpd, 0);
+  cloudCtrl.dispose();
 });

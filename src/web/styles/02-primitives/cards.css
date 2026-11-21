@@ -35,6 +35,13 @@
   gap: 14px;
 }
 
+.settings-item-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: var(--pad-card-row);
+}
+
 .private-skill-row:not(:last-child) {
   border-bottom: 1px solid var(--border-hairline);
 }

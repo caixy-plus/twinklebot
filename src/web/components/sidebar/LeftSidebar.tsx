@@ -152,7 +152,9 @@ export function LeftSidebar({
 
   const updateTriggerTitle =
     updateDecision?.status === "ota-available"
-      ? "发现纯前端热更新，点击一键更新"
+      ? updateDecision?.otaKind === "core"
+        ? "发现 Core 运行时热更新（免重装），点击一键更新"
+        : "发现纯前端热更新，点击一键更新"
       : "发现新版本，点击查看更新";
 
   return (

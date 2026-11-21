@@ -143,7 +143,7 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
     } else {
       const modeNote =
         hostExecutionMode === "always"
-          ? "normal commands and non-sensitive file reads/writes are auto-allowed; only destructive shell commands (`sudo`/`rm`/`mv`), sensitive directories, and `risk: \"high\"` actions pause for confirmation"
+          ? "auto-allowed for routine tasks in scope: reading/searching files, organizing/renaming files (`mv`), editing ordinary files the user asked to modify, generating docs/media, and running normal CLI tools — use `risk: \"low\"` or `\"medium\"` and execute directly without asking first; ONLY set `risk: \"high\"` (or let automatic audit confirm) for deleting important files (`rm`), privileged `sudo`, modifying sensitive system/shell configs, or irreversible external actions (sending messages/posts — draft first, payments, orders, agreements)"
           : "mutating host actions prompt the user for confirmation";
       hostComputerLine = isWinHost
         ? `- User's Computer ("你的电脑", ${hostDisplayLabel} — mode: \`${hostExecutionMode}\`, ${modeNote}): Use \`host_run_shell\` (runs Windows PowerShell \`powershell.exe -NoProfile -NonInteractive\` directly with UTF-8 & \`WSL_UTF8=1\` enabled — write native PowerShell 5.1 syntax using \`;\` instead of \`&&\`, no outer \`powershell -Command\` wrapper needed), \`host_open\` (Explorer / default app), \`host_read_file\`, and \`host_write_file\` when inspecting/editing local Windows files or managing WSL.`

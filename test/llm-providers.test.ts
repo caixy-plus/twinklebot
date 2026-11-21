@@ -6,7 +6,10 @@ import {
   sanitizeProvidersForClient,
   testProviderConnection,
 } from "../src/agent/providers/registry.js";
-import { createGeminiDriver } from "../src/agent/providers/gemini-driver.js";
+import {
+  createGeminiDriver,
+  sanitizeInputForGemini,
+} from "../src/agent/providers/gemini-driver.js";
 import {
   canonicalToOpenAiMessages,
   createOpenAiCompatDriver,
@@ -383,6 +386,71 @@ test("gemini driver strips unsigned thoughts upfront and retries without foreign
   assert.equal(seenInputs.length, 2);
   assert.equal(seenInputs[0].some((s: any) => s.text === "unsigned openai reasoning"), false);
   assert.equal(seenInputs[1].some((s: any) => s.type === "thought"), false);
+});
+
+test("gemini driver folds unsigned cross-provider tool turns upfront and recovers from generic 400 invalid argument", async () => {
+  // 1. DeepSeek/OpenAI history (thought without signature + model_output + function_call + function_result)
+  //    is cleanly folded into valid model_output / user_input turns while preserving Gemini signed tool turns!
+  const mixedHistory = [
+    userStep("check page"),
+    // Gemini native signed tool turn -> preserved intact!
+    { type: "thought", signature: "gem-sig-1", summary: [{ type: "text", text: "plan" }] },
+    { type: "function_call", id: "call_gem_1", name: "run_shell", arguments: { command: "pwd" } },
+    { type: "function_result", call_id: "call_gem_1", name: "run_shell", result: '{"stdout":"/tmp"}' },
+    { type: "model_output", content: [{ type: "text", text: "done step 1" }] },
+    userStep("now open browser"),
+    // DeepSeek/OpenAI unsigned turn with pre-action model_output + function_call -> MUST be folded!
+    { type: "thought", text: "deepseek reasoning without signature" },
+    { type: "model_output", content: [{ type: "text", text: "好的，我去看看" }] },
+    { type: "function_call", id: "call_00_IuRG", name: "browser_snapshot", arguments: { url: "https://example.com" } },
+    { type: "function_result", call_id: "call_00_IuRG", name: "browser_snapshot", result: '{"ok":true,"title":"Example"}' },
+  ];
+
+  const firstSanitized = sanitizeInputForGemini(mixedHistory, {
+    stripAllThoughts: false,
+    foldUnsignedToolTurns: true,
+  });
+  // Gemini native signed call preserved
+  assert.ok(firstSanitized.some((s: any) => s.type === "function_call" && s.id === "call_gem_1"));
+  // Foreign unsigned DeepSeek call folded (never sent as raw unsigned function_call!)
+  assert.equal(
+    firstSanitized.some((s: any) => s.type === "function_call" && s.id === "call_00_IuRG"),
+    false
+  );
+  // Folded context preserves tool call & result text
+  const serialized = JSON.stringify(firstSanitized);
+  assert.ok(serialized.includes("browser_snapshot"));
+  assert.ok(serialized.includes("Example"));
+
+  // 2. If Gemini still returns generic `400 Request contains an invalid argument.` (e.g. cross-version
+  //    Gemini signature mismatch), driver automatically retries with all thoughts stripped & tool turns folded!
+  const seen: any[] = [];
+  const driver = createGeminiDriver({
+    apiKey: "test-key",
+    client: {
+      interactions: {
+        async create(params: any) {
+          seen.push(params.input);
+          if (params.input.some((s: any) => s.type === "thought" || s.type === "function_call")) {
+            const err: any = new Error("400 Request contains an invalid argument.");
+            err.status = 400;
+            throw err;
+          }
+          return { steps: [{ type: "model_output", content: [{ type: "text", text: "recovered-400" }] }] };
+        },
+      },
+    },
+  });
+
+  const turn = await driver.nextTurn({
+    model: "gemini-3.1-pro-preview",
+    systemInstruction: "sys",
+    input: mixedHistory,
+  });
+
+  assert.equal(turn.text, "recovered-400");
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].some((s: any) => s.type === "thought" || s.type === "function_call"), false);
 });
 
 test("openAiResponseToTurn extracts DeepSeek prompt_cache_hit_tokens and prompt_cache_miss_tokens accurately", () => {

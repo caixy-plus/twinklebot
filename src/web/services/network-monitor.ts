@@ -244,6 +244,7 @@ export function reportHttpOutcome({
   }
 
   if (!timedOut && !networkError) return;
+  if (getState().updateState?.coreSwitchInProgress) return;
   if (!isRemoteAccountType(accountType)) return;
 
   consecutiveHttpFailures += 1;
@@ -346,6 +347,7 @@ export function reportTransportDisconnected({
   nextRetryDelayMs?: number | null;
   reason?: string;
 }) {
+  if (getState().updateState?.coreSwitchInProgress) return;
   if (weakDebounceTimer) {
     clearTimeout(weakDebounceTimer);
     weakDebounceTimer = null;

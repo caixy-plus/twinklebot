@@ -7,6 +7,10 @@ import { createExecutorClient } from "../agent/executor-client.js";
 import { buildScrubbedEnv } from "./mcp-client.js";
 import { resolveProjectRoot } from "./project-root.js";
 import {
+  createExecutorAutoSyncController,
+  updateBotComputer,
+} from "./bot-computer-updater.js";
+import {
   buildTwinklebotChromeWrapperScript,
   buildWslProvisionScript,
   classifyWslInstallFailure,
@@ -815,6 +819,9 @@ export function createLocalAwareExecutorClient({
   fetchImpl,
   execFileFn,
   retryDelayMs,
+  autoSyncExecutor,
+  updateBotComputerFn,
+  localShaOverride,
 }: {
   url: string;
   token: string;
@@ -824,13 +831,16 @@ export function createLocalAwareExecutorClient({
   fetchImpl?: typeof fetch;
   execFileFn?: (cmd: string, args: string[], timeout?: number) => Promise<any>;
   retryDelayMs?: number;
+  autoSyncExecutor?: boolean;
+  updateBotComputerFn?: typeof updateBotComputer;
+  localShaOverride?: string;
 }): ExecutorClient {
   const probeClient = createExecutorClient({
     url,
     token,
     ...(fetchImpl ? { fetchImpl } : {}),
   });
-  const client = createExecutorClient({
+  const baseClient = createExecutorClient({
     url,
     token,
     ...(fetchImpl ? { fetchImpl } : {}),
@@ -856,10 +866,45 @@ export function createLocalAwareExecutorClient({
         }
       : {}),
   });
+
+  const enableAutoSync =
+    typeof autoSyncExecutor === "boolean"
+      ? autoSyncExecutor
+      : !fetchImpl && !execFileFn && deployEnv === "local" && (platform === "darwin" || platform === "win32");
+
+  const autoSync = enableAutoSync
+    ? createExecutorAutoSyncController({
+        platform,
+        deployEnv: String(deployEnv || "local"),
+        executor: probeClient,
+        executorToken: token,
+        store,
+        ...(updateBotComputerFn ? { updateBotComputerFn } : {}),
+        ...(execFileFn ? { execFileFn } : {}),
+        ...(typeof localShaOverride === "string" ? { localShaOverride } : {}),
+      })
+    : null;
+
   if (!fetchImpl && !execFileFn) {
     initLocalWslKeepaliveOnStartup({ platform, deployEnv, store });
   }
-  return client;
+  if (autoSync) {
+    autoSync.scheduleStartupSync(1500);
+  }
+
+  if (!autoSync) {
+    return baseClient;
+  }
+
+  return {
+    health: (opts) => baseClient.health(opts),
+    call: async (route, body, opts) => {
+      if (!autoSync.isSynced()) {
+        await autoSync.syncIfOutdated("pre-call");
+      }
+      return baseClient.call(route, body, opts);
+    },
+  };
 }
 
 export default {

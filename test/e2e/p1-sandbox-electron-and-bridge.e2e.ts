@@ -222,7 +222,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       priority: "P1",
       featureTier: "F1",
       difficulty: "D3",
-      title: "全栈真沙盒闭环：Web UI → Node Agent → 真实 Python executor.py → 真实 Chrome 登录 + send_file 投递卡片",
+      title: "全栈真沙盒闭环：Web UI → Node Agent → 真实 Python executor.py → 真实 Chrome 登录 + browser_tabs + send_file 投递卡片",
       module: "Fullstack Sandbox",
     },
     async () => {
@@ -303,6 +303,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         if (step === 5) {
           return {
             toolCalls: [
+              { id: "sb5a", name: "browser_tabs", args: { action: "list", risk: "low" } },
               { id: "sb5", name: "run_shell", args: { command: `printf 'SBOX_REPORT_OK' > ${reportFile}`, risk: "low" } },
             ],
           };
@@ -347,7 +348,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       priority: "P1",
       featureTier: "F1",
       difficulty: "D3",
-      title: "共享 Chrome Profile 跨 Bot 登录态(Cookie + localStorage)与双标签并发 DOM 操作隔离",
+      title: "共享 Chrome Profile 跨 Bot 登录态(Cookie + localStorage)与每 Bot 独立窗口并发 DOM 操作隔离",
       module: "Sandbox Shared Profile",
     },
     async () => {

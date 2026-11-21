@@ -116,7 +116,11 @@ export function validateGithubManifestUrls(
       }
     }
   }
-  for (const b of [manifest.bundles?.desktop, manifest.bundles?.mobile]) {
+  for (const b of [
+    manifest.bundles?.desktop,
+    manifest.bundles?.desktopCore,
+    manifest.bundles?.mobile,
+  ]) {
     if (b?.bundleUrl) urlsToCheck.push(b.bundleUrl);
   }
   return urlsToCheck.every((u) => isTrustedGithubReleaseUrl(u, githubRepo));

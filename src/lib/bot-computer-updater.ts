@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -186,5 +187,181 @@ export async function updateBotComputer({
     ok: true,
     updatedAt: new Date().toISOString(),
     ...(activeDistro ? { distro: activeDistro } : {}),
+  };
+}
+
+export function computeBundledExecutorSha256(projectRoot = DEFAULT_PROJECT_ROOT): string {
+  try {
+    const localPath = resolveUnpackedExecutorPath(projectRoot);
+    if (!fs.existsSync(localPath)) return "";
+    const content = fs.readFileSync(localPath);
+    return crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
+  } catch {
+    return "";
+  }
+}
+
+export interface AutoSyncExecutorResult {
+  ok: boolean;
+  synced: boolean;
+  reason?: string;
+  updatedAt?: string;
+  error?: string;
+}
+
+export interface ExecutorAutoSyncController {
+  syncIfOutdated(reason?: string): Promise<AutoSyncExecutorResult>;
+  scheduleStartupSync(delayMs?: number): void;
+  isSynced(): boolean;
+  dispose(): void;
+}
+
+/**
+ * Keeps the local Ubuntu VM's `/opt/twinklebot/executor.py` automatically synchronized
+ * with the Desktop App's bundled `executor.py` whenever their SHA-256 hashes differ:
+ * - Triggered non-blockingly ~1.5s after App startup (if the VM is already running), AND
+ * - Triggered lazily before the first Bot Computer `executor.call(...)` if the VM woke up later.
+ * - Once verified up-to-date in this process, subsequent checks are a 0ms in-memory no-op.
+ */
+export function createExecutorAutoSyncController({
+  platform = process.platform,
+  deployEnv = "local",
+  projectRoot = DEFAULT_PROJECT_ROOT,
+  executor,
+  executorToken = "",
+  store = null,
+  updateBotComputerFn = updateBotComputer,
+  execFileFn,
+  cooldownMs = 5 * 60_000,
+  localShaOverride,
+}: {
+  platform?: string;
+  deployEnv?: string;
+  projectRoot?: string;
+  executor?: Partial<ExecutorClient> | null;
+  executorToken?: string;
+  store?: any;
+  updateBotComputerFn?: typeof updateBotComputer;
+  execFileFn?: (cmd: string, args: string[], timeout?: number) => Promise<any>;
+  cooldownMs?: number;
+  localShaOverride?: string;
+} = {}): ExecutorAutoSyncController {
+  const localSha =
+    typeof localShaOverride === "string"
+      ? localShaOverride.trim()
+      : computeBundledExecutorSha256(projectRoot);
+  const eligible =
+    deployEnv === "local" &&
+    (platform === "darwin" || platform === "win32") &&
+    Boolean(localSha) &&
+    Boolean(executor && typeof executor.health === "function");
+
+  let verifiedSha = "";
+  let inflight: Promise<AutoSyncExecutorResult> | null = null;
+  let lastFailedAt = 0;
+  let startupTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  async function runCheck(reason: string): Promise<AutoSyncExecutorResult> {
+    if (!eligible || disposed) {
+      return { ok: true, synced: false, reason: "ineligible" };
+    }
+    if (verifiedSha === localSha) {
+      return { ok: true, synced: false, reason: "up-to-date" };
+    }
+    if (lastFailedAt > 0 && Date.now() - lastFailedAt < cooldownMs) {
+      return { ok: false, synced: false, reason: "cooldown" };
+    }
+
+    const persistedState = store?.readSettings?.()?.botComputer?.state;
+    if (persistedState === "creating" || persistedState === "uncreated") {
+      return { ok: true, synced: false, reason: `state:${persistedState}` };
+    }
+
+    let health: any = null;
+    try {
+      health = await executor!.health!({ timeoutMs: 2500, skipWake: true });
+    } catch {
+      return { ok: true, synced: false, reason: "unreachable" };
+    }
+    if (!health || health.ok === false) {
+      return { ok: true, synced: false, reason: "unhealthy" };
+    }
+
+    const remoteSha = String(health.executor_sha256 || "").trim();
+    if (remoteSha && remoteSha === localSha) {
+      verifiedSha = localSha;
+      return { ok: true, synced: false, reason: "up-to-date" };
+    }
+
+    try {
+      const upd = await updateBotComputerFn({
+        platform,
+        projectRoot,
+        executor,
+        executorToken,
+        ...(execFileFn ? { execFileFn } : {}),
+      });
+      verifiedSha = localSha;
+      lastFailedAt = 0;
+      try {
+        const prevBc = store?.readSettings?.()?.botComputer || {};
+        store?.writeSettings?.({
+          botComputer: {
+            ...prevBc,
+            state: "ready",
+            updatedAt: upd.updatedAt,
+            ...(upd.distro ? { distro: upd.distro } : {}),
+          },
+        });
+      } catch {
+        // non-fatal persistence error
+      }
+      console.log(
+        `[TwinkleBot] Auto-synced Bot Computer executor.py (${reason}, ${remoteSha || "legacy"} -> ${localSha})`
+      );
+      return { ok: true, synced: true, updatedAt: upd.updatedAt };
+    } catch (err: any) {
+      lastFailedAt = Date.now();
+      const msg = err?.message || String(err);
+      console.warn(`[TwinkleBot] Auto-sync executor.py skipped (${reason}): ${msg}`);
+      return { ok: false, synced: false, error: msg };
+    }
+  }
+
+  return {
+    syncIfOutdated(reason = "manual"): Promise<AutoSyncExecutorResult> {
+      if (!eligible || disposed || verifiedSha === localSha) {
+        return Promise.resolve({ ok: true, synced: false, reason: "up-to-date" });
+      }
+      if (!inflight) {
+        inflight = runCheck(reason).finally(() => {
+          inflight = null;
+        });
+      }
+      return inflight;
+    },
+    scheduleStartupSync(delayMs = 1500): void {
+      if (!eligible || disposed || startupTimer) return;
+      startupTimer = setTimeout(() => {
+        startupTimer = null;
+        if (!disposed) {
+          void this.syncIfOutdated("startup").catch(() => {});
+        }
+      }, Math.max(0, delayMs));
+      if (typeof (startupTimer as any)?.unref === "function") {
+        (startupTimer as any).unref();
+      }
+    },
+    isSynced(): boolean {
+      return Boolean(localSha) && verifiedSha === localSha;
+    },
+    dispose(): void {
+      disposed = true;
+      if (startupTimer) {
+        clearTimeout(startupTimer);
+        startupTimer = null;
+      }
+    },
   };
 }

@@ -43,6 +43,17 @@ MAX_SHELL_OUTPUT = 20000
 MAX_FILE_CHARS = 200000
 DEFAULT_BROWSER = "/usr/local/bin/google-chrome"
 DEFAULT_CDP_PORT = 9222
+
+
+def _compute_self_sha256() -> str:
+    try:
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+EXECUTOR_FILE_SHA256 = _compute_self_sha256()
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _IGNORED_CDP_PREFIXES = ("devtools://", "chrome-extension://", "chrome://omnibox")
 _BLANK_CDP_URLS = ("", "about:blank", "chrome://newtab/", "chrome://new-tab-page/", "edge://newtab/")
@@ -460,11 +471,19 @@ def fetch_cdp_browser_ws(port: int = DEFAULT_CDP_PORT, timeout: float = 2.0):
 
 
 def close_cdp_target(target_id: str, port: int = DEFAULT_CDP_PORT, timeout: float = 2.0):
-    if not target_id:
+    tid = str(target_id or "").strip()
+    if not tid:
         return
+    browser_ws = fetch_cdp_browser_ws(port=port, timeout=min(timeout, 1.0))
+    if browser_ws:
+        try:
+            cdp_ws_call(browser_ws, "Target.closeTarget", {"targetId": tid}, timeout=timeout)
+            return
+        except Exception:
+            pass
     try:
         with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/json/close/{urllib.parse.quote(str(target_id))}",
+            f"http://127.0.0.1:{port}/json/close/{urllib.parse.quote(tid)}",
             timeout=timeout,
         ) as resp:
             resp.read()
@@ -472,34 +491,170 @@ def close_cdp_target(target_id: str, port: int = DEFAULT_CDP_PORT, timeout: floa
         pass
 
 
-def create_cdp_target(url: str = "about:blank", port: int = DEFAULT_CDP_PORT, timeout: float = 4.0) -> dict:
+def get_cdp_window_for_target(
+    target_id: str,
+    port: int = DEFAULT_CDP_PORT,
+    timeout: float = 2.0,
+):
+    tid = str(target_id or "").strip()
+    if not tid:
+        return None
+    browser_ws = fetch_cdp_browser_ws(port=port, timeout=min(timeout, 1.5))
+    if not browser_ws:
+        return None
+    try:
+        res = cdp_ws_call(browser_ws, "Browser.getWindowForTarget", {"targetId": tid}, timeout=timeout)
+        if isinstance(res, dict) and res.get("windowId") is not None:
+            return res
+    except Exception:
+        return None
+    return None
+
+
+def set_cdp_window_bounds(
+    window_id: int,
+    bounds: dict,
+    port: int = DEFAULT_CDP_PORT,
+    timeout: float = 2.0,
+) -> bool:
+    if window_id is None or not isinstance(bounds, dict):
+        return False
+    browser_ws = fetch_cdp_browser_ws(port=port, timeout=min(timeout, 1.5))
+    if not browser_ws:
+        return False
+    try:
+        cdp_ws_call(
+            browser_ws,
+            "Browser.setWindowBounds",
+            {"windowId": int(window_id), "bounds": bounds},
+            timeout=timeout,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def create_cdp_target(
+    url: str = "about:blank",
+    port: int = DEFAULT_CDP_PORT,
+    timeout: float = 4.0,
+    new_window: bool = True,
+    background: bool = False,
+) -> dict:
     start_url = url if isinstance(url, str) and url.strip() else "about:blank"
     browser_ws = fetch_cdp_browser_ws(port=port, timeout=min(timeout, 2.0))
     if browser_ws:
-        try:
-            res = cdp_ws_call(browser_ws, "Target.createTarget", {"url": start_url}, timeout=timeout)
-            tid = str((res or {}).get("targetId") or "").strip()
-            if tid:
-                try:
-                    for t in fetch_cdp_targets(port=port, timeout=min(timeout, 2.0)):
-                        if isinstance(t, dict) and str(t.get("id") or "") == tid:
-                            return t
-                except Exception:
-                    pass
-                return {
-                    "id": tid,
-                    "type": "page",
-                    "url": start_url,
-                    "title": "",
-                    "webSocketDebuggerUrl": f"ws://127.0.0.1:{port}/devtools/page/{tid}",
-                }
-        except Exception:
-            pass
+        if new_window:
+            param_variants = [
+                {"url": start_url, "newWindow": True, "background": bool(background)},
+                {"url": start_url, "newWindow": True},
+                {"url": start_url},
+            ]
+        else:
+            param_variants = [
+                {"url": start_url, "newWindow": False, "background": bool(background)},
+                {"url": start_url},
+            ]
+        for params in param_variants:
+            try:
+                res = cdp_ws_call(browser_ws, "Target.createTarget", params, timeout=timeout)
+                tid = str((res or {}).get("targetId") or "").strip()
+                if tid:
+                    try:
+                        for t in fetch_cdp_targets(port=port, timeout=min(timeout, 2.0)):
+                            if isinstance(t, dict) and str(t.get("id") or "") == tid:
+                                return t
+                    except Exception:
+                        pass
+                    return {
+                        "id": tid,
+                        "type": "page",
+                        "url": start_url,
+                        "title": "",
+                        "webSocketDebuggerUrl": f"ws://127.0.0.1:{port}/devtools/page/{tid}",
+                    }
+            except Exception:
+                continue
 
     encoded = urllib.parse.quote(start_url, safe=":/?&=#%")
     req = urllib.request.Request(f"http://127.0.0.1:{port}/json/new?{encoded}", method="PUT")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def create_cdp_tab_in_window(
+    parent_target: dict,
+    url: str = "about:blank",
+    port: int = DEFAULT_CDP_PORT,
+    window_id: int = None,
+    timeout: float = 4.0,
+    targets_fn=fetch_cdp_targets,
+    window_for_target_fn=get_cdp_window_for_target,
+):
+    """
+    Create a new tab strictly inside `parent_target`'s Chrome window (`window_id`),
+    preferring `window.open(url, '_blank')` with `userGesture=True` on `parent_target`
+    so the new tab opens in that exact window even while the window is in the background.
+    """
+    start_url = url if isinstance(url, str) and url.strip() else "about:blank"
+    parent_tid = str((parent_target or {}).get("id") or "").strip()
+    parent_ws = str((parent_target or {}).get("webSocketDebuggerUrl") or "").strip()
+    if not parent_ws and parent_tid:
+        parent_ws = f"ws://127.0.0.1:{port}/devtools/page/{parent_tid}"
+
+    try:
+        before_raw = targets_fn(port=port, timeout=min(timeout, 2.0)) or []
+    except Exception:
+        before_raw = []
+    before_ids = {
+        str(t.get("id") or "")
+        for t in before_raw
+        if isinstance(t, dict) and t.get("type") == "page" and t.get("id")
+    }
+
+    if parent_ws:
+        try:
+            cdp_ws_call(
+                parent_ws,
+                "Runtime.evaluate",
+                {
+                    "expression": f"Boolean(window.open({json.dumps(start_url)}, '_blank'))",
+                    "userGesture": True,
+                    "returnByValue": True,
+                },
+                timeout=min(timeout, 3.0),
+            )
+            deadline = time.time() + min(1.5, max(0.3, float(timeout)))
+            while time.time() < deadline:
+                try:
+                    after_raw = targets_fn(port=port, timeout=min(timeout, 2.0)) or []
+                except Exception:
+                    after_raw = []
+                new_pages = [
+                    t
+                    for t in after_raw
+                    if isinstance(t, dict)
+                    and t.get("type") == "page"
+                    and t.get("id")
+                    and str(t.get("id")) not in before_ids
+                    and not str(t.get("url") or "").startswith(_IGNORED_CDP_PREFIXES)
+                ]
+                for cand in reversed(new_pages):
+                    cid = str(cand["id"])
+                    if window_id is not None and window_for_target_fn is not None:
+                        winfo = window_for_target_fn(cid, port=port, timeout=1.5)
+                        if isinstance(winfo, dict) and winfo.get("windowId") is not None:
+                            if int(winfo["windowId"]) != int(window_id):
+                                continue
+                    return cand
+                time.sleep(0.06)
+        except Exception:
+            pass
+
+    # Fallback when parent page is a restricted scheme (e.g. chrome://) where window.open is disallowed
+    if parent_tid:
+        activate_cdp_target(parent_target, port=port, timeout=min(timeout, 1.5))
+    return create_cdp_target(start_url, port=port, timeout=timeout, new_window=False, background=False)
 
 
 def close_redundant_blank_tabs(port: int = DEFAULT_CDP_PORT, timeout: float = 2.0, protected_ids=None):
@@ -610,13 +765,17 @@ def _default_tcp_open(port: int, host: str = "127.0.0.1", timeout: float = 0.25)
 
 class TabManager:
     """
-    Multi-Bot Chrome Tab Manager over a SINGLE official Google Chrome instance (`:1`, CDP `9222`)
-    sharing the Primary Profile (`/opt/twinklebot/chrome-profile`) for 100% native shared login state.
+    Multi-Bot Chrome Window Manager (1 Bot <-> 1 dedicated Chrome window) over a SINGLE official
+    Google Chrome instance (`:1`, CDP `9222`) sharing the Primary Profile
+    (`/opt/twinklebot/chrome-profile`) for 100% native shared login state.
 
     - Bot count is unlimited.
-    - Each active Bot gets its own isolated CDP Page Tab (`target_id`) inside the shared Chrome process.
-    - Concurrently active Bot tabs are bounded by `max_concurrent_screens` (hardware-budgeted default);
-      idle tabs are reclaimed (preserving last URL) when the pool is full, and in-flight overflows queue FIFO.
+    - Each active Bot owns a dedicated maximized Chrome Window (`windowId` via CDP
+      `Browser.getWindowForTarget`) that natively supports multiple tabs inside that window
+      (user tabs, `target="_blank"` / `window.open()` popups, and `/browser/tabs` operations).
+    - Concurrently active Bot windows are bounded by `max_concurrent_screens` (hardware-budgeted
+      default); idle windows are reclaimed (closing all tabs in that window while preserving the
+      last URL) when the pool is full, and in-flight overflows queue FIFO.
     """
 
     def __init__(
@@ -635,6 +794,9 @@ class TabManager:
         create_tab_fn=create_cdp_target,
         close_tab_fn=close_cdp_target,
         activate_tab_fn=activate_cdp_target,
+        window_for_target_fn=None,
+        set_window_bounds_fn=None,
+        create_tab_in_window_fn=None,
         browser_bin: str = None,
         **_legacy_kwargs,
     ):
@@ -664,14 +826,31 @@ class TabManager:
         self.create_tab_fn = create_tab_fn
         self.close_tab_fn = close_tab_fn
         self.activate_tab_fn = activate_tab_fn
+        is_real_cdp = cdp_ws_fn is fetch_cdp_browser_ws and create_tab_fn is create_cdp_target
+        self.window_for_target_fn = (
+            window_for_target_fn
+            if window_for_target_fn is not None
+            else (get_cdp_window_for_target if is_real_cdp else None)
+        )
+        self.set_window_bounds_fn = (
+            set_window_bounds_fn
+            if set_window_bounds_fn is not None
+            else (set_cdp_window_bounds if is_real_cdp else None)
+        )
+        self.create_tab_in_window_fn = (
+            create_tab_in_window_fn
+            if create_tab_in_window_fn is not None
+            else (create_cdp_tab_in_window if is_real_cdp else None)
+        )
         self.browser_bin = browser_bin or DEFAULT_BROWSER
         self._lock = threading.RLock()
         self._slot_cond = threading.Condition(self._lock)
         self._browser_boot_lock = threading.RLock()
         self.x11_lock = threading.RLock()
-        self._bot_targets = {}  # bot_key -> target_id
+        self._bot_targets = {}  # bot_key -> active target_id inside its window
+        self._bot_windows = {}  # bot_key -> Chrome CDP windowId (int)
         self._bot_is_admin = {}  # bot_key -> bool
-        self._bot_last_urls = {}  # bot_key -> last non-blank URL for seamless tab wake
+        self._bot_last_urls = {}  # bot_key -> last non-blank URL for seamless wake
         self._last_tab_at = {}  # bot_key -> timestamp
         self._in_flight = {}  # bot_key -> active request count
         self._load_map()
@@ -682,6 +861,125 @@ class TabManager:
         if bid:
             return bid
         return "__admin__" if is_admin else "__default__"
+
+    def _get_target_window_id(self, target_id: str):
+        if not target_id or self.window_for_target_fn is None:
+            return None
+        try:
+            info = self.window_for_target_fn(str(target_id), port=self.cdp_port, timeout=2.0)
+            if isinstance(info, dict) and info.get("windowId") is not None:
+                return int(info["windowId"])
+        except Exception:
+            return None
+        return None
+
+    def _maximize_window(self, window_id) -> bool:
+        if window_id is None or self.set_window_bounds_fn is None:
+            return False
+        try:
+            return bool(
+                self.set_window_bounds_fn(
+                    int(window_id),
+                    {"windowState": "maximized"},
+                    port=self.cdp_port,
+                    timeout=2.0,
+                )
+            )
+        except Exception:
+            return False
+
+    def _call_create_tab(self, url: str, new_window: bool = True, background: bool = False) -> dict:
+        try:
+            return self.create_tab_fn(
+                url,
+                port=self.cdp_port,
+                new_window=new_window,
+                background=background,
+            )
+        except TypeError:
+            try:
+                return self.create_tab_fn(url, port=self.cdp_port, new_window=new_window)
+            except TypeError:
+                return self.create_tab_fn(url, port=self.cdp_port)
+
+    def _map_targets_by_window(self, live_pages: list) -> dict:
+        by_win = {}
+        if self.window_for_target_fn is None:
+            return by_win
+        for t in live_pages:
+            tid = str(t.get("id") or "").strip()
+            if not tid:
+                continue
+            wid = self._get_target_window_id(tid)
+            if wid is not None:
+                by_win.setdefault(wid, []).append(t)
+        return by_win
+
+    def list_bot_window_targets(self, bot_key: str, live_pages: list = None) -> list:
+        """Return ONLY the live page targets belonging to `bot_key`'s bound Chrome window."""
+        if not bot_key:
+            return []
+        pages = live_pages if live_pages is not None else self._live_page_targets()
+        live_by_id = {str(t["id"]): t for t in pages}
+        with self._lock:
+            wid = self._bot_windows.get(bot_key)
+            active_tid = self._bot_targets.get(bot_key)
+
+        if self.window_for_target_fn is not None:
+            if wid is None and active_tid and active_tid in live_by_id:
+                wid = self._get_target_window_id(active_tid)
+                if wid is not None:
+                    with self._lock:
+                        self._bot_windows[bot_key] = wid
+            if wid is not None:
+                matched = []
+                for t in pages:
+                    tid = str(t.get("id") or "")
+                    if not tid:
+                        continue
+                    twid = self._get_target_window_id(tid)
+                    if twid == wid:
+                        matched.append(t)
+                if matched:
+                    return matched
+
+        if active_tid and active_tid in live_by_id:
+            return [live_by_id[active_tid]]
+        return []
+
+    def set_bot_active_target(self, bot_key: str, target_id: str, url: str = None) -> bool:
+        tid = str(target_id or "").strip()
+        if not bot_key or not tid:
+            return False
+        twid = self._get_target_window_id(tid)
+        with self._lock:
+            bound_wid = self._bot_windows.get(bot_key)
+            if bound_wid is not None and twid is not None and twid != bound_wid:
+                return False
+            self._bot_targets[bot_key] = tid
+            if twid is not None and bound_wid is None:
+                self._bot_windows[bot_key] = twid
+            u = str(url or "").strip()
+            if u and not _is_blank_cdp_url(u):
+                self._bot_last_urls[bot_key] = u
+            self._last_tab_at[bot_key] = time.time()
+            self._save_map()
+        return True
+
+    def _collect_window_close_ids(self, window_id, fallback_tid: str, live_pages: list, protected_other_tids: set) -> list:
+        close_ids = []
+        seen = set()
+        if window_id is not None and self.window_for_target_fn is not None:
+            for t in live_pages:
+                tid = str(t.get("id") or "")
+                if not tid or tid in protected_other_tids or tid in seen:
+                    continue
+                if self._get_target_window_id(tid) == window_id:
+                    close_ids.append(tid)
+                    seen.add(tid)
+        if fallback_tid and fallback_tid not in protected_other_tids and fallback_tid not in seen:
+            close_ids.append(fallback_tid)
+        return close_ids
 
     def _load_map(self):
         try:
@@ -696,6 +994,16 @@ class TabManager:
                             tid = str(v or "").strip()
                             if bk and tid:
                                 self._bot_targets[bk] = tid
+                    raw_wins = data.get("bot_windows")
+                    if isinstance(raw_wins, dict):
+                        for k, v in raw_wins.items():
+                            bk = str(k or "").strip()
+                            try:
+                                wid = int(v)
+                            except (TypeError, ValueError):
+                                continue
+                            if bk:
+                                self._bot_windows[bk] = wid
                     raw_urls = data.get("bot_last_urls")
                     if isinstance(raw_urls, dict):
                         for k, v in raw_urls.items():
@@ -705,6 +1013,7 @@ class TabManager:
                                 self._bot_last_urls[bk] = u
         except Exception:
             self._bot_targets = {}
+            self._bot_windows = {}
             self._bot_last_urls = {}
 
     def _save_map(self):
@@ -713,16 +1022,18 @@ class TabManager:
             if parent:
                 os.makedirs(parent, exist_ok=True)
             bindings = {
-                k: f"tab:{tid[:8]}"
-                for k, tid in sorted(self._bot_targets.items())
+                k: f"窗口 #{idx + 1}"
+                for idx, (k, _tid) in enumerate(sorted(self._bot_targets.items()))
             }
             payload = {
                 "mode": "shared-profile-multi-tab",
+                "window_isolation": "cdp-window",
                 "profile_dir": self.primary_profile_dir,
                 "cdp_port": self.cdp_port,
                 "max_concurrent_screens": self.max_concurrent_screens,
                 "budget": self.budget,
                 "bot_targets": dict(sorted(self._bot_targets.items())),
+                "bot_windows": dict(sorted(self._bot_windows.items())),
                 "bot_last_urls": dict(sorted(self._bot_last_urls.items())),
                 "bindings": bindings,
             }
@@ -805,19 +1116,43 @@ class TabManager:
                 time.sleep(0.2)
             return res
 
+    def _reconcile_live_targets_locked(self, live_pages: list, live_by_id: dict, by_win: dict):
+        """
+        Reconcile stale active target_ids:
+        - If a Bot's active tab was closed, but its bound `windowId` still has surviving tabs,
+          automatically re-bind its active target to a surviving tab in that same window.
+        - Only drop the Bot from `_bot_targets` / `_bot_windows` if its entire window is gone.
+        """
+        if not live_by_id:
+            return
+        changed = False
+        for bk, tid in list(self._bot_targets.items()):
+            if tid in live_by_id:
+                continue
+            wid = self._bot_windows.get(bk)
+            survivors = by_win.get(wid, []) if wid is not None else []
+            if survivors:
+                self._bot_targets[bk] = str(survivors[-1]["id"])
+                changed = True
+            else:
+                self._bot_targets.pop(bk, None)
+                self._bot_windows.pop(bk, None)
+                changed = True
+        if changed:
+            self._save_map()
+
     def set_max_concurrent_screens(self, limit: int) -> dict:
         clamped = max(
             ABSOLUTE_MIN_CONCURRENT_SCREENS,
             min(ABSOLUTE_MAX_CONCURRENT_SCREENS, int(limit)),
         )
-        to_close = []
+        evicted_entries = []
         live_pages = self._live_page_targets()
         live_by_id = {str(t["id"]): t for t in live_pages}
+        by_win = self._map_targets_by_window(live_pages)
         with self._lock:
             self.max_concurrent_screens = clamped
-            for bk, tid in list(self._bot_targets.items()):
-                if tid not in live_by_id:
-                    self._bot_targets.pop(bk, None)
+            self._reconcile_live_targets_locked(live_pages, live_by_id, by_win)
             if len(self._bot_targets) > clamped:
                 idle_bots = [
                     bk
@@ -828,18 +1163,22 @@ class TabManager:
                 while len(self._bot_targets) > clamped and idle_bots:
                     victim = idle_bots.pop(0)
                     vtid = self._bot_targets.pop(victim, None)
+                    vwid = self._bot_windows.pop(victim, None)
                     vt = live_by_id.get(vtid or "")
                     if vt and not _is_blank_cdp_url(vt.get("url", "")):
                         self._bot_last_urls[victim] = str(vt.get("url"))
-                    if vtid:
-                        to_close.append(vtid)
+                    if vtid or vwid is not None:
+                        evicted_entries.append((vwid, vtid))
+            protected_other = set(self._bot_targets.values())
             self._save_map()
             self._slot_cond.notify_all()
         remaining_live = len(live_pages)
-        for vtid in to_close:
-            if remaining_live > 1:
-                self.close_tab_fn(vtid, port=self.cdp_port)
-                remaining_live -= 1
+        for vwid, vtid in evicted_entries:
+            close_ids = self._collect_window_close_ids(vwid, vtid, live_pages, protected_other)
+            for cid in close_ids:
+                if remaining_live > 1:
+                    self.close_tab_fn(cid, port=self.cdp_port)
+                    remaining_live -= 1
         return {
             "ok": True,
             "max_concurrent_screens": self.max_concurrent_screens,
@@ -859,19 +1198,20 @@ class TabManager:
         deadline = time.time() + max(0.0, float(wait_timeout))
 
         evicted_tid = None
+        evicted_wid = None
+        evicted_live_pages = []
         restore_url = "about:blank"
         chosen_target = None
+        promote_old_tid = None
 
         while True:
             live_pages = self._live_page_targets()
             live_by_id = {str(t["id"]): t for t in live_pages}
+            by_win = self._map_targets_by_window(live_pages) if self.window_for_target_fn is not None else {}
 
             with self._lock:
                 self._bot_is_admin[bot_key] = bool(is_admin)
-                # Drop any stale target IDs closed externally by the user or page script
-                for bk, tid in list(self._bot_targets.items()):
-                    if live_by_id and tid not in live_by_id:
-                        self._bot_targets.pop(bk, None)
+                self._reconcile_live_targets_locked(live_pages, live_by_id, by_win)
 
                 existing_tid = self._bot_targets.get(bot_key)
                 if existing_tid and (existing_tid in live_by_id or not live_by_id):
@@ -895,25 +1235,31 @@ class TabManager:
                         display=self.display,
                         cdp_port=self.cdp_port,
                     )
-                    return {**base, "bot_key": bot_key, "target_id": None, "acquired": False}
+                    return {**base, "bot_key": bot_key, "target_id": None, "window_id": None, "acquired": False}
 
                 if len(self._bot_targets) < self.max_concurrent_screens:
                     self._in_flight[bot_key] = self._in_flight.get(bot_key, 0) + 1
                     self._last_tab_at[bot_key] = time.time()
                     restore_url = self._bot_last_urls.get(bot_key, "about:blank")
                     owned_ids = set(self._bot_targets.values())
-                    # Claim an unclaimed initial blank tab if present instead of leaving orphan about:blank
-                    if restore_url == "about:blank":
+                    owned_wids = set(self._bot_windows.values())
+                    # Only claim an initial startup blank window when no other Bot already owns that window
+                    if restore_url == "about:blank" and len(self._bot_targets) == 0:
                         for p in live_pages:
                             pid = str(p["id"])
                             if pid not in owned_ids and _is_blank_cdp_url(p.get("url", "")):
+                                pwid = self._get_target_window_id(pid) if self.window_for_target_fn is not None else None
+                                if pwid is not None and pwid in owned_wids:
+                                    continue
                                 chosen_target = p
                                 self._bot_targets[bot_key] = pid
+                                if pwid is not None:
+                                    self._bot_windows[bot_key] = pwid
                                 self._save_map()
                                 break
                     break
 
-                # Pool is at max_concurrent_screens: reclaim an IDLE tab if any exists; otherwise wait FIFO!
+                # Pool is at max_concurrent_screens: reclaim an IDLE window if any exists; otherwise wait FIFO!
                 idle_candidates = [
                     bk
                     for bk in self._bot_targets
@@ -925,6 +1271,8 @@ class TabManager:
                     )
                     victim_bot = idle_candidates[0]
                     evicted_tid = self._bot_targets.pop(victim_bot, None)
+                    evicted_wid = self._bot_windows.pop(victim_bot, None)
+                    evicted_live_pages = list(live_pages)
                     vt = live_by_id.get(evicted_tid or "")
                     if vt and not _is_blank_cdp_url(vt.get("url", "")):
                         self._bot_last_urls[victim_bot] = str(vt.get("url"))
@@ -936,35 +1284,93 @@ class TabManager:
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     raise RuntimeError(
-                        f"All {self.max_concurrent_screens} concurrent Chrome tabs are busy; timed out waiting in queue"
+                        f"All {self.max_concurrent_screens} concurrent Chrome windows are busy; timed out waiting in queue"
                     )
                 self._slot_cond.wait(timeout=min(remaining, 0.4))
 
         try:
-            # If we didn't claim an existing tab above, create a dedicated new tab FIRST (so Chrome never hits 0 tabs)
+            # Verify an existing/claimed target owns a dedicated Chrome window (no sharing across Bots).
+            # If it shares a window with another Bot (e.g. legacy pre-upgrade tab), promote it into its own window!
+            if chosen_target is not None and self.window_for_target_fn is not None:
+                ctid = str(chosen_target.get("id") or "").strip()
+                cwid = self._get_target_window_id(ctid) if ctid else None
+                if cwid is not None:
+                    with self._lock:
+                        other_owned_wids = {
+                            w for bk, w in self._bot_windows.items() if bk != bot_key and w is not None
+                        }
+                        # Also check if another bound bot's target is sitting in the same window
+                        other_tids_in_same_win = [
+                            bk
+                            for bk, otid in self._bot_targets.items()
+                            if bk != bot_key and otid and otid != ctid and self._get_target_window_id(otid) == cwid
+                        ]
+                        shared_conflict = (cwid in other_owned_wids) or (bool(other_tids_in_same_win) and not is_admin)
+                        if not shared_conflict:
+                            if self._bot_windows.get(bot_key) != cwid:
+                                self._bot_windows[bot_key] = cwid
+                                self._save_map()
+                    if shared_conflict:
+                        promote_old_tid = ctid
+                        restore_url = str(chosen_target.get("url") or "").strip() or "about:blank"
+                        chosen_target = None
+                    else:
+                        self._maximize_window(cwid)
+
+            # Spawn a dedicated maximized Chrome window FIRST (so Chrome never hits 0 tabs)
             if chosen_target is None:
                 try:
-                    created = self.create_tab_fn(restore_url, port=self.cdp_port)
+                    created = self._call_create_tab(
+                        restore_url,
+                        new_window=True,
+                        background=(not activate),
+                    )
                     tid = str((created or {}).get("id") or "").strip()
                     if tid:
                         chosen_target = created
+                        new_wid = self._get_target_window_id(tid)
                         with self._lock:
                             self._bot_targets[bot_key] = tid
+                            if new_wid is not None:
+                                self._bot_windows[bot_key] = new_wid
                             self._save_map()
+                        if new_wid is not None:
+                            self._maximize_window(new_wid)
                 except Exception:
                     # Fallback to best available page if CDP /json/new isn't mocked in legacy tests
                     fallback_page = select_cdp_page_target(self._live_page_targets())
                     if fallback_page:
                         chosen_target = fallback_page
+                        f_tid = str(fallback_page["id"])
+                        f_wid = self._get_target_window_id(f_tid)
                         with self._lock:
-                            self._bot_targets[bot_key] = str(fallback_page["id"])
+                            self._bot_targets[bot_key] = f_tid
+                            if f_wid is not None:
+                                self._bot_windows[bot_key] = f_wid
                             self._save_map()
 
-            if evicted_tid and (not chosen_target or str(chosen_target.get("id")) != evicted_tid):
-                self.close_tab_fn(evicted_tid, port=self.cdp_port)
+            if promote_old_tid and (not chosen_target or str(chosen_target.get("id")) != promote_old_tid):
+                self.close_tab_fn(promote_old_tid, port=self.cdp_port)
+
+            if evicted_tid or evicted_wid is not None:
+                with self._lock:
+                    protected_other = set(self._bot_targets.values())
+                if isinstance(chosen_target, dict) and chosen_target.get("id"):
+                    protected_other.add(str(chosen_target["id"]))
+                close_ids = self._collect_window_close_ids(
+                    evicted_wid,
+                    evicted_tid,
+                    evicted_live_pages or self._live_page_targets(),
+                    protected_other,
+                )
+                for cid in close_ids:
+                    self.close_tab_fn(cid, port=self.cdp_port)
 
             if activate and isinstance(chosen_target, dict) and chosen_target.get("id"):
                 self.activate_tab_fn(chosen_target, port=self.cdp_port)
+
+            with self._lock:
+                bound_wid = self._bot_windows.get(bot_key)
 
             base = display_resources(
                 1,
@@ -976,6 +1382,7 @@ class TabManager:
                 **base,
                 "bot_key": bot_key,
                 "target_id": str(chosen_target.get("id")) if isinstance(chosen_target, dict) and chosen_target.get("id") else None,
+                "window_id": bound_wid,
                 "ws_url": str(chosen_target.get("webSocketDebuggerUrl") or "") if isinstance(chosen_target, dict) else "",
                 "tab_url": str(chosen_target.get("url") or "") if isinstance(chosen_target, dict) else "",
                 "tab_title": str(chosen_target.get("title") or "") if isinstance(chosen_target, dict) else "",
@@ -984,6 +1391,198 @@ class TabManager:
         except Exception:
             self.release_bot_tab_in_flight(bot_key)
             raise
+
+    def manage_bot_tabs(
+        self,
+        bot_key: str,
+        action: str = "list",
+        url: str = None,
+        target_id: str = None,
+        index: int = None,
+    ) -> dict:
+        """
+        Window-scoped multi-Tab management strictly restricted to `bot_key`'s own Chrome `windowId`.
+        Supports: `list`, `new`, `switch`, `close`.
+        """
+        act = str(action or "list").strip().lower()
+        if act not in ("list", "new", "switch", "close"):
+            raise ValueError(f"unsupported browser_tabs action: {action!r} (expected list/new/switch/close)")
+
+        def _format_tabs(tabs_list, active_id):
+            return [
+                {
+                    "index": i,
+                    "target_id": str(t.get("id") or ""),
+                    "url": str(t.get("url") or ""),
+                    "title": str(t.get("title") or ""),
+                    "active": str(t.get("id") or "") == active_id,
+                }
+                for i, t in enumerate(tabs_list)
+            ]
+
+        def _pick_target(tabs_list, req_tid, req_idx):
+            if req_tid is not None and str(req_tid).strip():
+                want = str(req_tid).strip()
+                for t in tabs_list:
+                    if str(t.get("id") or "") == want:
+                        return t
+                raise ValueError(f"target_id {want!r} not found in this bot's window")
+            if req_idx is not None:
+                if type(req_idx) is not int or isinstance(req_idx, bool):
+                    raise ValueError("index must be an integer")
+                if req_idx < 0 or req_idx >= len(tabs_list):
+                    raise ValueError(f"tab index {req_idx} out of range (0..{max(0, len(tabs_list) - 1)})")
+                return tabs_list[req_idx]
+            return None
+
+        live_pages = self._live_page_targets()
+        win_tabs = self.list_bot_window_targets(bot_key, live_pages=live_pages)
+        with self._lock:
+            wid = self._bot_windows.get(bot_key)
+            active_tid = self._bot_targets.get(bot_key)
+
+        if act == "list":
+            return {
+                "ok": True,
+                "action": "list",
+                "window_id": wid,
+                "active_target_id": active_tid,
+                "tab_count": len(win_tabs),
+                "tabs": _format_tabs(win_tabs, active_tid),
+            }
+
+        if act == "new":
+            start_url = "about:blank"
+            if url is not None and str(url).strip():
+                if not isinstance(url, str):
+                    raise TypeError("url must be a string")
+                u = url.strip()
+                if u != "about:blank":
+                    parsed = urllib.parse.urlparse(u)
+                    if parsed.scheme not in ("http", "https"):
+                        raise ValueError(f"invalid scheme: {parsed.scheme}")
+                start_url = u
+
+            parent_target = None
+            for t in win_tabs:
+                if str(t.get("id") or "") == active_tid:
+                    parent_target = t
+                    break
+            if parent_target is None and win_tabs:
+                parent_target = win_tabs[-1]
+
+            if self.create_tab_in_window_fn is not None and parent_target is not None:
+                created = self.create_tab_in_window_fn(
+                    parent_target,
+                    url=start_url,
+                    port=self.cdp_port,
+                    window_id=wid,
+                    targets_fn=self.targets_fn,
+                    window_for_target_fn=self.window_for_target_fn,
+                )
+            else:
+                created = self._call_create_tab(start_url, new_window=False, background=True)
+
+            new_tid = str((created or {}).get("id") or "").strip()
+            if not new_tid:
+                raise RuntimeError("Failed to open new tab in bot window")
+            with self._lock:
+                self._bot_targets[bot_key] = new_tid
+                if wid is None:
+                    nwid = self._get_target_window_id(new_tid)
+                    if nwid is not None:
+                        self._bot_windows[bot_key] = nwid
+                        wid = nwid
+                if not _is_blank_cdp_url(start_url):
+                    self._bot_last_urls[bot_key] = start_url
+                self._last_tab_at[bot_key] = time.time()
+                self._save_map()
+            updated_tabs = self.list_bot_window_targets(bot_key)
+            return {
+                "ok": True,
+                "action": "new",
+                "window_id": wid,
+                "active_target_id": new_tid,
+                "target_id": new_tid,
+                "url": str((created or {}).get("url") or start_url),
+                "tab_count": len(updated_tabs),
+                "tabs": _format_tabs(updated_tabs, new_tid),
+            }
+
+        if act == "switch":
+            chosen = _pick_target(win_tabs, target_id, index)
+            if chosen is None:
+                raise ValueError("switch requires target_id or index")
+            cid = str(chosen["id"])
+            with self._lock:
+                self._bot_targets[bot_key] = cid
+                cu = str(chosen.get("url") or "")
+                if cu and not _is_blank_cdp_url(cu):
+                    self._bot_last_urls[bot_key] = cu
+                self._last_tab_at[bot_key] = time.time()
+                self._save_map()
+            self.activate_tab_fn(chosen, port=self.cdp_port)
+            return {
+                "ok": True,
+                "action": "switch",
+                "window_id": wid,
+                "active_target_id": cid,
+                "target_id": cid,
+                "url": str(chosen.get("url") or ""),
+                "title": str(chosen.get("title") or ""),
+                "tab_count": len(win_tabs),
+                "tabs": _format_tabs(win_tabs, cid),
+            }
+
+        # act == "close"
+        if len(win_tabs) <= 1:
+            return {
+                "ok": False,
+                "action": "close",
+                "window_id": wid,
+                "active_target_id": active_tid,
+                "tab_count": len(win_tabs),
+                "tabs": _format_tabs(win_tabs, active_tid),
+                "error": "cannot close the last remaining tab in this bot's window; navigate it instead",
+            }
+        chosen = _pick_target(win_tabs, target_id, index)
+        if chosen is None:
+            for t in win_tabs:
+                if str(t.get("id") or "") == active_tid:
+                    chosen = t
+                    break
+            if chosen is None:
+                chosen = win_tabs[-1]
+        close_tid = str(chosen["id"])
+        close_idx = next((i for i, t in enumerate(win_tabs) if str(t.get("id") or "") == close_tid), 0)
+        remaining_win_tabs = [t for t in win_tabs if str(t.get("id") or "") != close_tid]
+        next_active_tid = active_tid
+        if close_tid == active_tid and remaining_win_tabs:
+            next_idx = min(close_idx, len(remaining_win_tabs) - 1)
+            next_active = remaining_win_tabs[next_idx]
+            next_active_tid = str(next_active["id"])
+            with self._lock:
+                self._bot_targets[bot_key] = next_active_tid
+                nu = str(next_active.get("url") or "")
+                if nu and not _is_blank_cdp_url(nu):
+                    self._bot_last_urls[bot_key] = nu
+                self._save_map()
+        self.close_tab_fn(close_tid, port=self.cdp_port)
+        updated_tabs = self.list_bot_window_targets(bot_key)
+        deadline = time.time() + 0.6
+        while any(str(t.get("id") or "") == close_tid for t in updated_tabs) and time.time() < deadline:
+            time.sleep(0.04)
+            updated_tabs = self.list_bot_window_targets(bot_key)
+        updated_tabs = [t for t in updated_tabs if str(t.get("id") or "") != close_tid]
+        return {
+            "ok": True,
+            "action": "close",
+            "window_id": wid,
+            "closed_target_id": close_tid,
+            "active_target_id": next_active_tid,
+            "tab_count": len(updated_tabs),
+            "tabs": _format_tabs(updated_tabs, next_active_tid),
+        }
 
     def release_bot_tab_in_flight(self, bot_key: str) -> None:
         if not bot_key:
@@ -1022,7 +1621,15 @@ class TabManager:
 
     def protected_target_ids(self) -> set:
         with self._lock:
-            return set(self._bot_targets.values())
+            protected = set(self._bot_targets.values())
+            owned_wids = set(self._bot_windows.values())
+        if owned_wids and self.window_for_target_fn is not None:
+            for t in self._live_page_targets():
+                tid = str(t.get("id") or "")
+                if tid and tid not in protected:
+                    if self._get_target_window_id(tid) in owned_wids:
+                        protected.add(tid)
+        return protected
 
     def reclaim_idle_browsers(self, now: float = None) -> list:
         cur = now if now is not None else time.time()
@@ -1037,19 +1644,23 @@ class TabManager:
                     continue
                 if (cur - last_ts) >= self.browser_idle_sec and bk in self._bot_targets:
                     tid = self._bot_targets.pop(bk, None)
+                    wid = self._bot_windows.pop(bk, None)
                     vt = live_by_id.get(tid or "")
                     if vt and not _is_blank_cdp_url(vt.get("url", "")):
                         self._bot_last_urls[bk] = str(vt.get("url"))
-                    if tid:
-                        to_close.append((bk, tid))
+                    if tid or wid is not None:
+                        to_close.append((bk, wid, tid))
+            protected_other = set(self._bot_targets.values())
             if to_close:
                 self._save_map()
         remaining = len(live_pages)
         reclaimed_bots = []
-        for bk, tid in to_close:
-            if remaining > 1:
-                self.close_tab_fn(tid, port=self.cdp_port)
-                remaining -= 1
+        for bk, wid, tid in to_close:
+            close_ids = self._collect_window_close_ids(wid, tid, live_pages, protected_other)
+            for cid in close_ids:
+                if remaining > 1:
+                    self.close_tab_fn(cid, port=self.cdp_port)
+                    remaining -= 1
             reclaimed_bots.append(bk)
         return reclaimed_bots
 
@@ -1062,38 +1673,56 @@ class TabManager:
             if self._bot_is_admin.get(bid, False):
                 return {"ok": True, "released": False, "reason": "admin primary tab kept"}
             tid = self._bot_targets.pop(bid, None)
+            wid = self._bot_windows.pop(bid, None)
             self._bot_last_urls.pop(bid, None)
             self._last_tab_at.pop(bid, None)
+            protected_other = set(self._bot_targets.values())
             self._save_map()
             self._slot_cond.notify_all()
-        if tid:
-            if len(live_pages) > 1:
-                self.close_tab_fn(tid, port=self.cdp_port)
-            return {"ok": True, "released": True, "target_id": tid}
+        if tid or wid is not None:
+            close_ids = self._collect_window_close_ids(wid, tid, live_pages, protected_other)
+            remaining = len(live_pages)
+            closed_count = 0
+            for cid in close_ids:
+                if remaining > 1:
+                    self.close_tab_fn(cid, port=self.cdp_port)
+                    remaining -= 1
+                    closed_count += 1
+            return {
+                "ok": True,
+                "released": True,
+                "target_id": tid,
+                "window_id": wid,
+                "closed_tabs": closed_count,
+            }
         return {"ok": True, "released": False}
 
     def list_displays(self) -> dict:
         live_pages = self._live_page_targets()
         live_by_id = {str(t["id"]): t for t in live_pages}
+        by_win = self._map_targets_by_window(live_pages) if self.window_for_target_fn is not None else {}
         with self._lock:
-            for bk, tid in list(self._bot_targets.items()):
-                if live_by_id and tid not in live_by_id:
-                    self._bot_targets.pop(bk, None)
+            self._reconcile_live_targets_locked(live_pages, live_by_id, by_win)
             bindings = {
-                bk: f"标签 #{idx + 1}"
+                bk: f"窗口 #{idx + 1}"
                 for idx, (bk, _tid) in enumerate(sorted(self._bot_targets.items()))
             }
-            tabs_info = [
-                {
-                    "bot_id": bk,
-                    "target_id": tid,
-                    "url": str((live_by_id.get(tid) or {}).get("url") or self._bot_last_urls.get(bk, "")),
-                    "title": str((live_by_id.get(tid) or {}).get("title") or ""),
-                    "in_flight": self._in_flight.get(bk, 0),
-                    "last_active_at": self._last_tab_at.get(bk),
-                }
-                for bk, tid in sorted(self._bot_targets.items())
-            ]
+            tabs_info = []
+            for bk, tid in sorted(self._bot_targets.items()):
+                wid = self._bot_windows.get(bk)
+                win_tabs = by_win.get(wid, []) if wid is not None else ([live_by_id[tid]] if tid in live_by_id else [])
+                tabs_info.append(
+                    {
+                        "bot_id": bk,
+                        "target_id": tid,
+                        "window_id": wid,
+                        "tab_count": len(win_tabs),
+                        "url": str((live_by_id.get(tid) or {}).get("url") or self._bot_last_urls.get(bk, "")),
+                        "title": str((live_by_id.get(tid) or {}).get("title") or ""),
+                        "in_flight": self._in_flight.get(bk, 0),
+                        "last_active_at": self._last_tab_at.get(bk),
+                    }
+                )
             max_screens = self.max_concurrent_screens
             budget = dict(self.budget)
 
@@ -1106,6 +1735,7 @@ class TabManager:
         return {
             "ok": True,
             "mode": "shared-profile-multi-tab",
+            "window_isolation": "cdp-window",
             "max_concurrent_screens": max_screens,
             "budget": budget,
             "bindings": bindings,
@@ -1266,8 +1896,11 @@ class Actions:
         profile_dir: str = None,
         target_id: str = None,
         target_ws_url: str = None,
+        window_id: int = None,
         targets_fn=None,
         protected_targets_fn=None,
+        list_window_targets_fn=None,
+        on_target_switch_fn=None,
         cwd: str = None,
     ):
         self.display = str(display or ":1")
@@ -1276,8 +1909,11 @@ class Actions:
         self.cwd = str(cwd or "").strip() or None
         self.target_id = str(target_id or "").strip() or None
         self.target_ws_url = str(target_ws_url or "").strip() or None
+        self.window_id = window_id
         self.targets_fn = targets_fn or fetch_cdp_targets
         self.protected_targets_fn = protected_targets_fn
+        self.list_window_targets_fn = list_window_targets_fn
+        self.on_target_switch_fn = on_target_switch_fn
         self._custom_run = run
         self._custom_spawn = spawn
         self._custom_cdp_eval = cdp_eval
@@ -1614,11 +2250,52 @@ return collectGbSnapshot({max_elements}, {max_text});
             res = self.cdp_eval(expr)
         if not isinstance(res, dict):
             raise RuntimeError("Failed to collect browser snapshot")
+        if self.list_window_targets_fn is not None:
+            try:
+                wtabs = self.list_window_targets_fn()
+                if isinstance(wtabs, list) and wtabs:
+                    res["tab_count"] = len(wtabs)
+            except Exception:
+                pass
+        if self.target_id:
+            res.setdefault("target_id", self.target_id)
         return res
+
+    def _wait_for_active_tab_ready(self, max_polls: int = 16, poll_sec: float = 0.2):
+        for _ in range(max_polls):
+            try:
+                state = self.cdp_session(
+                    lambda call: _eval_on_session(
+                        call,
+                        "(function() { const cur = String(location.href || ''); if (cur === 'about:blank') return 'navigating'; return document.readyState; })()",
+                    )
+                )
+                if state == "complete":
+                    return
+                if state == "interactive":
+                    time.sleep(0.15)
+                    return
+            except Exception:
+                pass
+            time.sleep(poll_sec)
 
     def browser_click(self, ref):
         norm_ref = normalize_element_ref(ref)
         if self.cdp_eval is default_cdp_eval:
+            before_window_tids = set()
+            if self.list_window_targets_fn is not None:
+                try:
+                    before_window_tids = {
+                        str(t.get("id") or "")
+                        for t in (self.list_window_targets_fn() or [])
+                        if isinstance(t, dict) and t.get("id")
+                    }
+                except Exception:
+                    before_window_tids = set()
+
+            clicked_holder = {}
+            new_tab_holder = {}
+
             def run_click(call):
                 locate_expr = f"""(function() {{
 const ref = {json.dumps(norm_ref)};
@@ -1647,9 +2324,30 @@ return {{ ok: true, visible: Boolean(visible), x: x, y: y, tag: tag, name: name 
                     raise RuntimeError("Failed to locate element for browser_click")
                 if not info.get("ok"):
                     return info
+                clicked_holder["info"] = info
                 if info.get("visible"):
                     self._dispatch_mouse_click(call, info.get("x", 0), info.get("y", 0))
                 time.sleep(0.3)
+
+                # Auto-detect popup / target="_blank" / window.open() opened in THIS Bot's window
+                if self.list_window_targets_fn is not None and before_window_tids:
+                    try:
+                        after_tabs = self.list_window_targets_fn() or []
+                        new_tabs = [
+                            t
+                            for t in after_tabs
+                            if isinstance(t, dict)
+                            and t.get("id")
+                            and str(t["id"]) not in before_window_tids
+                        ]
+                        if new_tabs:
+                            new_tab_holder["target"] = new_tabs[-1]
+                            new_tab_holder["tab_count"] = len(after_tabs)
+                            return {"_switched_new_tab": True}
+                        new_tab_holder["tab_count"] = len(after_tabs)
+                    except Exception:
+                        pass
+
                 snap_expr = f"""(function() {{
 {_JS_SNAPSHOT_HELPER}
 return collectGbSnapshot(80, 3000);
@@ -1662,9 +2360,45 @@ return collectGbSnapshot(80, 3000);
                     "tag": info.get("tag", ""),
                     "name": info.get("name", ""),
                 }
+                if "tab_count" in new_tab_holder:
+                    snap["tab_count"] = new_tab_holder["tab_count"]
+                if self.target_id:
+                    snap.setdefault("target_id", self.target_id)
                 return snap
 
-            return self.cdp_session(run_click)
+            res = self.cdp_session(run_click)
+            if isinstance(res, dict) and res.get("_switched_new_tab") and "target" in new_tab_holder:
+                newest = new_tab_holder["target"]
+                new_tid = str(newest["id"])
+                new_ws = str(newest.get("webSocketDebuggerUrl") or "").strip()
+                new_url = str(newest.get("url") or "").strip()
+                self.target_id = new_tid
+                self.target_ws_url = new_ws or f"ws://127.0.0.1:{self.cdp_port}/devtools/page/{new_tid}"
+                if self.on_target_switch_fn is not None:
+                    try:
+                        self.on_target_switch_fn(new_tid, new_url)
+                    except Exception:
+                        pass
+                self._wait_for_active_tab_ready()
+                snap_expr = f"""(function() {{
+{_JS_SNAPSHOT_HELPER}
+return collectGbSnapshot(80, 3000);
+}})()"""
+                snap = self.cdp_session(lambda call: _eval_on_session(call, snap_expr))
+                if not isinstance(snap, dict):
+                    raise RuntimeError("Failed to collect browser snapshot on newly opened tab")
+                info = clicked_holder.get("info") or {}
+                snap["clicked"] = {
+                    "ref": norm_ref,
+                    "tag": info.get("tag", ""),
+                    "name": info.get("name", ""),
+                }
+                snap["switched_to_new_tab"] = True
+                snap["target_id"] = new_tid
+                if "tab_count" in new_tab_holder:
+                    snap["tab_count"] = new_tab_holder["tab_count"]
+                return snap
+            return res
 
         expr = f"""(async function() {{
 {_JS_SNAPSHOT_HELPER}
@@ -1882,7 +2616,15 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
 
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/health":
-            self.send_json(200, {"ok": True, "width": 1440, "height": 900})
+            self.send_json(
+                200,
+                {
+                    "ok": True,
+                    "width": 1440,
+                    "height": 900,
+                    "executor_sha256": EXECUTOR_FILE_SHA256,
+                },
+            )
         elif parsed.path == "/displays":
             dm = getattr(self.server, "display_manager", None)
             if dm is None:
@@ -2087,6 +2829,43 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                         submit=submit,
                         clear=clear,
                     )
+                elif path == "/browser/tabs":
+                    action = body.get("action", "list")
+                    url = body.get("url")
+                    target_id = body.get("target_id")
+                    index = body.get("index")
+                    if dm is not None and acquired_bot_key:
+                        res = dm.manage_bot_tabs(
+                            acquired_bot_key,
+                            action=action,
+                            url=url,
+                            target_id=target_id,
+                            index=index,
+                        )
+                    else:
+                        pages = [
+                            t
+                            for t in (actions.targets_fn(port=actions.cdp_port, timeout=2.5) or [])
+                            if isinstance(t, dict)
+                            and t.get("type") == "page"
+                            and t.get("id")
+                            and not str(t.get("url") or "").startswith(_IGNORED_CDP_PREFIXES)
+                        ]
+                        res = {
+                            "ok": True,
+                            "action": str(action or "list"),
+                            "tab_count": len(pages),
+                            "tabs": [
+                                {
+                                    "index": i,
+                                    "target_id": str(t.get("id") or ""),
+                                    "url": str(t.get("url") or ""),
+                                    "title": str(t.get("title") or ""),
+                                    "active": str(t.get("id") or "") == actions.target_id,
+                                }
+                                for i, t in enumerate(pages)
+                            ],
+                        }
                 else:
                     self.send_json(404, {"error": "not found"})
                     return
@@ -2115,7 +2894,7 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
 
 class ExecutorServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
-    _BROWSER_ROUTES = {"/open_url", "/browser/snapshot", "/browser/click", "/browser/type"}
+    _BROWSER_ROUTES = {"/open_url", "/browser/snapshot", "/browser/click", "/browser/type", "/browser/tabs"}
     _X11_ROUTES = {"/screenshot", "/click", "/type", "/key", "/scroll", "/drag", "/windows", "/focus"}
     _FILE_ROUTES = {"/read", "/write"}
 
@@ -2127,6 +2906,7 @@ class ExecutorServer(http.server.ThreadingHTTPServer):
 
     def _make_tab_actions(self, tab_info: dict) -> Actions:
         dm = self.display_manager
+        bot_key = tab_info.get("bot_key")
         return Actions(
             run=self.actions.run,
             browser=self.actions.browser,
@@ -2138,8 +2918,19 @@ class ExecutorServer(http.server.ThreadingHTTPServer):
             profile_dir=(dm.primary_profile_dir if dm is not None else self.actions.profile_dir),
             target_id=tab_info.get("target_id"),
             target_ws_url=tab_info.get("ws_url"),
+            window_id=tab_info.get("window_id"),
             targets_fn=(dm.targets_fn if dm is not None else None),
             protected_targets_fn=(dm.protected_target_ids if dm is not None else None),
+            list_window_targets_fn=(
+                (lambda bk=bot_key: dm.list_bot_window_targets(bk))
+                if dm is not None and bot_key
+                else None
+            ),
+            on_target_switch_fn=(
+                (lambda tid, url="", bk=bot_key: dm.set_bot_active_target(bk, tid, url=url))
+                if dm is not None and bot_key
+                else None
+            ),
         )
 
     def _make_shell_actions(self, bot_workspace: str = "") -> Actions:

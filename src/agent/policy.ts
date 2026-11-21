@@ -35,7 +35,246 @@ const DENIED_DIRS = Array.from(
 
 const DENIED_SEGMENTS = new Set([".ssh", ".aws", ".gnupg", "keychains"]);
 
-const CONFIRM_SHELL_RE = /\b(sudo|rm|mv|dd|mkfs|shutdown|reboot|format|diskpart|Remove-Item)\b|(curl|wget)[^|]*\|\s*(ba)?sh\b/i;
+const SENSITIVE_CONFIG_BASENAMES = new Set([
+  ".zshrc",
+  ".zprofile",
+  ".zshenv",
+  ".bashrc",
+  ".bash_profile",
+  ".profile",
+  ".gitconfig",
+  "crontab",
+  "sudoers",
+  "hosts",
+]);
+
+const SENSITIVE_SYSTEM_DIR_PREFIXES = [
+  "/etc/",
+  "/system/",
+  "/usr/",
+  "/sbin/",
+  "/bin/",
+  "/library/launchdaemons/",
+  "/library/launchagents/",
+  "c:\\windows\\",
+  "c:/windows/",
+];
+
+const PIPE_TO_SHELL_RE =
+  /(?:^|[;&|\n]\s*)(?:curl|wget)\b[^|\n]*\|\s*(?:env\s+)?(?:ba|z|da|k)?sh\b/i;
+
+const SHELL_WRAPPER_CMDS = new Set([
+  "command",
+  "builtin",
+  "nohup",
+  "time",
+  "nice",
+  "env",
+  "xargs",
+]);
+
+const DANGEROUS_COMMAND_NAMES = new Set([
+  "sudo",
+  "doas",
+  "su",
+  "rm",
+  "unlink",
+  "shred",
+  "srm",
+  "remove-item",
+  "ri",
+  "del",
+  "erase",
+  "mkfs",
+  "fdisk",
+  "parted",
+  "diskpart",
+  "format-volume",
+  "shutdown",
+  "reboot",
+  "halt",
+  "poweroff",
+]);
+
+function isSensitiveConfigPath(filePath: unknown): boolean {
+  const resolved = normalizeCandidatePath(filePath);
+  if (!resolved) return false;
+  const normalizedSlashes = resolved.replace(/\\/g, "/");
+  const lower = normalizedSlashes.toLowerCase();
+  const base = path.basename(resolved).toLowerCase();
+
+  if (SENSITIVE_CONFIG_BASENAMES.has(base)) {
+    return true;
+  }
+  if (lower.includes("/library/launchagents/") || lower.includes("/library/launchdaemons/")) {
+    return true;
+  }
+  for (const prefix of SENSITIVE_SYSTEM_DIR_PREFIXES) {
+    if (lower === prefix.slice(0, -1) || lower.startsWith(prefix)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Strip single/double quoted string literals (keeping `$(...)` and backtick substitutions
+ * inside double quotes visible for inspection), and collect quoted payloads of `sh -c` / `eval`.
+ */
+function stripShellQuotesForScan(command: string): { sanitized: string; nestedPayloads: string[] } {
+  let out = "";
+  const nestedPayloads: string[] = [];
+  let i = 0;
+  const n = command.length;
+
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      const before = out.trimEnd();
+      const isInlineShellExec =
+        /(?:^|[;&|\n(]\s*)(?:(?:\/[\w./-]*\/)?(?:ba|z|da|k)?sh\s+-[a-z]*c|eval)\s*$/i.test(before);
+      i += 1;
+      let literal = "";
+      out += " ";
+      while (i < n) {
+        const c = command[i];
+        if (quote === '"' && c === "\\" && i + 1 < n) {
+          literal += command[i + 1];
+          i += 2;
+          continue;
+        }
+        if (c === quote) {
+          i += 1;
+          break;
+        }
+        // Keep command substitutions inside double quotes so `echo "$(rm -rf /)"` is still caught
+        if (quote === '"' && c === "$" && command[i + 1] === "(") {
+          let depth = 1;
+          let sub = "$(";
+          i += 2;
+          while (i < n && depth > 0) {
+            const sc = command[i];
+            if (sc === "(") depth += 1;
+            else if (sc === ")") depth -= 1;
+            sub += sc;
+            i += 1;
+          }
+          out += ` ${sub} `;
+          literal += sub;
+          continue;
+        }
+        if (quote === '"' && c === "`") {
+          let sub = "`";
+          i += 1;
+          while (i < n && command[i] !== "`") {
+            sub += command[i];
+            i += 1;
+          }
+          if (i < n) {
+            sub += "`";
+            i += 1;
+          }
+          out += ` ${sub} `;
+          literal += sub;
+          continue;
+        }
+        literal += c;
+        i += 1;
+      }
+      if (isInlineShellExec && literal.trim()) {
+        nestedPayloads.push(literal);
+      }
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+
+  return { sanitized: out, nestedPayloads };
+}
+
+function isDangerousShellCommand(
+  command: string,
+  { allowNormalMv = false }: { allowNormalMv?: boolean } = {},
+  depth = 0
+): boolean {
+  if (!command || depth > 3) return false;
+  if (PIPE_TO_SHELL_RE.test(command)) return true;
+
+  const { sanitized, nestedPayloads } = stripShellQuotesForScan(command);
+
+  // Split by shell command boundaries (;, &&, ||, |, &, newline, $(, backtick)
+  const segments = sanitized.split(/(?:&&|\|\||[;\n|&`]|\$\(|\))/);
+  for (const rawSeg of segments) {
+    let seg = rawSeg.trim();
+    if (!seg) continue;
+
+    // Strip leading environment variable assignments (e.g. FOO=1 BAR=baz cmd)
+    while (/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/.test(seg)) {
+      seg = seg.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "").trim();
+    }
+    if (!seg) continue;
+
+    const tokens = seg.split(/\s+/).filter(Boolean);
+    let idx = 0;
+    while (idx < tokens.length) {
+      const tokBase = path.basename(tokens[idx]).toLowerCase();
+      if (SHELL_WRAPPER_CMDS.has(tokBase)) {
+        idx += 1;
+        while (idx < tokens.length && tokens[idx].startsWith("-")) {
+          idx += 1;
+        }
+        continue;
+      }
+      break;
+    }
+    if (idx >= tokens.length) continue;
+
+    const cmdBase = path.basename(tokens[idx]).toLowerCase();
+    const restTokens = tokens.slice(idx + 1);
+    const restStr = restTokens.join(" ");
+
+    if (DANGEROUS_COMMAND_NAMES.has(cmdBase) || cmdBase.startsWith("mkfs.")) {
+      return true;
+    }
+    if (cmdBase === "dd" && /\b(?:if|of)=/i.test(restStr)) {
+      return true;
+    }
+    if (cmdBase === "format" && /(?:^|\s)[a-z]:/i.test(restStr)) {
+      return true;
+    }
+    if (cmdBase === "diskutil" && /\b(erase\w*|partitiondisk)\b/i.test(restStr)) {
+      return true;
+    }
+    if (
+      cmdBase === "find" &&
+      (/(?:^|\s)-delete(?:\s|$)/i.test(restStr) ||
+        /(?:^|\s)-exec\s+(?:\/[\w./-]*\/)?(?:rm|unlink|shred)\b/i.test(restStr))
+    ) {
+      return true;
+    }
+    if (cmdBase === "mv" || cmdBase === "move-item") {
+      if (!allowNormalMv) {
+        return true;
+      }
+      // Under hostExecutionMode="always", allow moving/renaming normal files,
+      // but still confirm if any path touches sensitive directories or system configs.
+      const pathArgs = restTokens.filter((tok) => tok && !tok.startsWith("-"));
+      if (pathArgs.some((p) => isPathDenied(p) || isSensitiveConfigPath(p))) {
+        return true;
+      }
+    }
+  }
+
+  for (const nested of nestedPayloads) {
+    if (isDangerousShellCommand(nested, { allowNormalMv }, depth + 1)) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 const SANDBOX_TOOLS = new Set([
   "screenshot",
@@ -53,6 +292,7 @@ const SANDBOX_TOOLS = new Set([
   "browser_snapshot",
   "browser_click",
   "browser_type",
+  "browser_tabs",
 ]);
 
 const DENIED_KEYCHAIN_SHELL_RE =
@@ -239,7 +479,17 @@ export function assessToolCall(
   }
 
   // 3. High risk action confirmation
-  if (safeArgs.risk === "high") {
+  // Under hostExecutionMode="always", ignore overly-conservative LLM risk="high" flags on
+  // read-only host/MCP inspection, harmless host_open, or ordinary (non-sensitive) host_write_file
+  // so routine user-requested edits/opens don't spam confirmation cards.
+  const ignoreSpuriousHighRisk =
+    hostExecutionMode === "always" &&
+    (READ_ONLY_HOST_AND_MCP_TOOLS.has(name) ||
+      name === "host_open" ||
+      (name === "host_write_file" &&
+        Boolean(normalizeCandidatePath(safeArgs.path)) &&
+        !isSensitiveConfigPath(safeArgs.path)));
+  if (safeArgs.risk === "high" && !ignoreSpuriousHighRisk) {
     return {
       decision: "confirm",
       reason: "Action is flagged as high risk",
@@ -284,7 +534,8 @@ export function assessToolCall(
   // 6. Shell dangerous command confirmation (host_run_shell, or restricted sandbox run_shell)
   if (name === "run_shell" || name === "host_run_shell") {
     const command = typeof safeArgs.command === "string" ? safeArgs.command : "";
-    if (CONFIRM_SHELL_RE.test(command)) {
+    const allowNormalMv = name === "host_run_shell" && hostExecutionMode === "always";
+    if (isDangerousShellCommand(command, { allowNormalMv })) {
       return {
         decision: "confirm",
         reason: "Shell command requires confirmation",
@@ -303,8 +554,15 @@ export function assessToolCall(
       };
     }
     // When "你的电脑" is set to "始终允许" ("always"), allow non-sensitive host file writes
-    // outside writeRoots without prompting (hardcoded sensitive paths remain denied in step 1).
+    // outside writeRoots without prompting, while still confirming sensitive shell/system configs
+    // (hardcoded credential paths remain strictly denied in step 1).
     if (name === "host_write_file" && hostExecutionMode === "always") {
+      if (isSensitiveConfigPath(filePath)) {
+        return {
+          decision: "confirm",
+          reason: `修改敏感配置文件 '${filePath}' 需要确认`,
+        };
+      }
       return {
         decision: "allow",
         reason: "Host file write allowed under hostExecutionMode=always",

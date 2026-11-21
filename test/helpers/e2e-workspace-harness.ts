@@ -142,6 +142,24 @@ export async function createE2EWorkspace(opts: E2EWorkspaceOptions = {}) {
             text_excerpt: route === "/browser/type" ? "Password: ***" : "Portal Page Ready",
           };
         }
+        if (route === "/browser/tabs") {
+          return {
+            ok: true,
+            action: body?.action || "list",
+            window_id: 1001,
+            active_target_id: "MOCK-TAB-1",
+            tab_count: 1,
+            tabs: [
+              {
+                index: 0,
+                target_id: "MOCK-TAB-1",
+                url: body?.url || "https://example.test",
+                title: "Mock Page",
+                active: true,
+              },
+            ],
+          };
+        }
         if (route === "/shell") {
           return { exit_code: 0, stdout: `shell-ok: ${body?.command || ""}`, stderr: "", truncated: false };
         }

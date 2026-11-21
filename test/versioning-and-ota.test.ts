@@ -22,6 +22,7 @@ import {
 } from "../src/shared/versioning.js";
 import { createTarGzFromDir, extractTarGzSafely } from "../src/lib/tar-gzip.js";
 import { createWebOtaManager } from "../src/electron/web-ota.js";
+import { createCoreOtaManager } from "../src/electron/core-ota.js";
 import {
   clearGithubManifestCacheForTest,
   fetchLatestGithubManifest,
@@ -689,5 +690,237 @@ test("GitHub CDN manifest resolution & server endpoints work cleanly and host bu
   } finally {
     errServer.close();
     clearGithubManifestCacheForTest();
+  }
+});
+
+test("evaluateUpdateCompatibility prefers no-reinstall Core OTA when native shell meets minVersionForCoreOta", () => {
+  const coreManifest: VersionManifest = {
+    schemaVersion: 1,
+    generatedAt: "2026-11-21T03:00:00.000Z",
+    releaseTag: "v1.1.0",
+    releaseUrl: "https://github.com/caixy-plus/twinklebot-releases/releases/tag/v1.1.0",
+    webBuild: "20261121.030000-core123456",
+    coreBuild: "20261121.030000-core123456",
+    shells: {
+      desktop: {
+        latestVersion: "1.1.0",
+        minVersionForOta: "1.0.3",
+        minVersionForCoreOta: "1.0.3",
+        assets: {
+          "darwin-arm64": {
+            fileName: "TwinkleBot-1.1.0-arm64.dmg",
+            downloadUrl:
+              "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.1.0/TwinkleBot-1.1.0-arm64.dmg",
+          },
+        },
+      },
+    },
+    bundles: {
+      desktopCore: {
+        target: "desktop",
+        coreBuild: "20261121.030000-core123456",
+        coreVersion: "1.1.0",
+        webBuild: "20261121.030000-core123456",
+        bundleUrl:
+          "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.1.0/twinklebot-core-desktop.tar.gz",
+        sha256: "a".repeat(64),
+        sizeBytes: 900000,
+        minShellVersion: "1.0.3",
+      },
+    },
+  };
+
+  // Thin desktop shell >= minVersionForCoreOta chooses Core OTA even on v1.1.0 release, with optional shell download
+  const coreChoice = evaluateUpdateCompatibility(coreManifest, {
+    platform: "desktop",
+    desktopArch: "darwin-arm64",
+    nativeVersion: "1.0.3",
+    activeWebBuild: "20261120.010000-old0000000",
+    supportsCoreOta: true,
+    activeCoreBuild: "20261120.010000-old0000000",
+  });
+  assert.equal(coreChoice.status, "ota-available");
+  assert.equal(coreChoice.otaKind, "core");
+  assert.equal(coreChoice.coreBundle?.coreBuild, "20261121.030000-core123456");
+  assert.equal(coreChoice.optionalShellUpdate?.latestVersion, "1.1.0");
+
+  // Once activeCoreBuild matches coreBuild, up-to-date!
+  const coreCurrent = evaluateUpdateCompatibility(coreManifest, {
+    platform: "desktop",
+    desktopArch: "darwin-arm64",
+    nativeVersion: "1.0.3",
+    activeWebBuild: "20261121.030000-core123456",
+    supportsCoreOta: true,
+    activeCoreBuild: "20261121.030000-core123456",
+  });
+  assert.equal(coreCurrent.status, "up-to-date");
+
+  // Native shell below minShellVersion requires full installer
+  const shellTooOld = evaluateUpdateCompatibility(coreManifest, {
+    platform: "desktop",
+    desktopArch: "darwin-arm64",
+    nativeVersion: "1.0.2",
+    activeWebBuild: "20261119.010000-old0000000",
+    supportsCoreOta: true,
+    activeCoreBuild: "20261119.010000-old0000000",
+  });
+  assert.equal(shellTooOld.status, "shell-update-required");
+});
+
+test("createCoreOtaManager enforces GitHub URL trust, SHA-256, minShellVersion, watchdog rollback, and legacy cache cleanup", async () => {
+  const userDataDir = makeTempDir("core-ota-user-");
+  const builtInDir = makeTempDir("core-ota-builtin-");
+  const srcV2 = makeTempDir("core-ota-src-v2-");
+  const outArchive = path.join(srcV2, "..", "core-v2.tar.gz");
+  const badShellSrc = makeTempDir("core-ota-src-minshell-");
+  const badShellArchive = path.join(badShellSrc, "..", "core-minshell.tar.gz");
+
+  fs.mkdirSync(path.join(builtInDir, "public"), { recursive: true });
+  fs.writeFileSync(path.join(builtInDir, "server-bundle.mjs"), "console.log('builtin');\n");
+  fs.writeFileSync(path.join(builtInDir, "public", "index.html"), "<html>builtin</html>");
+  fs.writeFileSync(
+    path.join(builtInDir, "core-meta.json"),
+    JSON.stringify({ coreBuild: "20261120.010000-builtin123", coreVersion: "1.0.3", minShellVersion: "1.0.3" })
+  );
+
+  // Seed legacy ota-web cache to verify cleanup on fresh init/upgrade
+  const legacyOtaWebDir = path.join(userDataDir, "ota-web");
+  fs.mkdirSync(legacyOtaWebDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyOtaWebDir, "state.json"), "{}");
+
+  fs.mkdirSync(path.join(srcV2, "public"), { recursive: true });
+  fs.writeFileSync(path.join(srcV2, "server-bundle.mjs"), "console.log('v2');\n");
+  fs.writeFileSync(path.join(srcV2, "public", "index.html"), "<html>v2</html>");
+  fs.writeFileSync(
+    path.join(srcV2, "public", "web-meta.json"),
+    JSON.stringify({ webBuild: "20261121.120000-corev20001" })
+  );
+  fs.writeFileSync(
+    path.join(srcV2, "core-meta.json"),
+    JSON.stringify({ coreBuild: "20261121.120000-corev20001", coreVersion: "1.0.4", minShellVersion: "1.0.3" })
+  );
+  const pkgV2 = createTarGzFromDir(srcV2, outArchive);
+  const bytesV2 = fs.readFileSync(outArchive);
+
+  fs.mkdirSync(path.join(badShellSrc, "public"), { recursive: true });
+  fs.writeFileSync(path.join(badShellSrc, "server-bundle.mjs"), "console.log('v9');\n");
+  fs.writeFileSync(path.join(badShellSrc, "public", "index.html"), "<html>v9</html>");
+  fs.writeFileSync(
+    path.join(badShellSrc, "core-meta.json"),
+    JSON.stringify({ coreBuild: "20261122.120000-future999", coreVersion: "9.0.0", minShellVersion: "9.9.9" })
+  );
+  const pkgFuture = createTarGzFromDir(badShellSrc, badShellArchive);
+  const bytesFuture = fs.readFileSync(badShellArchive);
+
+  const server = http.createServer((req, res) => {
+    const payload = req.url === "/future.tar.gz" ? bytesFuture : bytesV2;
+    res.writeHead(200, { "Content-Type": "application/gzip" });
+    res.end(payload);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as any).port;
+
+  try {
+    const mgrProd = createCoreOtaManager({
+      userDataDir,
+      appVersion: "1.0.3",
+      builtInCoreDir: builtInDir,
+    });
+    assert.equal(fs.existsSync(legacyOtaWebDir), false);
+    await assert.rejects(
+      () =>
+        mgrProd.stageFromUrl({
+          bundleUrl: `http://127.0.0.1:${port}/v2.tar.gz`,
+          expectedSha256: pkgV2.sha256,
+          coreBuild: "20261121.120000-corev20001",
+        }),
+      /未受信任的 GitHub/
+    );
+    mgrProd.dispose();
+
+    const rollbacks: string[] = [];
+    const mgr = createCoreOtaManager({
+      userDataDir,
+      appVersion: "1.0.3",
+      builtInCoreDir: builtInDir,
+      allowLoopbackForTest: true,
+      watchdogTimeoutMs: 50,
+      onRollbackApplied: (_st, reason) => {
+        rollbacks.push(reason);
+      },
+    });
+
+    // Reject minShellVersion > appVersion
+    await assert.rejects(
+      () =>
+        mgr.stageFromUrl({
+          bundleUrl: `http://127.0.0.1:${port}/future.tar.gz`,
+          expectedSha256: pkgFuture.sha256,
+          coreBuild: "20261122.120000-future999",
+        }),
+      /原生壳版本过低|不完整/
+    );
+
+    // Stage + activate + confirm valid V2
+    const { cleanBuild } = await mgr.stageFromUrl({
+      bundleUrl: `http://127.0.0.1:${port}/v2.tar.gz`,
+      expectedSha256: pkgV2.sha256,
+      coreBuild: "20261121.120000-corev20001",
+    });
+    assert.equal(cleanBuild, "20261121.120000-corev20001");
+    mgr.activatePreparedBuild(cleanBuild);
+    mgr.confirmReady(cleanBuild);
+    assert.equal(mgr.getStatus().usingBuiltIn, false);
+    assert.equal(mgr.getStatus().lastGoodBuild, "20261121.120000-corev20001");
+    assert.equal(mgr.getStatus().activeCoreVersion, "1.0.4");
+
+    // Unconfirmed V3 triggers watchdog rollback back to V2 & invokes onRollbackApplied
+    fs.writeFileSync(
+      path.join(srcV2, "core-meta.json"),
+      JSON.stringify({ coreBuild: "20261121.130000-corev30002", coreVersion: "1.0.5", minShellVersion: "1.0.3" })
+    );
+    const v3Archive = path.join(srcV2, "..", "core-v3.tar.gz");
+    const pkgV3 = createTarGzFromDir(srcV2, v3Archive);
+    const v3Bytes = fs.readFileSync(v3Archive);
+    const mgrWatch = createCoreOtaManager({
+      userDataDir,
+      appVersion: "1.0.3",
+      builtInCoreDir: builtInDir,
+      allowLoopbackForTest: true,
+      watchdogTimeoutMs: 40,
+      fetchImpl: async () => new Response(v3Bytes, { status: 200 }),
+      onRollbackApplied: (_st, reason) => {
+        rollbacks.push(reason);
+      },
+    });
+    await mgrWatch.applyFromUrl({
+      bundleUrl: `http://127.0.0.1:${port}/v3.tar.gz`,
+      expectedSha256: pkgV3.sha256,
+      coreBuild: "20261121.130000-corev30002",
+    });
+    await new Promise((r) => setTimeout(r, 95));
+    assert.equal(mgrWatch.getStatus().activeBuild, "20261121.120000-corev20001");
+    assert.ok(rollbacks.some((r) => r.includes("自动回滚")));
+    mgrWatch.dispose();
+    mgr.dispose();
+
+    // Upgrading native shell semver clears Core OTA cache
+    const mgrUpgraded = createCoreOtaManager({
+      userDataDir,
+      appVersion: "1.0.4",
+      builtInCoreDir: builtInDir,
+    });
+    assert.equal(mgrUpgraded.getStatus().usingBuiltIn, true);
+    assert.equal(mgrUpgraded.getStatus().activeBuild, null);
+    mgrUpgraded.dispose();
+  } finally {
+    server.close();
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+    fs.rmSync(builtInDir, { recursive: true, force: true });
+    fs.rmSync(srcV2, { recursive: true, force: true });
+    fs.rmSync(badShellSrc, { recursive: true, force: true });
+    fs.rmSync(outArchive, { force: true });
+    fs.rmSync(badShellArchive, { force: true });
+    fs.rmSync(path.join(srcV2, "..", "core-v3.tar.gz"), { force: true });
   }
 });

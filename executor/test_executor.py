@@ -474,7 +474,10 @@ class TestHTTPServer(unittest.TestCase):
     def test_health_with_token_returns_200(self):
         status, data = self.request("/health")
         self.assertEqual(status, 200)
-        self.assertEqual(data, {"ok": True, "width": 1440, "height": 900})
+        self.assertEqual(data["ok"], True)
+        self.assertEqual(data["width"], 1440)
+        self.assertEqual(data["height"], 900)
+        self.assertRegex(data.get("executor_sha256", ""), r"^[a-f0-9]{16}$")
 
     def test_click_invalid_param_returns_400(self):
         status, data = self.request("/click", method="POST", body={"x": "a"})
@@ -1077,6 +1080,256 @@ class TestHTTPServer(unittest.TestCase):
                 self.assertFalse(accepted, "/proc/net/tcp probe must not open an RFB/TCP connection")
         finally:
             srv_sock.close()
+
+    def test_per_bot_dedicated_window_multi_tab_and_popup_isolation(self):
+        """
+        Verify 1 Bot <-> 1 dedicated maximized Chrome window (`windowId`):
+        - Distinct Bots get distinct `windowId`s (newWindow=True + Browser.setWindowBounds maximized).
+        - `/browser/tabs` (`list`, `new`, `switch`, `close`) strictly scopes to each Bot's own `windowId`.
+        - Cross-Bot `target_id` switch/close is rejected with 400.
+        - Closing the last tab in a Bot's window is refused cleanly.
+        - Closing a Bot's active tab while another tab survives in its window re-binds to the survivor.
+        - Releasing / evicting a Bot closes ALL tabs belonging to its `windowId` in one shot.
+        - `browser_click` auto-switches to a new popup tab opened inside the same `windowId`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            live_tabs = [
+                {
+                    "id": "T-1",
+                    "type": "page",
+                    "url": "about:blank",
+                    "title": "Start",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/T-1",
+                }
+            ]
+            tab_to_win = {"T-1": 100}
+            seq_tab = [1]
+            seq_win = [100]
+            maximized_wins = []
+            closed_tabs = []
+            activated_tabs = []
+
+            def fake_create_tab(url="about:blank", port=9222, new_window=True, background=False):
+                seq_tab[0] += 1
+                tid = f"T-{seq_tab[0]}"
+                if new_window:
+                    seq_win[0] += 1
+                    wid = seq_win[0]
+                else:
+                    wid = seq_win[0]
+                tab_to_win[tid] = wid
+                tab = {
+                    "id": tid,
+                    "type": "page",
+                    "url": url or "about:blank",
+                    "title": f"Title {tid}",
+                    "webSocketDebuggerUrl": f"ws://127.0.0.1:{port}/devtools/page/{tid}",
+                }
+                live_tabs.append(tab)
+                return tab
+
+            def fake_create_tab_in_window(
+                parent_target, url="about:blank", port=9222, window_id=None, **_kw
+            ):
+                seq_tab[0] += 1
+                tid = f"T-{seq_tab[0]}"
+                wid = window_id if window_id is not None else tab_to_win.get(parent_target.get("id"), 100)
+                tab_to_win[tid] = wid
+                tab = {
+                    "id": tid,
+                    "type": "page",
+                    "url": url or "about:blank",
+                    "title": f"Tab {tid}",
+                    "webSocketDebuggerUrl": f"ws://127.0.0.1:{port}/devtools/page/{tid}",
+                }
+                live_tabs.append(tab)
+                return tab
+
+            def fake_close_tab(tid, port=9222):
+                closed_tabs.append(tid)
+                live_tabs[:] = [t for t in live_tabs if t["id"] != tid]
+
+            def fake_win_for_target(tid, port=9222, timeout=2.0):
+                wid = tab_to_win.get(str(tid))
+                return {"windowId": wid, "bounds": {"windowState": "normal"}} if wid is not None else None
+
+            def fake_set_bounds(wid, bounds, port=9222, timeout=2.0):
+                if bounds.get("windowState") == "maximized":
+                    maximized_wins.append(int(wid))
+                return True
+
+            dm = TabManager(
+                map_path=os.path.join(td, "map.json"),
+                primary_profile_dir=os.path.join(td, "chrome-profile"),
+                max_concurrent_screens=4,
+                browser_boot_timeout_sec=0.05,
+                spawn_fn=lambda *a, **kw: type("P", (), {"pid": 9999})(),
+                tcp_open_fn=lambda p: True,
+                cdp_ws_fn=lambda port=9222, timeout=1.0: "ws://127.0.0.1:9222/devtools/browser/1",
+                targets_fn=lambda port=9222, timeout=2.0: list(live_tabs),
+                create_tab_fn=fake_create_tab,
+                close_tab_fn=fake_close_tab,
+                activate_tab_fn=lambda target, port=9222: activated_tabs.append(target.get("id")),
+                window_for_target_fn=fake_win_for_target,
+                set_window_bounds_fn=fake_set_bounds,
+                create_tab_in_window_fn=fake_create_tab_in_window,
+            )
+
+            # 1. Admin & Worker each get their own distinct, maximized Chrome windowId
+            a_info = dm.acquire_bot_tab("bot-admin", is_admin=True, activate=True)
+            dm.release_bot_tab_in_flight(a_info["bot_key"])
+            b_info = dm.acquire_bot_tab("bot-worker", is_admin=False, activate=False)
+            dm.release_bot_tab_in_flight(b_info["bot_key"])
+
+            self.assertEqual(a_info["window_id"], 100)
+            self.assertEqual(b_info["window_id"], 101)
+            self.assertNotEqual(a_info["window_id"], b_info["window_id"])
+            self.assertIn(100, maximized_wins)
+            self.assertIn(101, maximized_wins)
+
+            # 2. HTTP /browser/tabs supports list / new / switch / close strictly scoped to each Bot's window
+            srv = make_server(
+                Actions(FakeRun(), spawn=lambda *a, **kw: None, cdp_eval=lambda expr: {"ok": True}),
+                "tok-win",
+                host="127.0.0.1",
+                port=0,
+                display_manager=dm,
+            )
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            port = srv.server_address[1]
+            try:
+                def post(path, body, bot_id="bot-worker", is_admin=False):
+                    r = urllib.request.Request(
+                        f"http://127.0.0.1:{port}{path}",
+                        data=json.dumps(body).encode("utf-8"),
+                        headers={
+                            "Authorization": "Bearer tok-win",
+                            "Content-Type": "application/json",
+                            "X-Twinkle-Bot-Id": bot_id,
+                            "X-Twinkle-Bot-Admin": "1" if is_admin else "0",
+                        },
+                        method="POST",
+                    )
+                    try:
+                        with urllib.request.urlopen(r) as resp:
+                            return resp.status, json.loads(resp.read().decode("utf-8"))
+                    except urllib.error.HTTPError as e:
+                        return e.code, json.loads(e.read().decode("utf-8"))
+
+                # Worker opens 2 additional tabs inside its own window (windowId 101)
+                st, new1 = post("/browser/tabs", {"action": "new", "url": "https://a.example"})
+                self.assertEqual(st, 200)
+                self.assertEqual(new1["window_id"], 101)
+                self.assertEqual(new1["tab_count"], 2)
+                t_worker_2 = new1["target_id"]
+                self.assertEqual(tab_to_win[t_worker_2], 101)
+
+                st, new2 = post("/browser/tabs", {"action": "new", "url": "https://b.example"})
+                self.assertEqual(st, 200)
+                self.assertEqual(new2["tab_count"], 3)
+                t_worker_3 = new2["target_id"]
+
+                # Admin's window (windowId 100) still has ONLY its 1 tab — zero leakage!
+                st, admin_tabs = post("/browser/tabs", {"action": "list"}, bot_id="bot-admin", is_admin=True)
+                self.assertEqual(st, 200)
+                self.assertEqual(admin_tabs["window_id"], 100)
+                self.assertEqual(admin_tabs["tab_count"], 1)
+
+                # Worker CANNOT switch to or close Admin's tab T-1 (cross-window rejection -> 400)
+                st_bad_sw, _ = post("/browser/tabs", {"action": "switch", "target_id": "T-1"})
+                self.assertEqual(st_bad_sw, 400)
+                st_bad_cl, _ = post("/browser/tabs", {"action": "close", "target_id": "T-1"})
+                self.assertEqual(st_bad_cl, 400)
+
+                # Worker switches back to index 0, then closes t_worker_2
+                st, sw = post("/browser/tabs", {"action": "switch", "index": 0})
+                self.assertEqual(st, 200)
+                self.assertEqual(sw["active_target_id"], b_info["target_id"])
+
+                st, cl = post("/browser/tabs", {"action": "close", "target_id": t_worker_2})
+                self.assertEqual(st, 200)
+                self.assertEqual(cl["closed_target_id"], t_worker_2)
+                self.assertEqual(cl["tab_count"], 2)
+
+                # Admin cannot close its last remaining tab
+                st, last_cl = post("/browser/tabs", {"action": "close"}, bot_id="bot-admin", is_admin=True)
+                self.assertEqual(st, 200)
+                self.assertFalse(last_cl["ok"])
+
+                # All tabs in both windows are protected from close_redundant_blank_tabs
+                prot = dm.protected_target_ids()
+                self.assertIn("T-1", prot)
+                self.assertIn(b_info["target_id"], prot)
+                self.assertIn(t_worker_3, prot)
+
+                # 3. If user manually closes Worker's active tab while t_worker_3 survives in window 101,
+                #    next acquire_bot_tab seamlessly re-binds to t_worker_3 inside the SAME window 101!
+                live_tabs[:] = [x for x in live_tabs if x["id"] != b_info["target_id"]]
+                rebound = dm.acquire_bot_tab("bot-worker", is_admin=False)
+                dm.release_bot_tab_in_flight(rebound["bot_key"])
+                self.assertEqual(rebound["window_id"], 101)
+                self.assertEqual(rebound["target_id"], t_worker_3)
+
+                # Add another tab in window 101, then release_bot -> closes ALL tabs of window 101 in one shot!
+                st, extra = post("/browser/tabs", {"action": "new", "url": "https://c.example"})
+                self.assertEqual(st, 200)
+                t_worker_4 = extra["target_id"]
+                rel = dm.release_bot("bot-worker")
+                self.assertTrue(rel["released"])
+                self.assertEqual(rel["closed_tabs"], 2)
+                remaining_ids = {x["id"] for x in live_tabs}
+                self.assertEqual(remaining_ids, {"T-1"}, "releasing worker must close all tabs in its window only")
+                self.assertNotIn(t_worker_3, remaining_ids)
+                self.assertNotIn(t_worker_4, remaining_ids)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+            # 4. Actions.browser_click auto-follows a new popup tab opened inside THIS Bot's window
+            popup_tabs = [
+                {"id": "W1-MAIN", "type": "page", "url": "https://origin.test", "title": "Origin", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/W1-MAIN"}
+            ]
+            switched_log = []
+
+            def fake_cdp_session(fn):
+                def fake_call(method, params=None):
+                    expr = str((params or {}).get("expression") or "")
+                    if method == "Input.dispatchMouseEvent" and (params or {}).get("type") == "mouseReleased":
+                        # Simulate target="_blank" link opening a new tab inside THIS Bot's window!
+                        if len(popup_tabs) == 1:
+                            popup_tabs.append({
+                                "id": "W1-POPUP",
+                                "type": "page",
+                                "url": "https://popup.test/docs",
+                                "title": "Popup Docs",
+                                "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/W1-POPUP",
+                            })
+                        return {}
+                    if "document.querySelector('[data-gb-ref=" in expr:
+                        return {"result": {"value": {"ok": True, "visible": True, "x": 100, "y": 50, "tag": "a", "name": "Open Docs"}}}
+                    if "document.readyState" in expr:
+                        return {"result": {"value": "complete"}}
+                    if "collectGbSnapshot" in expr:
+                        return {"result": {"value": {"ok": True, "url": "https://popup.test/docs", "title": "Popup Docs", "elements": [], "text_excerpt": "Popup Loaded"}}}
+                    return {"result": {"value": {}}}
+                return fn(fake_call)
+
+            act = Actions(
+                run=FakeRun(),
+                cdp_session=fake_cdp_session,
+                target_id="W1-MAIN",
+                window_id=200,
+                list_window_targets_fn=lambda: list(popup_tabs),
+                on_target_switch_fn=lambda tid, url: switched_log.append((tid, url)),
+            )
+            click_res = act.browser_click("e1")
+            self.assertTrue(click_res.get("ok"))
+            self.assertTrue(click_res.get("switched_to_new_tab"))
+            self.assertEqual(click_res.get("target_id"), "W1-POPUP")
+            self.assertEqual(click_res.get("tab_count"), 2)
+            self.assertEqual(act.target_id, "W1-POPUP")
+            self.assertEqual(switched_log, [("W1-POPUP", "https://popup.test/docs")])
 
 
 if __name__ == "__main__":

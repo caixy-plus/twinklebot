@@ -196,7 +196,7 @@ jobs:
           if-no-files-found: ignore
 
   publish-ota-only:
-    name: Fast Pure-Frontend OTA Release
+    name: Fast Core + Frontend OTA Release
     needs: [prepare, release-e2e]
     if: needs.prepare.outputs.mode == 'ota-only'
     runs-on: ubuntu-latest
@@ -246,13 +246,14 @@ jobs:
           repository: ${{ vars.RELEASE_REPO || github.repository }}
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           tag_name: ${{ needs.prepare.outputs.release_tag }}
-          name: "TwinkleBot Frontend OTA (${{ needs.prepare.outputs.release_tag }})"
+          name: "TwinkleBot Core + Frontend OTA (${{ needs.prepare.outputs.release_tag }})"
           target_commitish: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
           prerelease: true
           make_latest: false
           generate_release_notes: true
           files: |
             dist-ota/version-manifest.json
+            dist-ota/twinklebot-core-desktop.tar.gz
             dist-ota/twinklebot-web-desktop.tar.gz
             dist-ota/twinklebot-web-mobile.tar.gz
 
@@ -492,6 +493,7 @@ jobs:
         run: |
           gh release upload "$RELEASE_TAG" \
             dist-ota/version-manifest.json \
+            dist-ota/twinklebot-core-desktop.tar.gz \
             dist-ota/twinklebot-web-desktop.tar.gz \
             dist-ota/twinklebot-web-mobile.tar.gz \
             --repo "$TARGET_REPO" \

@@ -98,30 +98,220 @@ function isInvalidThoughtSignatureError(err: unknown): boolean {
   return /invalid[\s_]+thought[\s_]+signature|thought[\s_]+signature/i.test(msg);
 }
 
-function sanitizeInputForGemini(
-  input: any,
-  { stripAllThoughts = false }: { stripAllThoughts?: boolean } = {}
-): any {
-  if (!Array.isArray(input)) return input;
+function isGeminiInvalidArgumentError(err: unknown): boolean {
+  const status = Number((err as any)?.status ?? (err as any)?.statusCode ?? 0);
+  const msg = String((err as any)?.message || err || "");
+  if (status === 400) return true;
+  return /\b400\b.*(?:invalid[\s_]+argument|bad[\s_]+request)|request contains an invalid argument/i.test(
+    msg
+  );
+}
+
+function normalizeTextParts(content: any): any[] {
+  if (typeof content === "string") {
+    return content ? [{ type: "text", text: content }] : [];
+  }
+  if (!Array.isArray(content)) return [];
   const out: any[] = [];
-  for (const step of input) {
-    if (!step || typeof step !== "object") {
-      out.push(step);
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text") {
+      if (typeof part.text === "string" && part.text.length > 0) {
+        out.push({ type: "text", text: part.text });
+      }
       continue;
     }
+    out.push(part);
+  }
+  return out;
+}
+
+function summarizeFunctionCallForText(fc: any): string {
+  const name = String(fc?.name || "tool");
+  let argText = "";
+  try {
+    argText = JSON.stringify(fc?.arguments ?? {});
+  } catch {
+    argText = "{}";
+  }
+  if (argText.length > 600) argText = `${argText.slice(0, 600)}…`;
+  return `[Tool call ${name}(${argText})]`;
+}
+
+function extractFunctionResultParts(fr: any): any[] {
+  const name = String(fr?.name || "tool");
+  const raw = fr?.result;
+  const parts: any[] = [];
+  if (typeof raw === "string") {
+    const trimmed = raw.length > 8000 ? `${raw.slice(0, 8000)}…` : raw;
+    parts.push({ type: "text", text: `[Tool result ${name}]: ${trimmed || "(empty)"}` });
+    return parts;
+  }
+  if (Array.isArray(raw)) {
+    const textChunks: string[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      if (item.type === "text" && typeof item.text === "string") {
+        textChunks.push(item.text);
+      } else if (item.type === "image" && item.data) {
+        parts.push(item);
+      }
+    }
+    const joined = textChunks.join("\n");
+    const clipped = joined.length > 8000 ? `${joined.slice(0, 8000)}…` : joined;
+    parts.unshift({ type: "text", text: `[Tool result ${name}]: ${clipped || "(ok)"}` });
+    return parts;
+  }
+  let serialized = "";
+  try {
+    serialized = JSON.stringify(raw ?? {});
+  } catch {
+    serialized = String(raw ?? "");
+  }
+  if (serialized.length > 8000) serialized = `${serialized.slice(0, 8000)}…`;
+  parts.push({ type: "text", text: `[Tool result ${name}]: ${serialized || "(ok)"}` });
+  return parts;
+}
+
+function pushMergedStep(out: any[], step: any): void {
+  if (!step || typeof step !== "object") return;
+  if (step.type === "model_output" || step.type === "user_input") {
+    const parts = normalizeTextParts(step.content ?? step.text);
+    if (parts.length === 0) return;
+    const prev = out[out.length - 1];
+    if (prev && prev.type === step.type && Array.isArray(prev.content)) {
+      prev.content = [...prev.content, ...parts];
+      return;
+    }
+    out.push({ type: step.type, content: parts });
+    return;
+  }
+  out.push(step);
+}
+
+/**
+ * Sanitize shared multi-provider history into a strictly valid Gemini Interactions API `input`:
+ * 1. Drops unsigned `thought` steps (e.g. DeepSeek/OpenAI `reasoning_content`).
+ * 2. Preserves Gemini-native signed tool turns (`[thought(sig), function_call..., function_result...]`)
+ *    intact so Prompt Cache & Gemini reasoning continuity are preserved.
+ * 3. Folds cross-provider unsigned `function_call` + `function_result` turns (e.g. DeepSeek -> Gemini
+ *    escalation, or `model_output` followed directly by `function_call`) into clean `model_output` /
+ *    `user_input` turns so Gemini 3 never rejects them with `400 Request contains an invalid argument.`.
+ * 4. Merges consecutive same-role text steps and drops empty content blocks.
+ */
+export function sanitizeInputForGemini(
+  input: any,
+  {
+    stripAllThoughts = false,
+    foldUnsignedToolTurns = true,
+  }: { stripAllThoughts?: boolean; foldUnsignedToolTurns?: boolean } = {}
+): any {
+  if (!Array.isArray(input)) return input;
+
+  // Step 1: filter raw thoughts and strip signatures when requested
+  const filtered: any[] = [];
+  for (const step of input) {
+    if (!step || typeof step !== "object") continue;
     if (step.type === "thought" || step.type === "thought_signature") {
       if (stripAllThoughts) continue;
       if (typeof step.signature !== "string" || !step.signature.trim()) continue;
-      out.push(step);
+      filtered.push(step);
       continue;
     }
     if (stripAllThoughts && "signature" in step) {
       const { signature: _ignored, ...rest } = step;
-      out.push(rest);
+      filtered.push(rest);
       continue;
     }
-    out.push(step);
+    filtered.push(step);
   }
+
+  if (!foldUnsignedToolTurns) {
+    return filtered;
+  }
+
+  // Step 2: walk steps; fold any function_call block that is NOT immediately preceded
+  // by a valid signed Gemini thought step (or when stripAllThoughts is active).
+  const out: any[] = [];
+  let i = 0;
+  while (i < filtered.length) {
+    const step = filtered[i];
+
+    if (step.type === "function_call") {
+      // Collect consecutive function_call steps in this model turn
+      const calls: any[] = [];
+      while (i < filtered.length && filtered[i]?.type === "function_call") {
+        calls.push(filtered[i]);
+        i += 1;
+      }
+      // Collect immediately following function_result steps (plus any interleaved screenshot user_input)
+      const results: any[] = [];
+      const callIds = new Set(calls.map((c) => String(c.id || "")).filter(Boolean));
+      while (
+        i < filtered.length &&
+        filtered[i]?.type === "function_result" &&
+        (callIds.size === 0 || !filtered[i].call_id || callIds.has(String(filtered[i].call_id)))
+      ) {
+        results.push(filtered[i]);
+        i += 1;
+      }
+
+      const prevOut = out[out.length - 1];
+      const hasValidPrecedingSignedThought =
+        !stripAllThoughts &&
+        prevOut &&
+        prevOut.type === "thought" &&
+        typeof prevOut.signature === "string" &&
+        prevOut.signature.trim().length > 0;
+
+      if (hasValidPrecedingSignedThought) {
+        for (const fc of calls) out.push(fc);
+        for (const fr of results) out.push(fr);
+      } else {
+        const callSummary = calls.map(summarizeFunctionCallForText).join("\n");
+        if (callSummary) {
+          pushMergedStep(out, {
+            type: "model_output",
+            content: [{ type: "text", text: callSummary }],
+          });
+        }
+        const resultParts: any[] = [];
+        for (const fr of results) {
+          resultParts.push(...extractFunctionResultParts(fr));
+        }
+        if (resultParts.length > 0) {
+          pushMergedStep(out, {
+            type: "user_input",
+            content: resultParts,
+          });
+        }
+      }
+      continue;
+    }
+
+    if (step.type === "function_result") {
+      // Stray/unpaired function_result -> fold safely as user_input
+      pushMergedStep(out, {
+        type: "user_input",
+        content: extractFunctionResultParts(step),
+      });
+      i += 1;
+      continue;
+    }
+
+    if (step.type === "text") {
+      pushMergedStep(out, {
+        type: "model_output",
+        content: normalizeTextParts(step.content ?? step.text),
+      });
+      i += 1;
+      continue;
+    }
+
+    pushMergedStep(out, step);
+    i += 1;
+  }
+
   return out;
 }
 
@@ -215,7 +405,10 @@ export function createGeminiDriver({
       });
 
       const invokeWithSignatureRecovery = async (targetModel: string, perCallTimeoutMs: number) => {
-        const firstInput = sanitizeInputForGemini(input, { stripAllThoughts: false });
+        const firstInput = sanitizeInputForGemini(input, {
+          stripAllThoughts: false,
+          foldUnsignedToolTurns: true,
+        });
         try {
           return await invokeCreate(
             buildParams(targetModel, firstInput),
@@ -223,15 +416,17 @@ export function createGeminiDriver({
             perCallTimeoutMs
           );
         } catch (err) {
-          if (signal?.aborted || !isInvalidThoughtSignatureError(err)) {
+          if (
+            signal?.aborted ||
+            (!isInvalidThoughtSignatureError(err) && !isGeminiInvalidArgumentError(err))
+          ) {
             throw err;
           }
-          const strippedInput = sanitizeInputForGemini(input, { stripAllThoughts: true });
-          const changed =
-            !Array.isArray(firstInput) ||
-            !Array.isArray(strippedInput) ||
-            strippedInput.length !== firstInput.length ||
-            firstInput.some((s: any) => s && typeof s === "object" && "signature" in s);
+          const strippedInput = sanitizeInputForGemini(input, {
+            stripAllThoughts: true,
+            foldUnsignedToolTurns: true,
+          });
+          const changed = JSON.stringify(strippedInput) !== JSON.stringify(firstInput);
           if (!changed) {
             throw err;
           }

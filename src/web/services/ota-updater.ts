@@ -104,13 +104,18 @@ function detectBrowserDesktopArch(): string {
 
 export function computeUpdateDecisionKey(decision: CompatibilityDecision | null): string {
   if (!decision || decision.status === "up-to-date") return "";
-  if (decision.status === "ota-available" && decision.otaBundle?.webBuild) {
-    return `ota:${decision.otaBundle.webBuild}`;
+  if (decision.status === "ota-available") {
+    if (decision.otaKind === "core" && decision.coreBundle?.coreBuild) {
+      return `core:${decision.coreBundle.coreBuild}`;
+    }
+    if (decision.otaBundle?.webBuild) {
+      return `ota:${decision.otaBundle.webBuild}`;
+    }
   }
   if (decision.status === "shell-update-required" && decision.shellUpdate?.latestVersion) {
     return `shell:${decision.shellUpdate.latestVersion}:${decision.shellUpdate.latestBuildCode || 0}`;
   }
-  return `${decision.status}:${decision.latestWebBuild || decision.releaseTag || ""}`;
+  return `${decision.status}:${decision.latestCoreBuild || decision.latestWebBuild || decision.releaseTag || ""}`;
 }
 
 /**
@@ -152,6 +157,14 @@ export async function refreshLocalUpdateMetadata() {
   let activeWebBuild = String(webMeta?.webBuild || diag?.webBuild || "");
   let usingBuiltIn = true;
   let lastRollbackReason = "";
+  let supportsCoreOta = false;
+  let activeCoreBuild = "";
+  let activeCoreVersion = "";
+  let deferredSwitch: {
+    buildId: string;
+    queuedAt?: number;
+    activeRunCount: number;
+  } | null = null;
 
   if (platform === "desktop" && window.twinklebotDesktop?.getOtaStatus) {
     try {
@@ -161,6 +174,20 @@ export async function refreshLocalUpdateMetadata() {
         nativeVersion = String(st.builtInAppVersion || nativeVersion);
         usingBuiltIn = st.usingBuiltIn !== false;
         lastRollbackReason = String(st.lastRollbackReason || "");
+        supportsCoreOta = Boolean(st.supportsCoreOta);
+        if (st.activeCoreBuild) {
+          activeCoreBuild = String(st.activeCoreBuild);
+        }
+        if (st.activeCoreVersion) {
+          activeCoreVersion = String(st.activeCoreVersion);
+        }
+        if (st.deferredSwitch && typeof st.deferredSwitch === "object" && st.deferredSwitch.buildId) {
+          deferredSwitch = {
+            buildId: String(st.deferredSwitch.buildId),
+            queuedAt: Number(st.deferredSwitch.queuedAt || 0) || undefined,
+            activeRunCount: Number(st.deferredSwitch.activeRunCount || 0),
+          };
+        }
         if (st.activeWebMeta?.webBuild) {
           activeWebBuild = String(st.activeWebMeta.webBuild);
         } else if (st.activeBuild) {
@@ -184,15 +211,20 @@ export async function refreshLocalUpdateMetadata() {
   }
 
   const githubRepo = String(webMeta?.githubRepo || DEFAULT_GITHUB_REPO).trim() || DEFAULT_GITHUB_REPO;
+  const resolvedWebBuild = activeWebBuild || `${nativeVersion}-builtin`;
   const localMeta = {
     platform,
     desktopArch,
     githubRepo,
     nativeVersion,
     nativeBuildCode,
-    activeWebBuild: activeWebBuild || `${nativeVersion}-builtin`,
+    activeWebBuild: resolvedWebBuild,
     usingBuiltIn,
     lastRollbackReason,
+    supportsCoreOta,
+    activeCoreBuild: activeCoreBuild || (supportsCoreOta ? resolvedWebBuild : ""),
+    activeCoreVersion: activeCoreVersion || nativeVersion,
+    deferredSwitch,
   };
 
   setState((prev) => {
@@ -205,6 +237,8 @@ export async function refreshLocalUpdateMetadata() {
           nativeVersion: localMeta.nativeVersion,
           nativeBuildCode: localMeta.nativeBuildCode,
           activeWebBuild: localMeta.activeWebBuild,
+          supportsCoreOta: localMeta.supportsCoreOta,
+          activeCoreBuild: localMeta.activeCoreBuild || undefined,
         })
       : prev.updateState.decision;
     return {
@@ -504,6 +538,8 @@ export async function checkForAppUpdates({
         nativeVersion: localMeta.nativeVersion,
         nativeBuildCode: localMeta.nativeBuildCode,
         activeWebBuild: localMeta.activeWebBuild,
+        supportsCoreOta: localMeta.supportsCoreOta,
+        activeCoreBuild: localMeta.activeCoreBuild || undefined,
       };
       const decision = evaluateUpdateCompatibility(manifest, env);
       const connectedNodeStatus = evaluateConnectedNodeStatus(
@@ -548,7 +584,55 @@ export async function checkForAppUpdates({
   return await checkInFlight;
 }
 
-export async function applyAvailableOtaUpdate() {
+function attachDesktopOtaProgressListener() {
+  unsubDesktopProgress?.();
+  unsubDesktopProgress =
+    window.twinklebotDesktop?.onOtaProgress?.((ev: any) => {
+      const phase = String(ev?.phase || "downloading");
+      const isWaitingIdle = phase === "waiting_idle";
+      const isSwitching = phase === "applying" || phase === "rollback";
+      setState((prev) => ({
+        updateState: {
+          ...prev.updateState,
+          applying: isWaitingIdle ? false : isSwitching ? true : prev.updateState.applying,
+          coreSwitchInProgress: isSwitching
+            ? true
+            : phase === "error"
+              ? false
+              : prev.updateState.coreSwitchInProgress,
+          localMeta:
+            isWaitingIdle && prev.updateState.localMeta
+              ? {
+                  ...prev.updateState.localMeta,
+                  deferredSwitch: {
+                    buildId: String(
+                      ev?.coreBuild ||
+                        ev?.webBuild ||
+                        prev.updateState.localMeta.deferredSwitch?.buildId ||
+                        ""
+                    ),
+                    activeRunCount: Number(ev?.activeRunCount || 0),
+                  },
+                }
+              : prev.updateState.localMeta,
+          progress: {
+            phase,
+            percent: Number(ev?.percent || 0),
+            message: String(ev?.message || ""),
+            activeRunCount:
+              typeof ev?.activeRunCount === "number" ? ev.activeRunCount : undefined,
+            coreBuild: ev?.coreBuild ? String(ev.coreBuild) : undefined,
+            webBuild: ev?.webBuild ? String(ev.webBuild) : undefined,
+          },
+        },
+      }));
+    }) || null;
+}
+
+export async function applyAvailableOtaUpdate(): Promise<{
+  queuedForIdle?: boolean;
+  activeRunCount?: number;
+} | void> {
   const st = getState().updateState;
   const decision = st.decision as CompatibilityDecision | null;
   if (!decision) return;
@@ -558,47 +642,88 @@ export async function applyAvailableOtaUpdate() {
     return;
   }
 
-  if (decision.status !== "ota-available" || !decision.otaBundle) {
-    throw new Error(decision.reason || "当前没有可用的前端热更新包");
+  if (decision.status !== "ota-available" || (!decision.otaBundle && !decision.coreBundle)) {
+    throw new Error(decision.reason || "当前没有可用的热更新包");
   }
 
-  const bundle = decision.otaBundle;
   const platform = st.localMeta?.platform || resolveCurrentPlatform();
+  const isCoreOta =
+    platform === "desktop" &&
+    decision.otaKind === "core" &&
+    Boolean(decision.coreBundle) &&
+    Boolean(window.twinklebotDesktop?.applyCoreOta || window.twinklebotDesktop?.applyWebOta);
 
   setState((prev) => ({
     updateState: {
       ...prev.updateState,
       applying: true,
+      coreSwitchInProgress: false,
       error: "",
       progress: {
         phase: "downloading",
         percent: 10,
-        message: "正在从 GitHub Releases 准备热更新…",
+        message: isCoreOta
+          ? "正在下载 TwinkleBot Core 运行时热更新包…"
+          : "正在从 GitHub Releases 准备热更新…",
       },
     },
   }));
 
+  let shouldKeepDesktopProgress = false;
   try {
-    if (platform === "desktop" && window.twinklebotDesktop?.applyWebOta) {
-      unsubDesktopProgress?.();
-      unsubDesktopProgress = window.twinklebotDesktop.onOtaProgress?.((ev: any) => {
+    if (isCoreOta && decision.coreBundle) {
+      attachDesktopOtaProgressListener();
+      const applyFn =
+        window.twinklebotDesktop?.applyCoreOta || window.twinklebotDesktop?.applyWebOta;
+      const res = await applyFn({
+        bundleUrl: decision.coreBundle.bundleUrl,
+        sha256: decision.coreBundle.sha256,
+        coreBuild: decision.coreBundle.coreBuild,
+        webBuild: decision.coreBundle.webBuild,
+      });
+      if (res?.queuedForIdle) {
+        shouldKeepDesktopProgress = true;
+        const activeRunCount = Number(res.activeRunCount || 1);
         setState((prev) => ({
           updateState: {
             ...prev.updateState,
+            applying: false,
+            coreSwitchInProgress: false,
+            localMeta: prev.updateState.localMeta
+              ? {
+                  ...prev.updateState.localMeta,
+                  deferredSwitch: res.deferredSwitch || {
+                    buildId: decision.coreBundle!.coreBuild,
+                    activeRunCount,
+                  },
+                }
+              : prev.updateState.localMeta,
             progress: {
-              phase: String(ev?.phase || "downloading"),
-              percent: Number(ev?.percent || 0),
-              message: String(ev?.message || ""),
+              phase: "waiting_idle",
+              percent: 90,
+              activeRunCount,
+              coreBuild: decision.coreBundle!.coreBuild,
+              webBuild: decision.coreBundle!.webBuild,
+              message: `新版本已下载就绪；当前有 ${activeRunCount} 个 Bot 正在运行，空闲后将自动平滑切换`,
             },
           },
         }));
-      });
+        return { queuedForIdle: true, activeRunCount };
+      }
+      return { queuedForIdle: false, activeRunCount: 0 };
+    } else if (platform === "desktop" && decision.otaBundle && window.twinklebotDesktop?.applyWebOta) {
+      attachDesktopOtaProgressListener();
       await window.twinklebotDesktop.applyWebOta({
-        bundleUrl: bundle.bundleUrl,
-        sha256: bundle.sha256,
-        webBuild: bundle.webBuild,
+        bundleUrl: decision.otaBundle.bundleUrl,
+        sha256: decision.otaBundle.sha256,
+        webBuild: decision.otaBundle.webBuild,
       });
-    } else if ((platform === "ios" || platform === "android") && isNativeMobileContainer()) {
+    } else if (
+      (platform === "ios" || platform === "android") &&
+      isNativeMobileContainer() &&
+      decision.otaBundle
+    ) {
+      const bundle = decision.otaBundle;
       unsubMobileProgress?.();
       unsubMobileProgress = onMobileWebOtaProgress((ev: any) => {
         setState((prev) => ({
@@ -625,16 +750,75 @@ export async function applyAvailableOtaUpdate() {
       updateState: {
         ...prev.updateState,
         applying: false,
+        coreSwitchInProgress: false,
         progress: null,
         error: String(err?.message || "热更新失败"),
       },
     }));
     throw err;
   } finally {
-    unsubDesktopProgress?.();
-    unsubDesktopProgress = null;
+    if (!shouldKeepDesktopProgress) {
+      unsubDesktopProgress?.();
+      unsubDesktopProgress = null;
+    }
     unsubMobileProgress?.();
     unsubMobileProgress = null;
+  }
+}
+
+export async function forceSwitchCoreOtaNow() {
+  if (!window.twinklebotDesktop?.forceSwitchCoreOta) {
+    throw new Error("当前桌面端不支持强制切换 Core 运行时");
+  }
+  attachDesktopOtaProgressListener();
+  setState((prev) => ({
+    updateState: {
+      ...prev.updateState,
+      applying: true,
+      coreSwitchInProgress: true,
+      error: "",
+      progress: {
+        phase: "applying",
+        percent: 92,
+        message: "正在立即重启本地核心服务并切换新版本…",
+      },
+    },
+  }));
+  try {
+    return await window.twinklebotDesktop.forceSwitchCoreOta();
+  } catch (err: any) {
+    setState((prev) => ({
+      updateState: {
+        ...prev.updateState,
+        applying: false,
+        coreSwitchInProgress: false,
+        progress: null,
+        error: String(err?.message || "强制切换失败"),
+      },
+    }));
+    unsubDesktopProgress?.();
+    unsubDesktopProgress = null;
+    throw err;
+  }
+}
+
+export async function cancelDeferredCoreOta() {
+  unsubDesktopProgress?.();
+  unsubDesktopProgress = null;
+  try {
+    await window.twinklebotDesktop?.cancelDeferredCoreOta?.();
+  } finally {
+    setState((prev) => ({
+      updateState: {
+        ...prev.updateState,
+        applying: false,
+        coreSwitchInProgress: false,
+        localMeta: prev.updateState.localMeta
+          ? { ...prev.updateState.localMeta, deferredSwitch: null }
+          : prev.updateState.localMeta,
+        progress: null,
+      },
+    }));
   }
 }
 

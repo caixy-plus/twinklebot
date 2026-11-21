@@ -133,6 +133,29 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/popup-host":
+            self._send_html(
+                200,
+                """<!doctype html>
+<html><head><title>Popup Host</title></head>
+<body>
+  <h1>Popup Host Page</h1>
+  <a id="blank-link" href="/popup-dest" target="_blank">Open Blank Dest</a>
+</body></html>""",
+            )
+            return
+
+        if path == "/popup-dest":
+            self._send_html(
+                200,
+                """<!doctype html>
+<html><head><title>Popup Dest</title></head>
+<body>
+  <h1>POPUP_DEST_LOADED</h1>
+</body></html>""",
+            )
+            return
+
         if path.startswith("/workspace/"):
             slot = path.split("/")[-1]
             self._send_html(
@@ -558,6 +581,85 @@ class TestRealGoogleChromeMultiTabE2E(unittest.TestCase):
         st_rd, rd = self._req("/read", body={"path": target_file}, bot_id="bot-cli-only", is_admin=False)
         self.assertEqual(st_rd, 200)
         self.assertEqual(rd.get("content"), "hello-chrome-e2e")
+
+    def test_06_per_bot_dedicated_window_multi_tab_and_blank_popup(self):
+        # 1. Admin & worker each own distinct real Chrome windowIds via CDP Browser.getWindowForTarget
+        _, a_ens = self._req("/displays/ensure", body={"bot_id": "bot-admin", "is_admin": True, "start_browser": True})
+        _, b_ens = self._req("/displays/ensure", body={"bot_id": "bot-win-test", "is_admin": False, "start_browser": True})
+        a_wid = a_ens.get("window_id")
+        b_wid = b_ens.get("window_id")
+        self.assertIsNotNone(a_wid)
+        self.assertIsNotNone(b_wid)
+        self.assertNotEqual(a_wid, b_wid, "Each Bot must own a distinct Chrome windowId")
+
+        # 2. Worker opens /popup-host and clicks a target="_blank" link -> auto-switches to popup in SAME windowId
+        st_snap, snap = self._req(
+            "/browser/snapshot",
+            body={"url": f"{self.fixture_base}/popup-host"},
+            bot_id="bot-win-test",
+            is_admin=False,
+        )
+        self.assertEqual(st_snap, 200)
+        link_el = next((e for e in snap.get("elements", []) if "Open Blank Dest" in (e.get("name") or "")), None)
+        self.assertIsNotNone(link_el, f"target=_blank link missing: {snap}")
+
+        st_clk, clk = self._req(
+            "/browser/click",
+            body={"ref": link_el["ref"]},
+            bot_id="bot-win-test",
+            is_admin=False,
+        )
+        self.assertEqual(st_clk, 200)
+        self.assertTrue(clk.get("switched_to_new_tab"), f"Expected auto-switch to new tab: {clk}")
+        self.assertIn("POPUP_DEST_LOADED", clk.get("text_excerpt", ""))
+        self.assertGreaterEqual(clk.get("tab_count", 0), 2)
+
+        # 3. /browser/tabs(new/list/switch/close) stays strictly inside bot-win-test's windowId
+        st_new, new_tab = self._req(
+            "/browser/tabs",
+            body={"action": "new", "url": f"{self.fixture_base}/workspace/multi"},
+            bot_id="bot-win-test",
+            is_admin=False,
+        )
+        self.assertEqual(st_new, 200)
+        self.assertEqual(new_tab.get("window_id"), b_wid)
+        self.assertEqual(new_tab.get("tab_count"), 3)
+
+        # Admin window still only has its own tab(s) and NOT bot-win-test's tabs
+        st_alist, alist = self._req("/browser/tabs", body={"action": "list"}, bot_id="bot-admin", is_admin=True)
+        self.assertEqual(st_alist, 200)
+        self.assertEqual(alist.get("window_id"), a_wid)
+        admin_tids = {x["target_id"] for x in alist.get("tabs", [])}
+        self.assertNotIn(new_tab.get("target_id"), admin_tids)
+
+        # Switch back to /popup-host by its listed index and close the extra tab
+        host_entry = next((x for x in new_tab.get("tabs", []) if "/popup-host" in (x.get("url") or "")), None)
+        self.assertIsNotNone(host_entry, f"Expected /popup-host in window tabs: {new_tab}")
+        st_sw, sw = self._req(
+            "/browser/tabs",
+            body={"action": "switch", "index": host_entry["index"]},
+            bot_id="bot-win-test",
+            is_admin=False,
+        )
+        self.assertEqual(st_sw, 200)
+        self.assertIn("/popup-host", sw.get("url", ""))
+
+        st_cl, cl = self._req(
+            "/browser/tabs",
+            body={"action": "close", "target_id": new_tab["target_id"]},
+            bot_id="bot-win-test",
+            is_admin=False,
+        )
+        self.assertEqual(st_cl, 200)
+        self.assertEqual(cl.get("tab_count"), 2)
+
+        # 4. Releasing bot-win-test closes ALL remaining tabs in its window in one shot without harming bot-admin
+        _, rel = self._req("/displays/release", body={"bot_id": "bot-win-test"})
+        self.assertTrue(rel.get("released"))
+        self.assertGreaterEqual(rel.get("closed_tabs", 0), 2)
+        st_alist2, alist2 = self._req("/browser/tabs", body={"action": "list"}, bot_id="bot-admin", is_admin=True)
+        self.assertEqual(st_alist2, 200)
+        self.assertGreaterEqual(alist2.get("tab_count", 0), 1)
 
 
 if __name__ == "__main__":

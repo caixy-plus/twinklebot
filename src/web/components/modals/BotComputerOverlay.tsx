@@ -1,6 +1,7 @@
 import { resolveBotAvatar } from "../../avatars.js";
 import {
   closeBotScreenOverlay,
+  refreshComputerDisplays,
   setNovncMode,
   stopCurrentSessionTask,
 } from "../../services/actions.js";
@@ -196,9 +197,9 @@ export function BotComputerOverlay() {
             </svg>
             <span id="screen-status-label">
               {viewOnly ? "仅观看" : "你正在独占控制"}
-              {boundDisplay.startsWith(":")
+              {boundDisplay
                 ? ` · ${displayName} (${boundDisplay})`
-                : isGroup && boundDisplay
+                : isGroup
                   ? ` · ${displayName}`
                   : ""}
             </span>
@@ -214,7 +215,10 @@ export function BotComputerOverlay() {
                   screenOverlayTargetBotId: e.target.value || null,
                   screenConnecting: true,
                 });
-                setTimeout(() => setState({ screenConnecting: false }), 420);
+                setTimeout(() => {
+                  setState({ screenConnecting: false });
+                  void refreshComputerDisplays();
+                }, 420);
               }}
               style={{
                 background: "rgba(255,255,255,0.12)",
@@ -231,7 +235,7 @@ export function BotComputerOverlay() {
                 return (
                   <option key={m.id} value={m.id} style={{ color: "#111" }}>
                     {m.title || "Bot"}
-                    {mDisp.startsWith(":") ? ` (${mDisp})` : ""}
+                    {mDisp ? ` (${mDisp})` : ""}
                   </option>
                 );
               })}

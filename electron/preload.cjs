@@ -44,6 +44,15 @@ contextBridge.exposeInMainWorld("twinklebotDesktop", {
   applyWebOta(payload) {
     return ipcRenderer.invoke("twinklebot:apply-web-ota", payload);
   },
+  applyCoreOta(payload) {
+    return ipcRenderer.invoke("twinklebot:apply-core-ota", payload);
+  },
+  forceSwitchCoreOta() {
+    return ipcRenderer.invoke("twinklebot:force-switch-core-ota");
+  },
+  cancelDeferredCoreOta() {
+    return ipcRenderer.invoke("twinklebot:cancel-deferred-core-ota");
+  },
   confirmWebOta(webBuild) {
     return ipcRenderer.invoke("twinklebot:confirm-web-ota", webBuild);
   },

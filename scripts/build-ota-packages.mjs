@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildWebBundle, readProjectShellMetadata } from "./build-web.mjs";
+import { buildCoreBundle } from "./build-core-bundle.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT_DIR = path.join(PROJECT_ROOT, "dist-ota");
@@ -161,16 +162,26 @@ export async function buildOtaPackages({
   try {
     const desktopStage = path.join(stageRoot, "desktop");
     const mobileStage = path.join(stageRoot, "mobile");
+    const desktopCoreStage = path.join(stageRoot, "desktop-core");
 
     const desktopBuild = await buildWebBundle({ target: "desktop", outDir: desktopStage });
     const mobileBuild = await buildWebBundle({ target: "mobile", outDir: mobileStage });
+    const coreBuild = await buildCoreBundle({
+      outDir: desktopCoreStage,
+      desktopWebDir: desktopStage,
+    });
 
     const desktopArchiveName = "twinklebot-web-desktop.tar.gz";
+    const desktopCoreArchiveName = "twinklebot-core-desktop.tar.gz";
     const mobileArchiveName = "twinklebot-web-mobile.tar.gz";
 
     const desktopPkg = createTarGzFromDir(
       desktopStage,
       path.join(resolvedOut, desktopArchiveName)
+    );
+    const desktopCorePkg = createTarGzFromDir(
+      desktopCoreStage,
+      path.join(resolvedOut, desktopCoreArchiveName)
     );
     const mobilePkg = createTarGzFromDir(
       mobileStage,
@@ -180,7 +191,7 @@ export async function buildOtaPackages({
     const effectiveTag =
       releaseTag ||
       (normalizedMode === "ota-only"
-        ? `ota-${mobileBuild.meta.webBuild}`
+        ? `ota-${coreBuild.meta.coreBuild}`
         : `v${shellsMeta.desktopVersion}`);
     const bundleDownloadBase = `https://github.com/${repo}/releases/download/${effectiveTag}`;
     const resolvedReleaseUrl =
@@ -190,12 +201,13 @@ export async function buildOtaPackages({
     let backendBlock;
 
     if (normalizedMode === "ota-only" && baseManifest?.shells) {
-      // Pure-frontend OTA mode: preserve exact binary download URLs & SHA-256s from latest full v* release,
-      // while honoring any raised minVersionForOta / minBuildCodeForOta in version-policy.json!
+      // Core + Frontend OTA mode: preserve exact binary download URLs & SHA-256s from latest full v* release,
+      // while honoring raised minVersionForOta / minVersionForCoreOta / minBuildCodeForOta AND refreshing backend capabilities!
       shellsBlock = {
         desktop: {
           ...baseManifest.shells.desktop,
           minVersionForOta: shellsMeta.minDesktopVersionForOta,
+          minVersionForCoreOta: shellsMeta.minDesktopVersionForCoreOta,
         },
         android: {
           ...baseManifest.shells.android,
@@ -208,9 +220,11 @@ export async function buildOtaPackages({
           minBuildCodeForOta: shellsMeta.minIosBuildCodeForOta,
         },
       };
-      backendBlock = baseManifest.backend || {
-        latestVersion: shellsMeta.backendVersion,
-        minCompatibleVersion: shellsMeta.minBackendCompatibleVersion,
+      backendBlock = {
+        latestVersion: coreBuild.meta.coreVersion || shellsMeta.backendVersion,
+        minCompatibleVersion:
+          baseManifest.backend?.minCompatibleVersion ||
+          shellsMeta.minBackendCompatibleVersion,
         apiCapabilities: shellsMeta.policyApiCapabilities,
       };
     } else {
@@ -232,6 +246,7 @@ export async function buildOtaPackages({
         desktop: {
           latestVersion: shellsMeta.desktopVersion,
           minVersionForOta: shellsMeta.minDesktopVersionForOta,
+          minVersionForCoreOta: shellsMeta.minDesktopVersionForCoreOta,
           fileName: primaryDesktop?.fileName || `TwinkleBot-${shellsMeta.desktopVersion}-arm64.dmg`,
           downloadUrl: primaryDesktop?.downloadUrl || shellReleasePage,
           ...(primaryDesktop?.sha256 ? { sha256: primaryDesktop.sha256 } : {}),
@@ -272,9 +287,10 @@ export async function buildOtaPackages({
       releaseNotes:
         releaseNotes ||
         (normalizedMode === "ota-only"
-          ? `TwinkleBot 纯前端热更新 (${mobileBuild.meta.webBuild})`
+          ? `TwinkleBot 前后端一体化热更新 (${coreBuild.meta.coreBuild})`
           : `TwinkleBot ${shellsMeta.desktopVersion} 全平台发布清单`),
       webBuild: mobileBuild.meta.webBuild,
+      coreBuild: coreBuild.meta.coreBuild,
       shells: shellsBlock,
       backend: backendBlock,
       bundles: {
@@ -286,6 +302,19 @@ export async function buildOtaPackages({
           sha256: desktopPkg.sha256,
           sizeBytes: desktopPkg.sizeBytes,
           requiredApiCapabilities: desktopBuild.meta.requiredApiCapabilities,
+        },
+        desktopCore: {
+          target: "desktop",
+          coreBuild: coreBuild.meta.coreBuild,
+          coreVersion: coreBuild.meta.coreVersion,
+          webBuild: coreBuild.meta.webBuild,
+          contentHash: coreBuild.meta.contentHash,
+          executorSha256: coreBuild.meta.executorSha256,
+          bundleUrl: `${bundleDownloadBase}/${desktopCoreArchiveName}`,
+          sha256: desktopCorePkg.sha256,
+          sizeBytes: desktopCorePkg.sizeBytes,
+          minShellVersion: coreBuild.meta.minShellVersion,
+          apiCapabilities: coreBuild.meta.apiCapabilities,
         },
         mobile: {
           target: "mobile",
@@ -308,6 +337,7 @@ export async function buildOtaPackages({
       manifestPath,
       manifest,
       desktopPkg,
+      desktopCorePkg,
       mobilePkg,
     };
   } finally {
@@ -322,6 +352,6 @@ if (
   const cliOpts = parseCliArgs(process.argv.slice(2));
   const res = await buildOtaPackages(cliOpts);
   console.log(
-    `[build-ota] mode=${res.mode} manifest=${res.manifestPath} desktop=${res.desktopPkg.sizeBytes}B mobile=${res.mobilePkg.sizeBytes}B webBuild=${res.manifest.webBuild}`
+    `[build-ota] mode=${res.mode} manifest=${res.manifestPath} core=${res.desktopCorePkg.sizeBytes}B desktop=${res.desktopPkg.sizeBytes}B mobile=${res.mobilePkg.sizeBytes}B coreBuild=${res.manifest.coreBuild}`
   );
 }

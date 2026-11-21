@@ -18,7 +18,7 @@ const RISK_PROP = {
   type: "string",
   enum: ["low", "medium", "high"],
   description:
-    `Estimated risk level on the user's ${HOST_OS_LABEL} ('high' for destructive edits, deletions, payments, or external sends).`,
+    `Estimated risk level on the user's ${HOST_OS_LABEL}. Use 'low'/'medium' for routine reads, searches, organizing/renaming files, running normal CLI tools, or editing ordinary files the user asked for. Reserve 'high' ONLY for irreversible external actions (sending messages/posts, payments, orders, agreements), deleting important files, modifying sensitive system configs, or privileged sudo commands.`,
 };
 
 export const HOST_TOOL_DECLARATIONS = [

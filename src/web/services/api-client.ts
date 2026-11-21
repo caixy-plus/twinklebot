@@ -38,6 +38,7 @@ export function triggerLanUnreachableFallback(
   opts: { forceModal?: boolean; suppressModal?: boolean } = {}
 ) {
   const s = getState();
+  if (s.updateState?.coreSwitchInProgress) return;
   if (!isActiveLanAccount(s)) return;
   // Non-blocking top NetworkStatusBanner is now the default UX for LAN disconnects;
   // only open the legacy blocking modal when explicitly forced.

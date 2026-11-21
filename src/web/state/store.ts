@@ -128,6 +128,7 @@ export type StreamItem =
       kind: "error";
       id: string;
       message: string;
+      dismissKey?: string;
     };
 
 export type TraceItem =
@@ -262,6 +263,14 @@ export interface AppState {
       activeWebBuild: string;
       usingBuiltIn: boolean;
       lastRollbackReason: string;
+      supportsCoreOta?: boolean;
+      activeCoreBuild?: string;
+      activeCoreVersion?: string;
+      deferredSwitch?: {
+        buildId: string;
+        queuedAt?: number;
+        activeRunCount: number;
+      } | null;
     } | null;
     latestManifest: any | null;
     decision: any | null;
@@ -274,8 +283,16 @@ export interface AppState {
       nodeCapabilities: string[];
       missingLatestCapabilities: string[];
     } | null;
-    progress: { phase: string; percent: number; message: string } | null;
+    progress: {
+      phase: string;
+      percent: number;
+      message: string;
+      activeRunCount?: number;
+      coreBuild?: string;
+      webBuild?: string;
+    } | null;
     applying: boolean;
+    coreSwitchInProgress?: boolean;
     dismissedVersionKey: string;
   };
   config: any | null;
@@ -503,6 +520,7 @@ export function createInitialState(): AppState {
       connectedNodeStatus: null,
       progress: null,
       applying: false,
+      coreSwitchInProgress: false,
       dismissedVersionKey: "",
     },
     config: null,
@@ -752,6 +770,44 @@ export const runtimeRefs: {
   connectingTimer: null,
   confirmResolve: null,
 };
+
+const DISMISSED_ERRORS_STORAGE_KEY = "twinklebot.dismissedErrorCards.v1";
+
+function readDismissedErrorKeys(): string[] {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return [];
+    const raw = window.localStorage.getItem(DISMISSED_ERRORS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function isErrorDismissed(dismissKey?: string): boolean {
+  if (!dismissKey) return false;
+  return readDismissedErrorKeys().includes(dismissKey);
+}
+
+export function dismissErrorCard(itemId: string, dismissKey?: string): void {
+  if (dismissKey) {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const list = readDismissedErrorKeys();
+        if (!list.includes(dismissKey)) {
+          const nextList = [...list, dismissKey].slice(-200);
+          window.localStorage.setItem(DISMISSED_ERRORS_STORAGE_KEY, JSON.stringify(nextList));
+        }
+      }
+    } catch {
+      // ignore storage quota / private mode errors
+    }
+  }
+  setState((prev) => ({
+    streamItems: prev.streamItems.filter((item) => item.id !== itemId),
+  }));
+}
 
 export function getState(): AppState {
   return currentState;
@@ -1016,6 +1072,7 @@ export function reduceSessionEvent(
         "browser_snapshot",
         "browser_click",
         "browser_type",
+        "browser_tabs",
       ].includes(evt.name);
       if (isBotDesktopVisualTool && prev.settings?.autoExpandScreen && !prev.screenOverlayOpen && !replay) {
         effects.shouldAutoExpandScreen = true;
@@ -1452,14 +1509,21 @@ export function reduceSessionEvent(
         sessionStatus = "error";
         liveThinkingSummary = "";
       }
-      streamItems = [
-        ...streamItems,
-        {
-          kind: "error",
-          id: nextStreamItemId("err"),
-          message: evt.message || "任务中断或遇到异常",
-        },
-      ];
+      const errMsg = evt.message || "任务中断或遇到异常";
+      const errSession = String(evt.sessionId || prev.activeSessionId || "default");
+      const errMarker = evt.seq ?? evt.ts ?? evt.id ?? "";
+      const dismissKey = `${errSession}:${errMarker}:${String(errMsg).slice(0, 120)}`;
+      if (!isErrorDismissed(dismissKey)) {
+        streamItems = [
+          ...streamItems,
+          {
+            kind: "error",
+            id: nextStreamItemId("err"),
+            message: errMsg,
+            dismissKey,
+          },
+        ];
+      }
       break;
     }
 

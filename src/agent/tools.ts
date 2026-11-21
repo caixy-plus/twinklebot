@@ -305,7 +305,7 @@ export const TOOL_DECLARATIONS = [
     type: "function",
     name: "browser_snapshot",
     description:
-      "Inspect this Bot's dedicated Google Chrome tab via Chrome DevTools Protocol (CDP) WITHOUT taking a screenshot. Optionally opens/navigates to `url` first. Returns the page URL, title, visible text excerpt, and interactive elements tagged with `[e1]..[eN]` refs for `browser_click` and `browser_type`.",
+      "Inspect the active tab in this Bot's dedicated Google Chrome window via Chrome DevTools Protocol (CDP) WITHOUT taking a screenshot. Optionally opens/navigates to `url` first. Returns the page URL, title, visible text excerpt, tab count, and interactive elements tagged with `[e1]..[eN]` refs for `browser_click` and `browser_type`.",
     parameters: {
       type: "object",
       properties: {
@@ -330,7 +330,7 @@ export const TOOL_DECLARATIONS = [
     type: "function",
     name: "browser_click",
     description:
-      "Click an interactive browser element by its `[eN]` ref (e.g. 'e1', 'e3') returned by `browser_snapshot` WITHOUT taking a screenshot or guessing pixel coordinates. Automatically returns the updated page snapshot.",
+      "Click an interactive browser element by its `[eN]` ref (e.g. 'e1', 'e3') returned by `browser_snapshot` WITHOUT taking a screenshot or guessing pixel coordinates. If the click opens a new tab (`target=\"_blank\"` / `window.open`) inside this Bot's window, automatically switches to the new tab and returns its snapshot.",
     parameters: {
       type: "object",
       properties: {
@@ -372,6 +372,36 @@ export const TOOL_DECLARATIONS = [
       required: ["ref", "text"],
     },
   },
+  {
+    type: "function",
+    name: "browser_tabs",
+    description:
+      "Manage tabs strictly inside this Bot's own dedicated Google Chrome window (`list`, `new`, `switch`, `close`). Never touches other Bots' windows or tabs.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "new", "switch", "close"],
+          description: "Tab operation: 'list' open tabs in this Bot's window, 'new' to open a tab in this window, 'switch' to another tab by target_id/index, or 'close' a tab (cannot close the last tab).",
+        },
+        url: {
+          type: "string",
+          description: "Optional HTTP/HTTPS URL when `action` is 'new' (defaults to about:blank).",
+        },
+        target_id: {
+          type: "string",
+          description: "Target tab ID (from `browser_tabs(action='list')`) for 'switch' or 'close'.",
+        },
+        index: {
+          type: "integer",
+          description: "0-based tab index in this Bot's window for 'switch' or 'close'.",
+        },
+        risk: RISK_PROPERTY,
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 export const SCREEN_CHANGING = new Set([
@@ -400,6 +430,7 @@ const ROUTE_MAP: Record<string, string> = {
   browser_snapshot: "/browser/snapshot",
   browser_click: "/browser/click",
   browser_type: "/browser/type",
+  browser_tabs: "/browser/tabs",
 };
 
 export interface RunToolOptions {

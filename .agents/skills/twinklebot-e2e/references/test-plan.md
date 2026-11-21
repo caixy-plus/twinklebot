@@ -55,8 +55,8 @@
 | **P0** | `P0-BOT-04` | `F1×D2` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Group Chat / Mention | 多选拉群、#mention-popover @Bot 自动补全点名路由与群聊发言者头部渲染 |
 | **P0** | `P0-PAIR-01` | `F1×D2` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | LAN Device Auth & Pairing | 真实非回环局域网 IPv4 401 鉴权拦截 + 双标签 6 位配对码握手换取 deviceToken |
 | **P0** | `P0-MEM-01` | `F1×D2` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Auto & Explicit Memory System | 自动与显式双路径记忆系统(PI-016)：显式「记住」直存、自动触发静默落库(零推荐卡片)、异步快模型提炼去重/防密钥与兼容 /resolve 校验 |
-| **P1** | `P1-SBOX-01` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Fullstack Sandbox | 全栈真沙盒闭环：Web UI → Node Agent → 真实 Python executor.py → 真实 Chrome 登录 + send_file 投递卡片 |
-| **P1** | `P1-SBOX-02` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Sandbox Shared Profile | 共享 Chrome Profile 跨 Bot 登录态(Cookie + localStorage)与双标签并发 DOM 操作隔离 |
+| **P1** | `P1-SBOX-01` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Fullstack Sandbox | 全栈真沙盒闭环：Web UI → Node Agent → 真实 Python executor.py → 真实 Chrome 登录 + browser_tabs + send_file 投递卡片 |
+| **P1** | `P1-SBOX-02` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Sandbox Shared Profile | 共享 Chrome Profile 跨 Bot 登录态(Cookie + localStorage)与每 Bot 独立窗口并发 DOM 操作隔离 |
 | **P1** | `P1-SBOX-03` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Screen Lease Pool | 屏幕并发池 FIFO 排队、纯 CLI 零阻塞、调大上限实时唤醒与右侧排队状态徽章 |
 | **P1** | `P1-SBOX-04` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | BotComputerOverlay / noVNC | noVNC 顶栏隐藏注入、人工独占接管(#pause-btn -> #resume-btn 补拍截图续跑)与群聊自动跟屏/手动切屏 |
 | **P1** | `P1-SBOX-05` | `F1×D2` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Bot Computer Lifecycle Routes | Bot 电脑生命周期接口与设置页控件：/api/computer/status、displays、provision(管理员)、update 与 reset 释放屏幕 |

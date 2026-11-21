@@ -31,6 +31,7 @@ export const SCREEN_REQUIRED_TOOLS = new Set<string>([
   "browser_snapshot",
   "browser_click",
   "browser_type",
+  "browser_tabs",
 ]);
 
 export function isScreenRequiredTool(toolName: string): boolean {

@@ -26,19 +26,13 @@ import {
 } from "./desktop-prefs.js";
 import { createTrayManager } from "./tray.js";
 import { normalizeAccountsState } from "../shared/accounts-store.js";
-import { createStore } from "../store/index.js";
-import { createModel } from "../agent/model.js";
-import { createLocalAwareExecutorClient } from "../lib/bot-computer-provisioner.js";
-import { createRunner } from "../agent/runner.js";
-import { createScheduler } from "../agent/scheduler.js";
-import { createServer } from "../server/index.js";
 import { resolveProjectRoot } from "../lib/project-root.js";
 import {
   fetchLatestGithubManifest,
   isTrustedGithubReleaseUrl,
 } from "../lib/github-releases.js";
-import { stopWslKeepalive } from "../lib/wsl-ubuntu.js";
-import { createWebOtaManager } from "./web-ota.js";
+import { createCoreOtaManager } from "./core-ota.js";
+import { createBackendSupervisor } from "./backend-supervisor.js";
 import crypto from "node:crypto";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -46,16 +40,12 @@ const __dirname = path.dirname(__filename);
 const APP_ROOT = resolveProjectRoot(__dirname);
 
 let mainWindow: BrowserWindow | null = null;
-let backendServer: http.Server | null = null;
 let backendUrl: string | null = null;
 let actualBackendPort = 0;
-let backendStore: ReturnType<typeof createStore> | null = null;
-let backendRunner: any = null;
-let backendScheduler: any = null;
 let desktopConfig: any = null;
 let trayManager: ReturnType<typeof createTrayManager> | null = null;
-let webOtaManager: ReturnType<typeof createWebOtaManager> | null = null;
-let unsubscribeRunner: (() => void) | null = null;
+let coreOtaManager: ReturnType<typeof createCoreOtaManager> | null = null;
+let backendSupervisor: ReturnType<typeof createBackendSupervisor> | null = null;
 let isQuitting = false;
 let keepRunningInBackground = true;
 let pendingShowWindow = false;
@@ -219,8 +209,20 @@ if (!gotSingleLock) {
   });
 }
 
-function createSafeModel(apiKey: string, getProviders: () => any[]) {
-  return createModel({ apiKey: apiKey || "", getProviders });
+function reloadMainWindowIgnoringCache() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const targetUrl = backendUrl;
+  void mainWindow.webContents.session
+    .clearCache()
+    .catch(() => {})
+    .finally(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (targetUrl && mainWindow.webContents.getURL() !== targetUrl) {
+        void mainWindow.loadURL(targetUrl);
+      } else {
+        mainWindow.webContents.reloadIgnoringCache();
+      }
+    });
 }
 
 async function startEmbeddedBackend() {
@@ -231,53 +233,52 @@ async function startEmbeddedBackend() {
     isPackaged: app.isPackaged,
   });
 
-  const store = createStore(desktopConfig.dataDir);
-  backendStore = store;
-  const model = createSafeModel(
-    desktopConfig.geminiApiKey,
-    () => store.readSettings()?.providers || []
-  );
-  const executor = createLocalAwareExecutorClient({
-    url: desktopConfig.executorUrl,
-    token: desktopConfig.executorToken || "unconfigured-token",
-    deployEnv: desktopConfig.deployEnv,
-    store,
-  });
-
-  backendRunner = createRunner({
-    store,
-    config: desktopConfig,
-    model,
-    executor,
-  });
-  unsubscribeRunner?.();
-  unsubscribeRunner = backendRunner.subscribe(() => {
-    trayManager?.refresh();
-  });
-  backendScheduler = createScheduler({
-    store,
-    runner: backendRunner,
-  });
-
-  store.markInterrupted();
-  backendScheduler.start();
-
-  webOtaManager = createWebOtaManager({
+  coreOtaManager = createCoreOtaManager({
     userDataDir: desktopConfig.userDataDir || app.getPath("userData"),
     appVersion: app.getVersion(),
-    builtInPublicDir: path.join(APP_ROOT, "public"),
-    watchdogTimeoutMs: 5000,
-    onReloadRequest: () => {
+    builtInCoreDir: path.join(APP_ROOT, "dist-server", "core-runtime"),
+    fallbackBuiltInPublicDir: path.join(APP_ROOT, "public"),
+    watchdogTimeoutMs: 8000,
+    onProgress: (ev) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        void mainWindow.webContents.session
-          .clearCache()
-          .catch(() => {})
-          .finally(() => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.reloadIgnoringCache();
-            }
-          });
+        mainWindow.webContents.send("twinklebot:ota-progress", ev);
       }
+    },
+    onRollbackApplied: async (_status, reason) => {
+      await backendSupervisor?.applyRollbackAndRestart(reason);
+    },
+  });
+
+  backendSupervisor = createBackendSupervisor({
+    repoFallbackRoot: APP_ROOT,
+    isPackaged: app.isPackaged,
+    coreOtaManager,
+    getDesktopConfig: () => desktopConfig,
+    getWindowVisible: () =>
+      Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+    onTraySnapshot: () => {
+      trayManager?.refresh();
+    },
+    onWakeWindow: async () => {
+      pendingShowWindow = true;
+      const win = await showMainWindow();
+      return {
+        ok: true,
+        pid: process.pid,
+        windowVisible: Boolean(win && !win.isDestroyed() && win.isVisible()),
+      };
+    },
+    onQuitApp: () => {
+      quitAppCleanly();
+    },
+    onBackendUrlChanged: (url, port) => {
+      backendUrl = url;
+      actualBackendPort = port;
+      persistRuntimeState();
+      trayManager?.refresh();
+    },
+    onReloadWindow: () => {
+      reloadMainWindowIgnoringCache();
     },
     onProgress: (ev) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -286,61 +287,9 @@ async function startEmbeddedBackend() {
     },
   });
 
-  const server = createServer({
-    config: desktopConfig,
-    store,
-    runner: backendRunner,
-    executor,
-    model,
-    scheduler: backendScheduler,
-    getEffectivePublicDir: () =>
-      webOtaManager?.getEffectivePublicDir() || path.join(APP_ROOT, "public"),
-    otaController: {
-      getStatus: () => webOtaManager?.getStatus() || null,
-      confirmReady: (webBuild) => webOtaManager?.confirmReady(webBuild) || null,
-      rollback: (reason) => webOtaManager?.rollback(reason) || null,
-    },
-    desktopController: {
-      wakeWindow: async () => {
-        pendingShowWindow = true;
-        const win = await showMainWindow();
-        return {
-          pid: process.pid,
-          windowVisible: Boolean(win && !win.isDestroyed() && win.isVisible()),
-        };
-      },
-      quitApp: () => {
-        quitAppCleanly();
-      },
-    },
-  });
-  backendServer = server;
-
-  await new Promise<void>((resolve, reject) => {
-    const tryListen = (portToBind: number) => {
-      const onError = (err: NodeJS.ErrnoException) => {
-        if (err?.code === "EADDRINUSE" && portToBind !== 0) {
-          server.off("error", onError);
-          tryListen(0);
-          return;
-        }
-        reject(err);
-      };
-      server.once("error", onError);
-      server.listen(portToBind, desktopConfig.host, () => {
-        server.off("error", onError);
-        resolve();
-      });
-    };
-    tryListen(desktopConfig.port);
-  });
-
-  const addr = server.address();
-  const actualPort = typeof addr === "object" && addr ? addr.port : desktopConfig.port;
-  actualBackendPort = actualPort;
-  const clientHost =
-    !desktopConfig.host || desktopConfig.host === "0.0.0.0" ? "127.0.0.1" : desktopConfig.host;
-  backendUrl = `http://${clientHost}:${actualPort}`;
+  const started = await backendSupervisor.start(desktopConfig.port);
+  actualBackendPort = started.port;
+  backendUrl = started.url;
   persistRuntimeState();
   return backendUrl;
 }
@@ -413,42 +362,29 @@ function quitAppCleanly() {
 }
 
 function buildTraySnapshot() {
-  let botCount = 0;
-  let groupCount = 0;
-  let scheduleCount = 0;
-  try {
-    const sessions = backendStore?.listSessions?.() || [];
-    for (const s of sessions) {
-      if (s?.type === "group" || s?.isGroup) groupCount += 1;
-      else botCount += 1;
-    }
-    const schedules = backendStore?.readSchedules?.() || [];
-    scheduleCount = schedules.filter((item: any) => item?.enabled !== false).length;
-  } catch {
-    // ignore telemetry errors
-  }
-
-  let activeRunCount = 0;
-  try {
-    activeRunCount = Object.keys(backendRunner?.activeSessions?.() || {}).length;
-  } catch {
-    activeRunCount = 0;
-  }
-
-  const relayConfigured = fs.existsSync(path.join(os.homedir(), ".config", "twinklebot-frpc", "frpc.toml"));
+  const workerSnap = backendSupervisor?.getTraySnapshot() || {
+    botCount: 0,
+    groupCount: 0,
+    scheduleCount: 0,
+    activeRunCount: 0,
+    relayConfigured: false,
+  };
   const windowVisible = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
 
   return {
     appVersion: app.getVersion(),
     backendUrl: backendUrl || "",
     port: actualBackendPort || desktopConfig?.port || 3230,
-    botCount,
-    groupCount,
-    scheduleCount,
-    activeRunCount,
+    botCount: workerSnap.botCount,
+    groupCount: workerSnap.groupCount,
+    scheduleCount: workerSnap.scheduleCount,
+    activeRunCount: workerSnap.activeRunCount,
     windowVisible,
     keepRunningInBackground,
-    relayConfigured,
+    relayConfigured: Boolean(
+      workerSnap.relayConfigured ||
+        fs.existsSync(path.join(os.homedir(), ".config", "twinklebot-frpc", "frpc.toml"))
+    ),
   };
 }
 
@@ -715,7 +651,7 @@ function createMainWindow() {
 
   win.webContents.on("did-fail-load", (_ev, errorCode, errorDescription, _url, isMainFrame) => {
     if (isMainFrame && errorCode !== -3) {
-      webOtaManager?.notifyRenderFailure(`页面加载失败 (${errorCode}: ${errorDescription})`);
+      coreOtaManager?.notifyRenderFailure(`页面加载失败 (${errorCode}: ${errorDescription})`);
       if (!hiddenToBackground && !win.isDestroyed() && !win.isVisible()) {
         win.show();
       }
@@ -723,7 +659,7 @@ function createMainWindow() {
   });
 
   win.webContents.on("render-process-gone", (_ev, details) => {
-    webOtaManager?.notifyRenderFailure(`渲染进程异常退出 (${details?.reason || "unknown"})`);
+    coreOtaManager?.notifyRenderFailure(`渲染进程异常退出 (${details?.reason || "unknown"})`);
   });
 
   win.loadURL(backendUrl);
@@ -779,10 +715,11 @@ ipcMain.handle("twinklebot:quit-app", () => {
 });
 
 ipcMain.handle("twinklebot:get-ota-status", () => {
-  const st = webOtaManager?.getStatus() || null;
+  const st = coreOtaManager?.getStatus() || null;
   return st
     ? {
         ...st,
+        deferredSwitch: backendSupervisor?.getDeferredSwitch() || null,
         platformArch: `${process.platform}-${process.arch}`,
       }
     : null;
@@ -810,25 +747,61 @@ ipcMain.handle("twinklebot:check-github-manifest", async (_event, opts) => {
   }
 });
 
-ipcMain.handle("twinklebot:apply-web-ota", async (_event, payload) => {
-  if (!webOtaManager) throw new Error("OTA manager unavailable");
-  return await webOtaManager.applyFromUrl({
+async function handleApplyDesktopOta(payload: any) {
+  if (!coreOtaManager || !backendSupervisor) {
+    throw new Error("OTA manager unavailable");
+  }
+  const buildId = String(payload?.coreBuild || payload?.webBuild || "");
+  const { cleanBuild } = await coreOtaManager.stageFromUrl({
     bundleUrl: String(payload?.bundleUrl || ""),
     expectedSha256: String(payload?.sha256 || payload?.expectedSha256 || ""),
-    webBuild: String(payload?.webBuild || ""),
+    coreBuild: buildId,
   });
+  const result = await backendSupervisor.requestCoreSwitch(cleanBuild, {
+    force: Boolean(payload?.force),
+  });
+  return {
+    ...result,
+    deferredSwitch: backendSupervisor.getDeferredSwitch(),
+  };
+}
+
+ipcMain.handle("twinklebot:apply-web-ota", async (_event, payload) => {
+  return await handleApplyDesktopOta(payload);
+});
+
+ipcMain.handle("twinklebot:apply-core-ota", async (_event, payload) => {
+  return await handleApplyDesktopOta(payload);
+});
+
+ipcMain.handle("twinklebot:force-switch-core-ota", async () => {
+  if (!backendSupervisor) throw new Error("Backend supervisor unavailable");
+  const result = await backendSupervisor.forceSwitchDeferred();
+  return {
+    ...result,
+    deferredSwitch: backendSupervisor.getDeferredSwitch(),
+  };
+});
+
+ipcMain.handle("twinklebot:cancel-deferred-core-ota", () => {
+  if (!backendSupervisor) return { ok: true, deferredSwitch: null };
+  backendSupervisor.cancelDeferredSwitch();
+  return {
+    ok: true,
+    deferredSwitch: backendSupervisor.getDeferredSwitch(),
+  };
 });
 
 ipcMain.handle("twinklebot:confirm-web-ota", (_event, webBuild) => {
-  return webOtaManager?.confirmReady(typeof webBuild === "string" ? webBuild : undefined) || null;
+  return coreOtaManager?.confirmReady(typeof webBuild === "string" ? webBuild : undefined) || null;
 });
 
 ipcMain.handle("twinklebot:rollback-web-ota", (_event, mode) => {
-  if (!webOtaManager) return null;
+  if (!coreOtaManager) return null;
   if (mode === "builtin") {
-    return webOtaManager.rollbackToBuiltIn();
+    return coreOtaManager.rollbackToBuiltIn();
   }
-  return webOtaManager.rollback("用户手动触发回滚上一稳定版本");
+  return coreOtaManager.rollback("用户手动触发回滚上一稳定版本");
 });
 
 ipcMain.handle("twinklebot:download-full-installer", async (_event, payload) => {
@@ -947,30 +920,30 @@ if (gotSingleLock) {
     }
   });
 
-  app.on("before-quit", () => {
+  let supervisorStopped = false;
+  let supervisorStopPromise: Promise<void> | null = null;
+
+  app.on("before-quit", (event) => {
     isQuitting = true;
     clearDesktopRuntime(desktopConfig?.userDataDir || app.getPath("userData"));
     try {
-      webOtaManager?.dispose();
-    } catch {}
-    try {
-      unsubscribeRunner?.();
-      unsubscribeRunner = null;
+      coreOtaManager?.dispose();
     } catch {}
     try {
       trayManager?.destroy();
     } catch {}
-    try {
-      backendScheduler?.stop?.();
-    } catch {}
-    try {
-      backendRunner?.stop?.();
-    } catch {}
-    try {
-      backendServer?.close?.();
-    } catch {}
-    try {
-      stopWslKeepalive();
-    } catch {}
+
+    if (backendSupervisor && !supervisorStopped) {
+      event.preventDefault();
+      if (!supervisorStopPromise) {
+        supervisorStopPromise = Promise.race([
+          backendSupervisor.stop().catch(() => {}),
+          new Promise<void>((resolve) => setTimeout(resolve, 2600)),
+        ]).finally(() => {
+          supervisorStopped = true;
+          app.quit();
+        });
+      }
+    }
   });
 }
