@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 import re
+import signal
 import socket
 import struct
 import subprocess
@@ -61,7 +62,11 @@ DISPLAY_MAP_PATH = os.environ.get("TWINKLEBOT_DISPLAY_MAP", "/opt/twinklebot/dis
 PRIMARY_PROFILE_DIR = "/opt/twinklebot/chrome-profile"
 ABSOLUTE_MIN_CONCURRENT_SCREENS = 1
 ABSOLUTE_MAX_CONCURRENT_SCREENS = 16
-BROWSER_IDLE_RECLAIM_SEC = max(60, int(os.environ.get("TWINKLEBOT_BROWSER_IDLE_SEC", str(15 * 60))))
+BROWSER_IDLE_RECLAIM_SEC = max(60, int(os.environ.get("TWINKLEBOT_BROWSER_IDLE_SEC", str(5 * 60))))
+BROWSER_SUSPEND_IDLE_SEC = max(
+    BROWSER_IDLE_RECLAIM_SEC,
+    int(os.environ.get("TWINKLEBOT_BROWSER_SUSPEND_SEC", str(10 * 60))),
+)
 
 
 def compute_screen_pool_budget(total_mem_bytes: int = None, cpu_cores: int = None) -> dict:
@@ -836,6 +841,137 @@ def _default_tcp_open(port: int, host: str = "127.0.0.1", timeout: float = 0.25)
         return False
 
 
+def _has_active_vnc_client(ports=(5901,)) -> bool:
+    """
+    Returns True when an active VNC client currently holds an ESTABLISHED TCP connection
+    to TigerVNC/x11vnc (`:1` -> port 5901) so idle Chrome auto-suspend never interrupts
+    a human user actively viewing or interacting through noVNC.
+    """
+    target_ports = {int(p) for p in ports}
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f.readlines()[1:]:
+                    cols = line.split()
+                    if len(cols) >= 4 and cols[3] == "01":
+                        addr_parts = cols[1].split(":", 1)
+                        if len(addr_parts) == 2:
+                            try:
+                                if int(addr_parts[1], 16) in target_ports:
+                                    return True
+                            except ValueError:
+                                pass
+        except OSError:
+            continue
+    return False
+
+
+def navigate_cdp_target(
+    target_id: str,
+    url: str = "about:blank",
+    port: int = DEFAULT_CDP_PORT,
+    timeout: float = 2.0,
+) -> bool:
+    tid = str(target_id or "").strip()
+    if not tid:
+        return False
+    ws_url = f"ws://127.0.0.1:{int(port)}/devtools/page/{tid}"
+    try:
+        cdp_ws_call(ws_url, "Page.navigate", {"url": str(url or "about:blank")}, timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _find_profile_chrome_pids(profile_dir: str) -> list:
+    pdir = str(profile_dir or "").strip()
+    if not pdir or not os.path.isdir("/proc"):
+        return []
+    needle = f"--user-data-dir={pdir}"
+    my_pid = os.getpid()
+    matched = []
+    try:
+        for ent in os.listdir("/proc"):
+            if not ent.isdigit():
+                continue
+            pid = int(ent)
+            if pid == my_pid:
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    raw = f.read()
+                if not raw:
+                    continue
+                parts = [p.decode("utf-8", errors="ignore") for p in raw.split(b"\0") if p]
+                if not parts:
+                    continue
+                exe_base = os.path.basename(parts[0]).lower()
+                if not any(tok in exe_base for tok in ("chrome", "chromium")):
+                    continue
+                if any(needle in arg for arg in parts[1:]):
+                    matched.append(pid)
+            except OSError:
+                continue
+    except OSError:
+        return []
+    return matched
+
+
+def _terminate_profile_chrome_procs(profile_dir: str, grace_sec: float = 1.5) -> int:
+    pids = _find_profile_chrome_pids(profile_dir)
+    if not pids:
+        return 0
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + max(0.1, float(grace_sec))
+    while time.time() < deadline:
+        alive = _find_profile_chrome_pids(profile_dir)
+        if not alive:
+            return len(pids)
+        time.sleep(0.1)
+    for pid in _find_profile_chrome_pids(profile_dir):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return len(pids)
+
+
+def close_cdp_browser(
+    port: int = DEFAULT_CDP_PORT,
+    profile_dir: str = None,
+    timeout: float = 3.0,
+) -> bool:
+    """
+    Gracefully shuts down the managed Chrome instance via CDP `Browser.close` so cookies,
+    localStorage, and session state flush cleanly to `profile_dir`, then reaps any straggler
+    processes still bound to `profile_dir`.
+    """
+    closed = False
+    try:
+        browser_ws = fetch_cdp_browser_ws(port=port, timeout=1.5)
+        if browser_ws:
+            try:
+                cdp_ws_call(browser_ws, "Browser.close", {}, timeout=2.0)
+                closed = True
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    deadline = time.time() + max(0.2, float(timeout))
+    while time.time() < deadline:
+        if not _default_tcp_open(port):
+            break
+        time.sleep(0.15)
+
+    reaped = _terminate_profile_chrome_procs(profile_dir or "", grace_sec=1.5) if profile_dir else 0
+    return bool(closed or reaped > 0 or not _default_tcp_open(port))
+
+
 class TabManager:
     """
     Multi-Bot Chrome Window Manager (1 Bot <-> 1 dedicated Chrome window) over a SINGLE official
@@ -857,6 +993,7 @@ class TabManager:
         primary_profile_dir: str = PRIMARY_PROFILE_DIR,
         max_concurrent_screens: int = None,
         browser_idle_sec: int = BROWSER_IDLE_RECLAIM_SEC,
+        browser_suspend_sec: int = None,
         browser_boot_timeout_sec: float = 8.0,
         cdp_port: int = DEFAULT_CDP_PORT,
         display: str = None,
@@ -866,6 +1003,9 @@ class TabManager:
         targets_fn=fetch_cdp_targets,
         create_tab_fn=create_cdp_target,
         close_tab_fn=close_cdp_target,
+        navigate_tab_fn=None,
+        close_browser_fn=None,
+        vnc_active_fn=_has_active_vnc_client,
         activate_tab_fn=activate_cdp_target,
         window_for_target_fn=None,
         set_window_bounds_fn=None,
@@ -891,6 +1031,12 @@ class TabManager:
             min(ABSOLUTE_MAX_CONCURRENT_SCREENS, int(initial_cap)),
         )
         self.browser_idle_sec = max(1, int(browser_idle_sec))
+        if browser_suspend_sec is not None:
+            self.browser_suspend_sec = max(0, int(browser_suspend_sec))
+        elif self.browser_idle_sec == BROWSER_IDLE_RECLAIM_SEC:
+            self.browser_suspend_sec = BROWSER_SUSPEND_IDLE_SEC
+        else:
+            self.browser_suspend_sec = max(self.browser_idle_sec * 3, self.browser_idle_sec + 1)
         self.browser_boot_timeout_sec = max(0.05, float(browser_boot_timeout_sec))
         self.spawn_fn = spawn_fn
         self.tcp_open_fn = tcp_open_fn
@@ -900,6 +1046,17 @@ class TabManager:
         self.close_tab_fn = close_tab_fn
         self.activate_tab_fn = activate_tab_fn
         is_real_cdp = cdp_ws_fn is fetch_cdp_browser_ws and create_tab_fn is create_cdp_target
+        self.navigate_tab_fn = (
+            navigate_tab_fn
+            if navigate_tab_fn is not None
+            else (navigate_cdp_target if is_real_cdp else None)
+        )
+        self.close_browser_fn = (
+            close_browser_fn
+            if close_browser_fn is not None
+            else (close_cdp_browser if is_real_cdp else None)
+        )
+        self.vnc_active_fn = vnc_active_fn
         self.window_for_target_fn = (
             window_for_target_fn
             if window_for_target_fn is not None
@@ -925,6 +1082,7 @@ class TabManager:
         self._bot_is_admin = {}  # bot_key -> bool
         self._bot_last_urls = {}  # bot_key -> last non-blank URL for seamless wake
         self._last_tab_at = {}  # bot_key -> timestamp
+        self._last_activity_at = time.time()
         self._in_flight = {}  # bot_key -> active request count
         self._load_map()
 
@@ -1035,7 +1193,9 @@ class TabManager:
             u = str(url or "").strip()
             if u and not _is_blank_cdp_url(u):
                 self._bot_last_urls[bot_key] = u
-            self._last_tab_at[bot_key] = time.time()
+            now_ts = time.time()
+            self._last_tab_at[bot_key] = now_ts
+            self._last_activity_at = now_ts
             self._save_map()
         return True
 
@@ -1141,11 +1301,16 @@ class TabManager:
             cdp_port=self.cdp_port,
         )
         with self._browser_boot_lock:
+            self._last_activity_at = time.time()
             if self.cdp_ws_fn(port=self.cdp_port, timeout=1.5):
                 return res
             os.makedirs(self.primary_profile_dir, exist_ok=True)
             reset_chrome_crash_state(self.primary_profile_dir)
             env = desktop_env(display=self.display, cdp_port=self.cdp_port, profile_dir=self.primary_profile_dir)
+            # Keep Chrome strictly inside executor's systemd cgroup instead of escaping into
+            # orphaned user@*.service `app-com.google.Chrome-*.scope` units on restart/shutdown.
+            env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+            env.pop("XDG_ACTIVATION_TOKEN", None)
             argv = [
                 self.browser_bin,
                 "--ozone-platform=x11",
@@ -1154,7 +1319,13 @@ class TabManager:
                 "--use-gl=angle",
                 "--use-angle=swiftshader",
                 "--enable-unsafe-swiftshader",
+                "--num-raster-threads=1",
                 "--disable-blink-features=AutomationControlled",
+                "--disable-background-networking",
+                "--disable-component-update",
+                "--disable-sync",
+                "--metrics-recording-only",
+                "--no-pings",
                 "--password-store=basic",
                 "--window-position=0,0",
                 "--window-size=1440,900",
@@ -1288,8 +1459,10 @@ class TabManager:
 
                 existing_tid = self._bot_targets.get(bot_key)
                 if existing_tid and (existing_tid in live_by_id or not live_by_id):
+                    now_ts = time.time()
                     self._in_flight[bot_key] = self._in_flight.get(bot_key, 0) + 1
-                    self._last_tab_at[bot_key] = time.time()
+                    self._last_tab_at[bot_key] = now_ts
+                    self._last_activity_at = now_ts
                     chosen_target = live_by_id.get(existing_tid) or {
                         "id": existing_tid,
                         "type": "page",
@@ -1311,8 +1484,10 @@ class TabManager:
                     return {**base, "bot_key": bot_key, "target_id": None, "window_id": None, "acquired": False}
 
                 if len(self._bot_targets) < self.max_concurrent_screens:
+                    now_ts = time.time()
                     self._in_flight[bot_key] = self._in_flight.get(bot_key, 0) + 1
-                    self._last_tab_at[bot_key] = time.time()
+                    self._last_tab_at[bot_key] = now_ts
+                    self._last_activity_at = now_ts
                     restore_url = self._bot_last_urls.get(bot_key, "about:blank")
                     owned_ids = set(self._bot_targets.values())
                     owned_wids = set(self._bot_windows.values())
@@ -1349,8 +1524,10 @@ class TabManager:
                     vt = live_by_id.get(evicted_tid or "")
                     if vt and not _is_blank_cdp_url(vt.get("url", "")):
                         self._bot_last_urls[victim_bot] = str(vt.get("url"))
+                    now_ts = time.time()
                     self._in_flight[bot_key] = self._in_flight.get(bot_key, 0) + 1
-                    self._last_tab_at[bot_key] = time.time()
+                    self._last_tab_at[bot_key] = now_ts
+                    self._last_activity_at = now_ts
                     restore_url = self._bot_last_urls.get(bot_key, "about:blank")
                     break
 
@@ -1568,7 +1745,9 @@ class TabManager:
                         wid = nwid
                 if not _is_blank_cdp_url(start_url):
                     self._bot_last_urls[bot_key] = start_url
-                self._last_tab_at[bot_key] = time.time()
+                now_ts = time.time()
+                self._last_tab_at[bot_key] = now_ts
+                self._last_activity_at = now_ts
                 self._save_map()
             updated_tabs = self.list_bot_window_targets(bot_key)
             return {
@@ -1592,7 +1771,9 @@ class TabManager:
                 cu = str(chosen.get("url") or "")
                 if cu and not _is_blank_cdp_url(cu):
                     self._bot_last_urls[bot_key] = cu
-                self._last_tab_at[bot_key] = time.time()
+                now_ts = time.time()
+                self._last_tab_at[bot_key] = now_ts
+                self._last_activity_at = now_ts
                 self._save_map()
             self.activate_tab_fn(chosen, port=self.cdp_port)
             return {
@@ -1666,7 +1847,9 @@ class TabManager:
                 self._in_flight.pop(bot_key, None)
             else:
                 self._in_flight[bot_key] = cur - 1
-            self._last_tab_at[bot_key] = time.time()
+            now_ts = time.time()
+            self._last_tab_at[bot_key] = now_ts
+            self._last_activity_at = now_ts
             self._slot_cond.notify_all()
 
     def record_bot_url(self, bot_key: str, url: str) -> None:
@@ -1674,6 +1857,8 @@ class TabManager:
         if not bot_key or not u or _is_blank_cdp_url(u):
             return
         with self._lock:
+            self._last_activity_at = time.time()
+            self._last_tab_at[bot_key] = self._last_activity_at
             if self._bot_last_urls.get(bot_key) != u:
                 self._bot_last_urls[bot_key] = u
                 self._save_map()
@@ -1688,6 +1873,10 @@ class TabManager:
         with self._lock:
             tid = self._bot_targets.get(bot_key)
             wid = self._bot_windows.get(bot_key)
+            if tid:
+                now_ts = time.time()
+                self._last_tab_at[bot_key] = now_ts
+                self._last_activity_at = now_ts
         if not tid:
             return False
         self.activate_tab_fn({"id": tid}, port=self.cdp_port)
@@ -1723,6 +1912,47 @@ class TabManager:
                         protected.add(tid)
         return protected
 
+    def suspend_browser(self, reason: str = "idle", live_pages: list = None) -> dict:
+        """
+        Gracefully closes the shared Chrome browser when all Bots are idle (or on executor
+        shutdown), preserving every Bot's last non-blank URL in `display-map.json` and keeping
+        `/opt/twinklebot/chrome-profile` (cookies & logins) completely intact.
+        """
+        if live_pages is None:
+            live_pages = self._live_page_targets()
+        live_by_id = {str(t["id"]): t for t in live_pages}
+        with self._lock:
+            if reason != "shutdown" and any(v > 0 for v in self._in_flight.values()):
+                return {"ok": False, "suspended": False, "reason": "in_flight"}
+            saved_bots = []
+            for bk, tid in list(self._bot_targets.items()):
+                vt = live_by_id.get(tid or "")
+                if vt and not _is_blank_cdp_url(vt.get("url", "")):
+                    self._bot_last_urls[bk] = str(vt.get("url"))
+                saved_bots.append(bk)
+            self._bot_targets.clear()
+            self._bot_windows.clear()
+            self._save_map()
+            self._slot_cond.notify_all()
+        closed = False
+        if self.close_browser_fn is not None:
+            try:
+                closed = bool(
+                    self.close_browser_fn(
+                        port=self.cdp_port,
+                        profile_dir=self.primary_profile_dir,
+                    )
+                )
+            except Exception:
+                closed = False
+        return {
+            "ok": True,
+            "suspended": True,
+            "closed": closed,
+            "reason": reason,
+            "saved_bots": saved_bots,
+        }
+
     def reclaim_idle_browsers(self, now: float = None) -> list:
         cur = now if now is not None else time.time()
         live_pages = self._live_page_targets()
@@ -1753,7 +1983,49 @@ class TabManager:
                 if remaining > 1:
                     self.close_tab_fn(cid, port=self.cdp_port)
                     remaining -= 1
+                elif self.navigate_tab_fn is not None:
+                    # Never leave a heavy SPA (e.g. YouTube Studio) spinning on SwiftShader as
+                    # the sole surviving tab after idle eviction — reset it to `about:blank`.
+                    vt = live_by_id.get(cid)
+                    if not vt or not _is_blank_cdp_url(vt.get("url", "")):
+                        try:
+                            self.navigate_tab_fn(cid, "about:blank", port=self.cdp_port)
+                        except Exception:
+                            pass
             reclaimed_bots.append(bk)
+
+        # Stage 2: Full-idle Chrome auto-suspend — when ALL Bots (including admin) are idle for
+        # >= browser_suspend_sec and no human is actively viewing noVNC, gracefully close Chrome
+        # (keeping profile/login state intact) so VM CPU & RAM drop back to ~0%.
+        if self.browser_suspend_sec > 0 and self.close_browser_fn is not None:
+            with self._lock:
+                has_in_flight = any(v > 0 for v in self._in_flight.values())
+                activity_points = [self._last_activity_at] + list(self._last_tab_at.values())
+                latest_activity = max(activity_points) if activity_points else 0.0
+                idle_elapsed = cur - latest_activity
+            if not has_in_flight and idle_elapsed >= self.browser_suspend_sec:
+                vnc_busy = False
+                if self.vnc_active_fn is not None:
+                    try:
+                        vnc_busy = bool(self.vnc_active_fn())
+                    except Exception:
+                        vnc_busy = False
+                if vnc_busy:
+                    with self._lock:
+                        self._last_activity_at = max(self._last_activity_at, cur)
+                else:
+                    browser_alive = bool(live_pages)
+                    if not browser_alive:
+                        try:
+                            browser_alive = bool(self.cdp_ws_fn(port=self.cdp_port, timeout=0.8))
+                        except Exception:
+                            browser_alive = False
+                    if browser_alive:
+                        res = self.suspend_browser(reason="idle_timeout", live_pages=live_pages)
+                        for sbk in res.get("saved_bots") or []:
+                            if sbk not in reclaimed_bots:
+                                reclaimed_bots.append(sbk)
+
         return reclaimed_bots
 
     def release_bot(self, bot_id: str, **_kwargs) -> dict:
@@ -1773,6 +2045,7 @@ class TabManager:
             self._slot_cond.notify_all()
         if tid or wid is not None:
             close_ids = self._collect_window_close_ids(wid, tid, live_pages, protected_other)
+            live_by_id = {str(t["id"]): t for t in live_pages}
             remaining = len(live_pages)
             closed_count = 0
             for cid in close_ids:
@@ -1780,6 +2053,13 @@ class TabManager:
                     self.close_tab_fn(cid, port=self.cdp_port)
                     remaining -= 1
                     closed_count += 1
+                elif self.navigate_tab_fn is not None:
+                    vt = live_by_id.get(cid)
+                    if not vt or not _is_blank_cdp_url(vt.get("url", "")):
+                        try:
+                            self.navigate_tab_fn(cid, "about:blank", port=self.cdp_port)
+                        except Exception:
+                            pass
             return {
                 "ok": True,
                 "released": True,
@@ -4026,9 +4306,10 @@ def main():
     actions = Actions(browser=browser)
     display_manager = DisplayManager(browser_bin=browser)
 
+    stop_event = threading.Event()
+
     def _reclaim_loop():
-        while True:
-            time.sleep(60)
+        while not stop_event.wait(30):
             try:
                 display_manager.reclaim_idle_browsers()
             except Exception:
@@ -4036,12 +4317,28 @@ def main():
 
     threading.Thread(target=_reclaim_loop, daemon=True).start()
     server = make_server(actions, token, host=host, port=port, display_manager=display_manager)
+
+    def _handle_shutdown_signal(_signum, _frame):
+        stop_event.set()
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _handle_shutdown_signal)
+        except Exception:
+            pass
+
     print(f"TwinkleBot executor listening on {host}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        stop_event.set()
+        try:
+            display_manager.suspend_browser(reason="shutdown")
+        except Exception:
+            pass
         server.server_close()
 
 

@@ -296,6 +296,9 @@ test("buildWslProvisionScript unifies persistent chrome profile, SwiftShader GL,
   assert.match(fullRendered, /--disable-renderer-backgrounding/);
   assert.match(fullRendered, /\/usr\/local\/bin\/twinklebot-chrome/);
   assert.match(fullRendered, /--use-angle=swiftshader/);
+  assert.match(fullRendered, /--num-raster-threads=1/);
+  assert.match(fullRendered, /--disable-background-networking/);
+  assert.match(fullRendered, /unset WAYLAND_DISPLAY PULSE_SERVER DBUS_SESSION_BUS_ADDRESS XDG_ACTIVATION_TOKEN/);
   assert.match(fullRendered, /twinklebot-browser\.service/);
   assert.match(fullRendered, /twinklebot-x11vnc\.service/);
   assert.match(fullRendered, /twinklebot-novnc\.service/);
@@ -303,6 +306,10 @@ test("buildWslProvisionScript unifies persistent chrome profile, SwiftShader GL,
   assert.match(fullRendered, /sync-proxy\.sh/);
   assert.match(fullRendered, /HOST_PROXY_PORT=7890/);
   assert.ok(!fullRendered.includes("--test-type"), "should not pass --test-type automation flag");
+  assert.ok(
+    !fullRendered.includes("--autoplay-policy=document-user-gesture-required"),
+    "Chrome 157 crashes with SIGTRAP when passed --autoplay-policy=document-user-gesture-required"
+  );
 
   const regParsed = parseWindowsProxyHint({
     env: {},
@@ -488,4 +495,20 @@ test("probeBotComputerState and resolveBotComputerStatusDisplay consistently cla
   const macDeployScript = buildMacOrbExecutorDeployScript({ executorToken: "tok-123", overwriteToken: true });
   assert.match(macDeployScript, /-BlacklistThreshold=0 -BlacklistTimeout=0/);
   assert.match(macDeployScript, /blacklisted: 127\.0\.0\.1/);
+  assert.match(macDeployScript, /KillMode=control-group/);
+  assert.match(macDeployScript, /TimeoutStopSec=12/);
+  assert.match(
+    macDeployScript,
+    /pkill -f -- '--user-data-dir=\[\/\]opt\/twinklebot\/chrome-profile'/,
+    "pkill -f pattern must use regex bracket [/] so bash -lc does not self-terminate"
+  );
+  const macDecoded = [...macDeployScript.matchAll(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/g)]
+    .map((m) => Buffer.from(m[1], "base64").toString("utf-8"))
+    .join("\n");
+  assert.match(macDecoded, /--num-raster-threads=1/);
+  assert.match(macDecoded, /unset WAYLAND_DISPLAY PULSE_SERVER DBUS_SESSION_BUS_ADDRESS XDG_ACTIVATION_TOKEN/);
+  assert.ok(
+    !macDecoded.includes("--autoplay-policy=document-user-gesture-required"),
+    "Chrome 157 crashes with SIGTRAP when passed --autoplay-policy=document-user-gesture-required"
+  );
 });

@@ -344,7 +344,7 @@ export async function syncFileToWslViaChunks({
 
 export function buildTwinklebotChromeWrapperScript(): string {
   return `#!/usr/bin/env bash
-unset WAYLAND_DISPLAY PULSE_SERVER
+unset WAYLAND_DISPLAY PULSE_SERVER DBUS_SESSION_BUS_ADDRESS XDG_ACTIVATION_TOKEN
 export DISPLAY="\${DISPLAY:-:1}"
 export XDG_SESSION_TYPE=x11
 export GDK_BACKEND=x11
@@ -365,7 +365,13 @@ EXTRA_ARGS=(
   --use-gl=angle
   --use-angle=swiftshader
   --enable-unsafe-swiftshader
+  --num-raster-threads=1
   --disable-blink-features=AutomationControlled
+  --disable-background-networking
+  --disable-component-update
+  --disable-sync
+  --metrics-recording-only
+  --no-pings
   --disable-background-timer-throttling
   --disable-backgrounding-occluded-windows
   --disable-renderer-backgrounding
@@ -587,7 +593,13 @@ exec "$BROWSER_BIN" \\
   --use-gl=angle \\
   --use-angle=swiftshader \\
   --enable-unsafe-swiftshader \\
+  --num-raster-threads=1 \\
   --disable-blink-features=AutomationControlled \\
+  --disable-background-networking \\
+  --disable-component-update \\
+  --disable-sync \\
+  --metrics-recording-only \\
+  --no-pings \\
   --disable-background-timer-throttling \\
   --disable-backgrounding-occluded-windows \\
   --disable-renderer-backgrounding \\

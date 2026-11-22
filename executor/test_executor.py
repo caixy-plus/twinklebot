@@ -1645,6 +1645,251 @@ class TestAutomationUpgrades(unittest.TestCase):
             self.assertEqual(activated, ["T1"])
             self.assertEqual(raised, [("T1", 77, dm.cdp_port, dm.display)])
 
+    def test_chrome_launch_flags_and_cgroup_dbus_isolation(self):
+        with tempfile.TemporaryDirectory() as td:
+            captured = []
+            cdp_up = {"ws": None}
+
+            def fake_spawn(argv, env=None, **_kw):
+                captured.append((list(argv), dict(env or {})))
+                cdp_up["ws"] = "ws://127.0.0.1:9222/devtools/browser/iso"
+                return type("P", (), {"pid": 4242})()
+
+            old_dbus = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+            old_xdg = os.environ.get("XDG_ACTIVATION_TOKEN")
+            os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/user/502/bus"
+            os.environ["XDG_ACTIVATION_TOKEN"] = "fake-token"
+            try:
+                dm = TabManager(
+                    map_path=os.path.join(td, "map.json"),
+                    primary_profile_dir=os.path.join(td, "chrome-profile"),
+                    browser_boot_timeout_sec=0.05,
+                    spawn_fn=fake_spawn,
+                    tcp_open_fn=lambda p: True,
+                    cdp_ws_fn=lambda port=9222, timeout=1.0: cdp_up["ws"],
+                    targets_fn=lambda port=9222, timeout=2.0: [],
+                )
+                dm.ensure_browser()
+            finally:
+                if old_dbus is None:
+                    os.environ.pop("DBUS_SESSION_BUS_ADDRESS", None)
+                else:
+                    os.environ["DBUS_SESSION_BUS_ADDRESS"] = old_dbus
+                if old_xdg is None:
+                    os.environ.pop("XDG_ACTIVATION_TOKEN", None)
+                else:
+                    os.environ["XDG_ACTIVATION_TOKEN"] = old_xdg
+
+            self.assertEqual(len(captured), 1)
+            argv, env = captured[0]
+            for flag in (
+                "--num-raster-threads=1",
+                "--disable-background-networking",
+                "--disable-component-update",
+                "--disable-sync",
+                "--metrics-recording-only",
+                "--no-pings",
+            ):
+                self.assertIn(flag, argv)
+            # Chrome 157 crashes with SIGTRAP when passed --autoplay-policy=document-user-gesture-required
+            self.assertNotIn("--autoplay-policy=document-user-gesture-required", argv)
+            self.assertNotIn("DBUS_SESSION_BUS_ADDRESS", env)
+            self.assertNotIn("XDG_ACTIVATION_TOKEN", env)
+
+    def test_idle_reclaim_navigates_last_surviving_tab_to_blank(self):
+        with tempfile.TemporaryDirectory() as td:
+            live_tabs = [
+                {
+                    "id": "T-HEAVY",
+                    "type": "page",
+                    "url": "https://studio.youtube.com/channel/UC123",
+                    "title": "YouTube Studio",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/T-HEAVY",
+                }
+            ]
+            closed = []
+            navigated = []
+
+            def fake_navigate(tid, url, port=9222):
+                navigated.append((tid, url))
+                for t in live_tabs:
+                    if t["id"] == tid:
+                        t["url"] = url
+                return True
+
+            dm = TabManager(
+                map_path=os.path.join(td, "map.json"),
+                primary_profile_dir=os.path.join(td, "chrome-profile"),
+                browser_idle_sec=5,
+                browser_suspend_sec=600,
+                browser_boot_timeout_sec=0.05,
+                spawn_fn=lambda *a, **kw: type("P", (), {"pid": 1001})(),
+                tcp_open_fn=lambda p: True,
+                cdp_ws_fn=lambda port=9222, timeout=1.0: "ws://127.0.0.1:9222/devtools/browser/1",
+                targets_fn=lambda port=9222, timeout=2.0: list(live_tabs),
+                close_tab_fn=lambda tid, port=9222: closed.append(tid),
+                navigate_tab_fn=fake_navigate,
+            )
+            dm._bot_targets["bot-worker"] = "T-HEAVY"
+            dm._bot_is_admin["bot-worker"] = False
+            now = time.time()
+            dm._last_tab_at["bot-worker"] = now - 10
+            dm._last_activity_at = now - 10
+
+            reclaimed = dm.reclaim_idle_browsers(now=now)
+            self.assertEqual(reclaimed, ["bot-worker"])
+            self.assertEqual(closed, [], "must not close the sole surviving tab in Stage 1")
+            self.assertEqual(navigated, [("T-HEAVY", "about:blank")])
+            self.assertEqual(live_tabs[0]["url"], "about:blank")
+            self.assertEqual(dm._bot_last_urls.get("bot-worker"), "https://studio.youtube.com/channel/UC123")
+
+    def test_full_idle_auto_suspend_respects_vnc_and_restores_on_wake(self):
+        with tempfile.TemporaryDirectory() as td:
+            primary_prof = os.path.join(td, "chrome-profile")
+            os.makedirs(primary_prof, exist_ok=True)
+            cookies_marker = os.path.join(primary_prof, "Cookies")
+            with open(cookies_marker, "w", encoding="utf-8") as f:
+                f.write("session=keep-me")
+
+            cdp_up = {"ws": None}
+            live_tabs = []
+            seq = [0]
+            spawn_count = [0]
+            close_browser_calls = []
+            vnc_active = {"busy": True}
+
+            def fake_spawn(argv, env=None, **_kw):
+                spawn_count[0] += 1
+                cdp_up["ws"] = f"ws://127.0.0.1:9222/devtools/browser/{spawn_count[0]}"
+                seq[0] += 1
+                live_tabs[:] = [
+                    {
+                        "id": f"T-{seq[0]}",
+                        "type": "page",
+                        "url": "about:blank",
+                        "title": "New Tab",
+                        "webSocketDebuggerUrl": f"ws://127.0.0.1:9222/devtools/page/T-{seq[0]}",
+                    }
+                ]
+                return type("P", (), {"pid": 5000 + spawn_count[0]})()
+
+            def fake_create_tab(url="about:blank", port=9222, **_kw):
+                seq[0] += 1
+                tid = f"T-{seq[0]}"
+                tab = {
+                    "id": tid,
+                    "type": "page",
+                    "url": url or "about:blank",
+                    "title": tid,
+                    "webSocketDebuggerUrl": f"ws://127.0.0.1:{port}/devtools/page/{tid}",
+                }
+                live_tabs.append(tab)
+                return tab
+
+            def fake_close_tab(tid, port=9222):
+                live_tabs[:] = [t for t in live_tabs if t["id"] != tid]
+
+            def fake_close_browser(port=9222, profile_dir=None, **_kw):
+                close_browser_calls.append((port, profile_dir))
+                cdp_up["ws"] = None
+                live_tabs.clear()
+                return True
+
+            dm = TabManager(
+                map_path=os.path.join(td, "map.json"),
+                primary_profile_dir=primary_prof,
+                browser_idle_sec=5,
+                browser_suspend_sec=15,
+                browser_boot_timeout_sec=0.05,
+                spawn_fn=fake_spawn,
+                tcp_open_fn=lambda p: True,
+                cdp_ws_fn=lambda port=9222, timeout=1.0: cdp_up["ws"],
+                targets_fn=lambda port=9222, timeout=2.0: list(live_tabs),
+                create_tab_fn=fake_create_tab,
+                close_tab_fn=fake_close_tab,
+                navigate_tab_fn=lambda tid, url, port=9222: True,
+                close_browser_fn=fake_close_browser,
+                vnc_active_fn=lambda: vnc_active["busy"],
+            )
+
+            admin = dm.acquire_bot_tab("bot-admin", is_admin=True)
+            dm.release_bot_tab_in_flight(admin["bot_key"])
+            worker = dm.acquire_bot_tab("bot-worker", is_admin=False)
+            dm.release_bot_tab_in_flight(worker["bot_key"])
+            for t in live_tabs:
+                if t["id"] == admin["target_id"]:
+                    t["url"] = "https://caixy.xin"
+                elif t["id"] == worker["target_id"]:
+                    t["url"] = "https://dev.to"
+
+            base_ts = time.time()
+            # Stage 1 (+10s): evicts non-admin worker, keeps admin & Chrome alive
+            r1 = dm.reclaim_idle_browsers(now=base_ts + 10)
+            self.assertEqual(r1, ["bot-worker"])
+            self.assertEqual(close_browser_calls, [])
+            self.assertIsNotNone(cdp_up["ws"])
+
+            # Stage 2 (+20s) while human VNC is connected: must defer auto-suspend!
+            r2 = dm.reclaim_idle_browsers(now=base_ts + 20)
+            self.assertEqual(r2, [])
+            self.assertEqual(close_browser_calls, [])
+            self.assertIsNotNone(cdp_up["ws"])
+
+            # Human disconnects VNC -> after another >=15s (+40s), Chrome auto-suspends!
+            vnc_active["busy"] = False
+            r3 = dm.reclaim_idle_browsers(now=base_ts + 40)
+            self.assertIn("bot-admin", r3)
+            self.assertEqual(len(close_browser_calls), 1)
+            self.assertIsNone(cdp_up["ws"])
+            self.assertEqual(live_tabs, [])
+            self.assertTrue(os.path.isfile(cookies_marker), "profile cookies must survive suspend")
+            self.assertEqual(dm._bot_last_urls.get("bot-admin"), "https://caixy.xin")
+
+            # On-demand wake relaunches Chrome and restores bot-admin's URL seamlessly
+            woken = dm.acquire_bot_tab("bot-admin", is_admin=True)
+            dm.release_bot_tab_in_flight(woken["bot_key"])
+            self.assertEqual(spawn_count[0], 2)
+            self.assertEqual(woken["tab_url"], "https://caixy.xin")
+
+    def test_full_idle_auto_suspend_reaps_ghost_chrome_when_bot_targets_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            cdp_up = {"ws": "ws://127.0.0.1:9222/devtools/browser/ghost"}
+            live_tabs = [
+                {
+                    "id": "T-GHOST",
+                    "type": "page",
+                    "url": "about:blank",
+                    "title": "Ghost",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/T-GHOST",
+                }
+            ]
+            closed_browsers = []
+
+            def fake_close_browser(port=9222, profile_dir=None, **_kw):
+                closed_browsers.append(port)
+                cdp_up["ws"] = None
+                live_tabs.clear()
+                return True
+
+            dm = TabManager(
+                map_path=os.path.join(td, "map.json"),
+                primary_profile_dir=os.path.join(td, "chrome-profile"),
+                browser_idle_sec=5,
+                browser_suspend_sec=15,
+                browser_boot_timeout_sec=0.05,
+                spawn_fn=lambda *a, **kw: type("P", (), {"pid": 999})(),
+                tcp_open_fn=lambda p: True,
+                cdp_ws_fn=lambda port=9222, timeout=1.0: cdp_up["ws"],
+                targets_fn=lambda port=9222, timeout=2.0: list(live_tabs),
+                close_browser_fn=fake_close_browser,
+                vnc_active_fn=lambda: False,
+            )
+            now = time.time()
+            dm._last_activity_at = now - 30
+            dm.reclaim_idle_browsers(now=now)
+            self.assertEqual(closed_browsers, [9222])
+            self.assertIsNone(cdp_up["ws"])
+
 
 if __name__ == "__main__":
     unittest.main()
