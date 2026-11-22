@@ -459,7 +459,43 @@ export function nextStreamItemId(prefix = "it"): string {
   return `${prefix}-${itemAutoId}`;
 }
 
+const UI_PREFS_STORAGE_KEY = "twinklebot.uiPrefs.v1";
+
+export interface UiPrefsSnapshot {
+  spellcheckEnabled?: boolean;
+  sidebarCompact?: boolean;
+  inspectorOpen?: boolean;
+  leftSidebarW?: number;
+  rightInspectorW?: number;
+}
+
+export function readUiPrefs(): UiPrefsSnapshot {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return {};
+    const raw = window.localStorage.getItem(UI_PREFS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as UiPrefsSnapshot;
+  } catch {
+    return {};
+  }
+}
+
+export function writeUiPrefs(patch: Partial<UiPrefsSnapshot>): UiPrefsSnapshot {
+  const next: UiPrefsSnapshot = { ...readUiPrefs(), ...patch };
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      window.localStorage.setItem(UI_PREFS_STORAGE_KEY, JSON.stringify(next));
+    }
+  } catch {
+    // ignore storage quota / private mode errors
+  }
+  return next;
+}
+
 export function createInitialState(): AppState {
+  const savedUiPrefs = readUiPrefs();
   return {
     accountsState: {
       activeAccountId: "local",
@@ -530,7 +566,6 @@ export function createInitialState(): AppState {
       onboardingRequired: false,
       profile: { name: "本地用户", color: "slate" },
       voice: { name: "Liora", speed: 1, lang: "Auto-detect" },
-      autoExpandScreen: false,
       hostComputer: { executionMode: "always" },
       mcpServers: {
         "kimi-cu": { ...DEFAULT_KIMI_CU_MCP_CONFIG },
@@ -562,7 +597,7 @@ export function createInitialState(): AppState {
         "custom-mail": { configured: false, enabled: false },
       },
     },
-    spellcheckEnabled: true,
+    spellcheckEnabled: savedUiPrefs.spellcheckEnabled !== false,
 
     sessions: [],
     activeMap: {},
@@ -592,8 +627,8 @@ export function createInitialState(): AppState {
     scrollPinGuardUntil: 0,
     computerMiniThumbUrl: null,
 
-    sidebarCompact: false,
-    inspectorOpen: true,
+    sidebarCompact: savedUiPrefs.sidebarCompact === true,
+    inspectorOpen: savedUiPrefs.inspectorOpen !== false,
     desktopFullscreen: false,
     mobileView: "list",
     accentColor: "black",
@@ -741,6 +776,9 @@ export const runtimeRefs: {
   eventSource: EventSource | null;
   selectSessionSeq: number;
   nextSelectOpts: { preserveScrollIfUnpinned?: boolean } | null;
+  settingsMutationSeq: number;
+  settingsMutationsInFlight: number;
+  settingsFetchSeq: number;
   providerBillingFetchSeq: number;
   usageFetchSeq: number;
   usageLiveRefreshTimer: any;
@@ -762,6 +800,9 @@ export const runtimeRefs: {
   eventSource: null,
   selectSessionSeq: 0,
   nextSelectOpts: null,
+  settingsMutationSeq: 0,
+  settingsMutationsInFlight: 0,
+  settingsFetchSeq: 0,
   providerBillingFetchSeq: 0,
   usageFetchSeq: 0,
   usageLiveRefreshTimer: null,
@@ -899,8 +940,6 @@ export function finalizeOrphanedInteractiveItems(
 }
 
 export interface EventApplySideEffects {
-  shouldAutoExpandScreen?: boolean;
-  autoExpandTargetBotId?: string;
   shouldRefreshUsage?: boolean;
   debouncedRefreshUsage?: boolean;
 }
@@ -1056,34 +1095,6 @@ export function reduceSessionEvent(
     case "action":
     case "tool_call": {
       stepCount += 1;
-      const isBotDesktopVisualTool = [
-        "screenshot",
-        "click",
-        "double_click",
-        "right_click",
-        "move",
-        "drag",
-        "scroll",
-        "type_text",
-        "key",
-        "list_windows",
-        "focus_window",
-        "open_url",
-        "browser_snapshot",
-        "browser_click",
-        "browser_type",
-        "browser_tabs",
-        "browser_scroll",
-        "browser_wait",
-        "browser_select",
-        "browser_upload_file",
-      ].includes(evt.name);
-      if (isBotDesktopVisualTool && prev.settings?.autoExpandScreen && !prev.screenOverlayOpen && !replay) {
-        effects.shouldAutoExpandScreen = true;
-        if (evt.botId) {
-          effects.autoExpandTargetBotId = String(evt.botId);
-        }
-      }
       const argSummary = summarizeArgs(evt.args) || `步骤 #${stepCount}`;
       traceItems = [
         ...traceItems,

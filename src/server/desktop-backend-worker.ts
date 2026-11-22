@@ -85,6 +85,7 @@ export async function runDesktopBackendWorker(): Promise<void> {
   let unsubscribeRunner: (() => void) | null = null;
   let trayTimer: ReturnType<typeof setTimeout> | null = null;
   let cachedOtaStatus: Record<string, any> | null = null;
+  let lastOtaStatusSyncAt = 0;
   let resolvedPublicDir = path.join(WORKER_ROOT, "public");
 
   const pendingReqs = new Map<
@@ -240,7 +241,27 @@ export async function runDesktopBackendWorker(): Promise<void> {
       scheduler,
       getEffectivePublicDir: () => resolvedPublicDir,
       otaController: {
-        getStatus: () => cachedOtaStatus,
+        getStatus: () => {
+          if (
+            cachedOtaStatus?.pendingBuild &&
+            typeof process.send === "function" &&
+            Date.now() - lastOtaStatusSyncAt > 1000
+          ) {
+            lastOtaStatusSyncAt = Date.now();
+            const reqId = `status-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            void sendPendingRpc(
+              { type: "ota_status_request", reqId },
+              reqId,
+              1500,
+              cachedOtaStatus
+            ).then((updated) => {
+              if (updated && typeof updated === "object") {
+                cachedOtaStatus = updated;
+              }
+            });
+          }
+          return cachedOtaStatus;
+        },
         confirmReady: (webBuild) => {
           if (cachedOtaStatus && cachedOtaStatus.pendingBuild && (!webBuild || webBuild === cachedOtaStatus.pendingBuild)) {
             cachedOtaStatus = {
@@ -297,11 +318,19 @@ export async function runDesktopBackendWorker(): Promise<void> {
     const requestedPort = Number.isFinite(Number(cfg.port)) ? Number(cfg.port) : 3230;
     const host = String(cfg.host || "127.0.0.1");
 
+    const MAX_PORT_RETRIES = 12;
+    const PORT_RETRY_DELAY_MS = 150;
     await new Promise<void>((resolve, reject) => {
+      let retries = 0;
       const tryListen = (portToBind: number) => {
         const onError = (err: NodeJS.ErrnoException) => {
           if (err?.code === "EADDRINUSE" && portToBind !== 0) {
             server.off("error", onError);
+            if (retries < MAX_PORT_RETRIES) {
+              retries += 1;
+              setTimeout(() => tryListen(portToBind), PORT_RETRY_DELAY_MS).unref?.();
+              return;
+            }
             tryListen(0);
             return;
           }

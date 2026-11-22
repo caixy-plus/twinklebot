@@ -104,7 +104,7 @@
 | **P2** | `P2-SET-01` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings General / Profile | 设置·通用：个人昵称保存(按钮+回车保存+空值防误存提示)与 6 色头像圆点切换(侧边栏联动 + 刷新持久化) |
 | **P2** | `P2-SET-02` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings General / Appearance | 设置·通用：浅色/深色/跟随系统三态主题(color-scheme 同步)、Bot 强调色 vs 默认黑灰与拼写检查(#message-input spellcheck)开关 |
 | **P2** | `P2-SET-03` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings General / Compression & Global Memories | 设置·通用：上下文压缩 3 档预设卡(50%/75%/85%)、滑块、高级自定义规则与全局共享记忆 CRUD/启停/编辑/删除 |
-| **P2** | `P2-SET-04` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings Computer | 设置·电脑：宿主机策略 always/ask/off(切 off 自动关闭 MCP)、自动展开开关与检测/健康状态联动 |
+| **P2** | `P2-SET-04` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings Computer | 设置·电脑：宿主机策略 always/ask/off(切 off 自动关闭 MCP)与检测/健康状态联动 |
 | **P2** | `P2-SET-05` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings Permissions | 设置·权限：自动审核开关(#policy-auto-audit-toggle)与 askRules / allowRules 全套 UI 增删改 |
 | **P2** | `P2-SET-06` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings Vault | 设置·保险库 Vault：分类筛选、实时搜索、AES加密密码(#vault-password-input/查看/清除)与 UI 内联编辑/删除/PATCH |
 | **P2** | `P2-SET-07` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Diagnostics & Capability Gate | 设置·关于与诊断(/api/system/diagnostics & /api/system/updates/check) + 连接 v1.0.0 旧节点动态隐藏 multi-display-v1 屏幕池控件 |

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { inferMailServerPreset } from "/skills-catalog.js";
 import {
   closeAppsModal,
+  commitSettingsPatch,
   openAppsModal,
   refreshMcpSkillStatus,
   refreshSettingsFromServer,
@@ -2652,11 +2653,7 @@ export function SkillsStoreModal() {
                       },
                     });
                     try {
-                      const saved = await apiJson("/api/settings", {
-                        method: "POST",
-                        body: JSON.stringify({ mcpServers: nextMcpServers }),
-                      });
-                      setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+                      await commitSettingsPatch({ mcpServers: nextMcpServers });
                       const res = await apiJson("/api/mcp/reconnect", {
                         method: "POST",
                         body: JSON.stringify({ serverId: mcpServerId }),

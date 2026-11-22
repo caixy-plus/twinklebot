@@ -584,36 +584,14 @@ test(
       `Number(document.querySelector('#novnc-frame')?.getAttribute('data-reconnect-seq') || '0') > ${Number(seqBeforeReset)}`
     );
     assert.ok(releasedTabs.includes(worker1.id), "Reset should release lingering non-admin Bot tab bindings");
-
-    // Feature 3: '执行动作时自动全屏打开画面' persists toggle and auto-opens #bot-screen-overlay on browser_snapshot tool_call
-    const checkedBefore = await chrome.evalJs<boolean>(
-      `Boolean(document.querySelector('#auto-expand-toggle')?.checked)`
+    assert.equal(
+      await chrome.evalJs<boolean>(`Boolean(document.querySelector('#auto-expand-toggle'))`),
+      false,
+      "auto-expand screen toggle must not be rendered in Settings -> Computer"
     );
-    assert.equal(checkedBefore, false);
-    await chrome.click("#auto-expand-toggle");
-    await chrome.waitFor(`Boolean(document.querySelector('#auto-expand-toggle')?.checked)`);
-    const savedAutoExpand: any = await (await fetch(`${baseUrl}/api/settings`)).json();
-    assert.equal(savedAutoExpand.autoExpandScreen, true);
 
     await chrome.click("#close-settings-modal-btn");
     await chrome.waitFor(`document.querySelector('#settings-modal-backdrop').hidden`);
-
-    // Select worker1 and trigger a visual browser action (`browser_snapshot`) -> fullscreen overlay must auto-open!
-    await chrome.evalJs(`(() => {
-      const items = Array.from(document.querySelectorAll('#session-list .session-item'));
-      const target = items.find(el => el.textContent && el.textContent.includes(${JSON.stringify(worker1.title)}));
-      target && target.click();
-    })()`);
-    await chrome.waitFor(
-      `Array.from(document.querySelectorAll('#session-list .session-item')).some(el => el.classList.contains('is-active') && el.textContent && el.textContent.includes(${JSON.stringify(worker1.title)}))`
-    );
-    await new Promise((r) => setTimeout(r, 80));
-
-    runner.start(worker1.id, "trigger browser snapshot for auto-expand");
-    await chrome.waitFor(`!document.querySelector('#bot-screen-overlay').hidden`);
-    await chrome.click("#exit-fullscreen-btn");
-    await chrome.waitFor(`document.querySelector('#bot-screen-overlay').hidden`);
-    await waitPool(() => !runner.isSessionBusy(worker1.id), "auto-expand task drained");
 
     // ---------- UI-4: v1.0.0 legacy node capability gating ----------
     await chrome.navigate(`http://127.0.0.1:${legacyPort}`);

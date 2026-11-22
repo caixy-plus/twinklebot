@@ -519,6 +519,9 @@ export async function handleSessionRoutes(
                 : [ruleEntry];
               ctx.store?.writeSettings?.({ policy: { ...policy, allowRules } });
             }
+            try {
+              ctx.runner?.broadcastGlobal?.({ type: "settings_updated" });
+            } catch {}
           }
 
           ctx.runner?.approve?.(callId, body.allow);

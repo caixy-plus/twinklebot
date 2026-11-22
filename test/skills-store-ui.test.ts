@@ -53,7 +53,7 @@ test("computer settings pane adopts GrokBot dual-computer model without traffic 
   assert.ok(html.includes('id="settings-update-computer-btn"'));
   assert.ok(html.includes("更新 Bot 的电脑"));
   assert.ok(html.includes('id="settings-reset-computer-btn"'));
-  assert.ok(html.includes('id="auto-expand-toggle"'));
+  assert.ok(!html.includes('id="auto-expand-toggle"'), "auto-expand screen toggle must be removed");
 });
 
 test("skills store supports optional platform MCP skill (kimi-cu) manual add, config and status", () => {

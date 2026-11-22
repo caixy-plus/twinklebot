@@ -379,6 +379,7 @@ export function createServer({
       model: resolvedModel,
       theme: raw.theme || "system",
       accentMode: raw.accentMode || "bot",
+      spellcheckEnabled: raw.spellcheckEnabled !== false,
       profile: {
         name: profileName,
         color: profileColor,

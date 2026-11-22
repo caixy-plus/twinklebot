@@ -148,6 +148,65 @@ test("settings rejects unknown model", async () => {
   }
 });
 
+test("POST /api/settings persists spellcheckEnabled, merges partial policy, and broadcasts settings_updated", async () => {
+  const broadcasts: any[] = [];
+  const ctx = await setupTestServer({
+    runner: {
+      status: () => ({ sessionId: null, state: "idle" }),
+      approve: () => {},
+      subscribe: () => () => {},
+      broadcastGlobal: (ev: any) => broadcasts.push(ev),
+    },
+  });
+  try {
+    // 1. Persist spellcheckEnabled = false and confirm GET /api/settings returns it
+    const resSpell = await fetch(`${ctx.baseUrl}/api/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spellcheckEnabled: false }),
+    });
+    assert.equal(resSpell.status, 200);
+    const spellJson = await resSpell.json();
+    assert.equal(spellJson.spellcheckEnabled, false);
+    assert.equal(ctx.store.readSettings().spellcheckEnabled, false);
+    assert.ok(
+      broadcasts.some((ev) => ev?.type === "settings_updated"),
+      "POST /api/settings must broadcast settings_updated"
+    );
+
+    // 2. Persist allowRules via approval endpoint, verify broadcast, then send partial policy patch
+    broadcasts.length = 0;
+    const resApprove = await fetch(`${ctx.baseUrl}/api/approvals/call-1`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        allow: true,
+        alwaysRule: { tool: "host_run_shell", pattern: "npm test", label: "host_run_shell npm test" },
+      }),
+    });
+    assert.equal(resApprove.status, 200);
+    assert.ok(
+      broadcasts.some((ev) => ev?.type === "settings_updated"),
+      "POST /api/approvals/:callId with alwaysRule must broadcast settings_updated"
+    );
+    assert.equal(ctx.store.readSettings().policy.allowRules.length, 1);
+
+    // Sending partial policy { autoAudit: false } must NOT wipe existing allowRules
+    const resPartialPolicy = await fetch(`${ctx.baseUrl}/api/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policy: { autoAudit: false } }),
+    });
+    assert.equal(resPartialPolicy.status, 200);
+    const partialJson = await resPartialPolicy.json();
+    assert.equal(partialJson.policy.autoAudit, false);
+    assert.equal(partialJson.policy.allowRules.length, 1);
+    assert.equal(partialJson.policy.allowRules[0].pattern, "npm test");
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
 test("screens route rejects traversal", async () => {
   const ctx = await setupTestServer();
   try {

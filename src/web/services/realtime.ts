@@ -449,6 +449,7 @@ export async function syncSessionsAndActiveOnReconnect(epoch = getState().accoun
   let run: Promise<void> | null = null;
   run = (async () => {
     try {
+      void refreshSettingsFromServer({ retries: 1 });
       const data = await apiJson("/api/sessions");
       if (epoch !== getState().accountEpoch) return;
       if (Array.isArray(data.sessions)) {

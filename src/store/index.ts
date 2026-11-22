@@ -106,6 +106,7 @@ export function createStore(dataDir: string) {
   const exchangesDir = path.join(rootDir, "exchanges");
   const customSkillsDir = path.join(rootDir, "custom-skills");
   const settingsFile = path.join(rootDir, "settings.json");
+  const settingsBackupFile = path.join(rootDir, "settings.json.bak");
   const schedulesFile = path.join(rootDir, "schedules.json");
   const vaultFile = path.join(rootDir, "vault.json");
   const mailAuthFile = path.join(rootDir, "mail-auth.json");
@@ -732,20 +733,67 @@ export function createStore(dataDir: string) {
     }
   }
 
-  function readSettings(): Record<string, any> {
-    if (!fs.existsSync(settingsFile)) return {};
+  function tryParseSettingsFile(
+    filePath: string
+  ):
+    | { ok: true; data: Record<string, any> }
+    | { ok: false; missing?: boolean; error?: unknown } {
+    if (!fs.existsSync(filePath)) return { ok: false, missing: true };
     try {
-      const content = fs.readFileSync(settingsFile, "utf-8");
+      const content = fs.readFileSync(filePath, "utf-8");
+      if (!content.trim()) return { ok: false, error: new Error("empty settings file") };
       const parsed = JSON.parse(content);
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-      return {};
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return { ok: true, data: parsed };
+      }
+      return { ok: false, error: new Error("invalid settings object") };
+    } catch (error) {
+      return { ok: false, error };
     }
   }
 
+  function readSettings(): Record<string, any> {
+    const primary = tryParseSettingsFile(settingsFile);
+    if (primary.ok) return primary.data;
+    const backup = tryParseSettingsFile(settingsBackupFile);
+    if (backup.ok) return backup.data;
+    return {};
+  }
+
   function writeSettings(patch: Record<string, any>): Record<string, any> {
-    const existing = readSettings();
+    const primary = tryParseSettingsFile(settingsFile);
+    let existing: Record<string, any>;
+    if (primary.ok) {
+      existing = primary.data;
+    } else if (primary.missing) {
+      const backup = tryParseSettingsFile(settingsBackupFile);
+      existing = backup.ok ? backup.data : {};
+    } else {
+      const backup = tryParseSettingsFile(settingsBackupFile);
+      if (backup.ok) {
+        try {
+          fs.copyFileSync(settingsFile, `${settingsFile}.corrupt.${Date.now()}`);
+        } catch {
+          // ignore backup copy failures
+        }
+        existing = backup.data;
+      } else {
+        throw new Error(
+          `Refusing to overwrite unreadable settings.json: ${
+            (primary.error as Error)?.message || "parse error"
+          }`
+        );
+      }
+    }
+
     const updated = { ...existing, ...patch };
+    if (primary.ok) {
+      try {
+        writeJsonAtomic(settingsBackupFile, existing);
+      } catch {
+        // best-effort backup before atomic replace
+      }
+    }
     writeJsonAtomic(settingsFile, updated);
     return updated;
   }

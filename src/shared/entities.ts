@@ -104,9 +104,10 @@ export interface ProviderBillingEntry {
 export interface AppSettings {
   theme: "system" | "light" | "dark" | string;
   accentMode: "bot" | "custom" | string;
+  spellcheckEnabled?: boolean;
   profile: ProfileSettings;
   voice: VoiceSettings;
-  autoExpandScreen: boolean;
+  autoExpandScreen?: boolean;
   hostComputer: { executionMode: HostExecutionMode | string };
   contextCompression?: ContextCompressionSettings;
   screenPool?: ScreenPoolSettings;

@@ -44,6 +44,7 @@ import {
   reduceSessionEvent,
   runtimeRefs,
   setState,
+  writeUiPrefs,
   type StreamItem,
 } from "../state/store.js";
 import {
@@ -256,32 +257,98 @@ export function syncDerivedAccent() {
   }
 }
 
-export function applyThemePreference(themeValue: string, persist = false) {
-  if (typeof document !== "undefined") {
-    const meta = document.querySelector('meta[name="color-scheme"]') as HTMLMetaElement | null;
-    if (meta) {
-      meta.content = themeValue === "light" || themeValue === "dark" ? themeValue : "light dark";
-    }
-    try {
-      if (themeValue === "light" || themeValue === "dark") {
-        localStorage.setItem("color-scheme", themeValue);
-      } else {
-        localStorage.removeItem("color-scheme");
-      }
-    } catch {}
+function syncThemeToDomAndStorage(themeValue: string) {
+  if (typeof document === "undefined") return;
+  const meta = document.querySelector('meta[name="color-scheme"]') as HTMLMetaElement | null;
+  if (meta) {
+    meta.content = themeValue === "light" || themeValue === "dark" ? themeValue : "light dark";
   }
+  try {
+    if (themeValue === "light" || themeValue === "dark") {
+      localStorage.setItem("color-scheme", themeValue);
+    } else {
+      localStorage.removeItem("color-scheme");
+    }
+  } catch {}
+}
 
+export function applyServerSettingsSnapshot(
+  saved: Record<string, any> | null | undefined,
+  { isMutation = false }: { isMutation?: boolean } = {}
+) {
+  if (!saved || typeof saved !== "object") return;
+  if (isMutation) {
+    runtimeRefs.settingsMutationSeq += 1;
+    deferredSettingsTasks.delete("settings");
+  }
+  const hasServerSpellcheck = typeof saved.spellcheckEnabled === "boolean";
+  const serverTheme =
+    typeof saved.theme === "string" &&
+    (saved.theme === "light" || saved.theme === "dark" || saved.theme === "system")
+      ? saved.theme
+      : null;
+
+  setState((prev) => ({
+    settings: { ...prev.settings, ...saved },
+    ...(hasServerSpellcheck ? { spellcheckEnabled: saved.spellcheckEnabled } : {}),
+  }));
+  if (hasServerSpellcheck) {
+    writeUiPrefs({ spellcheckEnabled: saved.spellcheckEnabled });
+  }
+  if (serverTheme) {
+    syncThemeToDomAndStorage(serverTheme);
+  }
+  syncDerivedAccent();
+}
+
+export async function commitSettingsPatch(
+  patch: Record<string, any>,
+  opts: { silentError?: boolean } = {}
+): Promise<any> {
+  const reqEpoch = getState().accountEpoch;
+  const mutSeq = ++runtimeRefs.settingsMutationSeq;
+  runtimeRefs.settingsMutationsInFlight += 1;
+  deferredSettingsTasks.delete("settings");
+  try {
+    const saved = await apiJson("/api/settings", {
+      method: "POST",
+      body: JSON.stringify(patch),
+    });
+    if (reqEpoch === getState().accountEpoch && mutSeq === runtimeRefs.settingsMutationSeq) {
+      applyServerSettingsSnapshot(saved, { isMutation: false });
+    }
+    return saved;
+  } catch (err) {
+    if (!opts.silentError) throw err;
+    return null;
+  } finally {
+    runtimeRefs.settingsMutationsInFlight = Math.max(
+      0,
+      runtimeRefs.settingsMutationsInFlight - 1
+    );
+  }
+}
+
+export function applyThemePreference(themeValue: string, persist = false) {
+  syncThemeToDomAndStorage(themeValue);
   setState((prev) => ({
     settings: { ...prev.settings, theme: themeValue },
   }));
   syncDerivedAccent();
 
   if (persist) {
-    apiJson("/api/settings", {
-      method: "POST",
-      body: JSON.stringify({ theme: themeValue }),
-    }).catch(() => {});
+    void commitSettingsPatch({ theme: themeValue }, { silentError: true });
   }
+}
+
+export function setSpellcheckPreference(enabled: boolean) {
+  const next = Boolean(enabled);
+  writeUiPrefs({ spellcheckEnabled: next });
+  setState((prev) => ({
+    spellcheckEnabled: next,
+    settings: { ...prev.settings, spellcheckEnabled: next },
+  }));
+  void commitSettingsPatch({ spellcheckEnabled: next }, { silentError: true });
 }
 
 /* ==================== SCROLL PINNING ==================== */
@@ -472,9 +539,6 @@ export function renderEventForActiveSession(evt: any, { replay = false } = {}) {
   });
   if (next !== prev) {
     setState(next);
-  }
-  if (effects.shouldAutoExpandScreen) {
-    openBotScreenOverlay(effects.autoExpandTargetBotId || null);
   }
   if (effects.shouldRefreshUsage) {
     refreshUsageAndHealth().catch(() => {});
@@ -1291,6 +1355,7 @@ export function openSettingsModal(
     },
   });
   if (!wasOpen || wasStandalone) {
+    void refreshSettingsFromServer({ retries: 1 });
     refreshUsageAndHealth();
     refreshVault();
     refreshSystemDiagnostics(false);
@@ -1412,16 +1477,59 @@ export function closeAppsModal() {
   });
 }
 
-export async function refreshSettingsFromServer() {
-  try {
-    const s = await apiJson("/api/settings");
-    runWhenSettingsScrollIdle("settings", () => {
-      setState((prev) => ({
-        settings: { ...prev.settings, ...s },
-      }));
-      syncDerivedAccent();
-    });
-  } catch {}
+export async function refreshSettingsFromServer(
+  opts: { retries?: number } = {}
+) {
+  const reqEpoch = getState().accountEpoch;
+  const startMutSeq = runtimeRefs.settingsMutationSeq;
+  const fetchSeq = ++runtimeRefs.settingsFetchSeq;
+  const maxRetries = Math.max(0, Math.min(3, Number(opts.retries ?? 2)));
+  const retryDelays = [250, 600, 1200];
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const s = await apiJson("/api/settings");
+      if (
+        reqEpoch !== getState().accountEpoch ||
+        fetchSeq !== runtimeRefs.settingsFetchSeq ||
+        runtimeRefs.settingsMutationSeq !== startMutSeq ||
+        runtimeRefs.settingsMutationsInFlight > 0
+      ) {
+        return;
+      }
+      runWhenSettingsScrollIdle("settings", () => {
+        if (
+          reqEpoch !== getState().accountEpoch ||
+          fetchSeq !== runtimeRefs.settingsFetchSeq ||
+          runtimeRefs.settingsMutationSeq !== startMutSeq ||
+          runtimeRefs.settingsMutationsInFlight > 0
+        ) {
+          return;
+        }
+        applyServerSettingsSnapshot(s, { isMutation: false });
+      });
+      return;
+    } catch (err: any) {
+      if (
+        err?.code === "STALE_ACCOUNT_EPOCH" ||
+        reqEpoch !== getState().accountEpoch ||
+        fetchSeq !== runtimeRefs.settingsFetchSeq ||
+        getState().lanNodeOffline ||
+        isRemoteAccountOffline(getState())
+      ) {
+        return;
+      }
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, retryDelays[attempt] || 500));
+        if (
+          reqEpoch !== getState().accountEpoch ||
+          fetchSeq !== runtimeRefs.settingsFetchSeq
+        ) {
+          return;
+        }
+      }
+    }
+  }
 }
 
 export async function refreshSystemDiagnostics(showFeedback = false) {

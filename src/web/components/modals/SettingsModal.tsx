@@ -24,6 +24,7 @@ import {
   bindScrollEndTracking,
   buildOptimisticUsagePayload,
   closeSettingsModal,
+  commitSettingsPatch,
   openSettingsModal,
   refreshAllLiveProviderBalances,
   refreshComputerDisplays,
@@ -34,12 +35,13 @@ import {
   refreshVault,
   resetBotComputerConnection,
   setNovncMode,
+  setSpellcheckPreference,
   showConfirmDialog,
   showToast,
   syncDerivedAccent,
   updateBotComputerComponents,
 } from "../../services/actions.js";
-import { apiJson } from "../../services/api-client.js";
+import { apiJson, apiUrl } from "../../services/api-client.js";
 import {
   applyAvailableOtaUpdate,
   cancelDeferredCoreOta,
@@ -61,7 +63,7 @@ import {
   isImeConfirmEnter,
   parseModelsCsv,
 } from "../../state/helpers.js";
-import { setState, useStore } from "../../state/store.js";
+import { getState, setState, useStore } from "../../state/store.js";
 import { isRemoteAccountOffline } from "../../services/network-monitor.js";
 import { StatusText, UiIcon } from "../common/Icon.js";
 import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
@@ -870,8 +872,13 @@ export function SettingsModal() {
     Math.round(Number(routing.maxTurnUsd ?? 0.5) * CLIENT_USD_TO_CNY * 100) / 100
   );
   const [budgetInput, setBudgetInput] = useState(cnyBudgetDefault);
+  const budgetInputRef = useRef(cnyBudgetDefault);
+  const budgetDirtyRef = useRef(false);
   useEffect(() => {
-    setBudgetInput(cnyBudgetDefault);
+    if (!budgetDirtyRef.current) {
+      setBudgetInput(cnyBudgetDefault);
+      budgetInputRef.current = cnyBudgetDefault;
+    }
   }, [cnyBudgetDefault]);
 
   const ctxBase = normalizeContextCompressionSettings(settings?.contextCompression);
@@ -879,10 +886,28 @@ export function SettingsModal() {
   const [ctxInstructionDraft, setCtxInstructionDraft] = useState<string>(
     String(ctxBase.customInstruction || "")
   );
+  const ctxDraftRef = useRef({
+    enabled: ctxBase.enabled !== false,
+    triggerPercent: ctxBase.triggerPercent,
+    customInstruction: String(ctxBase.customInstruction || ""),
+  });
+  const ctxPercentDirtyRef = useRef(false);
+  const ctxInstructionDirtyRef = useRef(false);
+  const ctxPercentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ctxInstructionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ctxSaveSeqRef = useRef(0);
   useEffect(() => {
-    setCtxPercentDraft(ctxBase.triggerPercent);
-    setCtxInstructionDraft(String(ctxBase.customInstruction || ""));
-  }, [ctxBase.triggerPercent, ctxBase.customInstruction]);
+    ctxDraftRef.current.enabled = ctxBase.enabled !== false;
+    if (!ctxPercentDirtyRef.current) {
+      setCtxPercentDraft(ctxBase.triggerPercent);
+      ctxDraftRef.current.triggerPercent = ctxBase.triggerPercent;
+    }
+    if (!ctxInstructionDirtyRef.current) {
+      const nextInstr = String(ctxBase.customInstruction || "");
+      setCtxInstructionDraft(nextInstr);
+      ctxDraftRef.current.customInstruction = nextInstr;
+    }
+  }, [ctxBase.enabled, ctxBase.triggerPercent, ctxBase.customInstruction]);
 
   const ctxEffective = normalizeContextCompressionSettings({
     ...ctxBase,
@@ -901,8 +926,15 @@ export function SettingsModal() {
   const [screenMaxDraft, setScreenMaxDraft] = useState<number>(
     screenPoolBase.maxConcurrentScreens
   );
+  const screenMaxDraftRef = useRef<number>(screenPoolBase.maxConcurrentScreens);
+  const screenMaxDirtyRef = useRef(false);
+  const screenSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const screenSaveSeqRef = useRef(0);
   useEffect(() => {
-    setScreenMaxDraft(screenPoolBase.maxConcurrentScreens);
+    if (!screenMaxDirtyRef.current) {
+      setScreenMaxDraft(screenPoolBase.maxConcurrentScreens);
+      screenMaxDraftRef.current = screenPoolBase.maxConcurrentScreens;
+    }
   }, [screenPoolBase.maxConcurrentScreens]);
   const screenPoolEffective = normalizeScreenPoolSettings(
     {
@@ -1147,47 +1179,206 @@ export function SettingsModal() {
       }
     }
     try {
-      const saved = await apiJson("/api/settings", {
-        method: "POST",
-        body: JSON.stringify({ routing: { ...routing, tiers: nextTiers } }),
-      });
-      setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+      await commitSettingsPatch({ routing: { ...routing, tiers: nextTiers } });
       showToast("模型路由配置已保存");
     } catch (err: any) {
       showToast(`保存失败: ${err.message}`);
     }
   };
 
-  const saveCtxCompression = async (patch: any) => {
-    const next = normalizeContextCompressionSettings({ ...ctxBase, ...patch });
-    const saved = await apiJson("/api/settings", {
-      method: "POST",
-      body: JSON.stringify({ contextCompression: next }),
-    });
-    setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+  const saveCtxCompression = async (
+    patch: Partial<{ enabled: boolean; triggerPercent: number; customInstruction: string }>,
+    opts: { skipIfUnchanged?: boolean } = {}
+  ) => {
+    if (ctxPercentTimerRef.current) {
+      clearTimeout(ctxPercentTimerRef.current);
+      ctxPercentTimerRef.current = null;
+    }
+    if (ctxInstructionTimerRef.current) {
+      clearTimeout(ctxInstructionTimerRef.current);
+      ctxInstructionTimerRef.current = null;
+    }
+    const mergedDraft = {
+      enabled:
+        patch.enabled !== undefined ? patch.enabled : ctxDraftRef.current.enabled,
+      triggerPercent:
+        patch.triggerPercent !== undefined
+          ? patch.triggerPercent
+          : ctxDraftRef.current.triggerPercent,
+      customInstruction:
+        patch.customInstruction !== undefined
+          ? patch.customInstruction
+          : ctxDraftRef.current.customInstruction,
+    };
+    ctxDraftRef.current = mergedDraft;
+    const next = normalizeContextCompressionSettings({ ...ctxBase, ...mergedDraft });
+    if (
+      opts.skipIfUnchanged &&
+      next.enabled === ctxBase.enabled &&
+      next.triggerPercent === ctxBase.triggerPercent &&
+      String(next.customInstruction || "") === String(ctxBase.customInstruction || "")
+    ) {
+      ctxPercentDirtyRef.current = false;
+      ctxInstructionDirtyRef.current = false;
+      return;
+    }
+    const mySaveSeq = ++ctxSaveSeqRef.current;
+    try {
+      await commitSettingsPatch({ contextCompression: next });
+      if (mySaveSeq === ctxSaveSeqRef.current) {
+        ctxPercentDirtyRef.current = false;
+        ctxInstructionDirtyRef.current = false;
+      }
+    } catch (err: any) {
+      if (mySaveSeq === ctxSaveSeqRef.current) {
+        ctxPercentDirtyRef.current = false;
+        ctxInstructionDirtyRef.current = false;
+        ctxDraftRef.current = {
+          enabled: ctxBase.enabled !== false,
+          triggerPercent: ctxBase.triggerPercent,
+          customInstruction: String(ctxBase.customInstruction || ""),
+        };
+        setCtxPercentDraft(ctxBase.triggerPercent);
+        setCtxInstructionDraft(String(ctxBase.customInstruction || ""));
+      }
+      showToast(`保存上下文压缩设置失败：${err?.message || "请求异常"}`);
+    }
   };
 
-  const saveScreenPool = async (patch: { mode?: "auto" | "custom"; maxConcurrentScreens?: number }) => {
+  const saveScreenPool = async (
+    patch: { mode?: "auto" | "custom"; maxConcurrentScreens?: number },
+    opts: { skipIfUnchanged?: boolean } = {}
+  ) => {
+    if (screenSaveTimerRef.current) {
+      clearTimeout(screenSaveTimerRef.current);
+      screenSaveTimerRef.current = null;
+    }
     const next = normalizeScreenPoolSettings(
       { ...screenPoolBase, ...patch },
       screenBudget
     );
+    screenMaxDraftRef.current = next.maxConcurrentScreens;
+    if (
+      opts.skipIfUnchanged &&
+      next.mode === screenPoolBase.mode &&
+      next.maxConcurrentScreens === screenPoolBase.maxConcurrentScreens
+    ) {
+      screenMaxDirtyRef.current = false;
+      return;
+    }
+    const mySaveSeq = ++screenSaveSeqRef.current;
     try {
-      const saved = await apiJson("/api/settings", {
-        method: "POST",
-        body: JSON.stringify({
-          screenPool: {
-            mode: next.mode,
-            maxConcurrentScreens: next.maxConcurrentScreens,
-          },
-        }),
+      await commitSettingsPatch({
+        screenPool: {
+          mode: next.mode,
+          maxConcurrentScreens: next.maxConcurrentScreens,
+        },
       });
-      setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+      if (mySaveSeq === screenSaveSeqRef.current) {
+        screenMaxDirtyRef.current = false;
+      }
       void refreshComputerDisplays();
     } catch (err: any) {
+      if (mySaveSeq === screenSaveSeqRef.current) {
+        screenMaxDirtyRef.current = false;
+        screenMaxDraftRef.current = screenPoolBase.maxConcurrentScreens;
+        setScreenMaxDraft(screenPoolBase.maxConcurrentScreens);
+      }
       showToast(`保存屏幕并发上限失败：${err?.message || "请求异常"}`);
     }
   };
+
+  const commitBudget = async (rawValue = budgetInputRef.current) => {
+    const cny = Math.max(0.35, Math.min(72.5, Number(rawValue) || 3.63));
+    const maxTurnUsd = Math.round((cny / CLIENT_USD_TO_CNY) * 1000) / 1000;
+    const prevUsd = Math.round(Number(routing.maxTurnUsd ?? 0.5) * 1000) / 1000;
+    budgetDirtyRef.current = false;
+    if (maxTurnUsd === prevUsd) {
+      setBudgetInput(cnyBudgetDefault);
+      budgetInputRef.current = cnyBudgetDefault;
+      return;
+    }
+    try {
+      await commitSettingsPatch({ routing: { ...routing, maxTurnUsd } });
+    } catch (err: any) {
+      setBudgetInput(cnyBudgetDefault);
+      budgetInputRef.current = cnyBudgetDefault;
+      showToast(`保存预算上限失败：${err?.message || "请求异常"}`);
+    }
+  };
+
+  const flushDirtyDraftsRef = useRef<() => void>(() => {});
+  flushDirtyDraftsRef.current = () => {
+    if (ctxPercentDirtyRef.current || ctxInstructionDirtyRef.current) {
+      void saveCtxCompression({}, { skipIfUnchanged: true });
+    }
+    if (screenMaxDirtyRef.current) {
+      const val = screenMaxDraftRef.current;
+      void saveScreenPool(
+        {
+          mode: val === screenBudget.defaultBalanced ? "auto" : "custom",
+          maxConcurrentScreens: val,
+        },
+        { skipIfUnchanged: true }
+      );
+    }
+    if (budgetDirtyRef.current) {
+      void commitBudget(budgetInputRef.current);
+    }
+  };
+
+  const prevOpenForFlushRef = useRef(settingsModal.open);
+  useEffect(() => {
+    if (prevOpenForFlushRef.current && !settingsModal.open) {
+      flushDirtyDraftsRef.current();
+    }
+    prevOpenForFlushRef.current = settingsModal.open;
+  }, [settingsModal.open]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const dirtyPatch: Record<string, any> = {};
+      if (ctxPercentDirtyRef.current || ctxInstructionDirtyRef.current) {
+        dirtyPatch.contextCompression = normalizeContextCompressionSettings({
+          ...ctxDraftRef.current,
+        });
+      }
+      if (screenMaxDirtyRef.current) {
+        const val = screenMaxDraftRef.current;
+        dirtyPatch.screenPool = {
+          mode: val === screenBudget.defaultBalanced ? "auto" : "custom",
+          maxConcurrentScreens: val,
+        };
+      }
+      if (budgetDirtyRef.current) {
+        const cny = Math.max(0.35, Math.min(72.5, Number(budgetInputRef.current) || 3.63));
+        dirtyPatch.routing = {
+          maxTurnUsd: Math.round((cny / CLIENT_USD_TO_CNY) * 1000) / 1000,
+        };
+      }
+      if (Object.keys(dirtyPatch).length === 0) return;
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const authToken = getState().activeAuthToken;
+        if (authToken) headers.Authorization = `Bearer ${authToken}`;
+        void fetch(apiUrl("/api/settings"), {
+          method: "POST",
+          keepalive: true,
+          headers,
+          body: JSON.stringify(dirtyPatch),
+        });
+      } catch {}
+    };
+    window.addEventListener("pagehide", handleBeforeUnload);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("pagehide", handleBeforeUnload);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      if (ctxPercentTimerRef.current) clearTimeout(ctxPercentTimerRef.current);
+      if (ctxInstructionTimerRef.current) clearTimeout(ctxInstructionTimerRef.current);
+      if (screenSaveTimerRef.current) clearTimeout(screenSaveTimerRef.current);
+    };
+  }, [screenBudget.defaultBalanced]);
 
   const handleSaveProfile = async () => {
     const nextName = profileNameInput.trim();
@@ -1195,12 +1386,14 @@ export function SettingsModal() {
       showToast("请输入有效的显示昵称");
       return;
     }
-    const saved = await apiJson("/api/settings", {
-      method: "POST",
-      body: JSON.stringify({ profile: { name: nextName, color: profileColor } }),
-    });
-    setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
-    showToast(`个人资料已保存为「${saved.profile?.name || nextName}」`);
+    try {
+      const saved = await commitSettingsPatch({
+        profile: { name: nextName, color: profileColor },
+      });
+      showToast(`个人资料已保存为「${saved?.profile?.name || nextName}」`);
+    } catch (err: any) {
+      showToast(`保存个人资料失败：${err?.message || "请求异常"}`);
+    }
   };
 
   // Usage payload computation
@@ -1399,16 +1592,16 @@ export function SettingsModal() {
                   },
                   ...globalMemories,
                 ];
-            const saved = await apiJson("/api/settings", {
-              method: "POST",
-              body: JSON.stringify({ globalMemories: next, privateSkills: next }),
-            });
-            setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
-            setMemName("");
-            setMemContent("");
-            setEditingMemId(null);
-            setMemFormOpen(false);
-            showToast(editingMemId ? "全局记忆已更新" : "全局记忆已保存");
+            try {
+              await commitSettingsPatch({ globalMemories: next, privateSkills: next });
+              setMemName("");
+              setMemContent("");
+              setEditingMemId(null);
+              setMemFormOpen(false);
+              showToast(editingMemId ? "全局记忆已更新" : "全局记忆已保存");
+            } catch (err: any) {
+              showToast(`保存全局记忆失败：${err?.message || "请求异常"}`);
+            }
           }}
         >
           保存记忆
@@ -1925,13 +2118,13 @@ export function SettingsModal() {
                   }
                 : x
             );
-            await apiJson("/api/settings", {
-              method: "POST",
-              body: JSON.stringify({ policy: { ...policy, [listKey]: nextList } }),
-            });
-            setEditingRuleKey(null);
-            refreshSettingsFromServer();
-            showToast("权限规则已更新");
+            try {
+              await commitSettingsPatch({ policy: { [listKey]: nextList } });
+              setEditingRuleKey(null);
+              showToast("权限规则已更新");
+            } catch (err: any) {
+              showToast(`更新权限规则失败：${err?.message || "请求异常"}`);
+            }
           }}
         >
           保存规则
@@ -2130,12 +2323,14 @@ export function SettingsModal() {
                           aria-label={c.label}
                           onClick={async () => {
                             const curName = profileNameInput.trim() || profileName;
-                            const saved = await apiJson("/api/settings", {
-                              method: "POST",
-                              body: JSON.stringify({ profile: { name: curName, color: c.key } }),
-                            });
-                            setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
-                            showToast("个人头像配色已更新");
+                            try {
+                              await commitSettingsPatch({
+                                profile: { name: curName, color: c.key },
+                              });
+                              showToast("个人头像配色已更新");
+                            } catch (err: any) {
+                              showToast(`更新头像配色失败：${err?.message || "请求异常"}`);
+                            }
                           }}
                         />
                       ))}
@@ -2183,10 +2378,7 @@ export function SettingsModal() {
                       settings: { ...prev.settings, accentMode },
                     }));
                     syncDerivedAccent();
-                    await apiJson("/api/settings", {
-                      method: "POST",
-                      body: JSON.stringify({ accentMode }),
-                    }).catch(() => {});
+                    await commitSettingsPatch({ accentMode }, { silentError: true });
                   }}
                 >
                   <option value="bot">Bot 颜色</option>
@@ -2201,7 +2393,7 @@ export function SettingsModal() {
                     id="setting-spellcheck-toggle"
                     type="checkbox"
                     checked={spellcheckEnabled}
-                    onChange={(e) => setState({ spellcheckEnabled: e.target.checked })}
+                    onChange={(e) => setSpellcheckPreference(e.target.checked)}
                   />
                   <span className="ios-switch-track" />
                 </label>
@@ -2229,11 +2421,11 @@ export function SettingsModal() {
                     checked={routing.smartRouter !== false}
                     onChange={async (e) => {
                       const nextRouting = { ...routing, smartRouter: e.target.checked };
-                      const saved = await apiJson("/api/settings", {
-                        method: "POST",
-                        body: JSON.stringify({ routing: nextRouting }),
-                      });
-                      setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+                      try {
+                        await commitSettingsPatch({ routing: nextRouting });
+                      } catch (err: any) {
+                        showToast(`保存路由设置失败：${err?.message || "请求异常"}`);
+                      }
                     }}
                   />
                   <span className="ios-switch-track" />
@@ -2255,11 +2447,11 @@ export function SettingsModal() {
                   value={routing.mode || "balanced"}
                   onChange={async (e) => {
                     const nextRouting = { ...routing, mode: e.target.value };
-                    const saved = await apiJson("/api/settings", {
-                      method: "POST",
-                      body: JSON.stringify({ routing: nextRouting }),
-                    });
-                    setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+                    try {
+                      await commitSettingsPatch({ routing: nextRouting });
+                    } catch (err: any) {
+                      showToast(`保存路由模式失败：${err?.message || "请求异常"}`);
+                    }
                   }}
                 >
                   <option value="economy">经济</option>
@@ -2285,15 +2477,20 @@ export function SettingsModal() {
                   disabled={routing.smartRouter === false}
                   value={budgetInput}
                   aria-label="单轮预算上限（人民币）"
-                  onChange={(e) => setBudgetInput(e.target.value)}
-                  onBlur={async () => {
-                    const cny = Math.max(0.35, Math.min(72.5, Number(budgetInput) || 3.63));
-                    const maxTurnUsd = Math.round((cny / CLIENT_USD_TO_CNY) * 1000) / 1000;
-                    const saved = await apiJson("/api/settings", {
-                      method: "POST",
-                      body: JSON.stringify({ routing: { ...routing, maxTurnUsd } }),
-                    });
-                    setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    budgetInputRef.current = v;
+                    budgetDirtyRef.current = true;
+                    setBudgetInput(v);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void commitBudget(e.currentTarget.value);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    void commitBudget(e.currentTarget.value);
                   }}
                 />
               </div>
@@ -2317,7 +2514,10 @@ export function SettingsModal() {
                     id="setting-ctx-compress-enabled"
                     type="checkbox"
                     checked={ctxEnabled}
-                    onChange={(e) => saveCtxCompression({ enabled: e.target.checked })}
+                    onChange={(e) => {
+                      ctxDraftRef.current.enabled = e.target.checked;
+                      void saveCtxCompression({ enabled: e.target.checked });
+                    }}
                   />
                   <span className="ios-switch-track" />
                 </label>
@@ -2358,8 +2558,11 @@ export function SettingsModal() {
                       data-ctx-preset={pr.id}
                       disabled={!ctxEnabled}
                       onClick={() => {
+                        ctxDraftRef.current.enabled = true;
+                        ctxDraftRef.current.triggerPercent = pr.pct;
+                        ctxPercentDirtyRef.current = true;
                         setCtxPercentDraft(pr.pct);
-                        saveCtxCompression({ enabled: true, triggerPercent: pr.pct });
+                        void saveCtxCompression({ enabled: true, triggerPercent: pr.pct });
                       }}
                     >
                       <div className="ctx-preset-head">
@@ -2390,10 +2593,45 @@ export function SettingsModal() {
                     step="5"
                     disabled={!ctxEnabled}
                     value={ctxEffective.triggerPercent}
-                    onChange={(e) => setCtxPercentDraft(Number(e.target.value))}
-                    onMouseUp={() => saveCtxCompression({ triggerPercent: ctxPercentDraft })}
-                    onTouchEnd={() => saveCtxCompression({ triggerPercent: ctxPercentDraft })}
-                    onKeyUp={() => saveCtxCompression({ triggerPercent: ctxPercentDraft })}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      ctxDraftRef.current.triggerPercent = val;
+                      ctxPercentDirtyRef.current = true;
+                      setCtxPercentDraft(val);
+                      if (ctxPercentTimerRef.current) clearTimeout(ctxPercentTimerRef.current);
+                      ctxPercentTimerRef.current = setTimeout(() => {
+                        ctxPercentTimerRef.current = null;
+                        void saveCtxCompression(
+                          { triggerPercent: ctxDraftRef.current.triggerPercent },
+                          { skipIfUnchanged: true }
+                        );
+                      }, 220);
+                    }}
+                    onPointerUp={(e) => {
+                      const val = Number(e.currentTarget.value);
+                      ctxDraftRef.current.triggerPercent = val;
+                      void saveCtxCompression({ triggerPercent: val }, { skipIfUnchanged: true });
+                    }}
+                    onMouseUp={(e) => {
+                      const val = Number(e.currentTarget.value);
+                      ctxDraftRef.current.triggerPercent = val;
+                      void saveCtxCompression({ triggerPercent: val }, { skipIfUnchanged: true });
+                    }}
+                    onTouchEnd={(e) => {
+                      const val = Number(e.currentTarget.value);
+                      ctxDraftRef.current.triggerPercent = val;
+                      void saveCtxCompression({ triggerPercent: val }, { skipIfUnchanged: true });
+                    }}
+                    onKeyUp={(e) => {
+                      const val = Number(e.currentTarget.value);
+                      ctxDraftRef.current.triggerPercent = val;
+                      void saveCtxCompression({ triggerPercent: val }, { skipIfUnchanged: true });
+                    }}
+                    onBlur={(e) => {
+                      const val = Number(e.currentTarget.value);
+                      ctxDraftRef.current.triggerPercent = val;
+                      void saveCtxCompression({ triggerPercent: val }, { skipIfUnchanged: true });
+                    }}
                   />
                   <div className="ctx-percent-scale" aria-hidden="true">
                     <span>30%（更省开销）</span>
@@ -2424,10 +2662,30 @@ export function SettingsModal() {
                         aria-label="自定义压缩规则"
                         disabled={!ctxEnabled}
                         value={ctxInstructionDraft}
-                        onChange={(e) => setCtxInstructionDraft(e.target.value)}
-                        onBlur={() =>
-                          saveCtxCompression({ customInstruction: ctxInstructionDraft })
-                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          ctxDraftRef.current.customInstruction = val;
+                          ctxInstructionDirtyRef.current = true;
+                          setCtxInstructionDraft(val);
+                          if (ctxInstructionTimerRef.current) {
+                            clearTimeout(ctxInstructionTimerRef.current);
+                          }
+                          ctxInstructionTimerRef.current = setTimeout(() => {
+                            ctxInstructionTimerRef.current = null;
+                            void saveCtxCompression(
+                              { customInstruction: ctxDraftRef.current.customInstruction },
+                              { skipIfUnchanged: true }
+                            );
+                          }, 450);
+                        }}
+                        onBlur={(e) => {
+                          const val = e.currentTarget.value;
+                          ctxDraftRef.current.customInstruction = val;
+                          void saveCtxCompression(
+                            { customInstruction: val },
+                            { skipIfUnchanged: true }
+                          );
+                        }}
                       />
                     </div>
                   </div>
@@ -2462,17 +2720,17 @@ export function SettingsModal() {
                   const isEditingThisMem = memFormOpen && editingMemId === memId;
                   const deleteGlobalMemory = async () => {
                     const next = globalMemories.filter((x: any) => (x.id || x.name) !== memId);
-                    await apiJson("/api/settings", {
-                      method: "POST",
-                      body: JSON.stringify({ globalMemories: next, privateSkills: next }),
-                    });
-                    setPendingDeleteMemId(null);
-                    if (editingMemId === memId) {
-                      setEditingMemId(null);
-                      setMemFormOpen(false);
+                    try {
+                      await commitSettingsPatch({ globalMemories: next, privateSkills: next });
+                      setPendingDeleteMemId(null);
+                      if (editingMemId === memId) {
+                        setEditingMemId(null);
+                        setMemFormOpen(false);
+                      }
+                      showToast(`已移除全局记忆「${mem.name}」`);
+                    } catch (err: any) {
+                      showToast(`移除全局记忆失败：${err?.message || "请求异常"}`);
                     }
-                    refreshSettingsFromServer();
-                    showToast(`已移除全局记忆「${mem.name}」`);
                   };
 
                   return (
@@ -2504,20 +2762,14 @@ export function SettingsModal() {
                                     ? { ...x, enabled: e.target.checked }
                                     : x
                                 );
-                                await apiJson("/api/settings", {
-                                  method: "POST",
-                                  body: JSON.stringify({
+                                try {
+                                  await commitSettingsPatch({
                                     globalMemories: next,
                                     privateSkills: next,
-                                  }),
-                                });
-                                setState((prev) => ({
-                                  settings: {
-                                    ...prev.settings,
-                                    globalMemories: next,
-                                    privateSkills: next,
-                                  },
-                                }));
+                                  });
+                                } catch (err: any) {
+                                  showToast(`更新全局记忆状态失败：${err?.message || "请求异常"}`);
+                                }
                               }}
                             />
                             <span className="ios-switch-track" />
@@ -2921,13 +3173,13 @@ export function SettingsModal() {
                   value={hostExecMode}
                   onChange={async (e) => {
                     const executionMode = e.target.value;
-                    const saved = await apiJson("/api/settings", {
-                      method: "POST",
-                      body: JSON.stringify({
+                    try {
+                      await commitSettingsPatch({
                         hostComputer: { ...(settings?.hostComputer || {}), executionMode },
-                      }),
-                    });
-                    setState((prev) => ({ settings: { ...prev.settings, ...saved } }));
+                      });
+                    } catch (err: any) {
+                      showToast(`保存宿主机执行模式失败：${err?.message || "请求异常"}`);
+                    }
                   }}
                 >
                   <option value="always">始终允许</option>
@@ -3124,46 +3376,6 @@ export function SettingsModal() {
                   {resettingComputer ? "重置中…" : "重置"}
                 </button>
               </div>
-              <div className="settings-divider" />
-              <div className="settings-item-row">
-                <div>
-                  <div className="settings-row-title">执行动作时自动全屏打开画面</div>
-                  <div className="settings-row-sub">
-                    当 Bot 调用虚拟桌面视觉工具时自动展开实时监看画面
-                  </div>
-                </div>
-                <label className="ios-switch" aria-label="动作自动展开画面">
-                  <input
-                    id="auto-expand-toggle"
-                    type="checkbox"
-                    checked={Boolean(settings?.autoExpandScreen)}
-                    onChange={async (e) => {
-                      const autoExpandScreen = e.target.checked;
-                      const prevVal = Boolean(settings?.autoExpandScreen);
-                      setState((prev) => ({
-                        settings: { ...prev.settings, autoExpandScreen },
-                      }));
-                      try {
-                        const saved = await apiJson("/api/settings", {
-                          method: "POST",
-                          body: JSON.stringify({ autoExpandScreen }),
-                        });
-                        if (saved && typeof saved.autoExpandScreen === "boolean") {
-                          setState((prev) => ({
-                            settings: { ...prev.settings, autoExpandScreen: saved.autoExpandScreen },
-                          }));
-                        }
-                      } catch (err: any) {
-                        setState((prev) => ({
-                          settings: { ...prev.settings, autoExpandScreen: prevVal },
-                        }));
-                        showToast(`保存失败：${err?.message || "无法更新设置"}`);
-                      }
-                    }}
-                  />
-                  <span className="ios-switch-track" />
-                </label>
-              </div>
               {multiDisplaySupported && (
                 <>
                   <div className="settings-divider" />
@@ -3220,6 +3432,8 @@ export function SettingsModal() {
                           }`}
                           data-screen-preset={pr.id}
                           onClick={() => {
+                            screenMaxDraftRef.current = pr.val;
+                            screenMaxDirtyRef.current = true;
                             setScreenMaxDraft(pr.val);
                             void saveScreenPool({
                               mode: pr.mode,
@@ -3246,28 +3460,79 @@ export function SettingsModal() {
                         max={screenBudget.max}
                         step={1}
                         value={screenPoolEffective.maxConcurrentScreens}
-                        onChange={(e) => setScreenMaxDraft(Number(e.target.value))}
-                        onMouseUp={() =>
-                          void saveScreenPool({
-                            mode:
-                              screenMaxDraft === screenBudget.defaultBalanced ? "auto" : "custom",
-                            maxConcurrentScreens: screenMaxDraft,
-                          })
-                        }
-                        onTouchEnd={() =>
-                          void saveScreenPool({
-                            mode:
-                              screenMaxDraft === screenBudget.defaultBalanced ? "auto" : "custom",
-                            maxConcurrentScreens: screenMaxDraft,
-                          })
-                        }
-                        onKeyUp={() =>
-                          void saveScreenPool({
-                            mode:
-                              screenMaxDraft === screenBudget.defaultBalanced ? "auto" : "custom",
-                            maxConcurrentScreens: screenMaxDraft,
-                          })
-                        }
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          screenMaxDraftRef.current = val;
+                          screenMaxDirtyRef.current = true;
+                          setScreenMaxDraft(val);
+                          if (screenSaveTimerRef.current) clearTimeout(screenSaveTimerRef.current);
+                          screenSaveTimerRef.current = setTimeout(() => {
+                            screenSaveTimerRef.current = null;
+                            const v = screenMaxDraftRef.current;
+                            void saveScreenPool(
+                              {
+                                mode: v === screenBudget.defaultBalanced ? "auto" : "custom",
+                                maxConcurrentScreens: v,
+                              },
+                              { skipIfUnchanged: true }
+                            );
+                          }, 220);
+                        }}
+                        onPointerUp={(e) => {
+                          const val = Number(e.currentTarget.value);
+                          screenMaxDraftRef.current = val;
+                          void saveScreenPool(
+                            {
+                              mode: val === screenBudget.defaultBalanced ? "auto" : "custom",
+                              maxConcurrentScreens: val,
+                            },
+                            { skipIfUnchanged: true }
+                          );
+                        }}
+                        onMouseUp={(e) => {
+                          const val = Number(e.currentTarget.value);
+                          screenMaxDraftRef.current = val;
+                          void saveScreenPool(
+                            {
+                              mode: val === screenBudget.defaultBalanced ? "auto" : "custom",
+                              maxConcurrentScreens: val,
+                            },
+                            { skipIfUnchanged: true }
+                          );
+                        }}
+                        onTouchEnd={(e) => {
+                          const val = Number(e.currentTarget.value);
+                          screenMaxDraftRef.current = val;
+                          void saveScreenPool(
+                            {
+                              mode: val === screenBudget.defaultBalanced ? "auto" : "custom",
+                              maxConcurrentScreens: val,
+                            },
+                            { skipIfUnchanged: true }
+                          );
+                        }}
+                        onKeyUp={(e) => {
+                          const val = Number(e.currentTarget.value);
+                          screenMaxDraftRef.current = val;
+                          void saveScreenPool(
+                            {
+                              mode: val === screenBudget.defaultBalanced ? "auto" : "custom",
+                              maxConcurrentScreens: val,
+                            },
+                            { skipIfUnchanged: true }
+                          );
+                        }}
+                        onBlur={(e) => {
+                          const val = Number(e.currentTarget.value);
+                          screenMaxDraftRef.current = val;
+                          void saveScreenPool(
+                            {
+                              mode: val === screenBudget.defaultBalanced ? "auto" : "custom",
+                              maxConcurrentScreens: val,
+                            },
+                            { skipIfUnchanged: true }
+                          );
+                        }}
                       />
                       <div className="ctx-percent-scale" aria-hidden="true">
                         <span>{screenBudget.min} 屏（配置预算下限）</span>
@@ -3309,12 +3574,13 @@ export function SettingsModal() {
                     type="checkbox"
                     checked={policy.autoAudit !== false}
                     onChange={async (e) => {
-                      const nextPolicy = { ...policy, autoAudit: e.target.checked };
-                      await apiJson("/api/settings", {
-                        method: "POST",
-                        body: JSON.stringify({ policy: nextPolicy }),
-                      });
-                      refreshSettingsFromServer();
+                      try {
+                        await commitSettingsPatch({
+                          policy: { autoAudit: e.target.checked },
+                        });
+                      } catch (err: any) {
+                        showToast(`更新自动审核失败：${err?.message || "请求异常"}`);
+                      }
                     }}
                   />
                   <span className="ios-switch-track" />
@@ -3390,26 +3656,23 @@ export function SettingsModal() {
                     id="save-ask-rule-btn"
                     onClick={async () => {
                       const pat = askPattern.trim();
-                      const nextPolicy = {
-                        ...policy,
-                        askRules: [
-                          ...askRules,
-                          {
-                            id: `ask-${Date.now()}`,
-                            tool: askTool,
-                            pattern: pat,
-                            label: `${askTool} ${pat}`.trim(),
-                          },
-                        ],
-                      };
-                      await apiJson("/api/settings", {
-                        method: "POST",
-                        body: JSON.stringify({ policy: nextPolicy }),
-                      });
-                      setAskPattern("");
-                      setAskFormOpen(false);
-                      refreshSettingsFromServer();
-                      showToast("询问规则已生效");
+                      const nextAskRules = [
+                        ...askRules,
+                        {
+                          id: `ask-${Date.now()}`,
+                          tool: askTool,
+                          pattern: pat,
+                          label: `${askTool} ${pat}`.trim(),
+                        },
+                      ];
+                      try {
+                        await commitSettingsPatch({ policy: { askRules: nextAskRules } });
+                        setAskPattern("");
+                        setAskFormOpen(false);
+                        showToast("询问规则已生效");
+                      } catch (err: any) {
+                        showToast(`保存询问规则失败：${err?.message || "请求异常"}`);
+                      }
                     }}
                   >
                     保存询问规则
@@ -3421,17 +3684,14 @@ export function SettingsModal() {
                 {askRules.map((rule: any) => {
                   const isEditingRule = editingRuleKey === `ask:${rule.id}`;
                   const removeAskRule = async () => {
-                    const nextPolicy = {
-                      ...policy,
-                      askRules: askRules.filter((x: any) => x.id !== rule.id),
-                    };
-                    await apiJson("/api/settings", {
-                      method: "POST",
-                      body: JSON.stringify({ policy: nextPolicy }),
-                    });
-                    setPendingDeleteRuleId(null);
-                    if (isEditingRule) setEditingRuleKey(null);
-                    refreshSettingsFromServer();
+                    const nextAskRules = askRules.filter((x: any) => x.id !== rule.id);
+                    try {
+                      await commitSettingsPatch({ policy: { askRules: nextAskRules } });
+                      setPendingDeleteRuleId(null);
+                      if (isEditingRule) setEditingRuleKey(null);
+                    } catch (err: any) {
+                      showToast(`移除询问规则失败：${err?.message || "请求异常"}`);
+                    }
                   };
                   return (
                     <div
@@ -3568,26 +3828,23 @@ export function SettingsModal() {
                     id="save-allow-rule-btn"
                     onClick={async () => {
                       const pat = allowPattern.trim();
-                      const nextPolicy = {
-                        ...policy,
-                        allowRules: [
-                          ...allowRules,
-                          {
-                            id: `allow-${Date.now()}`,
-                            tool: allowTool,
-                            pattern: pat,
-                            label: `${allowTool} ${pat}`.trim(),
-                          },
-                        ],
-                      };
-                      await apiJson("/api/settings", {
-                        method: "POST",
-                        body: JSON.stringify({ policy: nextPolicy }),
-                      });
-                      setAllowPattern("");
-                      setAllowFormOpen(false);
-                      refreshSettingsFromServer();
-                      showToast("允许规则已生效");
+                      const nextAllowRules = [
+                        ...allowRules,
+                        {
+                          id: `allow-${Date.now()}`,
+                          tool: allowTool,
+                          pattern: pat,
+                          label: `${allowTool} ${pat}`.trim(),
+                        },
+                      ];
+                      try {
+                        await commitSettingsPatch({ policy: { allowRules: nextAllowRules } });
+                        setAllowPattern("");
+                        setAllowFormOpen(false);
+                        showToast("允许规则已生效");
+                      } catch (err: any) {
+                        showToast(`保存允许规则失败：${err?.message || "请求异常"}`);
+                      }
                     }}
                   >
                     保存允许规则
@@ -3599,17 +3856,14 @@ export function SettingsModal() {
                 {allowRules.map((rule: any) => {
                   const isEditingRule = editingRuleKey === `allow:${rule.id}`;
                   const removeAllowRule = async () => {
-                    const nextPolicy = {
-                      ...policy,
-                      allowRules: allowRules.filter((x: any) => x.id !== rule.id),
-                    };
-                    await apiJson("/api/settings", {
-                      method: "POST",
-                      body: JSON.stringify({ policy: nextPolicy }),
-                    });
-                    setPendingDeleteRuleId(null);
-                    if (isEditingRule) setEditingRuleKey(null);
-                    refreshSettingsFromServer();
+                    const nextAllowRules = allowRules.filter((x: any) => x.id !== rule.id);
+                    try {
+                      await commitSettingsPatch({ policy: { allowRules: nextAllowRules } });
+                      setPendingDeleteRuleId(null);
+                      if (isEditingRule) setEditingRuleKey(null);
+                    } catch (err: any) {
+                      showToast(`移除允许规则失败：${err?.message || "请求异常"}`);
+                    }
                   };
                   return (
                     <div

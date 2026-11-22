@@ -104,6 +104,12 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
       const st = ws.store.readSettings();
       assert.equal(st.theme, "light");
       assert.equal(st.accentMode, "default");
+      // Wait briefly for spellcheck POST to persist to settings.json
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && ws.store.readSettings().spellcheckEnabled === spellBefore) {
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      assert.equal(ws.store.readSettings().spellcheckEnabled, !spellBefore);
       await chrome!.selectOption("#setting-theme-select", "system");
     },
     { getChrome: () => chrome }
@@ -131,6 +137,14 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
       await chrome!.waitFor(`document.querySelector('#ctx-compress-percent-label')?.textContent?.includes('75%')`);
       await chrome!.setRangeValue("#setting-ctx-compress-percent", 80);
       await chrome!.waitFor(`document.querySelector('#ctx-compress-percent-label')?.textContent?.includes('80%')`);
+      const ctxDeadline = Date.now() + 3000;
+      while (
+        Date.now() < ctxDeadline &&
+        ws.store.readSettings()?.contextCompression?.triggerPercent !== 80
+      ) {
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      assert.equal(ws.store.readSettings()?.contextCompression?.triggerPercent, 80);
 
       // Expand advanced details if present
       const hasAdv = await chrome!.evalJs<boolean>(`Boolean(document.querySelector('#ctx-compress-advanced'))`);
@@ -192,7 +206,7 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
       priority: "P2",
       featureTier: "F3",
       difficulty: "D1",
-      title: "设置·电脑：宿主机策略 always/ask/off(切 off 自动关闭 MCP)、自动展开开关与检测/健康状态联动",
+      title: "设置·电脑：宿主机策略 always/ask/off(切 off 自动关闭 MCP)与检测/健康状态联动",
       module: "Settings Computer",
     },
     async () => {
@@ -220,7 +234,11 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
       assert.equal(stAfter.connected, false, "Setting host mode to off must disconnect MCP servers");
 
       await chrome!.selectOption("#host-exec-mode-select", "always");
-      await chrome!.evalJs(`document.querySelector('#auto-expand-toggle')?.closest('label')?.click()`);
+      assert.equal(
+        await chrome!.evalJs<boolean>(`Boolean(document.querySelector('#auto-expand-toggle'))`),
+        false,
+        "auto-expand screen toggle must remain removed"
+      );
       await chrome!.click("#settings-check-computer-btn");
     },
     { getChrome: () => chrome }

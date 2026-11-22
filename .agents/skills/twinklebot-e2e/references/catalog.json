@@ -844,7 +844,7 @@
           "priority": "P2",
           "featureTier": "F3",
           "difficulty": "D1",
-          "title": "设置·电脑：宿主机策略 always/ask/off(切 off 自动关闭 MCP)、自动展开开关与检测/健康状态联动",
+          "title": "设置·电脑：宿主机策略 always/ask/off(切 off 自动关闭 MCP)与检测/健康状态联动",
           "module": "Settings Computer"
         },
         {

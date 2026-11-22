@@ -224,6 +224,32 @@ test("settings read and write", () => {
     const patch2 = store.writeSettings({ theme: "dark" });
     assert.deepEqual(patch2, { model: "gemini-3.8-flash", theme: "dark" });
     assert.deepEqual(store.readSettings(), { model: "gemini-3.8-flash", theme: "dark" });
+
+    // Backup file preserves previous known-good settings snapshot
+    const settingsPath = path.join(dir, "settings.json");
+    const backupPath = path.join(dir, "settings.json.bak");
+    assert.equal(fs.existsSync(backupPath), true);
+
+    // Corrupting settings.json recovers from settings.json.bak instead of wiping user settings
+    store.writeSettings({
+      contextCompression: { enabled: true, triggerPercent: 85, customInstruction: "keep paths" },
+    });
+    fs.writeFileSync(settingsPath, "{corrupted-json", "utf-8");
+    const recovered = store.readSettings();
+    assert.equal(recovered.theme, "dark");
+    assert.equal(recovered.model, "gemini-3.8-flash");
+
+    // Writing a new patch repairs settings.json from backup without dropping recovered keys
+    const repaired = store.writeSettings({ spellcheckEnabled: false });
+    assert.equal(repaired.theme, "dark");
+    assert.equal(repaired.spellcheckEnabled, false);
+    assert.equal(store.readSettings().theme, "dark");
+    assert.equal(store.readSettings().spellcheckEnabled, false);
+
+    // If settings.json is unreadable AND no backup exists, refuse to overwrite with only the patch
+    fs.rmSync(backupPath, { force: true });
+    fs.writeFileSync(settingsPath, "{unreadable", "utf-8");
+    assert.throws(() => store.writeSettings({ theme: "light" }), /Refusing to overwrite unreadable settings\.json/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

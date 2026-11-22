@@ -2,7 +2,7 @@ import { useEffect, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import { useGlobalShortcuts } from "../hooks/useGlobalShortcuts.js";
 import { useMobileViewport } from "../hooks/useMobileViewport.js";
 import { bootstrapApp } from "../services/actions.js";
-import { useStore } from "../state/store.js";
+import { readUiPrefs, useStore, writeUiPrefs } from "../state/store.js";
 import { ChatStage } from "./chat/ChatStage.js";
 import { AccountDisconnectedGate } from "./common/AccountDisconnectedGate.js";
 import { ConfirmDialog } from "./common/ConfirmDialog.js";
@@ -31,6 +31,24 @@ export function App() {
   useMobileViewport(chatStageRef);
 
   useEffect(() => {
+    const prefs = readUiPrefs();
+    if (
+      typeof prefs.leftSidebarW === "number" &&
+      prefs.leftSidebarW >= 200 &&
+      prefs.leftSidebarW <= 420
+    ) {
+      document.documentElement.style.setProperty("--left-sidebar-w", `${prefs.leftSidebarW}px`);
+    }
+    if (
+      typeof prefs.rightInspectorW === "number" &&
+      prefs.rightInspectorW >= 260 &&
+      prefs.rightInspectorW <= 460
+    ) {
+      document.documentElement.style.setProperty(
+        "--right-inspector-w",
+        `${prefs.rightInspectorW}px`
+      );
+    }
     bootstrapApp().catch(() => {});
   }, []);
 
@@ -40,13 +58,16 @@ export function App() {
     const splitterEl = e.currentTarget;
     shell?.classList.add("is-resizing");
     splitterEl.classList.add("is-dragging");
+    let lastWidth = 0;
 
     const onMove = (ev: MouseEvent) => {
       if (isLeft) {
-        const w = Math.min(420, Math.max(200, ev.clientX));
+        const w = Math.min(420, Math.max(200, Math.round(ev.clientX)));
+        lastWidth = w;
         document.documentElement.style.setProperty("--left-sidebar-w", `${w}px`);
       } else {
-        const w = Math.min(460, Math.max(260, window.innerWidth - ev.clientX));
+        const w = Math.min(460, Math.max(260, Math.round(window.innerWidth - ev.clientX)));
+        lastWidth = w;
         document.documentElement.style.setProperty("--right-inspector-w", `${w}px`);
       }
     };
@@ -56,6 +77,9 @@ export function App() {
       splitterEl.classList.remove("is-dragging");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      if (lastWidth > 0) {
+        writeUiPrefs(isLeft ? { leftSidebarW: lastWidth } : { rightInspectorW: lastWidth });
+      }
     };
 
     window.addEventListener("mousemove", onMove);

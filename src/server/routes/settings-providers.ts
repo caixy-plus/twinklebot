@@ -355,6 +355,7 @@ export async function handleSettingsProvidersRoutes(
           const hasExtendedKeys = [
             "theme",
             "accentMode",
+            "spellcheckEnabled",
             "profile",
             "voice",
             "autoExpandScreen",
@@ -382,6 +383,9 @@ export async function handleSettingsProvidersRoutes(
           if (typeof body.model === "string") patch.model = body.model;
           if (typeof body.theme === "string") patch.theme = body.theme;
           if (typeof body.accentMode === "string") patch.accentMode = body.accentMode;
+          if (typeof body.spellcheckEnabled === "boolean") {
+            patch.spellcheckEnabled = body.spellcheckEnabled;
+          }
           if (body.profile && typeof body.profile === "object") {
             const cur = ctx.getMergedSettings().profile;
             const nextName =
@@ -439,8 +443,18 @@ export async function handleSettingsProvidersRoutes(
             }
             patch.mcpServers = ctx.sanitizeMcpServersMap(incoming);
           }
-          if (body.policy && typeof body.policy === "object") {
-            patch.policy = body.policy;
+          if (body.policy && typeof body.policy === "object" && !Array.isArray(body.policy)) {
+            const curPolicy = ctx.getMergedSettings().policy || DEFAULT_POLICY;
+            patch.policy = {
+              ...curPolicy,
+              ...(typeof body.policy.autoAudit === "boolean"
+                ? { autoAudit: body.policy.autoAudit }
+                : {}),
+              ...(Array.isArray(body.policy.askRules) ? { askRules: body.policy.askRules } : {}),
+              ...(Array.isArray(body.policy.allowRules)
+                ? { allowRules: body.policy.allowRules }
+                : {}),
+            };
           }
           if (Array.isArray(body.globalMemories)) {
             patch.globalMemories = body.globalMemories;
@@ -507,6 +521,9 @@ export async function handleSettingsProvidersRoutes(
             }
           }
           const merged = ctx.getMergedSettings();
+          try {
+            ctx.runner?.broadcastGlobal?.({ type: "settings_updated" });
+          } catch {}
           return sendJson(res, 200, {
             ...merged,
             ...(ctx.store?.writeSettings ? {} : saved),

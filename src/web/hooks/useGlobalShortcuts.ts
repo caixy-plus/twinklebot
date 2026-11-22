@@ -19,6 +19,7 @@ import {
   getState,
   resolveApprovalItemSummary,
   setState,
+  writeUiPrefs,
 } from "../state/store.js";
 
 export const DESKTOP_INSPECTOR_COLLAPSE_W = 920;
@@ -34,6 +35,7 @@ export function useGlobalShortcuts() {
     setState({ sidebarCompact: next });
     if (typeof window !== "undefined" && window.innerWidth >= DESKTOP_SIDEBAR_COMPACT_W) {
       preferredSidebarCompactRef.current = next;
+      writeUiPrefs({ sidebarCompact: next });
     }
   }, []);
 
@@ -41,6 +43,7 @@ export function useGlobalShortcuts() {
     setState({ inspectorOpen: open });
     if (typeof window !== "undefined" && window.innerWidth >= DESKTOP_INSPECTOR_COLLAPSE_W) {
       preferredInspectorOpenRef.current = open;
+      writeUiPrefs({ inspectorOpen: open });
     }
   }, []);
 
