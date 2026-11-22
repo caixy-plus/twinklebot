@@ -11,6 +11,7 @@ import { MarkdownRenderer } from "./components/chat/MarkdownRenderer.js";
 import { MarkupPreviewCard } from "./components/chat/MarkupPreviewCard.js";
 import { MessageGroup } from "./components/chat/MessageGroup.js";
 import {
+  refreshActiveAccountConnection,
   reloadWorkspaceForActiveAccount,
   retryActiveLanConnection,
 } from "./services/actions.js";
@@ -34,6 +35,7 @@ import {
   reportTransportConnected,
   reportTransportDisconnected,
   resetNetworkHealthForAccountSwitch,
+  shouldShowAccountDisconnectedGate,
 } from "./services/network-monitor.js";
 import {
   connectGlobalSse,
@@ -71,6 +73,7 @@ export {
   probeActiveTransportOnResume,
   reconnectRealtimeNow,
   reduceSessionEvent,
+  refreshActiveAccountConnection,
   reloadWorkspaceForActiveAccount,
   reportHeartbeatRtt,
   reportHeartbeatTimeout,
@@ -83,6 +86,7 @@ export {
   retryActiveLanConnection,
   runtimeRefs,
   setState,
+  shouldShowAccountDisconnectedGate,
   triggerLanUnreachableFallback,
 };
 

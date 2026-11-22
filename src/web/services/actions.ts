@@ -61,9 +61,11 @@ import {
   syncSessionsAndActiveOnReconnect,
 } from "./realtime.js";
 import {
+  getActiveAccountMeta,
   getNetworkThresholds,
   handleBrowserOnlineChange,
   inspectNavigatorConnectionHint,
+  isRemoteAccountOffline,
   resetNetworkHealthForAccountSwitch,
 } from "./network-monitor.js";
 import {
@@ -1750,12 +1752,12 @@ export async function reloadWorkspaceForActiveAccount(epoch = getState().account
     setNovncMode(true);
   } catch (err: any) {
     if (err?.code === "STALE_ACCOUNT_EPOCH") return;
-    if (epoch !== getState().accountEpoch || getState().lanNodeOffline) return;
+    if (epoch !== getState().accountEpoch || getState().lanNodeOffline || isRemoteAccountOffline(getState())) return;
     showToast(`配置加载失败: ${err.message}`);
   }
 
   await refreshSettingsFromServer();
-  if (epoch !== getState().accountEpoch || getState().lanNodeOffline) return;
+  if (epoch !== getState().accountEpoch || getState().lanNodeOffline || isRemoteAccountOffline(getState())) return;
 
   connectRealtimeTransport();
 
@@ -1795,15 +1797,46 @@ export async function reloadWorkspaceForActiveAccount(epoch = getState().account
     }
   } catch (err: any) {
     if (err?.code === "STALE_ACCOUNT_EPOCH") return;
-    if (epoch !== getState().accountEpoch || getState().lanNodeOffline) return;
+    if (epoch !== getState().accountEpoch || getState().lanNodeOffline || isRemoteAccountOffline(getState())) return;
     showToast(`会话加载失败: ${err.message}`);
   }
 
-  if (epoch !== getState().accountEpoch || getState().lanNodeOffline) return;
+  if (epoch !== getState().accountEpoch || getState().lanNodeOffline || isRemoteAccountOffline(getState())) return;
   refreshSchedules();
   refreshUsageAndHealth();
   refreshOnlineCloudHosts();
   void refreshSystemDiagnostics(false);
+}
+
+export async function refreshActiveAccountConnection(
+  epoch = getState().accountEpoch
+): Promise<{ ok: boolean; error?: string }> {
+  const s = getState();
+  const accMeta = getActiveAccountMeta(s);
+  try {
+    const res = await apiFetch("/api/system/health", {
+      timeoutMs: 4000,
+      suppressLanOfflineModal: true,
+    });
+    if (epoch !== getState().accountEpoch) return { ok: false };
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    markLanReachable();
+    runtimeRefs.wsReconnectAttempt = 0;
+    connectRealtimeTransport();
+    if (!getState().sessions.length) {
+      await reloadWorkspaceForActiveAccount(epoch);
+    } else {
+      await syncSessionsAndActiveOnReconnect(epoch);
+    }
+    showToast(`已恢复连接：${accMeta.label}`);
+    return { ok: true };
+  } catch (err: any) {
+    if (epoch !== getState().accountEpoch) return { ok: false };
+    if (accMeta.type === "lan") {
+      setState({ lanNodeOffline: true });
+    }
+    return { ok: false, error: err?.message || "无法连接到账号服务端" };
+  }
 }
 
 export async function retryActiveLanConnection(epoch = getState().accountEpoch): Promise<boolean> {

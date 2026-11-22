@@ -13,6 +13,7 @@ import {
   syncBotScreenLandscapeState,
 } from "../services/actions.js";
 import { apiJson } from "../services/api-client.js";
+import { shouldShowAccountDisconnectedGate } from "../services/network-monitor.js";
 import { previewFrameRegistry } from "../state/helpers.js";
 import {
   getState,
@@ -117,6 +118,12 @@ export function useGlobalShortcuts() {
     };
 
     const handleDocumentKeyDown = (e: KeyboardEvent) => {
+      if (shouldShowAccountDisconnectedGate(getState())) {
+        if ((e.metaKey || e.ctrlKey) && ["k", ",", "\\", "i"].includes(e.key.toLowerCase())) {
+          e.preventDefault();
+        }
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         openPaletteSearch();

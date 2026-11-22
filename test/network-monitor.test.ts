@@ -214,3 +214,85 @@ test("SSR renders unified NetworkStatusBanner copy (账号 terminology, uniform 
   assert.ok(recoveredHtml.includes('data-network-status="recovered"'));
   assert.ok(recoveredHtml.includes("连接已恢复，已同步最新状态"));
 });
+
+test("AccountDisconnectedGate blocks remote offline accounts (cloud/LAN) with native <dialog closedby=none> and never blocks local desktop account or Core OTA switch", async () => {
+  const ssr = await import(pathToFileURL(SSR_BUNDLE_PATH).href);
+
+  // 1. Remote cloud offline -> gate opens with refresh + account switch list
+  const cloudOfflineHtml = ssr.renderAppToStaticMarkup({
+    accountsState: CLOUD_ACCOUNTS,
+    networkHealth: {
+      status: "offline",
+      rttMs: null,
+      reconnectAttempt: 3,
+      nextRetryAt: null,
+      transport: "none",
+      reason: "ws_closed",
+      browserOffline: false,
+      dismissedWeakBanner: false,
+      updatedAt: Date.now(),
+    },
+  });
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+  assert.match(cloudOfflineHtml, /<dialog[^>]*id="account-disconnected-gate"[^>]*closedby="none"/);
+  assert.ok(cloudOfflineHtml.includes('data-account-gate-open="true"'));
+  assert.ok(cloudOfflineHtml.includes('id="account-gate-refresh-btn"'));
+  assert.ok(cloudOfflineHtml.includes("刷新当前账号"));
+  assert.ok(cloudOfflineHtml.includes('data-account-gate-switch-id="local"'));
+  assert.ok(cloudOfflineHtml.includes("本地工作台 · 始终可用"));
+  assert.ok(!cloudOfflineHtml.includes('id="account-disconnected-gate" open'), "native modal <dialog> must not use open attribute");
+
+  // 2. Core OTA hot-swap in progress -> gate suppressed
+  ssr.resetStoreForTest({
+    accountsState: CLOUD_ACCOUNTS,
+    networkHealth: {
+      status: "offline",
+      rttMs: null,
+      reconnectAttempt: 3,
+      nextRetryAt: null,
+      transport: "none",
+      reason: "ws_closed",
+      browserOffline: false,
+      dismissedWeakBanner: false,
+      updatedAt: Date.now(),
+    },
+    updateState: {
+      ...ssr.createInitialState().updateState,
+      coreSwitchInProgress: true,
+    },
+  });
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), false);
+
+  // 3. Desktop local account -> gate NEVER activates even when browserOffline=true
+  const localOfflineHtml = ssr.renderAppToStaticMarkup({
+    accountsState: { ...CLOUD_ACCOUNTS, activeAccountId: "local" },
+    networkHealth: {
+      status: "offline",
+      rttMs: null,
+      reconnectAttempt: 4,
+      nextRetryAt: null,
+      transport: "none",
+      reason: "browser_offline",
+      browserOffline: true,
+      dismissedWeakBanner: false,
+      updatedAt: Date.now(),
+    },
+  });
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), false);
+  assert.ok(localOfflineHtml.includes('data-account-gate-open="false"'));
+
+  // 4. Mobile LAN offline -> gate activates via lanNodeOffline
+  const lanOfflineHtml = ssr.renderAppToStaticMarkup({
+    accountsState: {
+      activeAccountId: "lan-1",
+      accounts: [
+        { id: "lan-1", type: "lan", name: "办公室 Mac", baseUrl: "http://192.168.1.10:3230" },
+        { id: "cloud-1", type: "cloud", name: "云端主账号", baseUrl: "https://cloud.example.com" },
+      ],
+    },
+    lanNodeOffline: true,
+  });
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+  assert.ok(lanOfflineHtml.includes('data-account-gate-open="true"'));
+  assert.ok(lanOfflineHtml.includes('data-account-gate-switch-id="cloud-1"'));
+});

@@ -18,6 +18,7 @@ import {
   scrollChatStreamToBottom,
 } from "../services/actions.js";
 import { dismissLanOfflineModal } from "../services/api-client.js";
+import { shouldShowAccountDisconnectedGate } from "../services/network-monitor.js";
 import { getState, setState } from "../state/store.js";
 
 export function useMobileViewport(chatStageRef: RefObject<HTMLElement | null>) {
@@ -61,6 +62,18 @@ export function useMobileViewport(chatStageRef: RefObject<HTMLElement | null>) {
 
     const unsubBack = onHardwareBackButton(() => {
       const s = getState();
+
+      // While the blocking Account Disconnected Gate is active, never dismiss back into
+      // the disconnected workspace; if inline LAN pairing is open, close pairing first,
+      // otherwise minimize the app cleanly.
+      if (shouldShowAccountDisconnectedGate(s)) {
+        if (s.mobilePairModalOpen) {
+          setState({ mobilePairModalOpen: false });
+          return;
+        }
+        void minimizeOrExitMobileApp();
+        return;
+      }
 
       if (s.confirmDialog.open) {
         resolveConfirmDialog(false);

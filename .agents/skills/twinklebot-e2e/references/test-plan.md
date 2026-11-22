@@ -95,8 +95,8 @@
 | **P1** | `P1-NET-01` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | NetworkStatusBanner Desktop | 桌面端统一弱网/重连/离线/恢复横幅(NetworkStatusBanner)四态生命周期、收起按钮、切换账号入口与浏览器离线区分 |
 | **P1** | `P1-NET-02` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | WS Heartbeat & Exponential Backoff | 远端 WS 心跳 RTT 弱网感知、Pong 超时重连与 WS+SSE 双失败指数退避(reconnecting -> offline -> 恢复追平消息) |
 | **P1** | `P1-NET-03` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | API Client Slow/Stale Guard | HTTP 慢请求在途弱网提示、连续失败转离线与切换账号 STALE_ACCOUNT_EPOCH 中止陈旧请求 |
-| **P1** | `P1-NET-04` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Tiered Offline Settings Guard | 分级离线设置护栏：远端离线锁定 Settings 全部 7 处远端 Fieldset 与 SkillsStore 全部 3 个子视图，外观/关于可用且本机账号永不锁定 |
-| **P1** | `P1-NET-05` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Mobile Network Banner & LAN Offline Modal | 移动端(390×844 dist-web)节点状态点(#mobile-node-dot)、列表页离线横幅、切换账号直达节点抽屉与 LAN 离线弹窗 |
+| **P1** | `P1-NET-04` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Account Disconnected Gate (Desktop) | 桌面端断连独占门禁页(AccountDisconnectedGate)：云端断连全屏锁定、禁止 Esc/快捷键穿透、仅允许刷新与切回本机，本机账号永不触发 |
+| **P1** | `P1-NET-05` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Account Disconnected Gate (Mobile) | 移动端(390×844 dist-web)断连独占门禁页(AccountDisconnectedGate)：局域网失联全屏锁定、内联配对/添加云端入口与一键切回在线云端恢复 |
 | **P1** | `P1-NET-06` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Foreground Resume Probe | 前台切回探活(visibilitychange)与浏览器 online/offline 恢复联动 |
 | **P1** | `P1-MOB-04` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile Layout, Tap Actions & Composer | 移动端零横向溢出护栏(375/390px 长命令卡片/表格/代码)、点击消息气泡弹出操作栏、Composer Enter 换行与更多菜单 |
 | **P1** | `P1-MOB-05` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile Deep Sheets & Drag Gestures | 移动端全抽屉深入交互：检查器活动/资料库 Tab、编辑 Bot 13×11、设置 6 项独立子页返回闭环与拖拽手势 |

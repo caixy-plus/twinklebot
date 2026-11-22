@@ -4,6 +4,7 @@ import { useMobileViewport } from "../hooks/useMobileViewport.js";
 import { bootstrapApp } from "../services/actions.js";
 import { useStore } from "../state/store.js";
 import { ChatStage } from "./chat/ChatStage.js";
+import { AccountDisconnectedGate } from "./common/AccountDisconnectedGate.js";
 import { ConfirmDialog } from "./common/ConfirmDialog.js";
 import { Toast } from "./common/Toast.js";
 import { RightInspector } from "./inspector/RightInspector.js";
@@ -93,6 +94,7 @@ export function App() {
       <SkillsStoreModal />
       <SettingsModal />
       <ConfirmDialog />
+      <AccountDisconnectedGate />
       <OnboardingOverlay />
       <MobileSheets />
       <Toast />

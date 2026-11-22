@@ -104,21 +104,30 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
       await tab.waitFor(`document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`, 10_000);
       await tab.waitFor(`document.documentElement.dataset.realtimeConnected === '1'`, 8000);
 
-      // 1. Browser offline event -> stage banner enters data-network-status="offline" & hides "切换账号" (because device itself has no network)
+      // 1. Browser offline event -> stage banner enters data-network-status="offline" AND blocking #account-disconnected-gate opens!
       await tab.setNetworkConditions({ offline: true });
       await tab.evalJs(`window.dispatchEvent(new Event('offline'))`);
       await tab.waitFor(
         `document.querySelector('[data-network-banner-placement="stage"] .network-status-banner')?.dataset?.networkStatus === 'offline'`,
         6000
       );
+      await tab.waitFor(
+        `Boolean(document.querySelector('#account-disconnected-gate')?.open) &&
+         document.querySelector('#account-disconnected-gate')?.dataset?.browserOffline === 'true'`,
+        4000
+      );
       const switchHiddenWhenBrowserOffline = await tab.evalJs<boolean>(
         `!document.querySelector('[data-network-banner-placement="stage"] [data-network-action="switch-account"]')`
       );
       assert.equal(switchHiddenWhenBrowserOffline, true, "Browser offline must hide switch-account action");
 
-      // 2. Restore online -> banner recovers ("已恢复连接") and eventually auto-hides
+      // 2. Restore online -> gate automatically closes and banner recovers ("已恢复连接")
       await tab.setNetworkConditions({ offline: false });
       await tab.evalJs(`window.dispatchEvent(new Event('online'))`);
+      await tab.waitFor(
+        `!document.querySelector('#account-disconnected-gate')?.open`,
+        8000
+      );
       await tab.waitFor(
         `(() => {
           const b = document.querySelector('[data-network-banner-placement="stage"] .network-status-banner');
@@ -367,11 +376,11 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
       priority: "P1",
       featureTier: "F2",
       difficulty: "D2",
-      title: "分级离线设置护栏：远端离线锁定 Settings 全部 7 处远端 Fieldset 与 SkillsStore 全部 3 个子视图，外观/关于可用且本机账号永不锁定",
-      module: "Tiered Offline Settings Guard",
+      title: "桌面端断连独占门禁页(AccountDisconnectedGate)：云端断连全屏锁定、禁止 Esc/快捷键穿透、仅允许刷新与切回本机，本机账号永不触发",
+      module: "Account Disconnected Gate (Desktop)",
     },
     async () => {
-      // 1. Remote unreachable cloud account -> offline state
+      // 1. Remote unreachable cloud account -> opens top-layer modal #account-disconnected-gate
       const offlineTab = await chrome!.openNewTab("about:blank");
       t.after(() => offlineTab.close());
       const offlineAccounts = {
@@ -386,102 +395,57 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
       `);
       await offlineTab.navigate(localWs.baseUrl);
       await offlineTab.waitFor(
-        `(() => {
-          const s = document.querySelector('[data-network-banner-placement="stage"] .network-status-banner')?.dataset?.networkStatus;
-          return s === 'offline' || s === 'reconnecting';
-        })()`,
-        12_000
-      );
-      await offlineTab.waitFor(
-        `document.querySelector('[data-network-banner-placement="stage"] .network-status-banner')?.dataset?.networkStatus === 'offline'`,
+        `Boolean(document.querySelector('#account-disconnected-gate')?.open) &&
+         Boolean(document.querySelector('#account-disconnected-gate')?.matches?.(':modal'))`,
         15_000
       );
 
-      // Open SettingsModal -> verify modal offline banner + ALL 7 remote fieldsets disabled, while Appearance & Updates stay enabled!
+      // Escape & global shortcuts MUST NOT dismiss the gate or open Search/Settings behind it!
+      await offlineTab.pressKey("Escape");
+      await offlineTab.pressKey("Escape");
+      const stillOpenAfterEsc = await offlineTab.evalJs<boolean>(
+        `Boolean(document.querySelector('#account-disconnected-gate')?.open)`
+      );
+      assert.equal(stillOpenAfterEsc, true, "Esc must never dismiss AccountDisconnectedGate while offline");
+
+      await offlineTab.evalJs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }))`);
+      const searchStillHidden = await offlineTab.evalJs<boolean>(
+        `Boolean(document.querySelector('#search-modal-backdrop')?.hidden)`
+      );
+      assert.equal(searchStillHidden, true, "Global shortcuts must be blocked behind AccountDisconnectedGate");
+
+      // Refresh button retries current account and displays inline error feedback while staying locked
+      await offlineTab.click("#account-gate-refresh-btn");
+      await offlineTab.waitFor(
+        `Boolean(document.querySelector('#account-gate-feedback')?.textContent?.includes('仍无法连接'))`,
+        8000
+      );
+      assert.equal(
+        await offlineTab.evalJs<boolean>(`Boolean(document.querySelector('#account-disconnected-gate')?.open)`),
+        true
+      );
+
+      // Switching directly to local desktop account from the gate closes it and restores workspace!
+      await offlineTab.click('[data-account-gate-switch-id="local"]');
+      await offlineTab.waitFor(`!document.querySelector('#account-disconnected-gate')?.open`, 8000);
+      await offlineTab.waitFor(`document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`, 8000);
+
+      // 2. Local desktop account NEVER opens AccountDisconnectedGate even if browser emits offline
+      await offlineTab.setNetworkConditions({ offline: true });
+      await offlineTab.evalJs(`window.dispatchEvent(new Event('offline'))`);
+      await new Promise((r) => setTimeout(r, 250));
+      const localGateOpen = await offlineTab.evalJs<boolean>(
+        `Boolean(document.querySelector('#account-disconnected-gate')?.open)`
+      );
+      assert.equal(localGateOpen, false, "Local desktop account must NEVER show AccountDisconnectedGate");
+      await offlineTab.setNetworkConditions({ offline: false });
+
+      // Settings remain 100% unlocked on local desktop account
       await offlineTab.click("#account-menu-btn");
       await offlineTab.waitFor(`!document.querySelector('#account-popover')?.hidden`, 4000);
       await offlineTab.click('[data-account-action="settings"]');
       await offlineTab.waitFor(`!document.querySelector('#settings-modal-backdrop')?.hidden`, 5000);
-      await offlineTab.waitFor(
-        `Boolean(document.querySelector('#settings-modal-backdrop [data-network-banner-placement="modal"] .network-status-banner'))`,
-        4000
-      );
-
-      const expectedSettingsGuards = ["profile", "general-remote", "models", "computer", "permissions", "vault", "usage"];
-      for (const guard of expectedSettingsGuards) {
-        const isDisabled = await offlineTab.evalJs<boolean>(
-          `Boolean(document.querySelector('fieldset[data-remote-offline-guard="${guard}"]')?.disabled)`
-        );
-        assert.equal(isDisabled, true, `Settings fieldset '${guard}' MUST be disabled when remote account is offline`);
-      }
-
-      // Appearance theme buttons & About/Updates tab MUST remain interactive (NOT inside a disabled fieldset)!
-      const appearanceEnabled = await offlineTab.evalJs<boolean>(
-        `!document.querySelector('[data-theme-mode="dark"]')?.closest('fieldset:disabled')`
-      );
-      assert.equal(appearanceEnabled, true, "Appearance controls must stay interactive offline");
-      await offlineTab.click('.settings-nav-item[data-settings-tab="updates"]');
-      const otaBtnEnabled = await offlineTab.evalJs<boolean>(
-        `!document.querySelector('#ota-check-btn')?.closest('fieldset:disabled')`
-      );
-      assert.equal(otaBtnEnabled, true, "About/Updates tab must stay interactive offline");
-      await offlineTab.click("#close-settings-modal-btn");
-
-      // Open SkillsStoreModal -> verify ALL 3 sub-views (skills-store, skills-manage, skills-detail) are guarded!
-      await offlineTab.click("#connect-apps-btn");
-      await offlineTab.waitFor(`!document.querySelector('#apps-modal-backdrop')?.hidden`, 5000);
-      await offlineTab.waitFor(
-        `Boolean(document.querySelector('#apps-modal-backdrop [data-network-banner-placement="modal"] .network-status-banner'))`,
-        4000
-      );
-      for (const guard of ["skills-store", "skills-manage", "skills-detail"]) {
-        const isDisabled = await offlineTab.evalJs<boolean>(
-          `Boolean(document.querySelector('fieldset[data-remote-offline-guard="${guard}"]')?.disabled)`
-        );
-        assert.equal(isDisabled, true, `SkillsStore fieldset '${guard}' MUST be disabled when remote account is offline`);
-      }
-      assert.equal(
-        await offlineTab.evalJs<boolean>(`Boolean(document.querySelector('#bot-templates-btn')?.disabled)`),
-        true
-      );
-      assert.equal(
-        await offlineTab.evalJs<boolean>(`Boolean(document.querySelector('#add-custom-skill-btn')?.disabled)`),
-        true
-      );
-      assert.equal(
-        await offlineTab.evalJs<boolean>(`Boolean(document.querySelector('#skill-detail-remove-btn')?.disabled)`),
-        true
-      );
-      // Back navigation buttons stay OUTSIDE disabled fieldset so user can navigate back cleanly
-      assert.equal(
-        await offlineTab.evalJs<boolean>(`Boolean(document.querySelector('#back-to-apps-btn')?.disabled)`),
-        false
-      );
-      assert.equal(
-        await offlineTab.evalJs<boolean>(`Boolean(document.querySelector('#skill-detail-back-btn')?.disabled)`),
-        false
-      );
-
-      // 2. Local desktop account NEVER locks settings even if browser emits offline
-      const localTab = await chrome!.openNewTab("about:blank");
-      t.after(() => localTab.close());
-      await localTab.addInitScript(`
-        try {
-          if (window === window.top) {
-            localStorage.setItem("twinklebot.accounts.v2", JSON.stringify({
-              activeAccountId: "local",
-              accounts: [{ id: "local", type: "local", name: "本机桌面", baseUrl: "", authToken: "" }]
-            }));
-          }
-        } catch {}
-      `);
-      await localTab.navigate(localWs.baseUrl);
-      await localTab.waitFor(`document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`, 8000);
-      await localTab.click("#account-menu-btn");
-      await localTab.waitFor(`!document.querySelector('#account-popover')?.hidden`, 4000);
-      await localTab.click('[data-account-action="settings"]');
-      await localTab.waitFor(`!document.querySelector('#settings-modal-backdrop')?.hidden`, 5000);
-      const localLocked = await localTab.evalJs<boolean>(
+      const localLocked = await offlineTab.evalJs<boolean>(
         `Boolean(document.querySelector('fieldset[data-remote-offline-guard="profile"]')?.disabled)`
       );
       assert.equal(localLocked, false, "Local desktop account must NEVER lock Settings fieldsets");
@@ -497,8 +461,8 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
       priority: "P1",
       featureTier: "F2",
       difficulty: "D2",
-      title: "移动端(390×844 dist-web)节点状态点(#mobile-node-dot)、列表页离线横幅、切换账号直达节点抽屉与 LAN 离线弹窗",
-      module: "Mobile Network Banner & LAN Offline Modal",
+      title: "移动端(390×844 dist-web)断连独占门禁页(AccountDisconnectedGate)：局域网失联全屏锁定、内联配对/添加云端入口与一键切回在线云端恢复",
+      module: "Account Disconnected Gate (Mobile)",
     },
     async () => {
       const distWebDir = path.resolve(process.cwd(), "dist-web");
@@ -543,27 +507,28 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
       `);
       await mobTab.navigate(mobileStatic.baseUrl);
       await mobTab.waitFor(
-        `document.querySelector('#mobile-node-dot')?.dataset?.netStatus === 'offline' ||
-         document.querySelector('[data-network-banner-placement="mobile-list"] .network-status-banner')?.dataset?.networkStatus === 'offline'`,
+        `Boolean(document.querySelector('#account-disconnected-gate')?.open) &&
+         Boolean(document.querySelector('#account-disconnected-gate')?.matches?.(':modal'))`,
         15_000
       );
 
-      // If #mobile-lan-offline-modal popped up, verify retry/close controls and dismiss it first
-      const lanModalOpen = await mobTab.evalJs<boolean>(`!document.querySelector('#mobile-lan-offline-modal')?.hidden`);
-      if (lanModalOpen) {
-        assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#mobile-lan-retry-btn'))`), true);
-        assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#mobile-lan-switch-cloud-btn'))`), true);
-        await mobTab.click("#mobile-lan-offline-close-btn");
-        await mobTab.waitFor(`document.querySelector('#mobile-lan-offline-modal')?.hidden`, 4000);
-      }
-
-      // Clicking "切换账号" on mobile-list banner opens #mobile-node-sheet!
-      await mobTab.waitFor(
-        `Boolean(document.querySelector('[data-network-banner-placement="mobile-list"] [data-network-action="switch-account"]'))`,
-        8000
+      // Mobile gate exposes refresh, switch to backup cloud, inline add-cloud & inline LAN pair
+      assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#account-gate-refresh-btn'))`), true);
+      assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#account-gate-add-cloud-btn'))`), true);
+      assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#account-gate-lan-btn'))`), true);
+      assert.equal(
+        await mobTab.evalJs<boolean>(`Boolean(document.querySelector('[data-account-gate-switch-id="cloud-backup"]'))`),
+        true
       );
-      await mobTab.click('[data-network-banner-placement="mobile-list"] [data-network-action="switch-account"]');
-      await mobTab.waitFor(`!document.querySelector('#mobile-node-sheet')?.hidden`, 5000);
+
+      // Inline LAN pair panel opens cleanly inside top-layer gate
+      await mobTab.click("#account-gate-lan-btn");
+      await mobTab.waitFor(`Boolean(document.querySelector('#account-gate-lan-panel'))`, 4000);
+
+      // Clicking backup cloud account directly switches and dismisses the gate cleanly!
+      await mobTab.click('[data-account-gate-switch-id="cloud-backup"]');
+      await mobTab.waitFor(`!document.querySelector('#account-disconnected-gate')?.open`, 10_000);
+      await mobTab.waitFor(`document.documentElement.dataset.realtimeConnected === '1'`, 10_000);
     },
     { getChrome: () => chrome }
   );

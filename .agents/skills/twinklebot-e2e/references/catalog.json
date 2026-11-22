@@ -685,6 +685,7 @@
       "file": "test/e2e/p1-network-resilience-and-offline.e2e.ts",
       "compiledFile": "e2e/p1-network-resilience-and-offline.e2e.js",
       "sourceGlobs": [
+        "src/web/components/common/AccountDisconnectedGate.tsx",
         "src/web/components/common/NetworkStatusBanner.tsx",
         "src/web/services/network-monitor.ts",
         "src/web/services/api-client.ts",
@@ -725,16 +726,16 @@
           "priority": "P1",
           "featureTier": "F2",
           "difficulty": "D2",
-          "title": "分级离线设置护栏：远端离线锁定 Settings 全部 7 处远端 Fieldset 与 SkillsStore 全部 3 个子视图，外观/关于可用且本机账号永不锁定",
-          "module": "Tiered Offline Settings Guard"
+          "title": "桌面端断连独占门禁页(AccountDisconnectedGate)：云端断连全屏锁定、禁止 Esc/快捷键穿透、仅允许刷新与切回本机，本机账号永不触发",
+          "module": "Account Disconnected Gate (Desktop)"
         },
         {
           "id": "P1-NET-05",
           "priority": "P1",
           "featureTier": "F2",
           "difficulty": "D2",
-          "title": "移动端(390×844 dist-web)节点状态点(#mobile-node-dot)、列表页离线横幅、切换账号直达节点抽屉与 LAN 离线弹窗",
-          "module": "Mobile Network Banner & LAN Offline Modal"
+          "title": "移动端(390×844 dist-web)断连独占门禁页(AccountDisconnectedGate)：局域网失联全屏锁定、内联配对/添加云端入口与一键切回在线云端恢复",
+          "module": "Account Disconnected Gate (Mobile)"
         },
         {
           "id": "P1-NET-06",

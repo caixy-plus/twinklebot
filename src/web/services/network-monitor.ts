@@ -78,6 +78,11 @@ export function isRemoteAccountOffline(s: AppState = getState()): boolean {
   );
 }
 
+export function shouldShowAccountDisconnectedGate(s: AppState = getState()): boolean {
+  if (s.updateState?.coreSwitchInProgress) return false;
+  return isRemoteAccountOffline(s);
+}
+
 export function getNetworkThresholds(mobile = isMobileViewport()) {
   return {
     weakRttMs: mobile ? 1500 : 1800,
