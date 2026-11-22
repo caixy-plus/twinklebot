@@ -256,7 +256,26 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         if (u.pathname === "/whoami") {
           const hasCookie = String(req.headers.cookie || "").includes("sbox_sid=shared-777");
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.end(`<!doctype html><html><body><div id="ck">${hasCookie ? "COOKIE_OK" : "COOKIE_MISS"}</div><div id="ls"></div><script>ls.textContent='LS:'+localStorage.getItem('sbox_user');</script></body></html>`);
+          res.end(`<!doctype html><html><body style="min-height:2400px">
+            <div id="ck">${hasCookie ? "COOKIE_OK" : "COOKIE_MISS"}</div>
+            <div id="ls"></div>
+            <select id="role"><option value="user">User</option><option value="admin">Admin</option></select>
+            <input id="up" type="file" style="display:none" />
+            <div id="up-name"></div>
+            <div id="shadow-host"></div>
+            <script>
+              ls.textContent = 'LS:' + localStorage.getItem('sbox_user');
+              document.getElementById('up').addEventListener('change', (ev) => {
+                const f = ev.target.files && ev.target.files[0];
+                document.getElementById('up-name').textContent = f ? ('UPLOADED:' + f.name) : '';
+              });
+              const sh = document.getElementById('shadow-host').attachShadow({ mode: 'open' });
+              const btn = document.createElement('button');
+              btn.id = 'shadow-btn';
+              btn.textContent = 'ShadowAction';
+              sh.appendChild(btn);
+            </script>
+          </body></html>`);
           return;
         }
         res.writeHead(404);
@@ -303,7 +322,8 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         if (step === 5) {
           return {
             toolCalls: [
-              { id: "sb5a", name: "browser_tabs", args: { action: "list", risk: "low" } },
+              { id: "sb5w", name: "browser_wait", args: { text: "COOKIE_OK", timeout: 5 } },
+              { id: "sb5a", name: "browser_tabs", args: { action: "list" } },
               { id: "sb5", name: "run_shell", args: { command: `printf 'SBOX_REPORT_OK' > ${reportFile}`, risk: "low" } },
             ],
           };
@@ -311,6 +331,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         if (step === 6) {
           return {
             toolCalls: [
+              { id: "sb6s", name: "browser_scroll", args: { direction: "down", amount: 500 } },
               { id: "sb6a", name: "list_windows", args: {} },
               { id: "sb6b", name: "focus_window", args: { id: "0x0" } },
               { id: "sb6", name: "send_file", args: { path: reportFile, label: "沙盒导出报告" } },
@@ -334,6 +355,53 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       await chrome!.waitFor(`Boolean(document.querySelector('.msg-file-card'))`, 8000);
       const cardText = await chrome!.evalJs<string>(`document.querySelector('.msg-file-card')?.textContent || ''`);
       assert.match(cardText, /sbox-report\.txt|沙盒导出报告/);
+
+      // Exercise upgraded CDP endpoints directly against real Chrome on /whoami:
+      // Shadow DOM capture, /browser/wait, /browser/scroll, /browser/select, and hidden file /browser/upload
+      const whoamiSnap: any = await realExec.call("/browser/snapshot", { url: whoamiUrl });
+      assert.equal(whoamiSnap.ok, true);
+      assert.equal(whoamiSnap.shadow_dom_detected, true, "browser_snapshot must traverse Open Shadow DOM");
+      const elements: any[] = Array.isArray(whoamiSnap.elements) ? whoamiSnap.elements : [];
+      assert.ok(
+        elements.some((el) => el.name === "ShadowAction"),
+        "Shadow DOM button must be discovered in browser_snapshot"
+      );
+      const selectEl = elements.find((el) => el.tag === "select");
+      const fileEl = elements.find((el) => el.tag === "input" && el.hidden_file_input === true);
+      assert.ok(selectEl?.ref, "Native <select> must be discovered in browser_snapshot");
+      assert.ok(fileEl?.ref, "Visually hidden <input type=file> must be discovered in browser_snapshot");
+
+      const waitRes: any = await realExec.call("/browser/wait", { text: "COOKIE_OK", timeout: 5 });
+      assert.equal(waitRes.ok, true);
+      assert.equal(waitRes.waited?.matched, true);
+
+      const scrollRes: any = await realExec.call("/browser/scroll", { direction: "down", amount: 500 });
+      assert.equal(scrollRes.ok, true);
+      assert.ok((scrollRes.scroll?.y || 0) > 0, "/browser/scroll must advance window.scrollY");
+
+      const refreshedSnap: any = await realExec.call("/browser/snapshot", {});
+      const refEls: any[] = Array.isArray(refreshedSnap.elements) ? refreshedSnap.elements : [];
+      const refSelect = refEls.find((el) => el.tag === "select");
+      const refFile = refEls.find((el) => el.tag === "input" && el.hidden_file_input === true);
+
+      const selectRes: any = await realExec.call("/browser/select", { ref: refSelect.ref, label: "Admin" });
+      assert.equal(selectRes.ok, true);
+      assert.equal(selectRes.selected?.value, "admin", "browser_select must select option by label");
+
+      // Re-resolve hidden file input ref after snapshot refresh, then test browser_upload_file
+      const postSelectEls: any[] = Array.isArray(selectRes.elements) ? selectRes.elements : [];
+      const uploadTarget = postSelectEls.find((el) => el.tag === "input" && el.hidden_file_input === true) || refFile;
+      const uploadRes: any = await realExec.call("/browser/upload", {
+        ref: uploadTarget.ref,
+        paths: [reportFile],
+      });
+      assert.equal(uploadRes.ok, true);
+      assert.equal(uploadRes.uploaded?.count, 1);
+      assert.match(
+        String(uploadRes.text_excerpt || ""),
+        /UPLOADED:sbox-report\.txt/,
+        "browser_upload_file must inject file into hidden <input type=file> via CDP DOM.setFileInputFiles"
+      );
 
       // Store whoamiUrl on global for P1-SBOX-02 shared profile test
       (realSbox as any).whoamiUrl = whoamiUrl;

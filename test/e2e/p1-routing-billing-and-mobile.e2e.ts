@@ -376,10 +376,11 @@ test("P1 Suite 6: Multi-Provider Routing Failover, Image/SVG Fallback, Context C
         if (s.includes("ultra-short Chinese phrase") || s.includes("短语") || s.includes("概括"))
           return { text: "压缩上下文" };
         if (
-          s.includes("context compression assistant") ||
-          s.includes("Core Goals & Constraints") ||
-          s.includes("核心目标与约束") ||
-          s.includes("摘要")
+          (!Array.isArray(body?.tools) || body.tools.length === 0) &&
+          (s.includes("context compression assistant") ||
+            s.includes("Core Goals & Constraints") ||
+            s.includes("核心目标与约束") ||
+            s.includes("摘要"))
         ) {
           return {
             text: "[Core Goals & Constraints] 完成长对话压缩\n[Completed Decisions] 已整理前序轮次\n[Key Files & Environment] 无\n[Pending Tasks & Next Steps] 继续当前问答",

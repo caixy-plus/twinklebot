@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assessToolCall } from "../../src/agent/policy.js";
+import { assessToolCall, extractSuggestedCommandPattern } from "../../src/agent/policy.js";
 import { runTool } from "../../src/agent/tools.js";
 import { isEncryptedEnvelope } from "../../src/lib/local-crypto.js";
 import { launchHeadlessChrome, type HeadlessChromeSession } from "../helpers/cdp-browser-harness.js";
@@ -130,10 +130,10 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
          document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`
       );
 
-      let shellCalled = 0;
+      let actionCalled = 0;
       const origCall = ws.executor.call;
       ws.executor.call = async (route: string, body?: any, opts?: any) => {
-        if (route === "/shell") shellCalled += 1;
+        if (route === "/browser/click") actionCalled += 1;
         return origCall(route, body, opts);
       };
 
@@ -141,18 +141,13 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
         // 1. Approve once
         let step = 0;
         mockLlm.setHandler(async ({ body }) => {
-          const s = JSON.stringify(body?.messages || "");
-          if (
-            s.includes("ultra-short Chinese phrase") ||
-            s.includes("Distill the current task progress") ||
-            s.includes("短语") ||
-            s.includes("概括")
-          )
+          if (!Array.isArray(body?.tools) || body.tools.length === 0) {
             return { text: "等待批准" };
+          }
           step += 1;
           if (step === 1) {
             return {
-              toolCalls: [{ id: "app-1", name: "run_shell", args: { command: "echo approve-once-ok", risk: "high" } }],
+              toolCalls: [{ id: "app-1", name: "browser_click", args: { ref: "e1", risk: "high" } }],
             };
           }
           return { text: "单次审批放行完成" };
@@ -161,7 +156,7 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
         await chrome!.typeText("#message-input", "跑一个需审批的命令", { clear: true });
         await chrome!.pressKey("Enter");
         await chrome!.waitFor(`Boolean(document.querySelector('.confirm-card:not(.is-collapsed)'))`, 8000);
-        assert.equal(shellCalled, 0, "Tool must NOT execute before approval");
+        assert.equal(actionCalled, 0, "Tool must NOT execute before approval");
 
         // Expand <details class="confirm-cmd-details"> if rendered before approving
         await chrome!.evalJs(`(() => {
@@ -174,19 +169,18 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
           `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('单次审批放行完成'))`,
           8000
         );
-        assert.equal(shellCalled, 1);
+        assert.equal(actionCalled, 1);
 
         // 2. Deny via explicit .btn-deny button click
         step = 0;
         mockLlm.setHandler(async ({ body }) => {
-          const s = JSON.stringify(body?.messages || "");
-          if (s.includes("ultra-short Chinese phrase") || s.includes("Distill the current task progress") || s.includes("短语") || s.includes("概括")) {
+          if (!Array.isArray(body?.tools) || body.tools.length === 0) {
             return { text: "等待批准" };
           }
           step += 1;
           if (step === 1) {
             return {
-              toolCalls: [{ id: "app-deny-btn", name: "run_shell", args: { command: "echo should-deny-btn", risk: "high" } }],
+              toolCalls: [{ id: "app-deny-btn", name: "browser_click", args: { ref: "e2", risk: "high" } }],
             };
           }
           return { text: "用户点击暂不允许拒绝了操作" };
@@ -199,23 +193,18 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
           `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('用户点击暂不允许拒绝了操作'))`,
           8000
         );
-        assert.equal(shellCalled, 1, "Button-denied tool must not execute");
+        assert.equal(actionCalled, 1, "Button-denied tool must not execute");
 
         // 3. Deny via Escape key
         step = 0;
         mockLlm.setHandler(async ({ body }) => {
-          const s = JSON.stringify(body?.messages || "");
-          if (
-            s.includes("ultra-short Chinese phrase") ||
-            s.includes("Distill the current task progress") ||
-            s.includes("短语") ||
-            s.includes("概括")
-          )
+          if (!Array.isArray(body?.tools) || body.tools.length === 0) {
             return { text: "等待批准" };
+          }
           step += 1;
           if (step === 1) {
             return {
-              toolCalls: [{ id: "app-2", name: "run_shell", args: { command: "echo should-deny-esc", risk: "high" } }],
+              toolCalls: [{ id: "app-2", name: "browser_click", args: { ref: "e3", risk: "high" } }],
             };
           }
           return { text: "用户按Escape拒绝了操作" };
@@ -229,7 +218,7 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
           `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('用户按Escape拒绝了操作'))`,
           8000
         );
-        assert.equal(shellCalled, 1, "Denied tool must not execute");
+        assert.equal(actionCalled, 1, "Denied tool must not execute");
 
         // Verify POST /api/approvals/:id returns 400/404 for unknown callId
         const missingApp = await fetch(`${ws.baseUrl}/api/approvals/nonexistent-call-id`, {
@@ -547,6 +536,55 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
         assessToolCall("host_run_shell", { command: "rm -rf /tmp/foo", risk: "medium" }, alwaysCfg).decision,
         "confirm",
         "Dangerous shell rm must still require confirmation in always mode"
+      );
+      assert.equal(
+        assessToolCall(
+          "host_run_shell",
+          { command: 'cd /Users/demo/blog && git commit -m "update"', risk: "high" },
+          alwaysCfg
+        ).decision,
+        "allow",
+        "Routine compound cd && git commit with spurious risk=high must auto-allow under always mode"
+      );
+      assert.equal(
+        assessToolCall(
+          "host_run_shell",
+          { command: "cd /Users/demo/blog && git push --force origin main", risk: "low" },
+          alwaysCfg
+        ).decision,
+        "confirm",
+        "Destructive git push --force must still require confirmation under always mode"
+      );
+      assert.equal(
+        assessToolCall(
+          "host_run_shell",
+          { command: "echo 'export X=1' >> ~/.zshrc", risk: "low" },
+          alwaysCfg
+        ).decision,
+        "confirm",
+        "Redirection into ~/.zshrc must require confirmation under always mode"
+      );
+      assert.equal(
+        extractSuggestedCommandPattern('cd /Users/demo/blog && git commit -m "update"'),
+        "git commit",
+        "extractSuggestedCommandPattern must skip leading cd and suggest meaningful subcommand"
+      );
+      assert.equal(
+        assessToolCall("browser_snapshot", { url: "https://example.com", risk: "high" }, alwaysCfg).decision,
+        "allow",
+        "sandboxMode=full internal tools ignore spurious risk=high"
+      );
+      assert.equal(
+        assessToolCall(
+          "browser_click",
+          { ref: "e1", risk: "high" },
+          {
+            ...alwaysCfg,
+            policy: { autoAudit: true, allowRules: [{ tool: "browser_click", pattern: "" }], askRules: [] },
+          }
+        ).decision,
+        "allow",
+        "sandboxMode=full external interactive tools honor tool-specific allowRules even with risk=high"
       );
 
       // 2. hostExecutionMode = "ask": read-only host tools allowed, write tools confirm

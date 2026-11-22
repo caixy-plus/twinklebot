@@ -137,11 +137,11 @@ test("P2 Suite 9: CLI Tool (Providers / Interactive Approval / Max-Steps & Doubl
       t.after(() => mockLlm.close());
       writeCliSettings(tmpData, mockLlm.openaiBaseUrl);
 
-      let shellCalled = 0;
+      let actionCalled = 0;
       const mockExecSrv = http.createServer((req, res) => {
-        if ((req.url || "").startsWith("/shell")) shellCalled += 1;
+        if ((req.url || "").startsWith("/browser/click")) actionCalled += 1;
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, screen: { width: 1440, height: 900 }, exit_code: 0, stdout: "APPROVED_OK", stderr: "", png_base64: "" }));
+        res.end(JSON.stringify({ ok: true, screen: { width: 1440, height: 900 }, clicked: { ref: "e1" }, elements: [], png_base64: "" }));
       });
       await new Promise<void>((r) => mockExecSrv.listen(0, "127.0.0.1", r));
       t.after(() => {
@@ -156,7 +156,7 @@ test("P2 Suite 9: CLI Tool (Providers / Interactive Approval / Max-Steps & Doubl
         if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "审批任务" };
         step += 1;
         if (step === 1) {
-          return { toolCalls: [{ id: "cli-apv-1", name: "run_shell", args: { command: "rm -rf /tmp/e2e-cli-apv-probe", risk: "high" } }] };
+          return { toolCalls: [{ id: "cli-apv-1", name: "browser_click", args: { ref: "e1", risk: "high" } }] };
         }
         return { text: "CLI审批放行成功" };
       });
@@ -179,7 +179,7 @@ test("P2 Suite 9: CLI Tool (Providers / Interactive Approval / Max-Steps & Doubl
       });
       assert.equal(apvOut.code, 0);
       assert.match(apvOut.stdout, /approve\? \[y\/N\]/);
-      assert.equal(shellCalled, 1, "Approving [y/N] with 'y' must execute tool");
+      assert.equal(actionCalled, 1, "Approving [y/N] with 'y' must execute tool");
 
       // 2. Single SIGINT graceful stop mid-flight
       let releaseSlow!: () => void;

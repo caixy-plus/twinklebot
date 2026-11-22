@@ -155,6 +155,7 @@
         "src/agent/tools.ts",
         "src/agent/host-tools.ts",
         "src/agent/memory-extractor.ts",
+        "src/shared/policy-utils.ts",
         "src/lib/bot-workspace.ts",
         "src/lib/device-auth.ts",
         "src/lib/lan-discovery.ts",

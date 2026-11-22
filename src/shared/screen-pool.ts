@@ -32,6 +32,10 @@ export const SCREEN_REQUIRED_TOOLS = new Set<string>([
   "browser_click",
   "browser_type",
   "browser_tabs",
+  "browser_scroll",
+  "browser_wait",
+  "browser_select",
+  "browser_upload_file",
 ]);
 
 export function isScreenRequiredTool(toolName: string): boolean {

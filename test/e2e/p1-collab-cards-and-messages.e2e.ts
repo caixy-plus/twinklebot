@@ -539,7 +539,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
         step += 1;
         if (step === 1) {
           return {
-            toolCalls: [{ id: "er-1", name: "run_shell", args: { command: "echo custom-rule-cmd", risk: "high" } }],
+            toolCalls: [{ id: "er-1", name: "browser_click", args: { ref: "e9", risk: "high" } }],
           };
         }
         return { text: "自定义规则保存并放行完成" };

@@ -4,7 +4,8 @@ import type { ExecutorClient } from "../shared/config.js";
 const RISK_PROPERTY = {
   type: "string",
   enum: ["low", "high"],
-  description: "Set to 'high' if this action pays, sends messages, submits orders, posts publicly, or deletes data.",
+  description:
+    "Always use 'low' for normal clicks, navigation, filling drafts, or routine sandbox operations. Set to 'high' ONLY when the action causes irreversible external side effects: paying, submitting real orders, sending messages/emails, publishing public posts, or deleting important online/local data.",
 };
 
 const SECRET_PLACEHOLDER_RE = /\{\{secret:(cred_[a-f0-9]+)\}\}/g;
@@ -77,9 +78,7 @@ export const TOOL_DECLARATIONS = [
     description: "Take a screenshot of the current desktop display (1440x900).",
     parameters: {
       type: "object",
-      properties: {
-        risk: RISK_PROPERTY,
-      },
+      properties: {},
       required: [],
     },
   },
@@ -115,13 +114,18 @@ export const TOOL_DECLARATIONS = [
   {
     type: "function",
     name: "type_text",
-    description: "Type text via clipboard paste. Use run_shell instead inside terminal windows.",
+    description:
+      "Type text into the focused desktop window (direct keystrokes for short single-line ASCII, clipboard paste for Unicode/multiline/credentials). Optionally presses Enter after typing. Use run_shell instead inside terminal windows.",
     parameters: {
       type: "object",
       properties: {
         text: {
           type: "string",
           description: "Text string to type/paste.",
+        },
+        press_enter: {
+          type: "boolean",
+          description: "Optional: press Return/Enter right after typing (default: false).",
         },
         risk: RISK_PROPERTY,
       },
@@ -168,7 +172,6 @@ export const TOOL_DECLARATIONS = [
           type: "integer",
           description: "Number of scroll clicks (1-20, default: 3).",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["x", "y", "direction"],
     },
@@ -207,9 +210,7 @@ export const TOOL_DECLARATIONS = [
     description: "List all open desktop windows with their IDs and titles.",
     parameters: {
       type: "object",
-      properties: {
-        risk: RISK_PROPERTY,
-      },
+      properties: {},
       required: [],
     },
   },
@@ -224,7 +225,6 @@ export const TOOL_DECLARATIONS = [
           type: "string",
           description: "Window ID from list_windows.",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["id"],
     },
@@ -260,7 +260,6 @@ export const TOOL_DECLARATIONS = [
           type: "string",
           description: "Absolute file path to read.",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["path"],
     },
@@ -305,7 +304,7 @@ export const TOOL_DECLARATIONS = [
     type: "function",
     name: "browser_snapshot",
     description:
-      "Inspect the active tab in this Bot's dedicated Google Chrome window via Chrome DevTools Protocol (CDP) WITHOUT taking a screenshot. Optionally opens/navigates to `url` first. Returns the page URL, title, visible text excerpt, tab count, and interactive elements tagged with `[e1]..[eN]` refs for `browser_click` and `browser_type`.",
+      "Inspect the active tab in this Bot's dedicated Google Chrome window via Chrome DevTools Protocol (CDP) WITHOUT taking a screenshot. Optionally opens/navigates to `url` first. Traverses Open Shadow DOM and same-origin iframes, prioritizes in-viewport interactive elements (`[e1]..[eN]`), and reports `iframes`, `challenge_detected`, and `focused` metadata.",
     parameters: {
       type: "object",
       properties: {
@@ -321,7 +320,6 @@ export const TOOL_DECLARATIONS = [
           type: "integer",
           description: "Maximum characters of visible page text to return (100-20000, default: 3000).",
         },
-        risk: RISK_PROPERTY,
       },
       required: [],
     },
@@ -330,7 +328,7 @@ export const TOOL_DECLARATIONS = [
     type: "function",
     name: "browser_click",
     description:
-      "Click an interactive browser element by its `[eN]` ref (e.g. 'e1', 'e3') returned by `browser_snapshot` WITHOUT taking a screenshot or guessing pixel coordinates. If the click opens a new tab (`target=\"_blank\"` / `window.open`) inside this Bot's window, automatically switches to the new tab and returns its snapshot.",
+      "Click an interactive browser element by its `[eN]` ref (e.g. 'e1', 'e3') returned by `browser_snapshot` WITHOUT taking a screenshot or guessing pixel coordinates. Automatically handles Shadow DOM / same-origin iframe refs, sticky-header occlusion fallback, post-click page navigation settle, and new tabs (`target=\"_blank\"` / `window.open`).",
     parameters: {
       type: "object",
       properties: {
@@ -347,7 +345,7 @@ export const TOOL_DECLARATIONS = [
     type: "function",
     name: "browser_type",
     description:
-      "Type or fill text into an input/textarea/editable browser element by its `[eN]` ref (e.g. 'e2') returned by `browser_snapshot` WITHOUT taking a screenshot. Optionally submits the form (`submit: true`). Automatically returns the updated page snapshot.",
+      "Type or fill text into an input/textarea/contenteditable browser element by its `[eN]` ref (e.g. 'e2') returned by `browser_snapshot` WITHOUT taking a screenshot. Optionally submits (`submit: true`). For `<select>` dropdowns, use `browser_select` instead. Automatically returns the updated page snapshot.",
     parameters: {
       type: "object",
       properties: {
@@ -397,9 +395,108 @@ export const TOOL_DECLARATIONS = [
           type: "integer",
           description: "0-based tab index in this Bot's window for 'switch' or 'close'.",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["action"],
+    },
+  },
+  {
+    type: "function",
+    name: "browser_scroll",
+    description:
+      "Scroll the active page (or a specific scrollable container by `ref`) inside this Bot's dedicated Chrome tab via CDP WITHOUT taking a screenshot or grabbing X11 focus, and return the refreshed DOM snapshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        direction: {
+          type: "string",
+          enum: ["up", "down", "left", "right"],
+          description: "Scroll direction (default: 'down').",
+        },
+        amount: {
+          type: "integer",
+          description: "Scroll distance in CSS pixels (50-5000, default: 600).",
+        },
+        ref: {
+          type: "string",
+          description: "Optional `[eN]` ref inside a scrollable container (e.g. modal or list) to scroll that container instead of the main window.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    type: "function",
+    name: "browser_wait",
+    description:
+      "Wait in this Bot's dedicated Chrome tab until specified `text` appears, a `ref` exists, or `ms` elapses (or the SPA finishes rendering), then return a fresh DOM snapshot WITHOUT taking a screenshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        ms: {
+          type: "integer",
+          description: "Milliseconds to wait when neither `text` nor `ref` is given (200-15000, default: 1500).",
+        },
+        text: {
+          type: "string",
+          description: "Optional visible text substring to wait for on the page before returning.",
+        },
+        ref: {
+          type: "string",
+          description: "Optional `[eN]` ref to wait for.",
+        },
+        timeout: {
+          type: "number",
+          description: "Max wait timeout in seconds when polling for `text`/`ref` (1-20, default: 10).",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    type: "function",
+    name: "browser_select",
+    description:
+      "Select an option in a native `<select>` dropdown element by its `[eN]` ref (matching `value` or visible `label`), firing full `input` and `change` events and returning the updated snapshot WITHOUT taking a screenshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        ref: {
+          type: "string",
+          description: "Element reference ID of the `<select>` from `browser_snapshot` (e.g. 'e4').",
+        },
+        value: {
+          type: "string",
+          description: "Option `value` attribute to select.",
+        },
+        label: {
+          type: "string",
+          description: "Visible option text label to select (used when `value` is omitted or does not match).",
+        },
+        risk: RISK_PROPERTY,
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    type: "function",
+    name: "browser_upload_file",
+    description:
+      "Attach one or more local files inside Bot's Computer directly to an `<input type=\"file\">` element by its `[eN]` ref via CDP `DOM.setFileInputFiles`, bypassing OS file picker dialogs completely and returning the updated snapshot WITHOUT taking a screenshot.",
+    parameters: {
+      type: "object",
+      properties: {
+        ref: {
+          type: "string",
+          description: "Element reference ID of the `<input type=\"file\">` from `browser_snapshot` (including hidden file inputs).",
+        },
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of absolute file paths inside Bot's Ubuntu computer to upload.",
+        },
+        risk: RISK_PROPERTY,
+      },
+      required: ["ref", "paths"],
     },
   },
 ];
@@ -431,6 +528,10 @@ const ROUTE_MAP: Record<string, string> = {
   browser_click: "/browser/click",
   browser_type: "/browser/type",
   browser_tabs: "/browser/tabs",
+  browser_scroll: "/browser/scroll",
+  browser_wait: "/browser/wait",
+  browser_select: "/browser/select",
+  browser_upload_file: "/browser/upload",
 };
 
 export interface RunToolOptions {

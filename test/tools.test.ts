@@ -8,6 +8,7 @@ import {
   runTool,
   hashScreenshot,
 } from "../src/agent/tools.js";
+import { createExecutorClient } from "../src/agent/executor-client.js";
 
 function fakeClient(routes: any = {}) {
   const calls: any[] = [];
@@ -29,9 +30,9 @@ function fakeClient(routes: any = {}) {
   };
 }
 
-test("TOOL_DECLARATIONS has expected shape and covers all 16 action tools", () => {
+test("TOOL_DECLARATIONS has expected shape and covers all 20 action tools", () => {
   assert.ok(Array.isArray(TOOL_DECLARATIONS), "TOOL_DECLARATIONS must be an array");
-  assert.equal(TOOL_DECLARATIONS.length, 16);
+  assert.equal(TOOL_DECLARATIONS.length, 20);
 
   const expectedTools = [
     "screenshot",
@@ -50,7 +51,23 @@ test("TOOL_DECLARATIONS has expected shape and covers all 16 action tools", () =
     "browser_click",
     "browser_type",
     "browser_tabs",
+    "browser_scroll",
+    "browser_wait",
+    "browser_select",
+    "browser_upload_file",
   ];
+
+  const riskFreeReadOnlyTools = new Set([
+    "screenshot",
+    "list_windows",
+    "focus_window",
+    "scroll",
+    "read_file",
+    "browser_snapshot",
+    "browser_tabs",
+    "browser_scroll",
+    "browser_wait",
+  ]);
 
   const toolMap = new Map();
   for (const decl of TOOL_DECLARATIONS) {
@@ -59,12 +76,14 @@ test("TOOL_DECLARATIONS has expected shape and covers all 16 action tools", () =
     assert.ok(typeof decl.description === "string" && decl.description.length > 0);
     assert.equal(decl.parameters.type, "object");
     assert.ok(decl.parameters.properties, "parameters must have properties");
-    assert.ok(
-      decl.parameters.properties.risk,
-      `${decl.name} must define risk property`
-    );
-    assert.equal(decl.parameters.properties.risk.type, "string");
-    assert.deepEqual(decl.parameters.properties.risk.enum, ["low", "high"]);
+    const props = decl.parameters.properties as Record<string, any>;
+    if (riskFreeReadOnlyTools.has(decl.name)) {
+      assert.equal(props.risk, undefined, `${decl.name} should omit risk property`);
+    } else {
+      assert.ok(props.risk, `${decl.name} must define risk property`);
+      assert.equal(props.risk.type, "string");
+      assert.deepEqual(props.risk.enum, ["low", "high"]);
+    }
     assert.ok(Array.isArray(decl.parameters.required));
     toolMap.set(decl.name, decl);
   }
@@ -73,13 +92,14 @@ test("TOOL_DECLARATIONS has expected shape and covers all 16 action tools", () =
     assert.ok(toolMap.has(name), `Missing declaration for ${name}`);
   }
 
-  // type_text description mentions run_shell for terminal windows
+  // type_text description mentions run_shell for terminal windows and declares press_enter
   const typeTextDecl = toolMap.get("type_text");
   assert.match(
     typeTextDecl.description,
     /run_shell.*terminal|terminal.*run_shell/i,
     "type_text description must instruct using run_shell inside terminal windows"
   );
+  assert.equal(typeTextDecl.parameters.properties.press_enter?.type, "boolean");
 });
 
 test("SCREEN_CHANGING contains the 7 interactive desktop tools", () => {
@@ -168,7 +188,7 @@ test("screenshot tool decodes png_base64 and avoids keeping huge base64 in resul
   assert.equal(r.screenshot.toString("base64"), pngBase64);
 });
 
-test("all 16 tools map to their correct executor routes", async () => {
+test("all 20 tools map to their correct executor routes", async () => {
   const routeExpectations = {
     screenshot: "/screenshot",
     click: "/click",
@@ -186,6 +206,10 @@ test("all 16 tools map to their correct executor routes", async () => {
     browser_click: "/browser/click",
     browser_type: "/browser/type",
     browser_tabs: "/browser/tabs",
+    browser_scroll: "/browser/scroll",
+    browser_wait: "/browser/wait",
+    browser_select: "/browser/select",
+    browser_upload_file: "/browser/upload",
   };
 
   for (const [toolName, expectedRoute] of Object.entries(routeExpectations)) {
@@ -201,15 +225,19 @@ test("all 16 tools map to their correct executor routes", async () => {
   }
 });
 
-test("browser_snapshot, browser_click, browser_type, and browser_tabs do NOT take screenshots", async () => {
+test("all 8 browser_* tools do NOT take screenshots", async () => {
   const client = fakeClient({
     "/browser/snapshot": { ok: true, url: "https://example.com", elements: [{ ref: "e1" }] },
     "/browser/click": { ok: true, clicked: { ref: "e1" }, elements: [] },
     "/browser/type": { ok: true, typed: { ref: "e1", submit: true }, elements: [] },
     "/browser/tabs": { ok: true, action: "list", tab_count: 2, tabs: [] },
+    "/browser/scroll": { ok: true, scrolled: { direction: "down", amount: 600 }, elements: [] },
+    "/browser/wait": { ok: true, waited: { matched: true, elapsed_ms: 200 }, elements: [] },
+    "/browser/select": { ok: true, selected: { ref: "e4", value: "us", label: "US" }, elements: [] },
+    "/browser/upload": { ok: true, uploaded: { ref: "e5", files: ["a.png"], count: 1 }, elements: [] },
   });
 
-  const s = await runTool("browser_snapshot", { url: "https://example.com", risk: "low" }, client, { settleMs: 0 });
+  const s = await runTool("browser_snapshot", { url: "https://example.com" }, client, { settleMs: 0 });
   assert.equal(s.screenshot, null);
   assert.equal(s.result.ok, true);
 
@@ -221,10 +249,62 @@ test("browser_snapshot, browser_click, browser_type, and browser_tabs do NOT tak
   assert.equal(t.screenshot, null);
   assert.equal(t.result.ok, true);
 
-  const tabs = await runTool("browser_tabs", { action: "list", risk: "low" }, client, { settleMs: 0 });
+  const tabs = await runTool("browser_tabs", { action: "list" }, client, { settleMs: 0 });
   assert.equal(tabs.screenshot, null);
   assert.equal(tabs.result.ok, true);
-  assert.equal(client.calls.length, 4);
+
+  const scr = await runTool("browser_scroll", { direction: "down", amount: 600 }, client, { settleMs: 0 });
+  assert.equal(scr.screenshot, null);
+  assert.equal(scr.result.ok, true);
+
+  const wt = await runTool("browser_wait", { text: "Ready", timeout: 5 }, client, { settleMs: 0 });
+  assert.equal(wt.screenshot, null);
+  assert.equal(wt.result.ok, true);
+
+  const sel = await runTool("browser_select", { ref: "e4", label: "US", risk: "low" }, client, { settleMs: 0 });
+  assert.equal(sel.screenshot, null);
+  assert.equal(sel.result.ok, true);
+
+  const up = await runTool("browser_upload_file", { ref: "e5", paths: ["/tmp/a.png"], risk: "low" }, client, { settleMs: 0 });
+  assert.equal(up.screenshot, null);
+  assert.equal(up.result.ok, true);
+
+  assert.equal(client.calls.length, 8);
+});
+
+test("createExecutorClient invokes onUnreachableWake when ubuntu.orb.local and 127.0.0.1 fallback both fail", async () => {
+  const seenUrls: string[] = [];
+  let woke = false;
+  const fakeFetch: any = async (url: string) => {
+    seenUrls.push(url);
+    if (!woke) {
+      throw new Error("ECONNREFUSED");
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, woken: true }),
+    };
+  };
+
+  const client = createExecutorClient({
+    url: "http://ubuntu.orb.local:7300",
+    token: "tok",
+    fetchImpl: fakeFetch,
+    onUnreachableWake: async () => {
+      woke = true;
+      return true;
+    },
+  });
+
+  const res: any = await client.call("/browser/snapshot", {});
+  assert.equal(res.ok, true);
+  assert.equal(res.woken, true);
+  assert.deepEqual(seenUrls, [
+    "http://ubuntu.orb.local:7300/browser/snapshot",
+    "http://127.0.0.1:7300/browser/snapshot",
+    "http://ubuntu.orb.local:7300/browser/snapshot",
+  ]);
 });
 
 test("screen_changed detection marks unchanged and changed desktop screenshots", async () => {

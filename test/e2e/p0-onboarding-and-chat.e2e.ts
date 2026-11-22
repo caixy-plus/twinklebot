@@ -683,7 +683,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
         step += 1;
         if (step === 1) {
           return {
-            toolCalls: [{ id: "c-reload", name: "run_shell", args: { command: "echo approved-after-reload", risk: "high" } }],
+            toolCalls: [{ id: "c-reload", name: "browser_click", args: { ref: "e1", risk: "high" } }],
           };
         }
         return { text: "刷新恢复并完成执行" };

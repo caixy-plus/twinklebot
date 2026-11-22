@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assessToolCall } from "../src/agent/policy.js";
+import {
+  assessToolCall,
+  extractSuggestedCommandPattern,
+  isHostShellSafeForAlwaysMode,
+} from "../src/agent/policy.js";
 
 const cfg = {
   sandboxMode: "restricted",
@@ -551,4 +555,207 @@ test("hostExecutionMode always eliminates false-positive confirmations while pro
     ).decision,
     "deny"
   );
+});
+
+test("hostExecutionMode always ignores spurious LLM risk=high on routine host_run_shell while confirming destructive git and sensitive redirects", () => {
+  const alwaysCfg = { ...cfg, hostExecutionMode: "always" };
+
+  // Compound routine commands tagged risk="high" by over-cautious LLMs must auto-allow under always mode
+  const routineSpuriousHighCommands = [
+    'cd /Users/YOUR_USERNAME/Workspace/cxy-blog && git commit -m "feat: publish post"',
+    "cd /Users/YOUR_USERNAME/Workspace/cxy-blog && ./deploy.sh",
+    "cd ~/Workspace/app && git push origin main",
+    "cd ~/Workspace/app && git push --force-with-lease origin feat",
+    "cd ~/Workspace/app && git reset --soft HEAD~1",
+    "cd ~/Workspace/app && git clean -n",
+    "cd ~/Workspace/app && npm run build && npm test",
+    'echo "> ~/.zshrc"',
+  ];
+  for (const command of routineSpuriousHighCommands) {
+    assert.equal(
+      isHostShellSafeForAlwaysMode(command),
+      true,
+      `Expected safe for always mode: ${command}`
+    );
+    assert.equal(
+      assessToolCall("host_run_shell", { command, risk: "high" }, alwaysCfg).decision,
+      "allow",
+      `Expected allow under always mode despite risk=high: ${command}`
+    );
+  }
+
+  // Deterministic destructive git & sensitive config redirections still confirm even if risk="low"
+  const destructiveCommands = [
+    "cd /Users/YOUR_USERNAME/Workspace/cxy-blog && git push --force origin main",
+    "cd /Users/YOUR_USERNAME/Workspace/cxy-blog && git push -f",
+    "git -C /Users/YOUR_USERNAME/Workspace/cxy-blog push --force",
+    "cd ~/Workspace/app && git reset --hard HEAD~1",
+    "cd ~/Workspace/app && git clean -fd",
+    "echo 'export EVIL=1' >> ~/.zshrc",
+    'echo "export EVIL=1" >> "~/.zshrc"',
+    "echo '127.0.0.1 evil' > /etc/hosts",
+    "echo '127.0.0.1 evil' | tee -a /etc/hosts",
+    "cp ~/tmp.plist ~/Library/LaunchAgents/com.evil.plist",
+    "rm -rf /tmp/foo",
+    "sudo echo hi",
+  ];
+  for (const command of destructiveCommands) {
+    assert.equal(
+      isHostShellSafeForAlwaysMode(command),
+      false,
+      `Expected NOT safe for always mode: ${command}`
+    );
+    assert.equal(
+      assessToolCall("host_run_shell", { command, risk: "low" }, alwaysCfg).decision,
+      "confirm",
+      `Expected confirm for destructive command: ${command}`
+    );
+  }
+});
+
+test("sandboxMode full auto-allows internal sandbox tools even with spurious risk=high and honors allowRules on external interactive tools", () => {
+  const fullCfg = { sandboxMode: "full", writeRoots: ["/tmp/ws"] };
+
+  const internalTools: [string, Record<string, any>][] = [
+    ["run_shell", { command: "rm -rf /tmp/scratch && npm run build", risk: "high" }],
+    ["read_file", { path: "/opt/sandbox/readme.md", risk: "high" }],
+    ["write_file", { path: "/opt/sandbox/out.txt", content: "ok", risk: "high" }],
+    ["open_url", { url: "https://example.com", risk: "high" }],
+    ["browser_snapshot", { url: "https://example.com", risk: "high" }],
+    ["browser_tabs", { action: "list", risk: "high" }],
+    ["browser_scroll", { direction: "down", amount: 600, risk: "high" }],
+    ["browser_wait", { ms: 1000, risk: "high" }],
+    ["browser_select", { ref: "e1", label: "Option A", risk: "high" }],
+    ["browser_upload_file", { ref: "e2", paths: ["/tmp/photo.png"], risk: "high" }],
+    ["screenshot", { risk: "high" }],
+    ["scroll", { x: 100, y: 100, direction: "down", risk: "high" }],
+    ["list_windows", { risk: "high" }],
+    ["focus_window", { id: "0x1", risk: "high" }],
+  ];
+  for (const [tool, args] of internalTools) {
+    assert.equal(
+      assessToolCall(tool, args, fullCfg).decision,
+      "allow",
+      `Expected auto-allow under sandboxMode=full for internal tool ${tool}`
+    );
+  }
+
+  // Hardcoded sensitive path & cross-Bot workspace guardrails still protect browser_upload_file
+  assert.equal(
+    assessToolCall(
+      "browser_upload_file",
+      { ref: "e2", paths: ["~/.ssh/id_rsa"] },
+      fullCfg
+    ).decision,
+    "deny"
+  );
+  assert.equal(
+    assessToolCall(
+      "browser_upload_file",
+      { ref: "e2", paths: ["/tmp/ws/bots/other-bot/secret.txt"] },
+      { ...fullCfg, botWorkspaceSessionId: "my-bot", baseWorkspaceRoot: "/tmp/ws" }
+    ).decision,
+    "confirm"
+  );
+
+  // External interactive sandbox tools still confirm when risk="high" unless matched by tool-specific allowRule
+  for (const [tool, args] of [
+    ["browser_click", { ref: "e5", risk: "high" }],
+    ["browser_type", { ref: "e3", text: "publish", submit: true, risk: "high" }],
+    ["click", { x: 50, y: 60, risk: "high" }],
+    ["type_text", { text: "send", risk: "high" }],
+    ["key", { combo: "Return", risk: "high" }],
+  ] as [string, Record<string, any>][]) {
+    assert.equal(assessToolCall(tool, args, fullCfg).decision, "confirm");
+    assert.equal(
+      assessToolCall(tool, args, {
+        ...fullCfg,
+        policy: { autoAudit: true, allowRules: [{ tool, pattern: "" }], askRules: [] },
+      }).decision,
+      "allow",
+      `Tool-specific allowRule must allow ${tool} even with risk=high in sandboxMode=full`
+    );
+    // Global wildcard rule must NOT silently bypass risk=high
+    assert.equal(
+      assessToolCall(tool, args, {
+        ...fullCfg,
+        policy: { autoAudit: true, allowRules: [{ tool: "*", pattern: "" }], askRules: [] },
+      }).decision,
+      "confirm"
+    );
+  }
+});
+
+test("policy autoAudit=false skips automatic risk=high prompts while still enforcing guardrails, askRules, and deterministic danger", () => {
+  const noAuditCfg = {
+    sandboxMode: "full",
+    hostExecutionMode: "always",
+    policy: {
+      autoAudit: false,
+      allowRules: [],
+      askRules: [{ tool: "host_run_shell", pattern: "deploy-prod" }],
+    },
+  };
+
+  // Skips LLM risk="high" automatic prompt
+  assert.equal(
+    assessToolCall("browser_click", { ref: "e9", risk: "high" }, noAuditCfg).decision,
+    "allow"
+  );
+  // Still enforces explicit askRules
+  assert.equal(
+    assessToolCall("host_run_shell", { command: "./deploy-prod.sh", risk: "low" }, noAuditCfg).decision,
+    "confirm"
+  );
+  // Still enforces hardcoded sensitive path deny
+  assert.equal(
+    assessToolCall("host_read_file", { path: "~/.ssh/id_rsa" }, noAuditCfg).decision,
+    "deny"
+  );
+  // Still enforces deterministic destructive shell confirmation
+  assert.equal(
+    assessToolCall("host_run_shell", { command: "rm -rf /tmp/x" }, noAuditCfg).decision,
+    "confirm"
+  );
+  // Still enforces hostExecutionMode="ask"
+  assert.equal(
+    assessToolCall(
+      "host_run_shell",
+      { command: "ls -la" },
+      { ...noAuditCfg, hostExecutionMode: "ask" }
+    ).decision,
+    "confirm"
+  );
+});
+
+test("extractSuggestedCommandPattern skips leading cd/export/env setup and extracts meaningful verbatim command prefix", () => {
+  assert.equal(
+    extractSuggestedCommandPattern('cd /Users/foo/cxy-blog && git commit -m "feat: post"'),
+    "git commit"
+  );
+  assert.equal(
+    extractSuggestedCommandPattern("cd /Users/foo/cxy-blog && ./deploy.sh --prod"),
+    "./deploy.sh"
+  );
+  assert.equal(
+    extractSuggestedCommandPattern("export NODE_ENV=production\ncd ~/app && npm run build"),
+    "npm run build"
+  );
+  assert.equal(
+    extractSuggestedCommandPattern("FOO=bar env -u X pnpm run test"),
+    "pnpm run test"
+  );
+  assert.equal(
+    extractSuggestedCommandPattern("echo always-rule-marker"),
+    "echo"
+  );
+  assert.equal(
+    extractSuggestedCommandPattern("git -C /Users/foo/repo push origin main"),
+    "git"
+  );
+  assert.equal(
+    extractSuggestedCommandPattern("cd /tmp/only-cd"),
+    "cd /tmp/only-cd"
+  );
+  assert.equal(extractSuggestedCommandPattern(""), "");
 });

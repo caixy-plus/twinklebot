@@ -357,7 +357,7 @@ def activate_cdp_target(target: dict, port: int = DEFAULT_CDP_PORT, timeout: flo
         pass
 
 
-def cdp_ws_session(ws_url: str, callback, timeout: float = 8.0):
+def cdp_ws_session(ws_url: str, callback, timeout: float = 12.0):
     parsed = urllib.parse.urlparse(ws_url)
     host = parsed.hostname or "127.0.0.1"
     if host not in ("127.0.0.1", "localhost"):
@@ -422,7 +422,7 @@ def cdp_ws_session(ws_url: str, callback, timeout: float = 8.0):
         return callback(call)
 
 
-def cdp_ws_call(ws_url: str, method: str, params: dict = None, timeout: float = 8.0):
+def cdp_ws_call(ws_url: str, method: str, params: dict = None, timeout: float = 12.0):
     return cdp_ws_session(ws_url, lambda call: call(method, params), timeout=timeout)
 
 
@@ -442,7 +442,7 @@ def _eval_on_session(call, expression: str):
     return res.get("result", {}).get("value")
 
 
-def default_cdp_session(callback, port: int = DEFAULT_CDP_PORT, timeout: float = 8.0):
+def default_cdp_session(callback, port: int = DEFAULT_CDP_PORT, timeout: float = 12.0):
     try:
         targets = fetch_cdp_targets(port=port, timeout=timeout)
     except Exception as e:
@@ -456,8 +456,81 @@ def default_cdp_session(callback, port: int = DEFAULT_CDP_PORT, timeout: float =
     return cdp_ws_session(target["webSocketDebuggerUrl"], callback, timeout=timeout)
 
 
-def default_cdp_eval(expression: str, port: int = DEFAULT_CDP_PORT, timeout: float = 8.0):
+def default_cdp_eval(expression: str, port: int = DEFAULT_CDP_PORT, timeout: float = 12.0):
     return default_cdp_session(lambda call: _eval_on_session(call, expression), port=port, timeout=timeout)
+
+
+def bring_cdp_target_to_front(
+    target_id: str,
+    window_id: int = None,
+    port: int = DEFAULT_CDP_PORT,
+    display: str = ":1",
+    timeout: float = 2.5,
+) -> bool:
+    """
+    Ensure both the CDP tab AND its dedicated X11 Chrome window are raised to the foreground
+    before X11 coordinate operations (`/screenshot`, `/click`, `/type`, `/key`, `/scroll`, `/drag`).
+    """
+    tid = str(target_id or "").strip()
+    if not tid:
+        return False
+    raised = False
+    ws_url = ""
+    title = ""
+    try:
+        targets = fetch_cdp_targets(port=port, timeout=min(timeout, 1.5))
+        if isinstance(targets, list):
+            for t in targets:
+                if isinstance(t, dict) and str(t.get("id") or "") == tid:
+                    ws_url = str(t.get("webSocketDebuggerUrl") or "")
+                    title = str(t.get("title") or "").strip()
+                    break
+    except Exception:
+        pass
+    if not ws_url:
+        ws_url = f"ws://127.0.0.1:{port}/devtools/page/{tid}"
+
+    # 1. Un-minimize the Bot's Chrome window via Browser.setWindowBounds if window_id is known
+    if window_id is not None:
+        try:
+            set_cdp_window_bounds(int(window_id), {"windowState": "normal"}, port=port, timeout=min(timeout, 1.5))
+        except Exception:
+            pass
+
+    # 2. Ask Chrome itself to focus/bring this page to front via CDP Page.bringToFront
+    try:
+        cdp_ws_call(ws_url, "Page.bringToFront", {}, timeout=min(timeout, 2.0))
+        raised = True
+    except Exception:
+        pass
+
+    # 3. Ask XFCE/X11 window manager (`wmctrl`) to raise the matching Chrome window by title
+    if title:
+        try:
+            proc = default_run(["wmctrl", "-l"], timeout=1.5, display=display, cdp_port=port)
+            out = (
+                proc.stdout.decode("utf-8", errors="replace")
+                if isinstance(proc.stdout, bytes)
+                else str(proc.stdout or "")
+            )
+            title_lower = title.lower()
+            matched_xid = None
+            for line in out.splitlines():
+                parts = line.strip().split(None, 3)
+                if len(parts) < 4:
+                    continue
+                xid, wtitle = parts[0], parts[3]
+                wlower = wtitle.lower()
+                if title_lower in wlower and ("chrome" in wlower or "chromium" in wlower or wlower.startswith(title_lower)):
+                    matched_xid = xid
+                    break
+            if matched_xid:
+                default_run(["wmctrl", "-i", "-a", matched_xid], timeout=1.5, display=display, cdp_port=port)
+                raised = True
+        except Exception:
+            pass
+
+    return raised
 
 
 def fetch_cdp_browser_ws(port: int = DEFAULT_CDP_PORT, timeout: float = 2.0):
@@ -1614,9 +1687,28 @@ class TabManager:
         bot_key = self._normalize_bot_key(bot_id, is_admin=is_admin)
         with self._lock:
             tid = self._bot_targets.get(bot_key)
+            wid = self._bot_windows.get(bot_key)
         if not tid:
             return False
         self.activate_tab_fn({"id": tid}, port=self.cdp_port)
+        # Also bring the dedicated Chrome window to X11 foreground so multi-Bot screenshots/clicks
+        # hit this Bot's window instead of whichever window happened to be on top.
+        raise_fn = getattr(self, "raise_window_fn", None)
+        if raise_fn is not None:
+            try:
+                raise_fn(tid, window_id=wid, port=self.cdp_port, display=self.display)
+            except Exception:
+                pass
+        elif self.activate_tab_fn is activate_cdp_target:
+            try:
+                bring_cdp_target_to_front(
+                    tid,
+                    window_id=wid,
+                    port=self.cdp_port,
+                    display=self.display,
+                )
+            except Exception:
+                pass
         return True
 
     def protected_target_ids(self) -> set:
@@ -1756,7 +1848,60 @@ class TabManager:
 DisplayManager = TabManager
 
 
-_JS_SNAPSHOT_HELPER = r"""
+_JS_FIND_REF_HELPER = r"""
+function findGbRef(ref) {
+  try {
+    const topDirect = document.querySelector('[data-gb-ref="' + ref + '"]');
+    if (topDirect) {
+      return { el: topDirect, win: window, doc: document, root: document, offsetX: 0, offsetY: 0 };
+    }
+  } catch (e) {}
+  function searchRoot(root, win, doc, offsetX, offsetY, depth) {
+    if (!root || depth > 6) return null;
+    try {
+      const direct = root.querySelector('[data-gb-ref="' + ref + '"]');
+      if (direct) {
+        return { el: direct, win: win, doc: doc, root: root, offsetX: offsetX, offsetY: offsetY };
+      }
+    } catch (e) {}
+    let all = [];
+    try {
+      all = root.querySelectorAll('*');
+    } catch (e) {
+      return null;
+    }
+    for (let i = 0; i < all.length; i++) {
+      const node = all[i];
+      if (node.shadowRoot) {
+        const hit = searchRoot(node.shadowRoot, win, doc, offsetX, offsetY, depth + 1);
+        if (hit) return hit;
+      }
+      if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
+        try {
+          const idoc = node.contentDocument;
+          const iwin = node.contentWindow;
+          if (idoc && iwin) {
+            const fr = node.getBoundingClientRect();
+            const hit = searchRoot(
+              idoc,
+              iwin,
+              idoc,
+              offsetX + (fr ? fr.left : 0),
+              offsetY + (fr ? fr.top : 0),
+              depth + 1
+            );
+            if (hit) return hit;
+          }
+        } catch (e) {}
+      }
+    }
+    return null;
+  }
+  return searchRoot(document, window, document, 0, 0, 0);
+}
+"""
+
+_JS_SNAPSHOT_HELPER = _JS_FIND_REF_HELPER + r"""
 function collectGbSnapshot(maxElements, maxText) {
   maxElements = maxElements || 80;
   maxText = maxText || 3000;
@@ -1771,34 +1916,220 @@ function collectGbSnapshot(maxElements, maxText) {
     '[role="link"]',
     '[role="tab"]',
     '[role="menuitem"]',
+    '[role="menuitemcheckbox"]',
+    '[role="menuitemradio"]',
     '[role="checkbox"]',
     '[role="switch"]',
     '[role="combobox"]',
     '[role="searchbox"]',
+    '[role="textbox"]',
+    '[role="option"]',
+    '[role="radio"]',
+    '[role="slider"]',
+    '[role="spinbutton"]',
+    '[role="treeitem"]',
     '[contenteditable="true"]',
+    '[contenteditable=""]',
+    '[tabindex]:not([tabindex="-1"])',
     '[onclick]'
   ].join(',');
 
   const vw = window.innerWidth || 1440;
   const vh = window.innerHeight || 900;
-  const nodes = Array.from(document.querySelectorAll(selector));
-  const elements = [];
-  let idx = 0;
+  const docEl = document.documentElement;
+  const docBody = document.body;
+  const scrollH = Math.max(
+    (docEl && docEl.scrollHeight) || 0,
+    (docBody && docBody.scrollHeight) || 0,
+    vh
+  );
 
-  for (const el of nodes) {
-    if (idx >= maxElements) break;
-    const style = window.getComputedStyle(el);
-    if (!style || style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') === 0) {
-      continue;
+  const seen = new WeakSet();
+  const inViewportCandidates = [];
+  const offscreenCandidates = [];
+  const iframes = [];
+  const shadowTextParts = [];
+  let shadowDomDetected = false;
+  let hiddenFileCount = 0;
+  const MAX_SCAN = Math.max(maxElements * 5, 400);
+  const STRUCTURAL_TAGS = { div: 1, section: 1, main: 1, article: 1, body: 1, html: 1, aside: 1, nav: 1, header: 1, footer: 1 };
+
+  function extractShadowText(sr) {
+    if (!sr || shadowTextParts.length >= 60) return;
+    try {
+      const walker = document.createTreeWalker(sr, NodeFilter.SHOW_TEXT);
+      let n;
+      while ((n = walker.nextNode())) {
+        const p = n.parentElement;
+        if (p) {
+          const pt = (p.tagName || '').toUpperCase();
+          if (pt === 'STYLE' || pt === 'SCRIPT' || pt === 'NOSCRIPT' || pt === 'TEMPLATE') continue;
+        }
+        const s = String(n.nodeValue || '').replace(/\s+/g, ' ').trim();
+        if (s.length >= 2) {
+          shadowTextParts.push(s);
+          if (shadowTextParts.length >= 60) break;
+        }
+      }
+    } catch (e) {}
+  }
+
+  function scanRoot(root, win, offsetX, offsetY, depth) {
+    if (!root || depth > 6) return;
+    if (inViewportCandidates.length + offscreenCandidates.length >= MAX_SCAN) return;
+
+    try {
+      const stale = root.querySelectorAll('[data-gb-ref]');
+      for (let i = 0; i < stale.length; i++) {
+        stale[i].removeAttribute('data-gb-ref');
+      }
+    } catch (e) {}
+
+    let matched = [];
+    try {
+      matched = Array.from(root.querySelectorAll(selector));
+    } catch (e) {
+      matched = [];
     }
-    const r = el.getBoundingClientRect();
-    if (!r || r.width < 3 || r.height < 3) continue;
-    idx += 1;
-    const ref = 'e' + idx;
-    el.setAttribute('data-gb-ref', ref);
 
-    const tag = (el.tagName || '').toLowerCase();
-    const role = el.getAttribute('role') || (el.getAttribute('type') || '').toLowerCase() || tag;
+    for (const el of matched) {
+      if (inViewportCandidates.length + offscreenCandidates.length >= MAX_SCAN) break;
+      if (seen.has(el)) continue;
+      seen.add(el);
+
+      const tag = (el.tagName || '').toLowerCase();
+      const inpType = tag === 'input' ? (el.getAttribute('type') || '').toLowerCase() : '';
+      const isFileInput = tag === 'input' && inpType === 'file';
+      let style = null;
+      try {
+        style = win.getComputedStyle(el);
+      } catch (e) {}
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      const visuallyHidden =
+        !style ||
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        parseFloat(style.opacity || '1') === 0 ||
+        !r ||
+        r.width < 3 ||
+        r.height < 3;
+
+      if (visuallyHidden) {
+        if (isFileInput && hiddenFileCount < 10) {
+          hiddenFileCount += 1;
+          inViewportCandidates.push({
+            el: el,
+            tag: tag,
+            inpType: inpType,
+            r: r || { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 },
+            offsetX: offsetX,
+            offsetY: offsetY,
+            inViewport: false,
+            hiddenFileInput: true,
+          });
+        }
+        continue;
+      }
+
+      // Skip huge structural containers that only matched via tabindex="0"
+      if (
+        STRUCTURAL_TAGS[tag] &&
+        !el.getAttribute('role') &&
+        !el.hasAttribute('onclick') &&
+        !el.isContentEditable &&
+        r.width * r.height > vw * vh * 0.35
+      ) {
+        continue;
+      }
+
+      const absLeft = r.left + offsetX;
+      const absTop = r.top + offsetY;
+      const absRight = r.right + offsetX;
+      const absBottom = r.bottom + offsetY;
+      const inVp = absBottom > 0 && absTop < vh && absRight > 0 && absLeft < vw;
+
+      const entry = {
+        el: el,
+        tag: tag,
+        inpType: inpType,
+        r: r,
+        offsetX: offsetX,
+        offsetY: offsetY,
+        inViewport: inVp,
+        hiddenFileInput: false,
+      };
+      if (inVp) {
+        inViewportCandidates.push(entry);
+      } else {
+        offscreenCandidates.push(entry);
+      }
+    }
+
+    // Walk nested Shadow DOM hosts and iframes
+    let allNodes = [];
+    try {
+      allNodes = root.querySelectorAll('*');
+    } catch (e) {
+      allNodes = [];
+    }
+    for (let i = 0; i < allNodes.length; i++) {
+      const node = allNodes[i];
+      if (node.shadowRoot) {
+        shadowDomDetected = true;
+        extractShadowText(node.shadowRoot);
+        scanRoot(node.shadowRoot, win, offsetX, offsetY, depth + 1);
+      }
+      if (node.tagName === 'IFRAME' || node.tagName === 'FRAME') {
+        let fr = null;
+        try {
+          fr = node.getBoundingClientRect();
+        } catch (e) {}
+        const visibleFrame = fr && fr.width >= 10 && fr.height >= 10;
+        let sameOriginDoc = null;
+        let sameOriginWin = null;
+        try {
+          sameOriginDoc = node.contentDocument;
+          sameOriginWin = node.contentWindow;
+        } catch (e) {
+          sameOriginDoc = null;
+          sameOriginWin = null;
+        }
+        if (visibleFrame && iframes.length < 20) {
+          const fInfo = {
+            src: String(node.getAttribute('src') || node.src || '').slice(0, 160),
+            cross_origin: !sameOriginDoc,
+            rect: {
+              x: Math.round(fr.left + offsetX + fr.width / 2),
+              y: Math.round(fr.top + offsetY + fr.height / 2),
+              w: Math.round(fr.width),
+              h: Math.round(fr.height),
+            },
+          };
+          const fTitle = String(node.getAttribute('title') || node.getAttribute('name') || '').trim();
+          if (fTitle) fInfo.title = fTitle.slice(0, 80);
+          iframes.push(fInfo);
+        }
+        if (sameOriginDoc && sameOriginWin && fr) {
+          scanRoot(sameOriginDoc, sameOriginWin, offsetX + fr.left, offsetY + fr.top, depth + 1);
+        }
+      }
+    }
+  }
+
+  scanRoot(document, window, 0, 0, 0);
+
+  const chosen = inViewportCandidates.concat(offscreenCandidates).slice(0, maxElements);
+  const elements = [];
+  for (let i = 0; i < chosen.length; i++) {
+    const c = chosen[i];
+    const el = c.el;
+    const ref = 'e' + (i + 1);
+    try {
+      el.setAttribute('data-gb-ref', ref);
+    } catch (e) {}
+
+    const tag = c.tag;
+    const role = el.getAttribute('role') || c.inpType || tag;
     const rawName = (
       el.innerText ||
       el.getAttribute('aria-label') ||
@@ -1816,45 +2147,165 @@ function collectGbSnapshot(maxElements, maxText) {
       role: role,
       name: rawName,
       rect: {
-        x: Math.round(r.left + r.width / 2),
-        y: Math.round(r.top + r.height / 2),
-        w: Math.round(r.width),
-        h: Math.round(r.height),
+        x: Math.round(c.r.left + c.offsetX + c.r.width / 2),
+        y: Math.round(c.r.top + c.offsetY + c.r.height / 2),
+        w: Math.round(c.r.width),
+        h: Math.round(c.r.height),
       },
-      in_viewport: r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw,
+      in_viewport: Boolean(c.inViewport),
     };
 
+    if (c.hiddenFileInput) {
+      item.hidden_file_input = true;
+      const acc = el.getAttribute('accept');
+      if (acc) item.accept = String(acc).slice(0, 80);
+      if (el.multiple) item.multiple = true;
+    } else if (tag === 'input' && c.inpType === 'file') {
+      const acc = el.getAttribute('accept');
+      if (acc) item.accept = String(acc).slice(0, 80);
+      if (el.multiple) item.multiple = true;
+    }
+
     if (tag === 'input' || tag === 'textarea' || tag === 'select') {
-      const inpType = (el.getAttribute('type') || '').toLowerCase();
-      item.value = inpType === 'password' ? (el.value ? '***' : '') : String(el.value || '').slice(0, 80);
+      item.value = c.inpType === 'password' ? (el.value ? '***' : '') : String(el.value || '').slice(0, 80);
       const ph = el.getAttribute('placeholder');
       if (ph) item.placeholder = String(ph).slice(0, 60);
+    }
+    if (tag === 'select' && el.options) {
+      const opts = [];
+      const limit = Math.min(el.options.length, 15);
+      for (let oi = 0; oi < limit; oi++) {
+        const o = el.options[oi];
+        opts.push({
+          value: String(o.value || '').slice(0, 60),
+          label: String(o.text || '').trim().slice(0, 60),
+          selected: Boolean(o.selected),
+        });
+      }
+      item.options = opts;
+    }
+    if (
+      (tag === 'input' && (c.inpType === 'checkbox' || c.inpType === 'radio')) ||
+      role === 'checkbox' ||
+      role === 'switch' ||
+      role === 'radio'
+    ) {
+      const checkedAttr = el.getAttribute('aria-checked');
+      item.checked = typeof el.checked === 'boolean' ? Boolean(el.checked) : checkedAttr === 'true';
     }
     if (tag === 'a' && el.href) {
       item.href = String(el.href).slice(0, 120);
     }
-    if (el.disabled) item.disabled = true;
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') {
+      item.disabled = true;
+    }
     elements.push(item);
   }
 
-  const rawText = (document.body && document.body.innerText ? document.body.innerText : '')
+  let rawText = (docBody && docBody.innerText ? docBody.innerText : '')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  if (shadowDomDetected && rawText.length < 300 && shadowTextParts.length > 0) {
+    const extra = shadowTextParts.join(' ').replace(/\s+/g, ' ').trim();
+    rawText = rawText ? (rawText + '\n' + extra) : extra;
+  }
 
-  return {
+  let focused = null;
+  try {
+    let ae = document.activeElement;
+    let guard = 0;
+    while (ae && guard < 8) {
+      guard += 1;
+      if (ae.shadowRoot && ae.shadowRoot.activeElement) {
+        ae = ae.shadowRoot.activeElement;
+        continue;
+      }
+      if (ae.tagName === 'IFRAME' || ae.tagName === 'FRAME') {
+        try {
+          if (ae.contentDocument && ae.contentDocument.activeElement) {
+            ae = ae.contentDocument.activeElement;
+            continue;
+          }
+        } catch (e) {}
+      }
+      break;
+    }
+    if (ae && ae !== docBody && ae !== docEl) {
+      const ftag = (ae.tagName || '').toLowerCase();
+      focused = {
+        ref: ae.getAttribute ? (ae.getAttribute('data-gb-ref') || null) : null,
+        tag: ftag,
+        role: (ae.getAttribute && ae.getAttribute('role')) || ftag,
+        name: String(
+          (ae.getAttribute && (ae.getAttribute('aria-label') || ae.getAttribute('placeholder') || ae.getAttribute('name'))) ||
+          ae.innerText ||
+          ''
+        ).replace(/\s+/g, ' ').trim().slice(0, 60),
+      };
+    }
+  } catch (e) {}
+
+  let challengeDetected = null;
+  try {
+    const tLow = String(document.title || '').toLowerCase();
+    const uLow = String(location.href || '').toLowerCase();
+    const bLow = rawText.slice(0, 1200).toLowerCase();
+    if (
+      tLow.includes('just a moment') ||
+      tLow.includes('attention required') ||
+      uLow.includes('__cf_chl_') ||
+      Boolean(document.querySelector('#challenge-running, #cf-challenge-running, #challenge-stage, .cf-turnstile'))
+    ) {
+      challengeDetected = { type: 'cloudflare', reason: 'Cloudflare human verification / challenge page detected' };
+    } else {
+      for (const f of iframes) {
+        const fsrc = String(f.src || '').toLowerCase();
+        if (fsrc.includes('challenges.cloudflare.com')) {
+          challengeDetected = { type: 'turnstile', reason: 'Cloudflare Turnstile challenge detected' };
+          break;
+        }
+        if (fsrc.includes('google.com/recaptcha') || fsrc.includes('recaptcha.net')) {
+          challengeDetected = { type: 'recaptcha', reason: 'Google reCAPTCHA challenge detected' };
+          break;
+        }
+        if (fsrc.includes('hcaptcha.com')) {
+          challengeDetected = { type: 'hcaptcha', reason: 'hCaptcha challenge detected' };
+          break;
+        }
+      }
+      if (!challengeDetected && Boolean(document.querySelector('.g-recaptcha, #recaptcha, .h-captcha'))) {
+        challengeDetected = { type: 'captcha', reason: 'CAPTCHA challenge widget detected' };
+      } else if (
+        !challengeDetected &&
+        bLow.length < 1000 &&
+        (bLow.includes('verify you are human') ||
+          bLow.includes('checking your browser') ||
+          bLow.includes('enable javascript and cookies to continue'))
+      ) {
+        challengeDetected = { type: 'bot_challenge', reason: 'Anti-bot human verification page detected' };
+      }
+    }
+  } catch (e) {}
+
+  const out = {
     ok: true,
     url: String(location.href || ''),
     title: String(document.title || ''),
     scroll: {
       y: Math.round(window.scrollY || 0),
-      max_y: Math.max(0, Math.round((document.documentElement.scrollHeight || vh) - vh)),
+      max_y: Math.max(0, Math.round(scrollH - vh)),
       viewport_h: vh,
     },
     element_count: elements.length,
     elements: elements,
     text_excerpt: rawText.slice(0, maxText),
   };
+  if (iframes.length > 0) out.iframes = iframes;
+  if (focused) out.focused = focused;
+  if (challengeDetected) out.challenge_detected = challengeDetected;
+  if (shadowDomDetected) out.shadow_dom_detected = true;
+  return out;
 }
 """
 
@@ -1945,12 +2396,11 @@ class Actions:
         elif self.target_id:
             self.cdp_session = self._target_cdp_session
         else:
-            self.cdp_session = lambda callback, port=None, timeout=8.0: default_cdp_session(
+            self.cdp_session = lambda callback, port=None, timeout=12.0: default_cdp_session(
                 callback, port=(port or self.cdp_port), timeout=timeout
             )
 
-    def _target_cdp_session(self, callback, port=None, timeout=8.0):
-        eff_port = port or self.cdp_port
+    def _resolve_target_ws_url(self, eff_port: int, timeout: float = 3.0) -> str:
         ws_url = ""
         try:
             targets = self.targets_fn(port=eff_port, timeout=min(timeout, 3.0))
@@ -1963,6 +2413,10 @@ class Actions:
             pass
         if not ws_url:
             ws_url = self.target_ws_url or f"ws://127.0.0.1:{eff_port}/devtools/page/{self.target_id}"
+        return ws_url
+
+    def _target_cdp_session(self, callback, port=None, timeout=12.0):
+        eff_port = port or self.cdp_port
 
         def _with_focus_emulation(call):
             try:
@@ -1971,7 +2425,15 @@ class Actions:
                 pass
             return callback(call)
 
-        return cdp_ws_session(ws_url, _with_focus_emulation, timeout=timeout)
+        ws_url = self._resolve_target_ws_url(eff_port, timeout=timeout)
+        try:
+            return cdp_ws_session(ws_url, _with_focus_emulation, timeout=timeout)
+        except (ConnectionError, TimeoutError, OSError):
+            # Retry once on transient WebSocket handshake/connection failures by refreshing the target URL
+            time.sleep(0.15)
+            fresh_ws = self._resolve_target_ws_url(eff_port, timeout=timeout)
+            self.target_ws_url = fresh_ws
+            return cdp_ws_session(fresh_ws, _with_focus_emulation, timeout=timeout)
 
     def screenshot(self):
         proc = self.run(["import", "-window", "root", "png:-"])
@@ -1993,20 +2455,38 @@ class Actions:
         self.run(cmd)
         return {"ok": True}
 
-    def type_text(self, text, sensitive=False):
+    def type_text(self, text, sensitive=False, press_enter=False):
         if not isinstance(text, str):
             raise TypeError("text must be a string")
-        self.run(["xclip", "-selection", "clipboard"], input=text.encode("utf-8"))
-        try:
-            self.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"])
-        finally:
-            if sensitive:
-                # Give target app a brief moment to read the clipboard on paste, then wipe X11 clipboard
-                time.sleep(0.08)
-                try:
-                    self.run(["xclip", "-selection", "clipboard"], input=b"")
-                except Exception:
-                    pass
+        if not isinstance(press_enter, bool):
+            raise ValueError("press_enter must be a boolean")
+
+        # Pure single-line printable ASCII (non-sensitive, <= 120 chars) uses direct xdotool keystrokes
+        # so custom inputs that intercept or ignore clipboard paste (e.g. tag chips, comboboxes)
+        # receive real keyboard events instead of silently dropping Ctrl+V.
+        is_direct_ascii = (
+            not sensitive
+            and 0 < len(text) <= 120
+            and all(32 <= ord(ch) <= 126 for ch in text)
+        )
+        if is_direct_ascii:
+            self.run(["xdotool", "type", "--clearmodifiers", "--delay", "12", "--", text])
+        else:
+            self.run(["xclip", "-selection", "clipboard"], input=text.encode("utf-8"))
+            # Brief settle so X11 clipboard selection ownership is registered before Ctrl+V
+            time.sleep(0.05)
+            try:
+                self.run(["xdotool", "key", "--clearmodifiers", "ctrl+v"])
+            finally:
+                if sensitive:
+                    # Give target app a brief moment to read the clipboard on paste, then wipe X11 clipboard
+                    time.sleep(0.08)
+                    try:
+                        self.run(["xclip", "-selection", "clipboard"], input=b"")
+                    except Exception:
+                        pass
+        if press_enter:
+            self.run(["xdotool", "key", "--clearmodifiers", "Return"])
         return {"ok": True}
 
     def key(self, combo):
@@ -2196,6 +2676,73 @@ class Actions:
         except Exception:
             return False
 
+    def _wait_for_page_settle(
+        self,
+        max_polls: int = 28,
+        poll_sec: float = 0.25,
+        require_content: bool = True,
+    ):
+        """
+        Wait until the active tab reaches `readyState === 'complete'` and (for SPAs)
+        either has visible body content or finishes a brief post-complete hydration grace period.
+        Tolerates transient 'Execution context was destroyed' errors during mid-flight navigations
+        and stays backward-compatible with mocks returning plain readyState strings.
+        """
+        probe_expr = (
+            "(function() { "
+            "const cur = String(location.href || ''); "
+            "if (cur === 'about:blank') return { state: 'navigating', url: cur, has_content: false }; "
+            "const rs = String(document.readyState || 'loading'); "
+            "const body = document.body; "
+            "const textLen = body && body.innerText ? body.innerText.trim().length : 0; "
+            "const childCount = body ? body.children.length : 0; "
+            "return { state: rs, url: cur, has_content: (textLen >= 20 || childCount >= 3) }; "
+            "})()"
+        )
+        complete_empty_polls = 0
+        interactive_polls = 0
+        for _ in range(max_polls):
+            try:
+                val = self.cdp_session(lambda call: _eval_on_session(call, probe_expr))
+                if isinstance(val, str):
+                    if val == "complete":
+                        return
+                    if val == "interactive":
+                        interactive_polls += 1
+                        if interactive_polls >= 4:
+                            return
+                elif isinstance(val, dict):
+                    st = val.get("state")
+                    has_content = bool(val.get("has_content"))
+                    if st == "complete":
+                        if not require_content or has_content:
+                            return
+                        complete_empty_polls += 1
+                        if complete_empty_polls >= 6:
+                            return
+                    elif st == "interactive":
+                        interactive_polls += 1
+                        if interactive_polls >= 12 and (not require_content or has_content):
+                            return
+            except Exception:
+                pass
+            time.sleep(poll_sec)
+
+    def _wait_for_active_tab_ready(self, max_polls: int = 18, poll_sec: float = 0.2):
+        self._wait_for_page_settle(max_polls=max_polls, poll_sec=poll_sec, require_content=True)
+
+    def _attach_snapshot_meta(self, snap: dict):
+        if self.list_window_targets_fn is not None:
+            try:
+                wtabs = self.list_window_targets_fn()
+                if isinstance(wtabs, list) and wtabs:
+                    snap["tab_count"] = len(wtabs)
+            except Exception:
+                pass
+        if self.target_id:
+            snap.setdefault("target_id", self.target_id)
+        return snap
+
     def browser_snapshot(self, url=None, max_elements=80, max_text=3000):
         if url is not None:
             if not isinstance(url, str):
@@ -2209,22 +2756,7 @@ class Actions:
                     self.cdp_session(lambda call: call("Page.navigate", {"url": url}))
                 else:
                     self.open_url(url)
-                for _ in range(32):
-                    try:
-                        state = self.cdp_session(
-                            lambda call: _eval_on_session(
-                                call,
-                                "(function() { const cur = String(location.href || ''); if (cur === 'about:blank') return 'navigating'; return document.readyState; })()",
-                            )
-                        )
-                        if state == "complete":
-                            break
-                        if state == "interactive":
-                            time.sleep(0.2)
-                            break
-                    except Exception:
-                        pass
-                    time.sleep(0.25)
+                self._wait_for_page_settle(max_polls=32, poll_sec=0.25, require_content=True)
                 if not self.target_id:
                     close_redundant_blank_tabs(port=self.cdp_port)
                 elif self.protected_targets_fn is not None:
@@ -2245,39 +2777,20 @@ class Actions:
 return collectGbSnapshot({max_elements}, {max_text});
 }})()"""
         if self.cdp_eval is default_cdp_eval:
-            res = self.cdp_session(lambda call: _eval_on_session(call, expr))
+            try:
+                res = self.cdp_session(lambda call: _eval_on_session(call, expr))
+            except Exception as exc:
+                msg = str(exc)
+                if "Execution context" in msg or "Cannot find context" in msg or "scrollHeight" in msg:
+                    self._wait_for_page_settle(max_polls=16, poll_sec=0.2, require_content=True)
+                    res = self.cdp_session(lambda call: _eval_on_session(call, expr))
+                else:
+                    raise
         else:
             res = self.cdp_eval(expr)
         if not isinstance(res, dict):
             raise RuntimeError("Failed to collect browser snapshot")
-        if self.list_window_targets_fn is not None:
-            try:
-                wtabs = self.list_window_targets_fn()
-                if isinstance(wtabs, list) and wtabs:
-                    res["tab_count"] = len(wtabs)
-            except Exception:
-                pass
-        if self.target_id:
-            res.setdefault("target_id", self.target_id)
-        return res
-
-    def _wait_for_active_tab_ready(self, max_polls: int = 16, poll_sec: float = 0.2):
-        for _ in range(max_polls):
-            try:
-                state = self.cdp_session(
-                    lambda call: _eval_on_session(
-                        call,
-                        "(function() { const cur = String(location.href || ''); if (cur === 'about:blank') return 'navigating'; return document.readyState; })()",
-                    )
-                )
-                if state == "complete":
-                    return
-                if state == "interactive":
-                    time.sleep(0.15)
-                    return
-            except Exception:
-                pass
-            time.sleep(poll_sec)
+        return self._attach_snapshot_meta(res)
 
     def browser_click(self, ref):
         norm_ref = normalize_element_ref(ref)
@@ -2298,26 +2811,84 @@ return collectGbSnapshot({max_elements}, {max_text});
 
             def run_click(call):
                 locate_expr = f"""(function() {{
+{_JS_FIND_REF_HELPER}
 const ref = {json.dumps(norm_ref)};
-const el = document.querySelector('[data-gb-ref="' + ref + '"]');
-if (!el) {{
+const hit = findGbRef(ref);
+if (!hit || !hit.el) {{
   return {{
     ok: false,
+    url: String(location.href || ''),
+    title: String(document.title || ''),
     error: 'element ' + ref + ' not found on current page (call browser_snapshot to refresh refs)'
   }};
 }}
+const el = hit.el;
+const beforeUrl = String(location.href || '');
 el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
-const r = el.getBoundingClientRect();
+let r = el.getBoundingClientRect();
 const tag = (el.tagName || '').toLowerCase();
 const name = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.value || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
-const visible = r && r.width >= 1 && r.height >= 1;
-const x = visible ? (r.left + r.width / 2) : 0;
-const y = visible ? (r.top + r.height / 2) : 0;
-if (!visible) {{
+let visible = Boolean(r && r.width >= 1 && r.height >= 1);
+let localX = visible ? (r.left + r.width / 2) : 0;
+let localY = visible ? (r.top + r.height / 2) : 0;
+let x = visible ? (localX + hit.offsetX) : 0;
+let y = visible ? (localY + hit.offsetY) : 0;
+let fallbackJsClick = false;
+let occludedBy = '';
+
+function checkHit(lx, ly) {{
+  try {{
+    const pointRoot = (hit.root && typeof hit.root.elementFromPoint === 'function') ? hit.root : hit.doc;
+    if (!pointRoot || typeof pointRoot.elementFromPoint !== 'function') return {{ ok: true }};
+    const topEl = pointRoot.elementFromPoint(lx, ly);
+    if (!topEl) return {{ ok: true }};
+    if (topEl === el || el.contains(topEl) || (topEl.contains && topEl.contains(el))) {{
+      return {{ ok: true }};
+    }}
+    const desc = ((topEl.tagName || '').toLowerCase() + (topEl.id ? '#' + topEl.id : '') + (typeof topEl.className === 'string' && topEl.className ? '.' + topEl.className.trim().split(/\\s+/).slice(0, 2).join('.') : '')).slice(0, 60);
+    return {{ ok: false, by: desc }};
+  }} catch (e) {{
+    return {{ ok: true }};
+  }}
+}}
+
+if (visible) {{
+  let occ = checkHit(localX, localY);
+  if (!occ.ok) {{
+    try {{ el.scrollIntoView({{ block: 'nearest', inline: 'nearest', behavior: 'instant' }}); }} catch (e) {{}}
+    r = el.getBoundingClientRect();
+    visible = Boolean(r && r.width >= 1 && r.height >= 1);
+    localX = visible ? (r.left + r.width / 2) : 0;
+    localY = visible ? (r.top + r.height / 2) : 0;
+    x = visible ? (localX + hit.offsetX) : 0;
+    y = visible ? (localY + hit.offsetY) : 0;
+    occ = visible ? checkHit(localX, localY) : {{ ok: false, by: occ.by }};
+    if (!occ.ok) {{
+      fallbackJsClick = true;
+      occludedBy = occ.by || 'overlay';
+      try {{ el.focus(); }} catch (e) {{}}
+      for (const evType of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {{
+        try {{ el.dispatchEvent(new MouseEvent(evType, {{ bubbles: true, cancelable: true, view: hit.win }})); }} catch (e) {{}}
+      }}
+      el.click();
+    }}
+  }}
+}} else {{
+  fallbackJsClick = true;
   try {{ el.focus(); }} catch (e) {{}}
   el.click();
 }}
-return {{ ok: true, visible: Boolean(visible), x: x, y: y, tag: tag, name: name }};
+return {{
+  ok: true,
+  visible: Boolean(visible && !fallbackJsClick),
+  fallback_js_click: fallbackJsClick,
+  occluded_by: occludedBy,
+  before_url: beforeUrl,
+  x: x,
+  y: y,
+  tag: tag,
+  name: name
+}};
 }})()"""
                 info = _eval_on_session(call, locate_expr)
                 if not isinstance(info, dict):
@@ -2352,14 +2923,28 @@ return {{ ok: true, visible: Boolean(visible), x: x, y: y, tag: tag, name: name 
 {_JS_SNAPSHOT_HELPER}
 return collectGbSnapshot(80, 3000);
 }})()"""
-                snap = _eval_on_session(call, snap_expr)
+                try:
+                    snap = _eval_on_session(call, snap_expr)
+                except Exception as exc:
+                    msg = str(exc)
+                    if "Execution context" in msg or "Cannot find context" in msg or "scrollHeight" in msg:
+                        return {"_navigated_retry": True}
+                    raise
                 if not isinstance(snap, dict):
                     raise RuntimeError("Failed to collect browser snapshot after click")
-                snap["clicked"] = {
+                before_url = info.get("before_url") or ""
+                if before_url and snap.get("url") and snap.get("url") != before_url and snap.get("element_count", 0) == 0:
+                    return {"_navigated_retry": True}
+                clicked_meta = {
                     "ref": norm_ref,
                     "tag": info.get("tag", ""),
                     "name": info.get("name", ""),
                 }
+                if info.get("fallback_js_click"):
+                    clicked_meta["fallback_js_click"] = True
+                if info.get("occluded_by"):
+                    clicked_meta["occluded_by"] = info["occluded_by"]
+                snap["clicked"] = clicked_meta
                 if "tab_count" in new_tab_holder:
                     snap["tab_count"] = new_tab_holder["tab_count"]
                 if self.target_id:
@@ -2367,6 +2952,30 @@ return collectGbSnapshot(80, 3000);
                 return snap
 
             res = self.cdp_session(run_click)
+            if isinstance(res, dict) and res.get("_navigated_retry"):
+                self._wait_for_page_settle(max_polls=20, poll_sec=0.25, require_content=True)
+                snap_expr = f"""(function() {{
+{_JS_SNAPSHOT_HELPER}
+return collectGbSnapshot(80, 3000);
+}})()"""
+                snap = self.cdp_session(lambda call: _eval_on_session(call, snap_expr))
+                if not isinstance(snap, dict):
+                    raise RuntimeError("Failed to collect browser snapshot after navigation")
+                info = clicked_holder.get("info") or {}
+                clicked_meta = {
+                    "ref": norm_ref,
+                    "tag": info.get("tag", ""),
+                    "name": info.get("name", ""),
+                }
+                if info.get("fallback_js_click"):
+                    clicked_meta["fallback_js_click"] = True
+                if info.get("occluded_by"):
+                    clicked_meta["occluded_by"] = info["occluded_by"]
+                snap["clicked"] = clicked_meta
+                if "tab_count" in new_tab_holder:
+                    snap["tab_count"] = new_tab_holder["tab_count"]
+                return self._attach_snapshot_meta(snap)
+
             if isinstance(res, dict) and res.get("_switched_new_tab") and "target" in new_tab_holder:
                 newest = new_tab_holder["target"]
                 new_tid = str(newest["id"])
@@ -2403,19 +3012,20 @@ return collectGbSnapshot(80, 3000);
         expr = f"""(async function() {{
 {_JS_SNAPSHOT_HELPER}
 const ref = {json.dumps(norm_ref)};
-const el = document.querySelector('[data-gb-ref="' + ref + '"]');
-if (!el) {{
+const hit = findGbRef(ref);
+if (!hit || !hit.el) {{
   return {{
     ok: false,
     error: 'element ' + ref + ' not found on current page (call browser_snapshot to refresh refs)'
   }};
 }}
+const el = hit.el;
 el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
 const tag = (el.tagName || '').toLowerCase();
 const name = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.value || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
 try {{ el.focus(); }} catch (e) {{}}
 for (const evType of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {{
-  try {{ el.dispatchEvent(new MouseEvent(evType, {{ bubbles: true, cancelable: true, view: window }})); }} catch (e) {{}}
+  try {{ el.dispatchEvent(new MouseEvent(evType, {{ bubbles: true, cancelable: true, view: hit.win }})); }} catch (e) {{}}
 }}
 el.click();
 await new Promise(r => setTimeout(r, 250));
@@ -2440,17 +3050,25 @@ return snap;
         if self.cdp_eval is default_cdp_eval:
             def run_type(call):
                 locate_expr = f"""(function() {{
+{_JS_FIND_REF_HELPER}
 const ref = {json.dumps(norm_ref)};
-const el = document.querySelector('[data-gb-ref="' + ref + '"]');
-if (!el) {{
+const hit = findGbRef(ref);
+if (!hit || !hit.el) {{
   return {{
     ok: false,
+    url: String(location.href || ''),
+    title: String(document.title || ''),
     error: 'element ' + ref + ' not found on current page (call browser_snapshot to refresh refs)'
   }};
 }}
+const el = hit.el;
+const beforeUrl = String(location.href || '');
 el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
 const tag = (el.tagName || '').toLowerCase();
-const editable = ('value' in el) || Boolean(el.isContentEditable) || ['input', 'textarea', 'select'].includes(tag);
+if (tag === 'select') {{
+  return {{ ok: true, is_select: true }};
+}}
+const editable = ('value' in el) || Boolean(el.isContentEditable) || ['input', 'textarea'].includes(tag);
 if (!editable) {{
   return {{
     ok: false,
@@ -2459,28 +3077,32 @@ if (!editable) {{
 }}
 const r = el.getBoundingClientRect();
 const visible = r && r.width >= 1 && r.height >= 1;
-const x = visible ? (r.left + r.width / 2) : 0;
-const y = visible ? (r.top + r.height / 2) : 0;
+const x = visible ? (r.left + hit.offsetX + r.width / 2) : 0;
+const y = visible ? (r.top + hit.offsetY + r.height / 2) : 0;
 try {{ el.focus(); }} catch (e) {{}}
-return {{ ok: true, visible: Boolean(visible), x: x, y: y }};
+return {{ ok: true, visible: Boolean(visible), before_url: beforeUrl, x: x, y: y }};
 }})()"""
                 info = _eval_on_session(call, locate_expr)
                 if not isinstance(info, dict):
                     raise RuntimeError("Failed to locate element for browser_type")
                 if not info.get("ok"):
                     return info
+                if info.get("is_select"):
+                    return {"_delegate_select": True}
                 if info.get("visible"):
                     self._dispatch_mouse_click(call, info.get("x", 0), info.get("y", 0))
                 if clear:
                     _eval_on_session(
                         call,
                         f"""(function() {{
-const el = document.querySelector('[data-gb-ref="' + {json.dumps(norm_ref)} + '"]');
-if (!el) return;
+{_JS_FIND_REF_HELPER}
+const hit = findGbRef({json.dumps(norm_ref)});
+if (!hit || !hit.el) return;
+const el = hit.el;
 try {{ el.focus(); }} catch (e) {{}}
 if (el.isContentEditable) {{
-  const sel = window.getSelection();
-  const range = document.createRange();
+  const sel = hit.win.getSelection();
+  const range = hit.doc.createRange();
   range.selectNodeContents(el);
   if (sel) {{ sel.removeAllRanges(); sel.addRange(range); }}
 }} else if (typeof el.select === 'function') {{
@@ -2498,13 +3120,36 @@ if (el.isContentEditable) {{
 {_JS_SNAPSHOT_HELPER}
 return collectGbSnapshot(80, 3000);
 }})()"""
-                snap = _eval_on_session(call, snap_expr)
+                try:
+                    snap = _eval_on_session(call, snap_expr)
+                except Exception as exc:
+                    msg = str(exc)
+                    if "Execution context" in msg or "Cannot find context" in msg or "scrollHeight" in msg:
+                        return {"_navigated_retry": True}
+                    raise
                 if not isinstance(snap, dict):
                     raise RuntimeError("Failed to collect browser snapshot after type")
+                before_url = info.get("before_url") or ""
+                if submit and before_url and snap.get("url") and snap.get("url") != before_url and snap.get("element_count", 0) == 0:
+                    return {"_navigated_retry": True}
                 snap["typed"] = {"ref": norm_ref, "submit": submit}
                 return snap
 
-            return self.cdp_session(run_type)
+            res = self.cdp_session(run_type)
+            if isinstance(res, dict) and res.get("_delegate_select"):
+                return self.browser_select(norm_ref, value=text, label=text)
+            if isinstance(res, dict) and res.get("_navigated_retry"):
+                self._wait_for_page_settle(max_polls=20, poll_sec=0.25, require_content=True)
+                snap_expr = f"""(function() {{
+{_JS_SNAPSHOT_HELPER}
+return collectGbSnapshot(80, 3000);
+}})()"""
+                snap = self.cdp_session(lambda call: _eval_on_session(call, snap_expr))
+                if not isinstance(snap, dict):
+                    raise RuntimeError("Failed to collect browser snapshot after type navigation")
+                snap["typed"] = {"ref": norm_ref, "submit": submit}
+                return self._attach_snapshot_meta(snap)
+            return res
 
         expr = f"""(async function() {{
 {_JS_SNAPSHOT_HELPER}
@@ -2512,13 +3157,14 @@ const ref = {json.dumps(norm_ref)};
 const text = {json.dumps(text)};
 const submit = {json.dumps(submit)};
 const clear = {json.dumps(clear)};
-const el = document.querySelector('[data-gb-ref="' + ref + '"]');
-if (!el) {{
+const hit = findGbRef(ref);
+if (!hit || !hit.el) {{
   return {{
     ok: false,
     error: 'element ' + ref + ' not found on current page (call browser_snapshot to refresh refs)'
   }};
 }}
+const el = hit.el;
 el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
 try {{ el.focus(); }} catch (e) {{}}
 
@@ -2569,6 +3215,346 @@ return snap;
         res = self.cdp_eval(expr)
         if not isinstance(res, dict):
             raise RuntimeError("Failed to execute browser_type")
+        return res
+
+    def browser_scroll(self, direction="down", amount=600, ref=None):
+        dir_norm = str(direction or "down").strip().lower()
+        if dir_norm not in ("up", "down", "left", "right"):
+            raise ValueError(f"invalid direction: {direction} (expected up/down/left/right)")
+        if type(amount) is not int or isinstance(amount, bool) or not (50 <= amount <= 5000):
+            raise ValueError(f"amount must be an integer between 50 and 5000, got {amount}")
+        norm_ref = normalize_element_ref(ref) if ref is not None and str(ref).strip() else None
+
+        dx = -amount if dir_norm == "left" else (amount if dir_norm == "right" else 0)
+        dy = -amount if dir_norm == "up" else (amount if dir_norm == "down" else 0)
+
+        expr = f"""(async function() {{
+{_JS_SNAPSHOT_HELPER}
+const dx = {dx};
+const dy = {dy};
+const ref = {json.dumps(norm_ref)};
+let scrolledContainer = false;
+
+function isScrollable(el) {{
+  if (!el || el === document.body || el === document.documentElement) return false;
+  try {{
+    const st = window.getComputedStyle(el);
+    if (!st) return false;
+    const canY = dy !== 0 && (st.overflowY === 'auto' || st.overflowY === 'scroll' || st.overflowY === 'overlay') && el.scrollHeight > el.clientHeight + 10;
+    const canX = dx !== 0 && (st.overflowX === 'auto' || st.overflowX === 'scroll' || st.overflowX === 'overlay') && el.scrollWidth > el.clientWidth + 10;
+    return canY || canX;
+  }} catch (e) {{
+    return false;
+  }}
+}}
+
+if (ref) {{
+  const hit = findGbRef(ref);
+  if (!hit || !hit.el) {{
+    return {{
+      ok: false,
+      error: 'element ' + ref + ' not found on current page (call browser_snapshot to refresh refs)'
+    }};
+  }}
+  let cur = hit.el;
+  while (cur && cur !== hit.doc.body && cur !== hit.doc.documentElement) {{
+    if (isScrollable(cur)) {{
+      cur.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
+      scrolledContainer = true;
+      break;
+    }}
+    cur = cur.parentElement;
+  }}
+  if (!scrolledContainer) {{
+    hit.win.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
+  }}
+}} else {{
+  const prevX = window.scrollX || 0;
+  const prevY = window.scrollY || 0;
+  window.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
+  const moved = (window.scrollX || 0) !== prevX || (window.scrollY || 0) !== prevY;
+  if (!moved) {{
+    // SPA fallback: locate the largest visible scrollable container
+    let best = null;
+    let bestArea = 0;
+    const all = document.querySelectorAll('*');
+    for (let i = 0; i < all.length && i < 2500; i++) {{
+      const el = all[i];
+      if (!isScrollable(el)) continue;
+      const r = el.getBoundingClientRect();
+      const area = r.width * r.height;
+      if (area > bestArea && r.width >= 200 && r.height >= 150) {{
+        bestArea = area;
+        best = el;
+      }}
+    }}
+    if (best) {{
+      best.scrollBy({{ left: dx, top: dy, behavior: 'instant' }});
+      scrolledContainer = true;
+    }}
+  }}
+}}
+
+await new Promise(r => setTimeout(r, 150));
+const snap = collectGbSnapshot(80, 3000);
+snap.scrolled = {{
+  direction: {json.dumps(dir_norm)},
+  amount: {amount},
+  ref: ref,
+  scrolled_container: scrolledContainer,
+}};
+return snap;
+}})()"""
+        if self.cdp_eval is default_cdp_eval:
+            res = self.cdp_session(lambda call: _eval_on_session(call, expr))
+        else:
+            res = self.cdp_eval(expr)
+        if not isinstance(res, dict):
+            raise RuntimeError("Failed to execute browser_scroll")
+        return self._attach_snapshot_meta(res)
+
+    def browser_wait(self, ms=1500, text=None, ref=None, timeout=10.0):
+        if type(ms) is not int or isinstance(ms, bool) or not (200 <= ms <= 15000):
+            raise ValueError(f"ms must be an integer between 200 and 15000, got {ms}")
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not (1 <= timeout <= 20):
+            raise ValueError(f"timeout must be a number between 1 and 20, got {timeout}")
+        want_text = None
+        if text is not None and str(text).strip():
+            if not isinstance(text, str):
+                raise TypeError("text must be a string")
+            want_text = text.strip()
+        norm_ref = normalize_element_ref(ref) if ref is not None and str(ref).strip() else None
+
+        started = time.time()
+        matched = False
+        if want_text or norm_ref:
+            deadline = started + float(timeout)
+            want_lower = want_text.lower() if want_text else ""
+            while True:
+                check_expr = f"""(function() {{
+{_JS_FIND_REF_HELPER}
+const wantRef = {json.dumps(norm_ref)};
+const wantLower = {json.dumps(want_lower)};
+if (wantRef && findGbRef(wantRef)) return true;
+if (wantLower) {{
+  const t = ((document.title || '') + ' ' + ((document.body && document.body.innerText) || '')).toLowerCase();
+  if (t.includes(wantLower)) return true;
+}}
+return false;
+}})()"""
+                try:
+                    if self.cdp_eval is default_cdp_eval:
+                        hit = self.cdp_session(lambda call: _eval_on_session(call, check_expr))
+                    else:
+                        hit = self.cdp_eval(check_expr)
+                    if hit:
+                        matched = True
+                        break
+                except Exception:
+                    pass
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.25)
+        else:
+            time.sleep(ms / 1000.0)
+            if self.cdp_eval is default_cdp_eval:
+                self._wait_for_page_settle(max_polls=8, poll_sec=0.2, require_content=False)
+            matched = True
+
+        snap = self.browser_snapshot(max_elements=80, max_text=3000)
+        elapsed_ms = int(round((time.time() - started) * 1000))
+        snap["waited"] = {
+            "matched": bool(matched),
+            "elapsed_ms": elapsed_ms,
+            **({"text": want_text} if want_text else {}),
+            **({"ref": norm_ref} if norm_ref else {}),
+        }
+        return snap
+
+    def browser_select(self, ref, value=None, label=None):
+        norm_ref = normalize_element_ref(ref)
+        val_str = str(value).strip() if value is not None and str(value).strip() else None
+        lbl_str = str(label).strip() if label is not None and str(label).strip() else None
+        if not val_str and not lbl_str:
+            raise ValueError("browser_select requires value or label")
+
+        expr = f"""(async function() {{
+{_JS_SNAPSHOT_HELPER}
+const ref = {json.dumps(norm_ref)};
+const wantVal = {json.dumps(val_str)};
+const wantLabel = {json.dumps(lbl_str)};
+const hit = findGbRef(ref);
+if (!hit || !hit.el) {{
+  return {{
+    ok: false,
+    error: 'element ' + ref + ' not found on current page (call browser_snapshot to refresh refs)'
+  }};
+}}
+const el = hit.el;
+const tag = (el.tagName || '').toLowerCase();
+if (tag !== 'select') {{
+  return {{
+    ok: false,
+    error: 'element ' + ref + ' (<' + tag + '>) is not a <select> dropdown; use browser_click for custom dropdowns'
+  }};
+}}
+const opts = Array.from(el.options || []);
+let chosen = null;
+if (wantVal) {{
+  chosen = opts.find(o => String(o.value) === wantVal) || null;
+}}
+if (!chosen && wantLabel) {{
+  chosen = opts.find(o => String(o.text || '').trim() === wantLabel) || null;
+}}
+if (!chosen && wantVal) {{
+  const vl = wantVal.toLowerCase();
+  chosen = opts.find(o => String(o.value).toLowerCase() === vl) || null;
+}}
+if (!chosen && wantLabel) {{
+  const ll = wantLabel.toLowerCase();
+  chosen = opts.find(o => String(o.text || '').trim().toLowerCase() === ll) || null;
+}}
+if (!chosen && wantLabel) {{
+  const ll = wantLabel.toLowerCase();
+  chosen = opts.find(o => String(o.text || '').trim().toLowerCase().includes(ll)) || null;
+}}
+if (!chosen) {{
+  return {{
+    ok: false,
+    error: 'no matching option found in <select> ' + ref,
+    available_options: opts.slice(0, 30).map(o => ({{ value: String(o.value || ''), label: String(o.text || '').trim() }}))
+  }};
+}}
+el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
+try {{ el.focus(); }} catch (e) {{}}
+const desc = Object.getOwnPropertyDescriptor(hit.win.HTMLSelectElement.prototype, 'value');
+if (desc && desc.set) {{
+  desc.set.call(el, chosen.value);
+}} else {{
+  el.value = chosen.value;
+}}
+chosen.selected = true;
+el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+await new Promise(r => setTimeout(r, 200));
+const snap = collectGbSnapshot(80, 3000);
+snap.selected = {{
+  ref: ref,
+  value: String(chosen.value || ''),
+  label: String(chosen.text || '').trim(),
+}};
+return snap;
+}})()"""
+        if self.cdp_eval is default_cdp_eval:
+            res = self.cdp_session(lambda call: _eval_on_session(call, expr))
+        else:
+            res = self.cdp_eval(expr)
+        if not isinstance(res, dict):
+            raise RuntimeError("Failed to execute browser_select")
+        return self._attach_snapshot_meta(res)
+
+    def browser_upload_file(self, ref, paths):
+        norm_ref = normalize_element_ref(ref)
+        if isinstance(paths, str):
+            raw_paths = [paths]
+        elif isinstance(paths, list):
+            raw_paths = paths
+        else:
+            raise TypeError("paths must be a list of file paths")
+        if not raw_paths:
+            raise ValueError("paths must be a non-empty list")
+
+        resolved_paths = []
+        for p in raw_paths:
+            if not isinstance(p, str) or not p.strip():
+                raise ValueError("each upload path must be a non-empty string")
+            check_read_path_allowed(p)
+            norm_p = os.path.realpath(p)
+            check_read_path_allowed(norm_p)
+            if not os.path.isfile(norm_p):
+                raise ValueError(f"upload file not found: {p}")
+            resolved_paths.append(norm_p)
+
+        if self.cdp_eval is default_cdp_eval:
+            def run_upload(call):
+                verify_expr = f"""(function() {{
+{_JS_FIND_REF_HELPER}
+const hit = findGbRef({json.dumps(norm_ref)});
+if (!hit || !hit.el) {{
+  return {{ ok: false, error: 'element ' + {json.dumps(norm_ref)} + ' not found on current page (call browser_snapshot to refresh refs)' }};
+}}
+const tag = (hit.el.tagName || '').toLowerCase();
+const typ = (hit.el.getAttribute('type') || '').toLowerCase();
+if (tag !== 'input' || typ !== 'file') {{
+  return {{ ok: false, error: 'element ' + {json.dumps(norm_ref)} + ' (<' + tag + ' type=\"' + typ + '\">) is not an <input type=\"file\">' }};
+}}
+return {{ ok: true, multiple: Boolean(hit.el.multiple) }};
+}})()"""
+                info = _eval_on_session(call, verify_expr)
+                if not isinstance(info, dict):
+                    raise RuntimeError("Failed to inspect file input element")
+                if not info.get("ok"):
+                    return info
+                if len(resolved_paths) > 1 and not info.get("multiple"):
+                    return {
+                        "ok": False,
+                        "error": f"file input {norm_ref} does not have the 'multiple' attribute; pass a single file path",
+                    }
+
+                try:
+                    call("DOM.enable", {})
+                except Exception:
+                    pass
+                call("DOM.getDocument", {"depth": 0})
+                eval_res = call(
+                    "Runtime.evaluate",
+                    {
+                        "expression": f"(function(){{ {_JS_FIND_REF_HELPER} const h = findGbRef({json.dumps(norm_ref)}); return h ? h.el : null; }})()",
+                        "returnByValue": False,
+                    },
+                )
+                obj_id = (eval_res.get("result") or {}).get("objectId")
+                if not obj_id:
+                    return {
+                        "ok": False,
+                        "error": f"failed to resolve DOM handle for file input {norm_ref}",
+                    }
+                req_res = call("DOM.requestNode", {"objectId": obj_id})
+                node_id = req_res.get("nodeId")
+                if not node_id:
+                    return {
+                        "ok": False,
+                        "error": f"failed to resolve DOM nodeId for file input {norm_ref}",
+                    }
+                call("DOM.setFileInputFiles", {"files": resolved_paths, "nodeId": node_id})
+                time.sleep(0.3)
+                snap_expr = f"""(function() {{
+{_JS_SNAPSHOT_HELPER}
+return collectGbSnapshot(80, 3000);
+}})()"""
+                snap = _eval_on_session(call, snap_expr)
+                if not isinstance(snap, dict):
+                    raise RuntimeError("Failed to collect browser snapshot after file upload")
+                snap["uploaded"] = {
+                    "ref": norm_ref,
+                    "files": [os.path.basename(p) for p in resolved_paths],
+                    "count": len(resolved_paths),
+                }
+                return snap
+
+            res = self.cdp_session(run_upload)
+            return self._attach_snapshot_meta(res) if isinstance(res, dict) else res
+
+        # Custom cdp_eval fallback (for unit tests mocking cdp_eval)
+        expr = f"""(function() {{
+{_JS_SNAPSHOT_HELPER}
+const snap = collectGbSnapshot(80, 3000);
+snap.uploaded = {{ ref: {json.dumps(norm_ref)}, files: {json.dumps([os.path.basename(p) for p in resolved_paths])}, count: {len(resolved_paths)} }};
+return snap;
+}})()"""
+        res = self.cdp_eval(expr)
+        if not isinstance(res, dict):
+            raise RuntimeError("Failed to execute browser_upload_file")
         return res
 
 
@@ -2763,7 +3749,11 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                 elif path == "/type":
                     if "text" not in body:
                         raise ValueError("missing text")
-                    res = actions.type_text(body["text"], sensitive=bool(body.get("sensitive", False)))
+                    res = actions.type_text(
+                        body["text"],
+                        sensitive=bool(body.get("sensitive", False)),
+                        press_enter=bool(body.get("press_enter", False)),
+                    )
                 elif path == "/key":
                     if "combo" not in body:
                         raise ValueError("missing combo")
@@ -2795,7 +3785,7 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                 elif path == "/shell":
                     if "command" not in body:
                         raise ValueError("missing command")
-                    timeout = body.get("timeout", 35)
+                    timeout = body.get("timeout", 120)
                     res = actions.shell(body["command"], timeout=timeout)
                 elif path == "/read":
                     if "path" not in body:
@@ -2866,6 +3856,29 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                                 for i, t in enumerate(pages)
                             ],
                         }
+                elif path == "/browser/scroll":
+                    direction = body.get("direction", "down")
+                    amount = body.get("amount", 600)
+                    ref = body.get("ref")
+                    res = actions.browser_scroll(direction=direction, amount=amount, ref=ref)
+                elif path == "/browser/wait":
+                    ms = body.get("ms", 1500)
+                    text = body.get("text")
+                    ref = body.get("ref")
+                    timeout = body.get("timeout", 10.0)
+                    res = actions.browser_wait(ms=ms, text=text, ref=ref, timeout=timeout)
+                elif path == "/browser/select":
+                    if "ref" not in body:
+                        raise ValueError("missing ref")
+                    res = actions.browser_select(
+                        ref=body["ref"],
+                        value=body.get("value"),
+                        label=body.get("label"),
+                    )
+                elif path == "/browser/upload":
+                    if "ref" not in body or "paths" not in body:
+                        raise ValueError("missing ref or paths")
+                    res = actions.browser_upload_file(ref=body["ref"], paths=body["paths"])
                 else:
                     self.send_json(404, {"error": "not found"})
                     return
@@ -2894,7 +3907,17 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
 
 class ExecutorServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
-    _BROWSER_ROUTES = {"/open_url", "/browser/snapshot", "/browser/click", "/browser/type", "/browser/tabs"}
+    _BROWSER_ROUTES = {
+        "/open_url",
+        "/browser/snapshot",
+        "/browser/click",
+        "/browser/type",
+        "/browser/tabs",
+        "/browser/scroll",
+        "/browser/wait",
+        "/browser/select",
+        "/browser/upload",
+    }
     _X11_ROUTES = {"/screenshot", "/click", "/type", "/key", "/scroll", "/drag", "/windows", "/focus"}
     _FILE_ROUTES = {"/read", "/write"}
 

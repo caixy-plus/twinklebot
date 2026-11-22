@@ -3,6 +3,9 @@ import path from "node:path";
 import { isHostTool } from "./host-tools.js";
 import { isMcpToolName } from "../lib/mcp-client.js";
 import { isOtherBotPrivateWorkspacePath } from "../lib/bot-workspace.js";
+import { extractSuggestedCommandPattern } from "../shared/policy-utils.js";
+
+export { extractSuggestedCommandPattern };
 
 const HOME_DIR = os.homedir();
 const CURRENT_USERNAME = (() => {
@@ -121,9 +124,14 @@ function isSensitiveConfigPath(filePath: unknown): boolean {
  * Strip single/double quoted string literals (keeping `$(...)` and backtick substitutions
  * inside double quotes visible for inspection), and collect quoted payloads of `sh -c` / `eval`.
  */
-function stripShellQuotesForScan(command: string): { sanitized: string; nestedPayloads: string[] } {
+function stripShellQuotesForScan(command: string): {
+  sanitized: string;
+  nestedPayloads: string[];
+  quotedRedirectTargets: string[];
+} {
   let out = "";
   const nestedPayloads: string[] = [];
+  const quotedRedirectTargets: string[] = [];
   let i = 0;
   const n = command.length;
 
@@ -134,6 +142,7 @@ function stripShellQuotesForScan(command: string): { sanitized: string; nestedPa
       const before = out.trimEnd();
       const isInlineShellExec =
         /(?:^|[;&|\n(]\s*)(?:(?:\/[\w./-]*\/)?(?:ba|z|da|k)?sh\s+-[a-z]*c|eval)\s*$/i.test(before);
+      const isRedirectTarget = /(?:^|[\s\d&])>{1,2}$/.test(before);
       i += 1;
       let literal = "";
       out += " ";
@@ -185,13 +194,16 @@ function stripShellQuotesForScan(command: string): { sanitized: string; nestedPa
       if (isInlineShellExec && literal.trim()) {
         nestedPayloads.push(literal);
       }
+      if (isRedirectTarget && literal.trim()) {
+        quotedRedirectTargets.push(literal.trim());
+      }
       continue;
     }
     out += ch;
     i += 1;
   }
 
-  return { sanitized: out, nestedPayloads };
+  return { sanitized: out, nestedPayloads, quotedRedirectTargets };
 }
 
 function isDangerousShellCommand(
@@ -202,7 +214,22 @@ function isDangerousShellCommand(
   if (!command || depth > 3) return false;
   if (PIPE_TO_SHELL_RE.test(command)) return true;
 
-  const { sanitized, nestedPayloads } = stripShellQuotesForScan(command);
+  const { sanitized, nestedPayloads, quotedRedirectTargets } = stripShellQuotesForScan(command);
+
+  // Output redirection (`>`, `>>`, `1>`, `2>`, `&>`) targeting sensitive configs or denied paths
+  for (const qTarget of quotedRedirectTargets) {
+    if (isPathDenied(qTarget) || isSensitiveConfigPath(qTarget)) {
+      return true;
+    }
+  }
+  const redirectRe = /(?:\d?>{1,2}|&>{1,2})\s*([^\s;&|)`]+)/g;
+  let redirMatch: RegExpExecArray | null;
+  while ((redirMatch = redirectRe.exec(sanitized)) !== null) {
+    const target = redirMatch[1];
+    if (target && (isPathDenied(target) || isSensitiveConfigPath(target))) {
+      return true;
+    }
+  }
 
   // Split by shell command boundaries (;, &&, ||, |, &, newline, $(, backtick)
   const segments = sanitized.split(/(?:&&|\|\||[;\n|&`]|\$\(|\))/);
@@ -254,6 +281,56 @@ function isDangerousShellCommand(
     ) {
       return true;
     }
+    if (cmdBase === "git") {
+      let gi = 0;
+      while (gi < restTokens.length && restTokens[gi].startsWith("-")) {
+        const flag = restTokens[gi];
+        gi += 1;
+        if (
+          (flag === "-C" ||
+            flag === "-c" ||
+            flag === "--git-dir" ||
+            flag === "--work-tree" ||
+            flag === "--namespace") &&
+          gi < restTokens.length
+        ) {
+          gi += 1;
+        }
+      }
+      const gitSub = (restTokens[gi] || "").toLowerCase();
+      const gitArgs = restTokens.slice(gi + 1);
+      if (
+        gitSub === "push" &&
+        gitArgs.some(
+          (t) =>
+            t === "--force" ||
+            t === "-f" ||
+            (/^-[a-z]*f[a-z]*$/i.test(t) && !t.startsWith("--"))
+        )
+      ) {
+        return true;
+      }
+      if (gitSub === "reset" && gitArgs.some((t) => t === "--hard")) {
+        return true;
+      }
+      if (
+        gitSub === "clean" &&
+        gitArgs.some(
+          (t) =>
+            t === "--force" ||
+            t === "-f" ||
+            (/^-[a-z]*f[a-z]*$/i.test(t) && !t.startsWith("--"))
+        )
+      ) {
+        return true;
+      }
+    }
+    if (cmdBase === "tee" || cmdBase === "cp" || cmdBase === "install" || cmdBase === "ln") {
+      const pathArgs = restTokens.filter((tok) => tok && !tok.startsWith("-"));
+      if (pathArgs.some((p) => isPathDenied(p) || isSensitiveConfigPath(p))) {
+        return true;
+      }
+    }
     if (cmdBase === "mv" || cmdBase === "move-item") {
       if (!allowNormalMv) {
         return true;
@@ -276,23 +353,41 @@ function isDangerousShellCommand(
   return false;
 }
 
-const SANDBOX_TOOLS = new Set([
+export function isHostShellSafeForAlwaysMode(command: unknown): boolean {
+  if (typeof command !== "string" || !command.trim()) return false;
+  if (DENIED_KEYCHAIN_SHELL_RE.test(command)) return false;
+  return !isDangerousShellCommand(command, { allowNormalMv: true });
+}
+
+const SANDBOX_INTERNAL_AUTO_ALLOW_TOOLS = new Set([
   "screenshot",
-  "click",
-  "type_text",
-  "key",
-  "scroll",
-  "drag",
   "list_windows",
   "focus_window",
+  "scroll",
+  "drag",
   "run_shell",
   "read_file",
   "write_file",
   "open_url",
   "browser_snapshot",
+  "browser_tabs",
+  "browser_scroll",
+  "browser_wait",
+  "browser_select",
+  "browser_upload_file",
+]);
+
+const SANDBOX_EXTERNAL_INTERACTION_TOOLS = new Set([
+  "click",
+  "type_text",
+  "key",
   "browser_click",
   "browser_type",
-  "browser_tabs",
+]);
+
+const SANDBOX_TOOLS = new Set([
+  ...SANDBOX_INTERNAL_AUTO_ALLOW_TOOLS,
+  ...SANDBOX_EXTERNAL_INTERACTION_TOOLS,
 ]);
 
 const DENIED_KEYCHAIN_SHELL_RE =
@@ -442,6 +537,36 @@ export function assessToolCall(
     }
   }
 
+  if (name === "browser_upload_file") {
+    const rawPaths = Array.isArray(safeArgs.paths)
+      ? safeArgs.paths
+      : typeof safeArgs.path === "string"
+        ? [safeArgs.path]
+        : [];
+    for (const p of rawPaths) {
+      if (isPathDenied(p)) {
+        return {
+          decision: "deny",
+          reason: `Uploading sensitive path '${p}' is denied`,
+        };
+      }
+      if (
+        config?.botWorkspaceSessionId &&
+        config?.baseWorkspaceRoot &&
+        isOtherBotPrivateWorkspacePath(
+          p,
+          [config.baseWorkspaceRoot],
+          config.botWorkspaceSessionId
+        )
+      ) {
+        return {
+          decision: "confirm",
+          reason: "待上传文件属于其他 Bot 的专属工作区/资料库，需用户确认后方可访问",
+        };
+      }
+    }
+  }
+
   if (name === "host_run_shell" || name === "run_shell") {
     const cmd = typeof safeArgs.command === "string" ? safeArgs.command : "";
     if (DENIED_KEYCHAIN_SHELL_RE.test(cmd)) {
@@ -452,9 +577,13 @@ export function assessToolCall(
     }
   }
 
-  // 2. Dynamic user policy rules (from Settings -> 权限)
+  const sandboxMode = config?.sandboxMode || "full";
   const policy = config?.policy;
-  if (policy && policy.autoAudit !== false) {
+  const autoAuditEnabled = policy?.autoAudit !== false;
+
+  // 2. Dynamic user policy rules (from Settings -> 权限)
+  if (policy) {
+    // 2a. Explicit askRules ALWAYS apply (even when autoAudit === false)
     const askRules = Array.isArray(policy.askRules) ? policy.askRules : [];
     for (const rule of askRules) {
       if (matchesCustomRule(rule, name, safeArgs)) {
@@ -465,31 +594,50 @@ export function assessToolCall(
       }
     }
 
-    if (safeArgs.risk !== "high") {
-      const allowRules = Array.isArray(policy.allowRules) ? policy.allowRules : [];
-      for (const rule of allowRules) {
-        if (matchesCustomRule(rule, name, safeArgs)) {
-          return {
-            decision: "allow",
-            reason: rule.label || "Allowed by user permission rule",
-          };
-        }
+    // 2b. Explicit allowRules:
+    // - Always honored when risk !== "high".
+    // - Also honored for Bot Computer external interactive tools (browser_click / browser_type /
+    //   click / type_text / key) under sandboxMode="full" and specific (non-wildcard) rules under
+    //   hostExecutionMode="always", so clicking "始终允许" actually suppresses repeat prompts.
+    // - Under hostExecutionMode="ask", risk === "high" must NEVER be bypassed by allowRules.
+    const canAllowRuleBypassHighRisk =
+      (sandboxMode === "full" && SANDBOX_EXTERNAL_INTERACTION_TOOLS.has(name)) ||
+      (isLocalHostAction && hostExecutionMode === "always");
+    const allowRules = Array.isArray(policy.allowRules) ? policy.allowRules : [];
+    for (const rule of allowRules) {
+      const ruleTool = String(rule?.tool || "").trim();
+      const rulePat = String(rule?.pattern || "").trim();
+      const isWildcardRule =
+        (!ruleTool || ruleTool === "*") && (!rulePat || rulePat === "*");
+      if (safeArgs.risk === "high" && (!canAllowRuleBypassHighRisk || isWildcardRule)) {
+        continue;
+      }
+      if (matchesCustomRule(rule, name, safeArgs)) {
+        return {
+          decision: "allow",
+          reason: rule.label || "Allowed by user permission rule",
+        };
       }
     }
   }
 
-  // 3. High risk action confirmation
-  // Under hostExecutionMode="always", ignore overly-conservative LLM risk="high" flags on
-  // read-only host/MCP inspection, harmless host_open, or ordinary (non-sensitive) host_write_file
-  // so routine user-requested edits/opens don't spam confirmation cards.
+  // 3. High risk action confirmation (skipped when policy.autoAudit === false)
+  // - Under sandboxMode="full", internal Bot Computer tools (shell, files, reads, navigation,
+  //   scroll, wait, select, upload) run in an isolated sandbox and ignore spurious LLM risk="high".
+  // - Under hostExecutionMode="always", ignore spurious LLM risk="high" on read-only host/MCP
+  //   inspection, host_open, non-sensitive host_write_file, and deterministic-safe host_run_shell
+  //   commands (e.g. `cd /repo && git commit`, `./deploy.sh`), while still confirming real
+  //   destructive/privileged shell commands, sensitive config writes, and risky MCP GUI actions.
   const ignoreSpuriousHighRisk =
-    hostExecutionMode === "always" &&
-    (READ_ONLY_HOST_AND_MCP_TOOLS.has(name) ||
-      name === "host_open" ||
-      (name === "host_write_file" &&
-        Boolean(normalizeCandidatePath(safeArgs.path)) &&
-        !isSensitiveConfigPath(safeArgs.path)));
-  if (safeArgs.risk === "high" && !ignoreSpuriousHighRisk) {
+    (sandboxMode === "full" && SANDBOX_INTERNAL_AUTO_ALLOW_TOOLS.has(name) && !isLocalHostAction) ||
+    (hostExecutionMode === "always" &&
+      (READ_ONLY_HOST_AND_MCP_TOOLS.has(name) ||
+        name === "host_open" ||
+        (name === "host_write_file" &&
+          Boolean(normalizeCandidatePath(safeArgs.path)) &&
+          !isSensitiveConfigPath(safeArgs.path)) ||
+        (name === "host_run_shell" && isHostShellSafeForAlwaysMode(safeArgs.command))));
+  if (autoAuditEnabled && safeArgs.risk === "high" && !ignoreSpuriousHighRisk) {
     return {
       decision: "confirm",
       reason: "Action is flagged as high risk",
@@ -497,7 +645,6 @@ export function assessToolCall(
   }
 
   // 4. Sandbox high-privilege mode (default "full"): Bot Computer tools run freely inside isolated sandbox
-  const sandboxMode = config?.sandboxMode || "full";
   if (sandboxMode === "full" && SANDBOX_TOOLS.has(name) && !isLocalHostAction) {
     if (name === "write_file" && !normalizeCandidatePath(safeArgs.path)) {
       return {

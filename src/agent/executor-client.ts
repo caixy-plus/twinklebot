@@ -62,7 +62,7 @@ export function createExecutorClient({
       serializedBody = JSON.stringify(body ?? {});
     }
 
-    let res: Response;
+    let res: Response | null = null;
     const tryWakeAndRefetch = async (): Promise<Response | null> => {
       if (
         !onUnreachableWake ||
@@ -82,12 +82,25 @@ export function createExecutorClient({
         wakingInProgress = false;
       }
       if (!woke || options.signal?.aborted) return null;
-      return fetchImpl(targetUrl, {
-        method,
-        headers,
-        body: serializedBody,
-        signal: buildSignal(options.signal, options.timeoutMs),
-      });
+      try {
+        return await fetchImpl(targetUrl, {
+          method,
+          headers,
+          body: serializedBody,
+          signal: buildSignal(options.signal, options.timeoutMs),
+        });
+      } catch (wakeFetchErr) {
+        if (targetUrl.includes("//ubuntu.orb.local:")) {
+          const fallbackUrl = targetUrl.replace("//ubuntu.orb.local:", "//127.0.0.1:");
+          return fetchImpl(fallbackUrl, {
+            method,
+            headers,
+            body: serializedBody,
+            signal: buildSignal(options.signal, options.timeoutMs),
+          });
+        }
+        throw wakeFetchErr;
+      }
     };
 
     try {
@@ -111,9 +124,10 @@ export function createExecutorClient({
             signal: buildSignal(options.signal, options.timeoutMs),
           });
         } catch {
-          throw new ExecutorError(`executor unreachable: ${err?.message || String(err)}`, 0);
+          // Fall through to tryWakeAndRefetch() so sleeping OrbStack VMs auto-wake
         }
-      } else {
+      }
+      if (res === null) {
         try {
           const wokenRes = await tryWakeAndRefetch();
           if (wokenRes) {
@@ -129,6 +143,10 @@ export function createExecutorClient({
           );
         }
       }
+    }
+
+    if (!res) {
+      throw new ExecutorError("executor unreachable", 0);
     }
 
     if (!res.ok) {

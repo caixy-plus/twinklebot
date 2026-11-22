@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { extractSuggestedCommandPattern } from "/shared/policy-utils.js";
 import {
   refreshSettingsFromServer,
   refreshVault,
@@ -291,7 +292,12 @@ export function ApprovalCard({
   item: Extract<StreamItem, { kind: "approval" }>;
 }) {
   const defaultPattern =
-    item.args?.command?.split(/\s+/)[0] || item.args?.path || item.args?.url || "";
+    extractSuggestedCommandPattern(item.args?.command) ||
+    item.args?.path ||
+    item.args?.url ||
+    item.args?.app ||
+    item.args?.target ||
+    "";
   const [ruleOpen, setRuleOpen] = useState(false);
   const [ruleMode, setRuleMode] = useState<"allow" | "ask">("allow");
   const [pattern, setPattern] = useState(defaultPattern);

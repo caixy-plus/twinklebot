@@ -13,7 +13,7 @@
 ## 二、五大运行面与双模外部依赖
 
 1. **Web 桌面端**：原生 Chrome CDP（macOS 默认可见 + HUD 状态角标，CI 自动无头；跨主/子标签页全局捕获零漏报 `pageerror` / `console.error`）。
-2. **Ubuntu 沙盒 (`executor/executor.py`)**：OrbStack `ubuntu` / Linux `Xvfb`/`Xtigervnc` 真实 Google Chrome 多标签共享 Profile、物理 X11 输入（含敏感剪贴板擦除）与全 21 个 Executor HTTP 端点契约。
+2. **Ubuntu 沙盒 (`executor/executor.py`)**：OrbStack `ubuntu` / Linux `Xvfb`/`Xtigervnc` 真实 Google Chrome 多标签共享 Profile、物理 X11 输入（含敏感剪贴板擦除）与全 26 个 Executor HTTP 端点契约。
 3. **移动端 (`dist-web/`)**：`APP_TARGET=mobile` 构建产物（mtime 自动增量重编）+ 375×667 / 390×844 触屏视口 + 真实触摸滑动手势 + Capacitor 桥接桩（含 WebUpdater OTA）。
 4. **Electron 桌面端**：真实 Electron 主进程启动、端口回退、数据目录隔离、IPC 桥、托盘 `tray.html`、全部 8 项菜单指令与 OTA 看门狗回滚。
 5. **CLI、官网 Landing 与 SSR**：`dist-server/src/cli/index.js`（含真实 `readline [y/N]`、`max_steps` 与双次 SIGINT）+ `landing/index.html`（4 大 OS UA + 7 项 Release 链接）+ `ssr-entry.js` 全量静态标记渲染。

@@ -207,6 +207,23 @@ export function translateToolHumanSummary(toolName: string, args: any = {}): str
   if (name === "write_file") return `写入文件：${args?.path || "工作区文件"}`;
   if (name === "read_file") return `读取文件：${args?.path || "工作区文件"}`;
   if (name === "open_url") return `在浏览器打开网页：${args?.url || ""}`;
+  if (name === "browser_snapshot") {
+    return args?.url ? `在浏览器查看网页：${args.url}` : "正在读取当前网页结构";
+  }
+  if (name === "browser_click") return `在网页中点击元素 ${args?.ref || ""}`.trim();
+  if (name === "browser_type") return `在网页输入框 ${args?.ref || ""} 填入内容`.trim();
+  if (name === "browser_tabs") return `管理浏览器标签页（${args?.action || "list"}）`;
+  if (name === "browser_scroll") return `在网页中向${args?.direction || "down"}滚动页面`;
+  if (name === "browser_wait") {
+    return args?.text ? `等待网页出现「${String(args.text).slice(0, 24)}」` : "等待网页加载完成";
+  }
+  if (name === "browser_select") {
+    return `在网页下拉框 ${args?.ref || ""} 选择「${args?.label || args?.value || ""}」`;
+  }
+  if (name === "browser_upload_file") {
+    const count = Array.isArray(args?.paths) ? args.paths.length : 1;
+    return `向网页文件框 ${args?.ref || ""} 上传 ${count} 个文件`;
+  }
   if (name === "screenshot") return "正在查看电脑桌面画面";
   if (name === "click" || name === "double_click" || name === "right_click") {
     return `在桌面点击位置 (${args?.x ?? "?"}, ${args?.y ?? "?"})`;

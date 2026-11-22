@@ -1073,6 +1073,10 @@ export function reduceSessionEvent(
         "browser_click",
         "browser_type",
         "browser_tabs",
+        "browser_scroll",
+        "browser_wait",
+        "browser_select",
+        "browser_upload_file",
       ].includes(evt.name);
       if (isBotDesktopVisualTool && prev.settings?.autoExpandScreen && !prev.screenOverlayOpen && !replay) {
         effects.shouldAutoExpandScreen = true;

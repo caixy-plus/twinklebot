@@ -15,7 +15,7 @@ import {
 } from "../src/lib/bot-computer-updater.js";
 import { createLocalAwareExecutorClient } from "../src/lib/bot-computer-provisioner.js";
 
-test("HOST_TOOL_DECLARATIONS defines 5 host tools with risk parameter", () => {
+test("HOST_TOOL_DECLARATIONS defines 5 host tools and scopes risk parameter to mutating tools", () => {
   const names = HOST_TOOL_DECLARATIONS.map((t) => t.name);
   assert.deepEqual(names, [
     "host_run_shell",
@@ -24,10 +24,19 @@ test("HOST_TOOL_DECLARATIONS defines 5 host tools with risk parameter", () => {
     "host_write_file",
     "host_record_screen",
   ]);
+  const mutatingRiskTools = new Set(["host_run_shell", "host_write_file", "host_record_screen"]);
   for (const decl of HOST_TOOL_DECLARATIONS) {
     assert.equal(decl.type, "function");
     assert.equal(isHostTool(decl.name), true);
-    assert.ok(decl.parameters.properties.risk);
+    if (mutatingRiskTools.has(decl.name)) {
+      assert.ok((decl.parameters.properties as Record<string, any>).risk, `${decl.name} should define risk`);
+    } else {
+      assert.equal(
+        (decl.parameters.properties as Record<string, any>).risk,
+        undefined,
+        `read-only/open tool ${decl.name} should omit risk to prevent spurious high-risk prompts`
+      );
+    }
   }
   assert.equal(isHostTool("run_shell"), false);
   assert.equal(isHostTool("mcp__kimi_cu__click"), false);

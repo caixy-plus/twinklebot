@@ -18,7 +18,7 @@ const RISK_PROP = {
   type: "string",
   enum: ["low", "medium", "high"],
   description:
-    `Estimated risk level on the user's ${HOST_OS_LABEL}. Use 'low'/'medium' for routine reads, searches, organizing/renaming files, running normal CLI tools, or editing ordinary files the user asked for. Reserve 'high' ONLY for irreversible external actions (sending messages/posts, payments, orders, agreements), deleting important files, modifying sensitive system configs, or privileged sudo commands.`,
+    `Estimated risk level on the user's ${HOST_OS_LABEL}. Always use 'low'/'medium' for routine reads, searches, cd/git/npm/build/deploy scripts, organizing/renaming files, running normal CLI tools, or editing ordinary files the user asked for. Reserve 'high' ONLY for irreversible external actions (sending messages/posts, payments, orders, agreements), deleting important files (rm), destructive git force-push/reset, modifying sensitive system/shell configs, or privileged sudo commands.`,
 };
 
 export const HOST_TOOL_DECLARATIONS = [
@@ -75,7 +75,6 @@ export const HOST_TOOL_DECLARATIONS = [
             ? "If true, highlights/selects the target file in Windows Explorer (/select,)."
             : "If true, reveals the target file/folder in Finder (-R).",
         },
-        risk: RISK_PROP,
       },
     },
   },
@@ -90,7 +89,6 @@ export const HOST_TOOL_DECLARATIONS = [
           type: "string",
           description: `File path on the user's ${HOST_OS_LABEL} (supports ~ expansion).`,
         },
-        risk: RISK_PROP,
       },
       required: ["path"],
     },

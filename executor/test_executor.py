@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import socket
 import struct
 import subprocess
@@ -17,7 +18,10 @@ try:
         Actions,
         DEFAULT_BROWSER,
         DisplayManager,
+        ExecutorHandler,
+        ExecutorServer,
         TabManager,
+        _JS_SNAPSHOT_HELPER,
         _default_tcp_open,
         _read_proc_listening_ports,
         cdp_ws_call,
@@ -32,7 +36,10 @@ except ImportError:
         Actions,
         DEFAULT_BROWSER,
         DisplayManager,
+        ExecutorHandler,
+        ExecutorServer,
         TabManager,
+        _JS_SNAPSHOT_HELPER,
         _default_tcp_open,
         _read_proc_listening_ports,
         cdp_ws_call,
@@ -1330,6 +1337,313 @@ class TestHTTPServer(unittest.TestCase):
             self.assertEqual(click_res.get("tab_count"), 2)
             self.assertEqual(act.target_id, "W1-POPUP")
             self.assertEqual(switched_log, [("W1-POPUP", "https://popup.test/docs")])
+
+
+class TestAutomationUpgrades(unittest.TestCase):
+    def test_type_text_direct_ascii_and_press_enter(self):
+        run = FakeRun()
+        Actions(run).type_text("javascript", press_enter=True)
+        self.assertEqual(
+            run.calls[0],
+            (["xdotool", "type", "--clearmodifiers", "--delay", "12", "--", "javascript"], None),
+        )
+        self.assertEqual(run.calls[1][0], ["xdotool", "key", "--clearmodifiers", "Return"])
+        self.assertEqual(len(run.calls), 2)
+
+        # Multiline ASCII falls back to clipboard paste
+        run2 = FakeRun()
+        Actions(run2).type_text("line1\nline2")
+        self.assertEqual(run2.calls[0], (["xclip", "-selection", "clipboard"], b"line1\nline2"))
+        self.assertEqual(run2.calls[1][0], ["xdotool", "key", "--clearmodifiers", "ctrl+v"])
+
+    def test_js_snapshot_helper_features_and_syntax(self):
+        helper = _JS_SNAPSHOT_HELPER
+        for needle in (
+            "function findGbRef(",
+            "function collectGbSnapshot(",
+            "docEl && docEl.scrollHeight",
+            "shadowRoot",
+            "contentDocument",
+            "inViewportCandidates",
+            "hidden_file_input",
+            "challenge_detected",
+            "iframes",
+            "focused",
+        ):
+            self.assertIn(needle, helper, f"Missing expected snapshot capability: {needle}")
+
+        # Verify JavaScript syntax parses cleanly if Node.js is available
+        node_bin = shutil.which("node")
+        if node_bin:
+            proc = subprocess.run(
+                [node_bin, "-e", f"new Function({json.dumps(helper)});"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            self.assertEqual(proc.returncode, 0, f"_JS_SNAPSHOT_HELPER syntax error: {proc.stderr}")
+
+    def test_browser_scroll_wait_select_upload_and_select_delegation(self):
+        cdp_calls = []
+        poll_count = {"n": 0}
+
+        def fake_cdp_session(fn):
+            def fake_call(method, params=None):
+                cdp_calls.append((method, params or {}))
+                if method == "DOM.requestNode":
+                    return {"nodeId": 42}
+                if method == "Runtime.evaluate":
+                    expr = str((params or {}).get("expression") or "")
+                    if not (params or {}).get("returnByValue", True):
+                        return {"result": {"objectId": "obj-file-1"}}
+                    if "wantLower" in expr:
+                        poll_count["n"] += 1
+                        return {"result": {"value": poll_count["n"] >= 2}}
+                    if "is_select" in expr:
+                        return {"result": {"value": {"ok": True, "is_select": True}}}
+                    if "not an <input type=" in expr:
+                        return {"result": {"value": {"ok": True, "multiple": True}}}
+                    if "wantVal" in expr:
+                        return {
+                            "result": {
+                                "value": {
+                                    "ok": True,
+                                    "url": "https://form.test",
+                                    "elements": [],
+                                    "selected": {"ref": "e4", "value": "us", "label": "United States"},
+                                }
+                            }
+                        }
+                    if "scrolledContainer" in expr:
+                        return {
+                            "result": {
+                                "value": {
+                                    "ok": True,
+                                    "url": "https://form.test",
+                                    "scroll": {"y": 600, "max_y": 2400, "viewport_h": 900},
+                                    "elements": [],
+                                    "scrolled": {"direction": "down", "amount": 600, "ref": None, "scrolled_container": False},
+                                }
+                            }
+                        }
+                    if "collectGbSnapshot" in expr:
+                        return {
+                            "result": {
+                                "value": {
+                                    "ok": True,
+                                    "url": "https://form.test",
+                                    "title": "Form Ready",
+                                    "element_count": 1,
+                                    "elements": [{"ref": "e1", "tag": "button"}],
+                                    "text_excerpt": "Form Ready",
+                                }
+                            }
+                        }
+                return {}
+
+            return fn(fake_call)
+
+        act = Actions(FakeRun(), cdp_session=fake_cdp_session)
+
+        # browser_scroll
+        scr = act.browser_scroll(direction="down", amount=600)
+        self.assertTrue(scr["ok"])
+        self.assertEqual(scr["scrolled"]["direction"], "down")
+
+        # browser_wait (polls until text matches)
+        wt = act.browser_wait(text="Form Ready", timeout=3.0)
+        self.assertTrue(wt["ok"])
+        self.assertTrue(wt["waited"]["matched"])
+        self.assertEqual(wt["waited"]["text"], "Form Ready")
+
+        # browser_select
+        sel = act.browser_select("e4", label="United States")
+        self.assertTrue(sel["ok"])
+        self.assertEqual(sel["selected"]["value"], "us")
+
+        # browser_type on <select> auto-delegates to browser_select
+        del_sel = act.browser_type("e4", "United States")
+        self.assertTrue(del_sel["ok"])
+        self.assertEqual(del_sel["selected"]["value"], "us")
+
+        # browser_upload_file uses CDP DOM.setFileInputFiles and enforces path security
+        with tempfile.TemporaryDirectory() as td:
+            f1 = os.path.join(td, "cover.png")
+            with open(f1, "wb") as fp:
+                fp.write(b"png")
+            cdp_calls.clear()
+            up = act.browser_upload_file("e5", [f1])
+            self.assertTrue(up["ok"])
+            self.assertEqual(up["uploaded"]["files"], ["cover.png"])
+            self.assertEqual(up["uploaded"]["count"], 1)
+            set_calls = [p for m, p in cdp_calls if m == "DOM.setFileInputFiles"]
+            self.assertEqual(len(set_calls), 1)
+            self.assertEqual(set_calls[0]["nodeId"], 42)
+            self.assertEqual(set_calls[0]["files"], [os.path.realpath(f1)])
+
+            # Missing file -> ValueError
+            with self.assertRaises(ValueError):
+                act.browser_upload_file("e5", [os.path.join(td, "missing.png")])
+            # Sensitive path -> PermissionError
+            with self.assertRaises(PermissionError):
+                act.browser_upload_file("e5", ["/home/user/.ssh/id_rsa"])
+
+    def test_browser_click_navigation_retry_and_occlusion_fallback(self):
+        snap_attempts = {"n": 0}
+
+        def fake_cdp_session(fn):
+            def fake_call(method, params=None):
+                if method == "Runtime.evaluate":
+                    expr = str((params or {}).get("expression") or "")
+                    if "document.readyState" in expr:
+                        return {"result": {"value": {"state": "complete", "url": "https://next.test", "has_content": True}}}
+                    if "getBoundingClientRect" in expr and "checkHit" in expr:
+                        return {
+                            "result": {
+                                "value": {
+                                    "ok": True,
+                                    "visible": False,
+                                    "fallback_js_click": True,
+                                    "occluded_by": "header.sticky-nav",
+                                    "before_url": "https://prev.test",
+                                    "x": 100,
+                                    "y": 40,
+                                    "tag": "a",
+                                    "name": "Next Page",
+                                }
+                            }
+                        }
+                    if "collectGbSnapshot" in expr:
+                        snap_attempts["n"] += 1
+                        if snap_attempts["n"] == 1:
+                            raise RuntimeError("Browser JS error: Execution context was destroyed")
+                        return {
+                            "result": {
+                                "value": {
+                                    "ok": True,
+                                    "url": "https://next.test",
+                                    "title": "Next Page",
+                                    "element_count": 2,
+                                    "elements": [{"ref": "e1", "tag": "button"}],
+                                }
+                            }
+                        }
+                return {}
+
+            return fn(fake_call)
+
+        act = Actions(FakeRun(), cdp_session=fake_cdp_session)
+        res = act.browser_click("e1")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["url"], "https://next.test")
+        self.assertTrue(res["clicked"]["fallback_js_click"])
+        self.assertEqual(res["clicked"]["occluded_by"], "header.sticky-nav")
+        self.assertEqual(snap_attempts["n"], 2)
+
+    def test_http_new_browser_routes_and_shell_default_timeout_120(self):
+        recorded_timeouts = []
+        run = FakeRun()
+        orig_shell = Actions.shell
+
+        class RecordingActions(Actions):
+            def shell(self, command, timeout=120):
+                recorded_timeouts.append(timeout)
+                return orig_shell(self, command, timeout=timeout)
+
+        act = RecordingActions(
+            run,
+            cdp_eval=lambda expr: {
+                "ok": True,
+                "url": "https://example.com",
+                "title": "Example",
+                "elements": [],
+                "text_excerpt": "hello",
+            },
+        )
+        server = ExecutorServer(("127.0.0.1", 0), ExecutorHandler, act, "test-tok")
+        port = server.server_address[1]
+        th = threading.Thread(target=server.serve_forever, daemon=True)
+        th.start()
+
+        def post(path, body):
+            data = json.dumps(body).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                headers={"Authorization": "Bearer test-tok", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return resp.status, json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read().decode("utf-8"))
+
+        try:
+            for r in ("/browser/scroll", "/browser/wait", "/browser/select", "/browser/upload"):
+                self.assertIn(r, ExecutorServer._BROWSER_ROUTES)
+
+            st, d = post("/shell", {"command": "echo hi"})
+            self.assertEqual(st, 200)
+            self.assertEqual(recorded_timeouts[-1], 120)
+
+            st, d = post("/type", {"text": "abc", "press_enter": True})
+            self.assertEqual(st, 200)
+            self.assertEqual(d, {"ok": True})
+
+            st, d = post("/browser/scroll", {"direction": "down", "amount": 500})
+            self.assertEqual(st, 200)
+            self.assertTrue(d["ok"])
+
+            st, d = post("/browser/wait", {"ms": 200})
+            self.assertEqual(st, 200)
+            self.assertTrue(d["ok"])
+            self.assertIn("waited", d)
+
+            st, d = post("/browser/select", {"ref": "e1", "label": "Opt A"})
+            self.assertEqual(st, 200)
+            self.assertTrue(d["ok"])
+
+            st, _ = post("/browser/select", {"ref": "e1"})
+            self.assertEqual(st, 400)
+
+            st, _ = post("/browser/upload", {"ref": "e1"})
+            self.assertEqual(st, 400)
+
+            st, _ = post("/browser/upload", {"ref": "e1", "paths": ["/home/u/.ssh/id_rsa"]})
+            self.assertEqual(st, 403)
+
+            with tempfile.TemporaryDirectory() as td:
+                up_file = os.path.join(td, "doc.txt")
+                with open(up_file, "w", encoding="utf-8") as fp:
+                    fp.write("hello")
+                st, d = post("/browser/upload", {"ref": "e2", "paths": [up_file]})
+                self.assertEqual(st, 200)
+                self.assertTrue(d["ok"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_tab_manager_focus_invokes_raise_window_hook(self):
+        activated = []
+        raised = []
+        with tempfile.TemporaryDirectory() as td:
+            dm = TabManager(
+                state_file=os.path.join(td, "tabs.json"),
+                targets_fn=lambda port=9222, timeout=2.0: [
+                    {"id": "T1", "type": "page", "url": "https://a.test", "title": "A", "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/T1"}
+                ],
+                activate_tab_fn=lambda target, port=9222: activated.append(target["id"]),
+            )
+            dm.raise_window_fn = lambda tid, window_id=None, port=9222, display=":1": raised.append(
+                (tid, window_id, port, display)
+            )
+            dm._bot_targets["bot-a"] = "T1"
+            dm._bot_windows["bot-a"] = 77
+            ok = dm.focus_bot_tab_if_exists("bot-a")
+            self.assertTrue(ok)
+            self.assertEqual(activated, ["T1"])
+            self.assertEqual(raised, [("T1", 77, dm.cdp_port, dm.display)])
 
 
 if __name__ == "__main__":
