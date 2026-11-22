@@ -1,6 +1,6 @@
 import { useEffect, useRef, type MouseEvent } from "react";
 import { resolveConfirmDialog } from "../../services/actions.js";
-import { useStore } from "../../state/store.js";
+import { getState, useStore } from "../../state/store.js";
 
 export function ConfirmDialog() {
   const confirmDialog = useStore((s) => s.confirmDialog);
@@ -34,18 +34,23 @@ export function ConfirmDialog() {
         dialog.removeAttribute("open");
       }
     }
-  }, [confirmDialog.open]);
+  }, [confirmDialog]);
 
-  const handleClose = () => {
+  useEffect(() => {
     const dialog = dialogRef.current;
-    const confirmed = dialog?.returnValue === "confirm";
-    if (dialog) {
+    if (!dialog) return;
+    const handleNativeClose = () => {
+      const confirmed = dialog.returnValue === "confirm";
       dialog.returnValue = "";
-    }
-    if (confirmDialog.open) {
-      resolveConfirmDialog(confirmed);
-    }
-  };
+      if (getState().confirmDialog.open) {
+        resolveConfirmDialog(confirmed);
+      }
+    };
+    dialog.addEventListener("close", handleNativeClose);
+    return () => {
+      dialog.removeEventListener("close", handleNativeClose);
+    };
+  }, []);
 
   const handleDialogClick = (event: MouseEvent<HTMLDialogElement>) => {
     const dialog = dialogRef.current;
@@ -73,7 +78,6 @@ export function ConfirmDialog() {
       closedby="any"
       aria-labelledby="app-confirm-title"
       aria-describedby="app-confirm-message"
-      onClose={handleClose}
       onClick={handleDialogClick}
     >
       <form method="dialog" className="app-confirm-shell">
