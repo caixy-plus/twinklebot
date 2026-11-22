@@ -787,7 +787,7 @@
           "priority": "P1",
           "featureTier": "F2",
           "difficulty": "D2",
-          "title": "移动端 OTA 热更新全 UI 链路(WebUpdater 检查/更新徽章 #mobile-update-btn/下载应用进度/回滚内置版)",
+          "title": "移动端 OTA 热更新全 UI 链路(WebUpdater 检查/更新徽章 #mobile-update-btn/下载应用进度)",
           "module": "Mobile OTA Updater UI"
         }
       ]

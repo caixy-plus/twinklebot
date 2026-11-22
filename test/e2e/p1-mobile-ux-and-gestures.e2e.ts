@@ -388,7 +388,7 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
       priority: "P1",
       featureTier: "F2",
       difficulty: "D2",
-      title: "移动端 OTA 热更新全 UI 链路(WebUpdater 检查/更新徽章 #mobile-update-btn/下载应用进度/回滚内置版)",
+      title: "移动端 OTA 热更新全 UI 链路(WebUpdater 检查/更新徽章 #mobile-update-btn/下载应用进度)",
       module: "Mobile OTA Updater UI",
     },
     async () => {
@@ -413,15 +413,11 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
       await tab.click("#apply-web-ota-btn");
       await tab.waitFor(`window.__e2eCapCalls.otaApplyCalls.length >= 1`, 6000);
 
-      // Click Rollback to Built-in -> invokes Capacitor WebUpdater.rollbackToBuiltIn!
-      const hasRollback = await tab.evalJs<boolean>(`Boolean(document.querySelector('#rollback-ota-builtin-btn'))`);
-      if (hasRollback) {
-        await tab.click("#rollback-ota-builtin-btn");
-        await tab.waitFor(`document.querySelector('#app-confirm-dialog')?.open || window.__e2eCapCalls.otaRollbackCalls >= 1`, 4000);
-        const dialogOpen = await tab.evalJs<boolean>(`Boolean(document.querySelector('#app-confirm-dialog')?.open)`);
-        if (dialogOpen) await tab.click("#app-confirm-ok-btn");
-        await tab.waitFor(`window.__e2eCapCalls.otaRollbackCalls >= 1`, 6000);
-      }
+      // Manual rollback-to-built-in button has been removed from Settings UI
+      assert.equal(
+        await tab.evalJs<boolean>(`Boolean(document.querySelector('#rollback-ota-builtin-btn'))`),
+        false
+      );
     },
     { getChrome: () => chrome }
   );

@@ -100,7 +100,7 @@
 | **P1** | `P1-NET-06` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Foreground Resume Probe | 前台切回探活(visibilitychange)与浏览器 online/offline 恢复联动 |
 | **P1** | `P1-MOB-04` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile Layout, Tap Actions & Composer | 移动端零横向溢出护栏(375/390px 长命令卡片/表格/代码)、点击消息气泡弹出操作栏、Composer Enter 换行与更多菜单 |
 | **P1** | `P1-MOB-05` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile Deep Sheets & Drag Gestures | 移动端全抽屉深入交互：检查器活动/资料库 Tab、编辑 Bot 13×11、设置 6 项独立子页返回闭环与拖拽手势 |
-| **P1** | `P1-MOB-06` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile OTA Updater UI | 移动端 OTA 热更新全 UI 链路(WebUpdater 检查/更新徽章 #mobile-update-btn/下载应用进度/回滚内置版) |
+| **P1** | `P1-MOB-06` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile OTA Updater UI | 移动端 OTA 热更新全 UI 链路(WebUpdater 检查/更新徽章 #mobile-update-btn/下载应用进度) |
 | **P2** | `P2-SET-01` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings General / Profile | 设置·通用：个人昵称保存(按钮+回车保存+空值防误存提示)与 6 色头像圆点切换(侧边栏联动 + 刷新持久化) |
 | **P2** | `P2-SET-02` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings General / Appearance | 设置·通用：浅色/深色/跟随系统三态主题(color-scheme 同步)、Bot 强调色 vs 默认黑灰与拼写检查(#message-input spellcheck)开关 |
 | **P2** | `P2-SET-03` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings General / Compression & Global Memories | 设置·通用：上下文压缩 3 档预设卡(50%/75%/85%)、滑块、高级自定义规则与全局共享记忆 CRUD/启停/编辑/删除 |

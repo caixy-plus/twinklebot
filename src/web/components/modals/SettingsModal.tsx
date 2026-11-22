@@ -49,7 +49,6 @@ import {
   downloadOrOpenFullShellUpdate,
   forceSwitchCoreOtaNow,
   hasConnectedNodeCapability,
-  rollbackOtaToBuiltIn,
 } from "../../services/ota-updater.js";
 import {
   CLIENT_USD_TO_CNY,
@@ -4725,36 +4724,6 @@ export function SettingsModal() {
                         暂不提醒
                       </button>
                     </div>
-                  </div>
-                </>
-              )}
-
-              {updateState?.localMeta?.usingBuiltIn === false && (
-                <>
-                  <div className="settings-divider" />
-                  <div className="settings-item-row">
-                    <div>
-                      <div className="settings-row-title">
-                        {updateState?.localMeta?.supportsCoreOta
-                          ? "恢复随包内置基线版本"
-                          : "恢复随包内置前端界面"}
-                      </div>
-                      <div className="settings-row-sub">
-                        {updateState?.localMeta?.supportsCoreOta
-                          ? "若热更新后本地服务或界面异常，可一键回退到安装包原版核心运行时"
-                          : "若热更新后界面显示异常，可一键回退到安装包原版静态资源"}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      id="rollback-ota-builtin-btn"
-                      className="settings-pill-btn"
-                      onClick={() => {
-                        void rollbackOtaToBuiltIn();
-                      }}
-                    >
-                      恢复内置版
-                    </button>
                   </div>
                 </>
               )}

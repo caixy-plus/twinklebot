@@ -22,7 +22,6 @@ import {
   isMobileAppTarget,
   isNativeMobileContainer,
   onMobileWebOtaProgress,
-  rollbackMobileWebOtaToBuiltIn,
 } from "../mobile-bridge.js";
 import { getState, setState } from "../state/store.js";
 import { apiJson } from "./api-client.js";
@@ -882,19 +881,6 @@ export async function downloadOrOpenFullShellUpdate() {
   }
 
   window.open(downloadUrl, "_blank", "noopener");
-}
-
-export async function rollbackOtaToBuiltIn() {
-  const platform = resolveCurrentPlatform();
-  if (platform === "desktop" && window.twinklebotDesktop?.rollbackWebOta) {
-    await window.twinklebotDesktop.rollbackWebOta("builtin");
-    return;
-  }
-  if ((platform === "ios" || platform === "android") && isNativeMobileContainer()) {
-    await rollbackMobileWebOtaToBuiltIn();
-    return;
-  }
-  window.location.reload();
 }
 
 export function dismissCurrentUpdateNotice() {
