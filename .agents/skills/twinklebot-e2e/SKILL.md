@@ -67,10 +67,10 @@ Read reference files on demand (progressive disclosure):
   - Milestone archive *(Git-tracked, opt-in)*: `docs/e2e-reports/YYYY-MM-DD-e2e-report.md` via `npm run e2e:report:archive`.
 
 ### Browser Visibility Controls
-- On interactive macOS runs, Chrome defaults to **visible headed mode** with an on-screen HUD status pill so the user can watch execution live.
-- Override via environment variables:
-  - `TWINKLEBOT_E2E_HEADLESS=1` — run headless (CI / background runs)
-  - `TWINKLEBOT_E2E_HEADED=1` — force visible Chrome window
+- Chrome defaults to **headless mode** (`--headless=new`, `slowMoMs = 0`) across all platforms (including local macOS runs) so E2E runs silently and quickly without popping up browser windows.
+- Override via environment variables only when explicitly debugging visually:
+  - `TWINKLEBOT_E2E_HEADED=1` — opt-in visible Chrome window with HUD status pill
+  - `TWINKLEBOT_E2E_HEADLESS=1` — explicitly force headless (takes precedence over `HEADED`)
   - `TWINKLEBOT_E2E_SLOWMO_MS=80` — slow down UI interactions for visual inspection
 
 ---

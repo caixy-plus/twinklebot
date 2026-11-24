@@ -869,10 +869,8 @@ export async function launchHeadlessChrome(opts: {
 
   const headed =
     opts.headed ??
-    (process.env.TWINKLEBOT_E2E_HEADED === "1" ||
-      (process.env.TWINKLEBOT_E2E_HEADLESS !== "1" &&
-        process.env.CI !== "true" &&
-        process.platform === "darwin"));
+    (process.env.TWINKLEBOT_E2E_HEADED === "1" &&
+      process.env.TWINKLEBOT_E2E_HEADLESS !== "1");
 
   const envSlow = Number(process.env.TWINKLEBOT_E2E_SLOWMO_MS);
   const slowMoMs =
