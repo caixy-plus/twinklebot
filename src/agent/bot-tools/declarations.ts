@@ -347,7 +347,7 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "web_search",
     description:
-      "Search the public internet for up-to-date information, documentation, news, or facts without launching a browser. Returns top search result titles, URLs, and snippets.",
+      "Search the public internet with automatic multi-engine routing (Google -> Bing -> DuckDuckGo -> Baidu) without launching a browser. Returns top search result titles, URLs, snippets, optional publication dates, and fetch timestamp. For time-sensitive or real-time queries (prices, news, exchange rates), set freshness='day' and follow up with web_fetch on an authoritative page instead of trusting cached snippets.",
     parameters: {
       type: "object",
       properties: {
@@ -358,6 +358,12 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
         max_results: {
           type: "integer",
           description: "Maximum results to return (1-10, default 6).",
+        },
+        freshness: {
+          type: "string",
+          enum: ["day", "week", "month", "year"],
+          description:
+            "Optional recency filter (e.g. 'day' for today's news/prices, 'week' for recent updates).",
         },
       },
       required: ["query"],

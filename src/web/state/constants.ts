@@ -262,6 +262,44 @@ export const DEFAULT_KIMI_CU_MCP_CONFIG = {
   args: ["mcp", "-s", "user"],
 };
 
+export function resolveHostPlatformHint(
+  hostPlatform?: string | null
+): "darwin" | "win32" | "linux" | "" {
+  const raw = String(hostPlatform || "").trim().toLowerCase();
+  if (raw === "darwin" || raw === "macos" || raw === "mac") return "darwin";
+  if (raw === "win32" || raw === "windows" || raw === "win") return "win32";
+  if (raw === "linux") return "linux";
+  if (typeof window !== "undefined") {
+    const deskPlat = String((window as any)?.twinklebotDesktop?.platform || "").toLowerCase();
+    if (deskPlat === "darwin" || deskPlat === "win32" || deskPlat === "linux") {
+      return deskPlat as "darwin" | "win32" | "linux";
+    }
+  }
+  if (typeof navigator !== "undefined") {
+    const ua = String(navigator.userAgent || "");
+    if (/Windows/i.test(ua)) return "win32";
+    if (/Macintosh|Mac OS X/i.test(ua)) return "darwin";
+    if (/Linux/i.test(ua) && !/Android/i.test(ua)) return "linux";
+  }
+  return "";
+}
+
+export function getDefaultKimiCuConfig(hostPlatform?: string | null) {
+  const plat = resolveHostPlatformHint(hostPlatform);
+  return {
+    type: "stdio",
+    command: plat && plat !== "darwin" ? "" : DEFAULT_KIMI_CU_MCP_CONFIG.command,
+    args: [...DEFAULT_KIMI_CU_MCP_CONFIG.args],
+  };
+}
+
+export function getFileManagerLabel(hostPlatform?: string | null): string {
+  const plat = resolveHostPlatformHint(hostPlatform);
+  if (plat === "darwin") return "访达";
+  if (plat === "win32") return "资源管理器";
+  return "文件管理器";
+}
+
 export const SKILL_FALLBACK_CATALOG = {
   platform: [
     {

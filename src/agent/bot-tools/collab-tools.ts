@@ -106,6 +106,7 @@ export async function handleCollabBotTool(
   if (name === "web_search") {
     return await searchWeb(args.query, {
       maxResults: args.max_results,
+      ...(args.freshness ? { freshness: args.freshness } : {}),
       ...(fetchImpl ? { fetchImpl } : {}),
     });
   }

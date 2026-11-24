@@ -13,13 +13,26 @@ export interface McpServerConfig {
   env?: Record<string, string>;
 }
 
-export const DEFAULT_MCP_SERVERS: Readonly<Record<string, McpServerConfig>> = Object.freeze({
-  "kimi-cu": Object.freeze({
-    type: "stdio",
-    command: "/Applications/KimiCU.app/Contents/MacOS/kimi-cu",
-    args: Object.freeze(["mcp", "-s", "user"]),
-  }),
-});
+export function isKimiCuSupportedPlatform(platform: string = process.platform): boolean {
+  return platform === "darwin";
+}
+
+export function getDefaultMcpServers(
+  platform: string = process.platform
+): Readonly<Record<string, McpServerConfig>> {
+  return Object.freeze({
+    "kimi-cu": Object.freeze({
+      type: "stdio",
+      command: isKimiCuSupportedPlatform(platform)
+        ? "/Applications/KimiCU.app/Contents/MacOS/kimi-cu"
+        : "",
+      args: Object.freeze(["mcp", "-s", "user"]),
+    }),
+  });
+}
+
+export const DEFAULT_MCP_SERVERS: Readonly<Record<string, McpServerConfig>> =
+  getDefaultMcpServers(process.platform);
 
 const SCRUBBED_ENV_KEYS = [
   "GEMINI_API_KEY",
@@ -504,12 +517,15 @@ function createStdioSession(
 }
 
 export function createMcpManager({
-  getServersConfig = () => DEFAULT_MCP_SERVERS,
+  getServersConfig,
   spawnFn = nodeSpawn,
+  platform = process.platform,
 }: {
   getServersConfig?: () => Record<string, McpServerConfig>;
   spawnFn?: typeof nodeSpawn;
+  platform?: string;
 } = {}) {
+  const defaultServers = getDefaultMcpServers(platform);
   const sessions = new Map<
     string,
     { sig: string; session: ReturnType<typeof createStdioSession> }
@@ -517,10 +533,21 @@ export function createMcpManager({
 
   function resolveConfigs(): Record<string, McpServerConfig> {
     const custom = getServersConfig?.() || {};
-    return {
-      ...DEFAULT_MCP_SERVERS,
+    const merged: Record<string, McpServerConfig> = {
+      ...defaultServers,
       ...(custom && typeof custom === "object" ? custom : {}),
     };
+    // Guard against legacy saved Mac .app path leaking onto Windows/Linux hosts
+    if (
+      !isKimiCuSupportedPlatform(platform) &&
+      merged["kimi-cu"]?.command === "/Applications/KimiCU.app/Contents/MacOS/kimi-cu"
+    ) {
+      merged["kimi-cu"] = {
+        ...merged["kimi-cu"],
+        command: "",
+      };
+    }
+    return merged;
   }
 
   function configSignature(cfg: McpServerConfig | undefined): string {
@@ -611,18 +638,39 @@ export function createMcpManager({
           error: `未配置 MCP 服务 ${serverId}`,
         };
       }
-      const binaryExists = checkBinaryExists(cfg.command);
+      const commandStr = String(cfg.command || "").trim();
+      const kimiUnsupported = serverId === "kimi-cu" && !isKimiCuSupportedPlatform(platform);
+      if (!commandStr) {
+        return {
+          serverId,
+          configured: true,
+          command: "",
+          args: Array.isArray(cfg.args) ? [...cfg.args] : [],
+          binaryExists: false,
+          connected: false,
+          ...(kimiUnsupported ? { unsupportedPlatform: true } : {}),
+          toolCount: 0,
+          tools: [],
+          error: kimiUnsupported
+            ? "当前系统暂不支持 KimiCU（仅支持 macOS），或可在配置中指定自定义 MCP 服务路径"
+            : `未配置 MCP 服务 ${serverId} 的可执行路径`,
+        };
+      }
+      const binaryExists = checkBinaryExists(commandStr);
       if (!binaryExists) {
         return {
           serverId,
           configured: true,
-          command: cfg.command,
+          command: commandStr,
           args: Array.isArray(cfg.args) ? [...cfg.args] : [],
           binaryExists: false,
           connected: false,
+          ...(kimiUnsupported ? { unsupportedPlatform: true } : {}),
           toolCount: 0,
           tools: [],
-          error: `未检测到 ${cfg.command}，请确认已安装 KimiCU.app`,
+          error: kimiUnsupported
+            ? "未检测到可用的本地 MCP 服务（KimiCU 仅支持 macOS）"
+            : `未检测到可执行文件（${commandStr}），请确认已安装或检查配置路径`,
         };
       }
 

@@ -12,7 +12,10 @@ import {
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
-import { DEFAULT_KIMI_CU_MCP_CONFIG } from "../../state/constants.js";
+import {
+  getDefaultKimiCuConfig,
+  resolveHostPlatformHint,
+} from "../../state/constants.js";
 import {
   formatMcpServersJson,
   getConfigurableSkillFromSettings,
@@ -131,9 +134,16 @@ export function SkillsStoreModal() {
   const mcpStatusByServer = useStore((s) => s.mcpStatusByServer);
   const mcpFeedback = useStore((s) => s.mcpFeedback);
   const settings = useStore((s) => s.settings);
+  const diagnostics = useStore((s) => s.diagnostics);
+  const computerStatus = useStore((s) => s.computerStatus);
   const networkHealth = useStore((s) => s.networkHealth);
   const lanNodeOffline = useStore((s) => s.lanNodeOffline);
   const accountsState = useStore((s) => s.accountsState);
+  const hostPlatform = resolveHostPlatformHint(
+    computerStatus?.hostComputer?.platform || diagnostics?.hostComputer?.platform
+  );
+  const isNonMacHost = Boolean(hostPlatform && hostPlatform !== "darwin");
+  const defaultKimiConfig = getDefaultKimiCuConfig(hostPlatform);
   const remoteAccountOffline = isRemoteAccountOffline({
     accountsState,
     networkHealth,
@@ -196,13 +206,13 @@ export function SkillsStoreModal() {
   const isMcpSkill = Boolean(detailSkill?.mcpServerId || detailSkill?.category === "platform");
   const mcpServerId = detailSkill?.mcpServerId || detailSkillId || "kimi-cu";
   const [mcpJsonText, setMcpJsonText] = useState(() =>
-    formatMcpServersJson(settings?.mcpServers, mcpServerId)
+    formatMcpServersJson(settings?.mcpServers, mcpServerId, hostPlatform)
   );
   const [mcpBusy, setMcpBusy] = useState<"save" | "test" | null>(null);
 
   useEffect(() => {
-    setMcpJsonText(formatMcpServersJson(settings?.mcpServers, mcpServerId));
-  }, [settings?.mcpServers, mcpServerId, detailSkillId]);
+    setMcpJsonText(formatMcpServersJson(settings?.mcpServers, mcpServerId, hostPlatform));
+  }, [settings?.mcpServers, mcpServerId, detailSkillId, hostPlatform]);
 
   const resetMailFormsForCreate = (targetProvider: "qqmail" | "custom-mail") => {
     const anyMail = enabledMailAccounts.length > 0;
@@ -535,7 +545,9 @@ export function SkillsStoreModal() {
       return `MCP 已连接${ver} · ${srv.toolCount || skill.toolCount} 项工具可用`;
     }
     if (srv?.binaryExists === false || srv?.binaryInstalled === false) {
-      return "已添加 · 未检测到 KimiCU.app，点击「配置」查看";
+      return isNonMacHost || srv?.unsupportedPlatform
+        ? "已添加 · 当前系统未安装或不支持 KimiCU，点击「配置」查看"
+        : "已添加 · 未检测到 KimiCU，点击「配置」查看";
     }
     return `${skill.toolCount} 项工具 · 已添加，点击「配置」检测或修改 MCP 服务`;
   };
@@ -2541,7 +2553,7 @@ export function SkillsStoreModal() {
                         className="inline-ui-icon inline-status-svg is-warn"
                         size={13}
                       />
-                      未安装 KimiCU
+                      {isNonMacHost || srv?.unsupportedPlatform ? "当前系统不可用" : "未安装 KimiCU"}
                     </span>
                   ) : srvErr ? (
                     <span id="mcp-status-badge" className="mcp-status-badge is-offline">
@@ -2561,18 +2573,24 @@ export function SkillsStoreModal() {
                 </div>
                 <div id="mcp-status-detail" className="mcp-status-detail">
                   {!srv
-                    ? `正在检测 ${
-                        settings?.mcpServers?.[mcpServerId]?.command ||
-                        DEFAULT_KIMI_CU_MCP_CONFIG.command
-                      } …`
+                    ? isNonMacHost
+                      ? "正在检测本地 MCP 服务状态…"
+                      : `正在检测 ${
+                          settings?.mcpServers?.[mcpServerId]?.command ||
+                          defaultKimiConfig.command ||
+                          "本地 MCP 服务"
+                        } …`
                     : srv.connected
                       ? `${srv.serverInfo?.name || "kimi-cu"}${
                           srv.serverInfo?.version ? ` v${srv.serverInfo.version}` : ""
                         } 握手成功 · ${srvCmdText}`
                       : srvBinMissing
-                        ? `未在本机检测到可执行文件：${srv.command}。请先安装 KimiCU.app，或在下方修改 command 路径后点击「保存并连接测试」。`
+                        ? isNonMacHost || srv?.unsupportedPlatform
+                          ? srvErr ||
+                            "当前系统未安装或暂不支持 KimiCU（仅支持 macOS），如需使用其它本地 MCP 服务请在下方配置可执行路径。"
+                          : `未在本机检测到可执行文件：${srv.command || "未配置"}。请先安装 KimiCU，或在下方修改 command 路径后点击「保存并连接测试」。`
                         : srvErr
-                          ? `${srvErr}（${srvCmdText}）`
+                          ? `${srvErr}${srvCmdText ? `（${srvCmdText}）` : ""}`
                           : `已检测到可执行文件：${srvCmdText}。点击「重新握手检测」可立即验证工具列表。`}
                 </div>
                 <div
@@ -2592,8 +2610,17 @@ export function SkillsStoreModal() {
               <div className="mail-field mcp-json-block">
                 <label htmlFor="mcp-config-json-input">MCP Server 配置（JSON）</label>
                 <span className="mail-field-hint">
-                  默认调用 <code>/Applications/KimiCU.app/Contents/MacOS/kimi-cu mcp -s user</code>
-                  ，后台无感操控本机任意 Mac 桌面软件且不抢占物理鼠标指针。
+                  {isNonMacHost ? (
+                    <>
+                      填写兼容 stdio 协议的本地 MCP 可执行路径与参数（KimiCU 桌面软件操控目前仅支持
+                      macOS）。
+                    </>
+                  ) : (
+                    <>
+                      默认调用 <code>/Applications/KimiCU.app/Contents/MacOS/kimi-cu mcp -s user</code>
+                      ，后台无感操控本机任意 Mac 桌面软件且不抢占物理鼠标指针。
+                    </>
+                  )}
                 </span>
                 <textarea
                   id="mcp-config-json-input"

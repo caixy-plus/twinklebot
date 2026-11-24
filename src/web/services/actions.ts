@@ -27,6 +27,7 @@ import {
 import {
   ACCOUNTS_STORAGE_KEY,
   buildBotComputerSelfHealPrompt,
+  getFileManagerLabel,
   PRESET_BOT_COMPUTER_INIT_PROMPT,
 } from "../state/constants.js";
 import {
@@ -1137,13 +1138,31 @@ export async function sendUserMessage(rawText?: string) {
   if (s.replyQuote && !stagedReplyTarget) {
     text = `> ${s.replyQuote}\n\n${text}`;
   }
+  // Invalidate any in-flight voice recognition session before clearing composerText
+  // so late async rec.onresult callbacks cannot write stale transcripts back (PI-012).
+  runtimeRefs.voiceSessionSeq = (runtimeRefs.voiceSessionSeq || 0) + 1;
+  if (runtimeRefs.speechRec) {
+    const activeRec = runtimeRefs.speechRec;
+    runtimeRefs.speechRec = null;
+    try {
+      if (typeof activeRec.abort === "function") {
+        activeRec.abort();
+      } else if (typeof activeRec.stop === "function") {
+        activeRec.stop();
+      }
+    } catch {}
+  }
   setState({
     replyQuote: null,
     replyTarget: null,
     pendingQuotes: [],
     composerText: "",
+    isRecordingVoice: false,
     openPopover: getState().openPopover === "mention" ? null : getState().openPopover,
   });
+  if (msgInputEl && msgInputEl.value) {
+    msgInputEl.value = "";
+  }
 
   if (!getState().activeSessionId) {
     const created = await apiJson("/api/sessions", {
@@ -2215,11 +2234,13 @@ export function toggleVoiceDictation() {
   const rec = new SpeechRec();
   rec.lang = "zh-CN";
   rec.interimResults = false;
+  const sessionSeq = (runtimeRefs.voiceSessionSeq = (runtimeRefs.voiceSessionSeq || 0) + 1);
   runtimeRefs.speechRec = rec;
   setState({ isRecordingVoice: true });
   showToast("正在聆听，请说话…");
 
   rec.onresult = (ev: any) => {
+    if (sessionSeq !== runtimeRefs.voiceSessionSeq) return;
     const transcript = ev.results?.[0]?.[0]?.transcript || "";
     if (transcript) {
       setState((prev) => ({
@@ -2229,10 +2250,20 @@ export function toggleVoiceDictation() {
     }
   };
   rec.onend = () => {
-    setState({ isRecordingVoice: false });
+    if (runtimeRefs.speechRec === rec) {
+      runtimeRefs.speechRec = null;
+    }
+    if (sessionSeq === runtimeRefs.voiceSessionSeq) {
+      setState({ isRecordingVoice: false });
+    }
   };
   rec.onerror = () => {
-    setState({ isRecordingVoice: false });
+    if (runtimeRefs.speechRec === rec) {
+      runtimeRefs.speechRec = null;
+    }
+    if (sessionSeq === runtimeRefs.voiceSessionSeq) {
+      setState({ isRecordingVoice: false });
+    }
   };
   rec.start();
 }
@@ -2245,7 +2276,11 @@ export async function openLocalFile(filePath: string, { reveal = false } = {}) {
       body: JSON.stringify({ path: filePath, reveal }),
     });
   } catch (err: any) {
-    showToast(`${reveal ? "打开访达" : "打开文件"}失败: ${err.message}`);
+    const fmLabel = getFileManagerLabel(
+      getState().computerStatus?.hostComputer?.platform ||
+        getState().diagnostics?.hostComputer?.platform
+    );
+    showToast(`${reveal ? `打开${fmLabel}` : "打开文件"}失败: ${err.message}`);
   }
 }
 
@@ -2389,6 +2424,11 @@ export async function bootstrapApp() {
   await loadAccountsDirectory();
 
   onAppForeground(async () => {
+    const now = Date.now();
+    if (runtimeRefs.lastForegroundProbeAt && now - runtimeRefs.lastForegroundProbeAt < 2000) {
+      return;
+    }
+    runtimeRefs.lastForegroundProbeAt = now;
     const s = getState();
     const activeAcc = (s.accountsState?.accounts || []).find(
       (a) => a.id === s.accountsState?.activeAccountId

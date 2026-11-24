@@ -233,7 +233,7 @@ export interface AppState {
     errorCode?: string;
     vmInstalled?: boolean;
     vmRunning?: boolean;
-    hostComputer?: { hostname?: string; executionMode?: string };
+    hostComputer?: { hostname?: string; platform?: string; executionMode?: string };
   };
   computerDisplays: {
     bindings: Record<string, string>;
@@ -769,8 +769,11 @@ export const runtimeRefs: {
   wsPingTimer: any;
   wsPongTimeoutTimer: any;
   wsLastPingSentAt: number;
+  wsLastMessageAt: number;
+  wsMissedPongs: number;
   wsReconnectAttempt: number;
   lastHiddenAt: number;
+  lastForegroundProbeAt: number;
   wsHasOpenedInEpoch: boolean;
   inflightReconnectSync: Promise<any> | null;
   eventSource: EventSource | null;
@@ -783,6 +786,7 @@ export const runtimeRefs: {
   usageFetchSeq: number;
   usageLiveRefreshTimer: any;
   speechRec: any;
+  voiceSessionSeq: number;
   toastTimer: any;
   connectingTimer: any;
   confirmResolve: ((confirmed: boolean) => void) | null;
@@ -793,8 +797,11 @@ export const runtimeRefs: {
   wsPingTimer: null,
   wsPongTimeoutTimer: null,
   wsLastPingSentAt: 0,
+  wsLastMessageAt: 0,
+  wsMissedPongs: 0,
   wsReconnectAttempt: 0,
   lastHiddenAt: 0,
+  lastForegroundProbeAt: 0,
   wsHasOpenedInEpoch: false,
   inflightReconnectSync: null,
   eventSource: null,
@@ -807,6 +814,7 @@ export const runtimeRefs: {
   usageFetchSeq: 0,
   usageLiveRefreshTimer: null,
   speechRec: null,
+  voiceSessionSeq: 0,
   toastTimer: null,
   connectingTimer: null,
   confirmResolve: null,

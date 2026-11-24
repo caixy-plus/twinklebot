@@ -289,16 +289,26 @@ function clearHeartbeatTimers() {
     runtimeRefs.wsPongTimeoutTimer = null;
   }
   runtimeRefs.wsLastPingSentAt = 0;
+  runtimeRefs.wsMissedPongs = 0;
 }
 
 function sendWsHeartbeatPing(
   ws: WebSocket,
   epoch: number,
-  timeoutMs = getNetworkThresholds().pongTimeoutMs
+  timeoutMs = getNetworkThresholds().pongTimeoutMs,
+  { force = false }: { force?: boolean } = {}
 ) {
   if (epoch !== getState().accountEpoch || runtimeRefs.wsSocket !== ws) return;
   if (ws.readyState !== WebSocket.OPEN) return;
   if (runtimeRefs.wsPongTimeoutTimer) return; // ping already in-flight
+  const thresholds = getNetworkThresholds();
+  if (
+    !force &&
+    runtimeRefs.wsLastMessageAt > 0 &&
+    Date.now() - runtimeRefs.wsLastMessageAt < thresholds.pingIntervalMs * 0.7
+  ) {
+    return;
+  }
   runtimeRefs.wsLastPingSentAt = Date.now();
   try {
     ws.send(JSON.stringify({ type: "ping", at: runtimeRefs.wsLastPingSentAt }));
@@ -308,6 +318,14 @@ function sendWsHeartbeatPing(
   runtimeRefs.wsPongTimeoutTimer = setTimeout(() => {
     runtimeRefs.wsPongTimeoutTimer = null;
     if (epoch !== getState().accountEpoch || runtimeRefs.wsSocket !== ws) return;
+    runtimeRefs.wsMissedPongs = (runtimeRefs.wsMissedPongs || 0) + 1;
+    // Require 2 consecutive missed pongs before treating the socket as dead so transient
+    // mobile WebView timer jitter or momentary WiFi latency spikes don't flap the connection.
+    if (runtimeRefs.wsMissedPongs < 2) {
+      sendWsHeartbeatPing(ws, epoch, timeoutMs, { force: true });
+      return;
+    }
+    runtimeRefs.wsMissedPongs = 0;
     reportHeartbeatTimeout();
     try {
       ws.close();
@@ -402,14 +420,19 @@ export function connectGlobalSse(epoch = getState().accountEpoch) {
       es.close();
       return;
     }
-    const wasReconnect = runtimeRefs.wsReconnectAttempt > 0 || runtimeRefs.wsHasOpenedInEpoch;
+    const curNetStatus = getState().networkHealth?.status;
+    const wasDisrupted =
+      curNetStatus === "offline" ||
+      curNetStatus === "reconnecting" ||
+      runtimeRefs.wsReconnectAttempt > 0;
+    const shouldSync = runtimeRefs.wsHasOpenedInEpoch || wasDisrupted;
     runtimeRefs.wsReconnectAttempt = 0;
     runtimeRefs.wsHasOpenedInEpoch = true;
     sseOpened = true;
     setRealtimeConnectedMarker(true);
     markLanReachable();
-    reportTransportConnected("sse", wasReconnect);
-    if (wasReconnect) {
+    reportTransportConnected("sse", wasDisrupted);
+    if (shouldSync) {
       syncSessionsAndActiveOnReconnect(epoch);
     }
   };
@@ -518,14 +541,20 @@ export function connectRealtimeTransport() {
         ws.close();
         return;
       }
-      const isReconnect =
-        runtimeRefs.wsHasOpenedInEpoch === true || runtimeRefs.wsReconnectAttempt > 0;
+      const curNetStatus = getState().networkHealth?.status;
+      const wasDisrupted =
+        curNetStatus === "offline" ||
+        curNetStatus === "reconnecting" ||
+        runtimeRefs.wsReconnectAttempt > 0;
+      const shouldSync = runtimeRefs.wsHasOpenedInEpoch === true || wasDisrupted;
       runtimeRefs.wsHasOpenedInEpoch = true;
       runtimeRefs.wsReconnectAttempt = 0;
+      runtimeRefs.wsLastMessageAt = Date.now();
+      runtimeRefs.wsMissedPongs = 0;
       openedOnce = true;
       setRealtimeConnectedMarker(true);
       markLanReachable();
-      reportTransportConnected("ws", isReconnect);
+      reportTransportConnected("ws", wasDisrupted);
       startWsHeartbeat(ws, epoch);
 
       const cur = getState();
@@ -547,20 +576,22 @@ export function connectRealtimeTransport() {
           );
         } catch {}
       }
-      if (isReconnect) {
+      if (shouldSync) {
         syncSessionsAndActiveOnReconnect(epoch);
       }
     };
 
     ws.onmessage = (evt) => {
       if (epoch !== getState().accountEpoch) return;
+      runtimeRefs.wsLastMessageAt = Date.now();
+      runtimeRefs.wsMissedPongs = 0;
+      if (runtimeRefs.wsPongTimeoutTimer) {
+        clearTimeout(runtimeRefs.wsPongTimeoutTimer);
+        runtimeRefs.wsPongTimeoutTimer = null;
+      }
       try {
         const payload = JSON.parse(String(evt.data));
         if (payload && payload.type === "pong") {
-          if (runtimeRefs.wsPongTimeoutTimer) {
-            clearTimeout(runtimeRefs.wsPongTimeoutTimer);
-            runtimeRefs.wsPongTimeoutTimer = null;
-          }
           if (runtimeRefs.wsLastPingSentAt > 0) {
             const rtt = Math.max(1, Date.now() - runtimeRefs.wsLastPingSentAt);
             runtimeRefs.wsLastPingSentAt = 0;
@@ -616,12 +647,17 @@ export async function reconnectRealtimeNow(): Promise<boolean> {
 }
 
 export function probeActiveTransportOnResume() {
+  const now = Date.now();
+  if (runtimeRefs.lastForegroundProbeAt && now - runtimeRefs.lastForegroundProbeAt < 2000) {
+    return;
+  }
+  runtimeRefs.lastForegroundProbeAt = now;
   const s = getState();
   const epoch = s.accountEpoch;
   if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   const ws = runtimeRefs.wsSocket;
   if (ws && ws.readyState === WebSocket.OPEN) {
-    sendWsHeartbeatPing(ws, epoch, 2500);
+    sendWsHeartbeatPing(ws, epoch, 6000, { force: true });
     return;
   }
   if (!runtimeRefs.eventSource && !ws) {

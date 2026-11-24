@@ -3,6 +3,8 @@ import {
   CLIENT_MODEL_RATES,
   CLIENT_USD_TO_CNY,
   DEFAULT_KIMI_CU_MCP_CONFIG,
+  getDefaultKimiCuConfig,
+  getFileManagerLabel,
   SKILL_FALLBACK_CATALOG,
 } from "./constants.js";
 
@@ -153,7 +155,7 @@ export function translateToolHumanSummary(toolName: string, args: any = {}): str
       : "在你的电脑终端执行命令";
   }
   if (name === "host_open") {
-    if (args?.reveal) return `在访达中定位：${args?.target || ""}`;
+    if (args?.reveal) return `在${getFileManagerLabel()}中定位：${args?.target || ""}`;
     const label = args?.app
       ? `${args.app}${args?.target ? ` (${args.target})` : ""}`
       : args?.target || "本地应用或文件";
@@ -764,15 +766,25 @@ export function parseModelsCsv(raw = ""): string[] {
   ];
 }
 
-export function formatMcpServersJson(mcpServers: any, serverId = "kimi-cu"): string {
-  const cfg = mcpServers?.[serverId] || DEFAULT_KIMI_CU_MCP_CONFIG;
+export function formatMcpServersJson(
+  mcpServers: any,
+  serverId = "kimi-cu",
+  hostPlatform?: string | null
+): string {
+  const fallback = getDefaultKimiCuConfig(hostPlatform);
+  const cfg = mcpServers?.[serverId] || fallback;
+  const rawCmd = String(cfg.command || "").trim();
+  const cmd =
+    fallback.command === "" && rawCmd === DEFAULT_KIMI_CU_MCP_CONFIG.command
+      ? ""
+      : rawCmd || fallback.command;
   return JSON.stringify(
     {
       mcpServers: {
         [serverId]: {
           type: cfg.type || "stdio",
-          command: cfg.command || DEFAULT_KIMI_CU_MCP_CONFIG.command,
-          args: Array.isArray(cfg.args) ? cfg.args : DEFAULT_KIMI_CU_MCP_CONFIG.args,
+          command: cmd,
+          args: Array.isArray(cfg.args) ? cfg.args : fallback.args,
         },
       },
     },

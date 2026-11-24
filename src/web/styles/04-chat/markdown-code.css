@@ -216,10 +216,10 @@
 /* Multi-Image Grid & Lightbox */
 .msg-media-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 8px;
   margin-bottom: 6px;
-  max-width: 340px;
+  max-width: 380px;
 }
 .msg-media-grid:has(> :only-child) {
   grid-template-columns: minmax(0, 1fr);
@@ -230,10 +230,13 @@
 }
 .msg-media-grid img {
   width: 100%;
-  height: 124px;
-  object-fit: cover;
+  height: auto;
+  min-height: 96px;
+  max-height: 260px;
+  object-fit: contain;
   border-radius: 12px;
   border: 1px solid var(--border-card);
+  background: var(--bg-elevated);
   cursor: zoom-in;
   display: block;
 }

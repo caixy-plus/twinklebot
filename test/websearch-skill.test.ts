@@ -7,9 +7,12 @@ import {
   isInstallableSkill,
 } from "../src/shared/skills-catalog.js";
 import {
+  buildNeutralUserAgent,
   isSafePublicWebUrl,
+  isRealTimeQuery,
   searchWeb,
   fetchWebPage,
+  resetSearchReachabilityCacheForTests,
 } from "../src/lib/web-search.js";
 import {
   BOT_COLLAB_TOOL_DECLARATIONS,
@@ -48,52 +51,110 @@ test("isSafePublicWebUrl blocks loopback, link-local, RFC1918 private IPs, and n
   }
 });
 
-test("searchWeb parses DuckDuckGo HTML redirect links and falls back to Bing on empty/error", async () => {
+test("searchWeb routes Google -> Bing -> DuckDuckGo -> Baidu by reachability/proxy, supports freshness & dates, and uses platform-neutral UA", async () => {
+  resetSearchReachabilityCacheForTests();
+
+  // Platform-aware UA must not hardcode Macintosh on Windows/Linux
+  assert.match(buildNeutralUserAgent("win32"), /Windows NT/);
+  assert.ok(!buildNeutralUserAgent("win32").includes("Macintosh"));
+  assert.match(buildNeutralUserAgent("linux"), /Linux/);
+  assert.ok(!buildNeutralUserAgent("linux").includes("Macintosh"));
+  assert.match(buildNeutralUserAgent("darwin"), /Macintosh/);
+
+  // 1. Google reachable -> prioritizes Google and passes tbs=qdr:d freshness param + extracts date
+  const googleHtml = `
+    <div>
+      <a href="/url?q=https%3A%2F%2Fnodejs.org%2Fen&amp;sa=U"><h3>Node.js Official</h3></a>
+      <div class="VwiC3b">2026-11-23 — Node.js is a free, open-source JavaScript runtime.</div>
+    </div>
+  `;
+  let capturedGoogleUrl = "";
+  const gRes = await searchWeb("nodejs runtime", {
+    maxResults: 5,
+    freshness: "day",
+    googleReachable: true,
+    fetchImpl: async (url) => {
+      capturedGoogleUrl = String(url);
+      return new Response(googleHtml, { status: 200 });
+    },
+  });
+  assert.equal(gRes.ok, true);
+  assert.equal(gRes.engine, "google");
+  assert.match(capturedGoogleUrl, /google\.com\/search/);
+  assert.match(capturedGoogleUrl, /tbs=qdr%3Ad/);
+  assert.equal(gRes.results![0].url, "https://nodejs.org/en");
+  assert.equal(gRes.results![0].publishedAt, "2026-11-23");
+  assert.ok(gRes.fetchedAt);
+
+  // 2. Google blocked/captcha -> automatically falls back to Bing (preferred over DDG/Baidu)
+  const bingHtml = `
+    <li class="b_algo">
+      <h2><a href="https://bing-hit.example.com/post">Bing Result Title</a></h2>
+      <div class="b_caption"><p>2 hours ago · Fresh search snippet from Bing.</p></div>
+    </li>
+  `;
+  const fbBing = await searchWeb("比特币 实时价格", {
+    googleReachable: true,
+    fetchImpl: async (url) => {
+      const u = String(url);
+      if (u.includes("google.com")) {
+        return new Response("Our systems have detected unusual traffic", { status: 200 });
+      }
+      assert.match(u, /bing\.com\/search/);
+      assert.match(u, /filters=/);
+      return new Response(bingHtml, { status: 200 });
+    },
+  });
+  assert.equal(fbBing.ok, true);
+  assert.equal(fbBing.engine, "bing");
+  assert.equal(fbBing.freshness, "day");
+  assert.ok(fbBing.freshnessNote && fbBing.freshnessNote.includes("web_fetch"));
+  assert.equal(isRealTimeQuery("比特币 实时价格"), true);
+  assert.equal(fbBing.results![0].url, "https://bing-hit.example.com/post");
+  assert.equal(fbBing.results![0].publishedAt, "2 hours ago");
+
+  // 3. No proxy / domestic direct (hasProxy: false) -> skips Google, tries Bing -> DuckDuckGo -> Baidu
+  const visitedDirect: string[] = [];
   const ddgHtml = `
     <div class="result">
       <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnodejs.org%2Fen&amp;rut=1">Node.js Official</a>
       <a class="result__snippet">Node.js is a free, open-source JavaScript runtime.</a>
     </div>
-    <div class="result">
-      <a class="result__a" href="https://example.org/guide">Guide &amp; Docs</a>
-      <span class="result__snippet">Complete <b>reference</b> guide.</span>
-    </div>
   `;
-  const res = await searchWeb("nodejs runtime", {
-    maxResults: 5,
+  const ddgFallback = await searchWeb("nodejs runtime", {
+    hasProxy: false,
     fetchImpl: async (url) => {
-      assert.match(String(url), /duckduckgo\.com/);
+      const u = String(url);
+      visitedDirect.push(u);
+      if (u.includes("bing.com")) return new Response("blocked", { status: 403 });
       return new Response(ddgHtml, { status: 200 });
     },
   });
-  assert.equal(res.ok, true);
-  assert.equal(res.engine, "duckduckgo");
-  assert.equal(res.results!.length, 2);
-  assert.equal(res.results![0].title, "Node.js Official");
-  assert.equal(res.results![0].url, "https://nodejs.org/en");
-  assert.match(res.results![0].snippet, /JavaScript runtime/);
-  assert.equal(res.results![1].title, "Guide & Docs");
-  assert.equal(res.results![1].snippet, "Complete reference guide.");
+  assert.equal(ddgFallback.ok, true);
+  assert.equal(ddgFallback.engine, "duckduckgo");
+  assert.ok(visitedDirect.every((u) => !u.includes("google.com")), "no-proxy must skip Google");
+  assert.equal(ddgFallback.results![0].url, "https://nodejs.org/en");
 
-  // Fallback to Bing when DuckDuckGo fails
-  const bingHtml = `
-    <li class="b_algo">
-      <h2><a href="https://bing-hit.example.com/post">Bing Result Title</a></h2>
-      <div class="b_caption"><p>Fresh search snippet from Bing.</p></div>
-    </li>
+  // 4. All international engines fail -> falls back to Baidu as final engine
+  const baiduHtml = `
+    <div class="result c-container">
+      <h3><a href="https://example.cn/news/1">国内资讯标题</a></h3>
+      <span class="c-color-gray2">2026年11月23日</span>
+      <span class="content-right_8Zs40">百度兜底摘要内容。</span>
+    </div>
   `;
-  const fbRes = await searchWeb("test fallback", {
+  const baiduRes = await searchWeb("国内新闻", {
+    hasProxy: false,
     fetchImpl: async (url) => {
-      if (String(url).includes("duckduckgo.com")) {
-        return new Response("blocked", { status: 403 });
-      }
-      return new Response(bingHtml, { status: 200 });
+      const u = String(url);
+      if (u.includes("baidu.com")) return new Response(baiduHtml, { status: 200 });
+      return new Response("timeout", { status: 503 });
     },
   });
-  assert.equal(fbRes.ok, true);
-  assert.equal(fbRes.engine, "bing");
-  assert.equal(fbRes.results!.length, 1);
-  assert.equal(fbRes.results![0].url, "https://bing-hit.example.com/post");
+  assert.equal(baiduRes.ok, true);
+  assert.equal(baiduRes.engine, "baidu");
+  assert.equal(baiduRes.results![0].title, "国内资讯标题");
+  assert.equal(baiduRes.results![0].publishedAt, "2026年11月23日");
 });
 
 test("fetchWebPage extracts title and readable text while stripping scripts/styles and guarding SSRF", async () => {

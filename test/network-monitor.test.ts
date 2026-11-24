@@ -296,3 +296,45 @@ test("AccountDisconnectedGate blocks remote offline accounts (cloud/LAN) with na
   assert.ok(lanOfflineHtml.includes('data-account-gate-open="true"'));
   assert.ok(lanOfflineHtml.includes('data-account-gate-switch-id="cloud-1"'));
 });
+
+test("Issue #4: silent reconnects, weak->online settling, and rapid recovery cooldown never spam recovered banner", async (t) => {
+  const ssr = await import(pathToFileURL(SSR_BUNDLE_PATH).href);
+  t.after(() => {
+    ssr.clearNetworkMonitorTimers();
+    ssr.disconnectRealtimeTransport();
+  });
+
+  ssr.resetStoreForTest({
+    accountsState: CLOUD_ACCOUNTS,
+    activeBaseUrl: "https://cloud.example.com",
+    accountEpoch: 30,
+  });
+  ssr.clearNetworkMonitorTimers();
+
+  // 1. Mobile thresholds use relaxed anti-flap heartbeat timeouts
+  const mobThresh = ssr.getNetworkThresholds(true);
+  assert.ok(mobThresh.pingIntervalMs >= 25000);
+  assert.ok(mobThresh.pongTimeoutMs >= 10000);
+  assert.ok(mobThresh.resumeBgThresholdMs >= 8000);
+
+  // 2. Silent reconnect while already online must stay online (never flash "recovered")
+  ssr.reportTransportConnected("ws", true);
+  assert.equal(ssr.getState().networkHealth.status, "online");
+
+  // 3. Settling from weak back to connected must NOT flash "recovered"
+  ssr.reportHeartbeatRtt(2400);
+  assert.equal(ssr.getState().networkHealth.status, "weak");
+  ssr.reportTransportConnected("ws", true);
+  assert.equal(ssr.getState().networkHealth.status, "online");
+
+  // 4. Genuine disruption (reconnecting -> connected) shows recovered once, then cooldown suppresses immediate repeat spam
+  ssr.reportTransportDisconnected({ attempt: 1, nextRetryDelayMs: 1000, reason: "ws_closed" });
+  assert.equal(ssr.getState().networkHealth.status, "reconnecting");
+  ssr.reportTransportConnected("ws", true);
+  assert.equal(ssr.getState().networkHealth.status, "recovered");
+
+  // Immediate second blip within 15s cooldown settles quietly to online
+  ssr.reportTransportDisconnected({ attempt: 1, nextRetryDelayMs: 1000, reason: "ws_closed" });
+  ssr.reportTransportConnected("ws", true);
+  assert.equal(ssr.getState().networkHealth.status, "online");
+});

@@ -11,6 +11,7 @@ import {
 export type ActiveAccountKind = "local" | "lan" | "cloud";
 
 const RECOVERED_VISIBLE_MS = 2500;
+const RECOVERED_COOLDOWN_MS = 15_000;
 const WEAK_SHOW_DEBOUNCE_MS = 800;
 const WEAK_MIN_VISIBLE_MS = 2500;
 const OFFLINE_RECONNECT_THRESHOLD = 3;
@@ -19,6 +20,7 @@ let weakDebounceTimer: any = null;
 let weakClearTimer: any = null;
 let recoveredClearTimer: any = null;
 let weakShownAt = 0;
+let lastRecoveredShownAt = 0;
 let consecutiveHttpFailures = 0;
 
 export function clearNetworkMonitorTimers() {
@@ -35,6 +37,7 @@ export function clearNetworkMonitorTimers() {
     recoveredClearTimer = null;
   }
   weakShownAt = 0;
+  lastRecoveredShownAt = 0;
   consecutiveHttpFailures = 0;
 }
 
@@ -89,9 +92,9 @@ export function getNetworkThresholds(mobile = isMobileViewport()) {
     slowRequestMs: mobile ? 2500 : 2800,
     lanTimeoutMs: 5000,
     cloudTimeoutMs: 15000,
-    pingIntervalMs: mobile ? 15000 : 25000,
-    pongTimeoutMs: 5000,
-    resumeBgThresholdMs: mobile ? 3000 : 5000,
+    pingIntervalMs: mobile ? 25000 : 30000,
+    pongTimeoutMs: mobile ? 10000 : 8000,
+    resumeBgThresholdMs: mobile ? 8000 : 5000,
   };
 }
 
@@ -228,8 +231,12 @@ export function reportHttpOutcome({
     consecutiveHttpFailures = 0;
     const cur = getState().networkHealth;
     if (cur.status === "offline" || cur.status === "reconnecting") {
+      const now = Date.now();
+      const showRecovered =
+        lastRecoveredShownAt === 0 || now - lastRecoveredShownAt >= RECOVERED_COOLDOWN_MS;
+      if (showRecovered) lastRecoveredShownAt = now;
       patchNetworkHealth({
-        status: "recovered",
+        status: showRecovered ? "recovered" : "online",
         rttMs: Math.round(elapsedMs),
         reconnectAttempt: 0,
         nextRetryAt: null,
@@ -237,7 +244,9 @@ export function reportHttpOutcome({
         reason: "",
         dismissedWeakBanner: false,
       });
-      scheduleRecoveredAutoHide();
+      if (showRecovered) {
+        scheduleRecoveredAutoHide();
+      }
       return;
     }
     if (isRemoteAccountType(accountType) && elapsedMs >= thresholds.slowRequestMs) {
@@ -322,11 +331,17 @@ export function reportTransportConnected(transport: "ws" | "sse", wasReconnect =
   consecutiveHttpFailures = 0;
 
   const cur = getState().networkHealth;
-  const shouldShowRecovered =
-    wasReconnect ||
-    cur.status === "reconnecting" ||
-    cur.status === "offline" ||
-    cur.status === "weak";
+  // Only show the green "recovered" banner when recovering from a genuine disruption
+  // (offline or reconnecting), never on silent socket refreshes or weak->online settling.
+  const wasDisrupted = cur.status === "reconnecting" || cur.status === "offline";
+  const now = Date.now();
+  const cooldownOk =
+    lastRecoveredShownAt === 0 || now - lastRecoveredShownAt >= RECOVERED_COOLDOWN_MS;
+  const shouldShowRecovered = wasDisrupted && cooldownOk;
+  if (shouldShowRecovered) {
+    lastRecoveredShownAt = now;
+  }
+  void wasReconnect;
 
   patchNetworkHealth({
     status: shouldShowRecovered ? "recovered" : "online",

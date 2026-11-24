@@ -1691,9 +1691,43 @@ async function runTaskInner({
           store.saveHistory(sessionId, prunedFinal);
         }
         let answerText = turn?.text ?? "";
+        const normalizeEmbedRef = (raw?: string): string => {
+          const s = String(raw || "").trim();
+          if (!s) return "";
+          try {
+            return decodeURIComponent(s).replace(/\\/g, "/");
+          } catch {
+            return s.replace(/\\/g, "/");
+          }
+        };
+        const answerHasEmbed = (embed?: { url?: string; path?: string; markdown?: string }): boolean => {
+          if (!embed) return false;
+          const normAnswer = normalizeEmbedRef(answerText);
+          const normUrl = normalizeEmbedRef(embed.url);
+          const normPath = normalizeEmbedRef(embed.path);
+          const normMd = normalizeEmbedRef(embed.markdown);
+          if (normUrl && (answerText.includes(String(embed.url)) || normAnswer.includes(normUrl))) {
+            return true;
+          }
+          if (normPath && (answerText.includes(String(embed.path)) || normAnswer.includes(normPath))) {
+            return true;
+          }
+          if (normMd && normAnswer.includes(normMd)) {
+            return true;
+          }
+          return false;
+        };
         const appendedNotices = new Set<string>();
+        const appendedEmbedKeys = new Set<string>();
         for (const embed of generatedImageEmbeds) {
-          if (embed?.url && embed?.markdown && !answerText.includes(embed.url)) {
+          const dedupKey = normalizeEmbedRef(embed?.url || embed?.markdown);
+          if (
+            embed?.url &&
+            embed?.markdown &&
+            !appendedEmbedKeys.has(dedupKey) &&
+            !answerHasEmbed(embed)
+          ) {
+            appendedEmbedKeys.add(dedupKey);
             answerText = answerText.trim()
               ? `${answerText.trim()}\n\n${embed.markdown}`
               : embed.markdown;
@@ -1713,11 +1747,13 @@ async function runTaskInner({
           }
         }
         for (const embed of deliveredFileEmbeds) {
+          const dedupKey = normalizeEmbedRef(embed?.url || embed?.path || embed?.markdown);
           if (
             embed?.markdown &&
-            (!embed.path || !answerText.includes(embed.path)) &&
-            (!embed.url || !answerText.includes(embed.url))
+            !appendedEmbedKeys.has(dedupKey) &&
+            !answerHasEmbed(embed)
           ) {
+            appendedEmbedKeys.add(dedupKey);
             answerText = answerText.trim()
               ? `${answerText.trim()}\n\n${embed.markdown}`
               : embed.markdown;

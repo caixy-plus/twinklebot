@@ -302,3 +302,25 @@ test("createMcpManager reports clear error when MCP binary does not exist", asyn
   assert.equal(status.binaryExists, false);
   assert.ok(status.error);
 });
+
+test("PI-009: createMcpManager on Windows never leaks macOS /Applications/KimiCU.app path or KimiCU.app copy", async (t) => {
+  const winMgr = createMcpManager({
+    platform: "win32",
+    getServersConfig: () => ({
+      "kimi-cu": {
+        type: "stdio",
+        command: "/Applications/KimiCU.app/Contents/MacOS/kimi-cu",
+        args: ["mcp", "-s", "user"],
+      },
+    }),
+  });
+  t.after(() => winMgr.closeAll());
+
+  const st = await winMgr.getServerStatus("kimi-cu", { connect: false });
+  assert.equal(st.connected, false);
+  assert.equal(st.binaryExists, false);
+  assert.equal(st.command, "");
+  assert.equal((st as any).unsupportedPlatform, true);
+  assert.ok(!String(st.error || "").includes("/Applications/KimiCU.app"));
+  assert.ok(!String(st.error || "").includes("KimiCU.app"));
+});

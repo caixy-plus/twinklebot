@@ -213,7 +213,20 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
           "| ColumnOne | ColumnTwo | ColumnThree | ColumnFour | ColumnFive |",
           "| :--- | :--- | :--- | :--- | :--- |",
           "| VeryLongCellValueWithoutSpaces_1234567890 | AlphaBetaGamma | DeltaEpsilon | ZetaEtaTheta | IotaKappa |",
+          "",
+          "[图片附件: 登录二维码.png](/api/screens/qr-test/qr.png)",
+          "[图片附件: 登录二维码.png](/api/screens/qr-test/qr.png)",
         ].join("\n"),
+      });
+      ws.store.appendEvent(mobBot.id, {
+        type: "approval_request",
+        callId: "mob-overflow-approval-1",
+        name: "host_run_shell",
+        reason: "执行超长命令参数测试手机端卡片绝不横向溢出",
+        args: {
+          command:
+            "curl -X POST https://api.example.com/v1/deploy/very_long_unbreakable_segment_1234567890_abcdefghijklmnopqrstuvwxyz --header 'X-Custom-Header: value_without_spaces_12345678901234567890'",
+        },
       });
       ws.store.appendEvent(mobBot.id, {
         type: "route_notice",
@@ -242,16 +255,52 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
       await tab.waitFor(`document.querySelector('#app-shell')?.dataset?.mobileView === 'chat'`, 6000);
       await tab.waitFor(`Boolean(document.querySelector('.msg-group.is-bot .bot-bubble'))`, 6000);
 
-      // 1. Assert ZERO horizontal page overflow at 375×667!
-      const ov375 = await tab.evalJs<{ docScrollW: number; winW: number }>(`({
-        docScrollW: document.documentElement.scrollWidth,
-        winW: window.innerWidth,
-      })`);
+      // 1. Assert ZERO horizontal page & stream overflow at 375×667 (PI-008 confirm-card + wide code/table)!
+      const ov375 = await tab.evalJs<{
+        docScrollW: number;
+        winW: number;
+        streamScrollW: number;
+        streamClientW: number;
+        qrImgCount: number;
+        qrObjectFit: string;
+      }>(`(() => {
+        const stream = document.querySelector('#event-stream');
+        const imgs = Array.from(document.querySelectorAll('.msg-media-grid img'));
+        const fit = imgs[0] ? getComputedStyle(imgs[0]).objectFit : '';
+        return {
+          docScrollW: document.documentElement.scrollWidth,
+          winW: window.innerWidth,
+          streamScrollW: stream ? stream.scrollWidth : 0,
+          streamClientW: stream ? stream.clientWidth : 0,
+          qrImgCount: imgs.length,
+          qrObjectFit: fit,
+        };
+      })()`);
       setEvidence("overflow375", ov375);
       assert.ok(
         ov375.docScrollW <= ov375.winW + 1,
         `Mobile 375px document must not overflow horizontally: scrollWidth=${ov375.docScrollW} > innerWidth=${ov375.winW}`
       );
+      assert.ok(
+        ov375.streamScrollW <= ov375.streamClientW + 1,
+        `Mobile #event-stream with .confirm-card must not overflow horizontally: ${ov375.streamScrollW} > ${ov375.streamClientW}`
+      );
+      // Issue #3: Duplicate identical QR image markdown is deduplicated to 1 and uses object-fit: contain
+      assert.equal(ov375.qrImgCount, 1, "Duplicate image markdown URL must be deduplicated");
+      assert.equal(ov375.qrObjectFit, "contain", "Chat image attachment must use object-fit: contain (never cover-crop QR codes)");
+
+      // Issue #9 / PI-015: Scrolling/dragging message list while composer input is focused blurs it to dismiss soft keyboard
+      const blurredOnDrag = await tab.evalJs<boolean>(`(() => {
+        const input = document.getElementById('message-input');
+        const stream = document.getElementById('event-stream');
+        if (!input || !stream) return false;
+        input.focus();
+        const wasFocused = document.activeElement === input;
+        stream.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+        stream.dispatchEvent(new Event('scroll', { bubbles: false }));
+        return wasFocused && document.activeElement !== input;
+      })()`);
+      assert.equal(blurredOnDrag, true, "User scrolling #event-stream on mobile must blur #message-input to dismiss keyboard");
 
       // 2. Tap user message bubble -> verify .msg-group.is-actions-open .msg-hover-actions is ACTUALLY visible (regression guard for CSS !important bug!)
       await tab.click(".msg-group.is-user .user-bubble");

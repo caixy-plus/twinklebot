@@ -379,12 +379,32 @@ function ProseSegment({ text }: { text: string }) {
   const rendered: ReactNode[] = [];
   let mediaBatch: Array<{ name: string; url: string }> = [];
 
+  const seenImageUrls = new Set<string>();
+  const normalizeMediaKey = (rawUrl: string): string => {
+    const clean = String(rawUrl || "").trim();
+    if (!clean) return "";
+    try {
+      const parsed = new URL(clean, "http://local.invalid");
+      return decodeURIComponent(`${parsed.pathname}${parsed.search}`);
+    } catch {
+      try {
+        return decodeURIComponent(clean);
+      } catch {
+        return clean;
+      }
+    }
+  };
+
   const flushMediaBatch = (keyPrefix: string) => {
     if (mediaBatch.length === 0) return;
     const batch = mediaBatch;
     mediaBatch = [];
     rendered.push(
-      <div key={`media-${keyPrefix}`} className="msg-media-grid">
+      <div
+        key={`media-${keyPrefix}`}
+        className="msg-media-grid"
+        data-count={String(batch.length)}
+      >
         {batch.map((imgItem, mIdx) => (
           <img
             key={`${imgItem.url}-${mIdx}`}
@@ -402,6 +422,11 @@ function ProseSegment({ text }: { text: string }) {
     if (block.type === "attachment_image") {
       const attName = block.name || "AI 生成图片";
       const attUrl = apiUrl(block.url);
+      const dedupKey = normalizeMediaKey(block.url || attUrl);
+      if (dedupKey && seenImageUrls.has(dedupKey)) {
+        return;
+      }
+      if (dedupKey) seenImageUrls.add(dedupKey);
       if (/\.svg$/i.test(attName)) {
         flushMediaBatch(`pre-svg-${idx}`);
         rendered.push(<AsyncSvgAttachment key={`svg-${idx}`} name={attName} url={attUrl} />);
