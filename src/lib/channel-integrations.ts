@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import * as lark from "@larksuiteoapi/node-sdk";
+import { Api as GrammyApi } from "grammy";
 import { isSafePublicWebUrl } from "./web-search.js";
 
 export type ChannelSkillId = "feishu-bot" | "telegram-bot";
@@ -260,6 +262,97 @@ export function sanitizeFeishuChannelConfig(cfg: FeishuChannelConfig) {
 export function resolveFeishuApiBase(cfg: Pick<FeishuChannelConfig, "domain" | "apiBaseUrl">): string {
   if (cfg.apiBaseUrl) return cfg.apiBaseUrl.replace(/\/+$/, "");
   return cfg.domain === "lark" ? DEFAULT_LARK_API_BASE : DEFAULT_FEISHU_API_BASE;
+}
+
+export function resolveFeishuSdkDomain(
+  cfg: Pick<FeishuChannelConfig, "domain" | "apiBaseUrl">
+): string | lark.Domain {
+  if (cfg.apiBaseUrl) return cfg.apiBaseUrl.replace(/\/+$/, "");
+  return cfg.domain === "lark" ? lark.Domain.Lark : lark.Domain.Feishu;
+}
+
+/**
+ * Adapts a custom `fetch` implementation (e.g. unit-test mocks) to `@larksuiteoapi/node-sdk`'s
+ * `HttpInstance` interface. In production (`fetchImpl === fetch`), we return `undefined` so the
+ * official Lark SDK uses its built-in HTTP stack directly.
+ */
+export function createLarkHttpInstance(fetchImpl?: typeof fetch): any {
+  if (!fetchImpl || fetchImpl === fetch) return undefined;
+  const doRequest = async (opts: Record<string, any> = {}) => {
+    const method = String(opts.method || "GET").toUpperCase();
+    let targetUrl = String(opts.url || "");
+    if (opts.params && typeof opts.params === "object") {
+      const u = new URL(targetUrl);
+      for (const [k, v] of Object.entries(opts.params)) {
+        if (v !== undefined && v !== null) u.searchParams.set(k, String(v));
+      }
+      targetUrl = u.toString();
+    }
+    const headers: Record<string, string> = {};
+    if (opts.headers && typeof opts.headers === "object") {
+      for (const [k, v] of Object.entries(opts.headers)) {
+        if (v !== undefined && v !== null) headers[k] = String(v);
+      }
+    }
+    let body: string | undefined;
+    if (opts.data !== undefined && method !== "GET" && method !== "HEAD") {
+      if (typeof opts.data === "string") {
+        body = opts.data;
+      } else {
+        body = JSON.stringify(opts.data);
+        if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
+          headers["Content-Type"] = "application/json; charset=utf-8";
+        }
+      }
+    }
+    const resp = await fetchImpl(targetUrl, { method, headers, body });
+    const parsed = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const err: any = new Error(parsed?.msg || `Request failed with status code ${resp.status}`);
+      err.response = { status: resp.status, data: parsed, headers: Object.fromEntries(resp.headers.entries()) };
+      throw err;
+    }
+    if (opts.$return_headers) {
+      return { resp: parsed, headers: Object.fromEntries(resp.headers.entries()) };
+    }
+    return parsed;
+  };
+  return {
+    request: doRequest,
+    get: (url: string, opts: any = {}) => doRequest({ ...opts, url, method: "GET" }),
+    delete: (url: string, opts: any = {}) => doRequest({ ...opts, url, method: "DELETE" }),
+    head: (url: string, opts: any = {}) => doRequest({ ...opts, url, method: "HEAD" }),
+    options: (url: string, opts: any = {}) => doRequest({ ...opts, url, method: "OPTIONS" }),
+    post: (url: string, data?: any, opts: any = {}) => doRequest({ ...opts, url, data, method: "POST" }),
+    put: (url: string, data?: any, opts: any = {}) => doRequest({ ...opts, url, data, method: "PUT" }),
+    patch: (url: string, data?: any, opts: any = {}) => doRequest({ ...opts, url, data, method: "PATCH" }),
+  };
+}
+
+export function createLarkClient(
+  cfg: Pick<FeishuChannelConfig, "appId" | "appSecret" | "domain" | "apiBaseUrl">,
+  fetchImpl: typeof fetch = fetch
+): lark.Client {
+  return new lark.Client({
+    appId: cfg.appId,
+    appSecret: cfg.appSecret,
+    appType: lark.AppType.SelfBuild,
+    domain: resolveFeishuSdkDomain(cfg),
+    loggerLevel: lark.LoggerLevel.error,
+    httpInstance: createLarkHttpInstance(fetchImpl),
+  });
+}
+
+export function createTelegramApi(
+  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl">,
+  fetchImpl: typeof fetch = fetch
+): GrammyApi {
+  const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
+  return new GrammyApi(cfg.botToken, {
+    apiRoot: base,
+    fetch: fetchImpl as any,
+    baseFetchConfig: {},
+  });
 }
 
 export function isSenderAllowed(
@@ -637,6 +730,43 @@ export function parseFeishuWebhookPayload(
   };
 }
 
+export function parseFeishuSdkMessageEvent(data: any): ParsedInboundChannelMessage | null {
+  if (!data || typeof data !== "object") return null;
+  const msg = data.message;
+  const sender = data.sender;
+  if (!msg || typeof msg !== "object") return null;
+  const chatId = String(msg.chat_id || "").trim();
+  const senderId = String(
+    sender?.sender_id?.open_id ||
+      sender?.sender_id?.user_id ||
+      sender?.sender_id?.union_id ||
+      chatId
+  ).trim();
+  if (!chatId) return null;
+
+  let text = "";
+  if (typeof msg.content === "string") {
+    try {
+      const parsed = JSON.parse(msg.content);
+      text = String(parsed?.text || "").trim();
+    } catch {
+      text = msg.content.trim();
+    }
+  }
+  text = text.replace(/@_user_\d+\s*/g, "").trim();
+  if (!text) return null;
+
+  const eventId = `fs:${String(data.event_id || msg.message_id || Date.now())}`;
+  return {
+    channel: "feishu-bot",
+    eventId,
+    chatId,
+    senderId,
+    senderName: senderId,
+    text,
+  };
+}
+
 export async function testTelegramChannel(
   cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl">,
   fetchImpl: typeof fetch = fetch
@@ -644,23 +774,21 @@ export async function testTelegramChannel(
   if (!cfg.botToken) {
     return { ok: false, error: "请先填写 Telegram Bot Token" };
   }
-  const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
-  const resp = await fetchImpl(`${base}/bot${encodeURIComponent(cfg.botToken)}/getMe`, {
-    method: "GET",
-  });
-  const data: any = await resp.json().catch(() => ({}));
-  if (!resp.ok || !data?.ok || !data?.result) {
+  try {
+    const api = createTelegramApi(cfg, fetchImpl);
+    const me = await api.getMe();
+    return {
+      ok: true,
+      botId: me.id,
+      botUsername: me.username || "",
+      botName: me.first_name || me.username || "Telegram Bot",
+    };
+  } catch (err: any) {
     return {
       ok: false,
-      error: data?.description || `Telegram API HTTP ${resp.status}`,
+      error: err?.description || err?.message || String(err),
     };
   }
-  return {
-    ok: true,
-    botId: data.result.id,
-    botUsername: data.result.username || "",
-    botName: data.result.first_name || data.result.username || "Telegram Bot",
-  };
 }
 
 export async function sendTelegramMessage(
@@ -670,18 +798,47 @@ export async function sendTelegramMessage(
   fetchImpl: typeof fetch = fetch
 ): Promise<void> {
   if (!cfg.botToken || !chatId) return;
-  const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
+  const api = createTelegramApi(cfg, fetchImpl);
   const chunks = chunkChannelText(text, 3900);
   for (const chunk of chunks) {
-    await fetchImpl(`${base}/bot${encodeURIComponent(cfg.botToken)}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: chunk,
-      }),
-    });
+    await api.sendMessage(chatId, chunk);
   }
+}
+
+export function formatFeishuApiError(
+  code: unknown,
+  msg: unknown,
+  httpStatus?: number
+): string {
+  const numCode = typeof code === "number" ? code : Number(code);
+  const rawMsg = String(msg || "").trim();
+  if (numCode === 21001) {
+    return "飞书平台策略拦截（code 21001：Access denied due to platform policy）。请确认：1) 应用创建在飞书「企业/团队组织」账号下（个人版或豆包关联账号会被平台拦截）；2) 已在飞书开放平台创建版本并发布生效；3) 企业安全策略 / IP 白名单未拦截当前网络出口。";
+  }
+  if (numCode === 10014 || numCode === 1000040345) {
+    return `飞书 App ID 或 App Secret 无效（code ${numCode}），请核对凭据及飞书/Lark 区域选择。`;
+  }
+  if (rawMsg) {
+    return Number.isFinite(numCode) && numCode > 0 ? `${rawMsg} (code ${numCode})` : rawMsg;
+  }
+  return `Feishu API failed (HTTP ${httpStatus ?? 0})`;
+}
+
+function extractLarkErrorInfo(err: any): { code?: number; msg?: string; status?: number } {
+  const respData = err?.response?.data;
+  const status = err?.response?.status;
+  const msg = String(respData?.msg || err?.msg || err?.message || "").trim();
+  let code =
+    typeof respData?.code === "number"
+      ? respData.code
+      : typeof err?.code === "number"
+        ? err.code
+        : undefined;
+  if (code === undefined && msg) {
+    const m = msg.match(/\bcode\s*[:=]\s*(\d+)\b/i);
+    if (m) code = Number(m[1]);
+  }
+  return { code, msg, status };
 }
 
 export async function fetchFeishuTenantAccessToken(
@@ -691,18 +848,25 @@ export async function fetchFeishuTenantAccessToken(
   if (!cfg.appId || !cfg.appSecret) {
     throw new Error("请先填写飞书 App ID 和 App Secret");
   }
-  const base = resolveFeishuApiBase(cfg);
-  const resp = await fetchImpl(`${base}/open-apis/auth/v3/tenant_access_token/internal`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json; charset=utf-8" },
-    body: JSON.stringify({
-      app_id: cfg.appId,
-      app_secret: cfg.appSecret,
-    }),
-  });
-  const data: any = await resp.json().catch(() => ({}));
-  if (!resp.ok || data?.code !== 0 || !data?.tenant_access_token) {
-    throw new Error(data?.msg || `Feishu auth failed (HTTP ${resp.status})`);
+  const client = createLarkClient(cfg, fetchImpl);
+  let data: any;
+  try {
+    data = await client.auth.v3.tenantAccessToken.internal({
+      data: {
+        app_id: cfg.appId,
+        app_secret: cfg.appSecret,
+      },
+    });
+  } catch (rawErr: any) {
+    const info = extractLarkErrorInfo(rawErr);
+    const err: any = new Error(formatFeishuApiError(info.code, info.msg, info.status));
+    if (info.code !== undefined) err.feishuCode = info.code;
+    throw err;
+  }
+  if (data?.code !== 0 || !data?.tenant_access_token) {
+    const err: any = new Error(formatFeishuApiError(data?.code, data?.msg, 200));
+    if (data?.code !== undefined) err.feishuCode = Number(data.code);
+    throw err;
   }
   return {
     token: String(data.tenant_access_token),
@@ -710,30 +874,96 @@ export async function fetchFeishuTenantAccessToken(
   };
 }
 
-export async function testFeishuChannel(
+export async function probeFeishuWsEndpoint(
   cfg: Pick<FeishuChannelConfig, "appId" | "appSecret" | "domain" | "apiBaseUrl">,
   fetchImpl: typeof fetch = fetch
-): Promise<{ ok: boolean; botName?: string; openId?: string; error?: string }> {
+): Promise<{ ok: boolean; wsUrl?: string; pingIntervalSec?: number; error?: string; code?: number }> {
+  const base = resolveFeishuApiBase(cfg);
+  const resp = await fetchImpl(`${base}/callback/ws/endpoint`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=utf-8", locale: "zh" },
+    body: JSON.stringify({ AppID: cfg.appId, AppSecret: cfg.appSecret }),
+  });
+  const data: any = await resp.json().catch(() => ({}));
+  const wsUrl = String(data?.data?.URL || data?.URL || "").trim();
+  if (!resp.ok || !wsUrl) {
+    return {
+      ok: false,
+      code: typeof data?.code === "number" ? data.code : undefined,
+      error: formatFeishuApiError(data?.code, data?.msg, resp.status),
+    };
+  }
+  const rawPing = Number(
+    data?.data?.ClientConfig?.PingInterval ?? data?.ClientConfig?.PingInterval ?? 90
+  );
+  return {
+    ok: true,
+    wsUrl,
+    pingIntervalSec: Math.max(15, Math.min(300, Number.isFinite(rawPing) ? rawPing : 90)),
+  };
+}
+
+export async function testFeishuChannel(
+  cfg: Pick<FeishuChannelConfig, "appId" | "appSecret" | "domain" | "apiBaseUrl"> & {
+    connectionMode?: FeishuConnectionMode;
+  },
+  fetchImpl: typeof fetch = fetch
+): Promise<{ ok: boolean; botName?: string; openId?: string; warning?: string; error?: string }> {
   try {
     const { token } = await fetchFeishuTenantAccessToken(cfg, fetchImpl);
-    const base = resolveFeishuApiBase(cfg);
-    const infoResp = await fetchImpl(`${base}/open-apis/bot/v3/info`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const infoData: any = await infoResp.json().catch(() => ({}));
-    if (infoResp.ok && infoData?.code === 0 && infoData?.bot) {
-      return {
-        ok: true,
-        botName: infoData.bot.app_name || "Feishu Bot",
-        openId: infoData.bot.open_id || "",
-      };
+    const client = createLarkClient(cfg, fetchImpl);
+    let botName = `Feishu App (${cfg.appId})`;
+    let openId = "";
+    let warning = "";
+
+    try {
+      const infoData: any = await client.request({
+        url: "/open-apis/bot/v3/info",
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (infoData?.code === 0 && infoData?.bot) {
+        botName = infoData.bot.app_name || "Feishu Bot";
+        openId = infoData.bot.open_id || "";
+      } else if (typeof infoData?.code === "number" && infoData.code !== 0) {
+        warning = `鉴权成功，但读取机器人信息返回 code ${infoData.code}（请确认已在飞书应用后台开启「机器人」能力并发布版本）`;
+      }
+    } catch (infoErr: any) {
+      const info = extractLarkErrorInfo(infoErr);
+      if (info.code) {
+        warning = `鉴权成功，但读取机器人信息返回 code ${info.code}（请确认已在飞书应用后台开启「机器人」能力并发布版本）`;
+      }
     }
+
+    if (cfg.connectionMode === "websocket") {
+      const wsProbe = await probeFeishuWsEndpoint(cfg, fetchImpl).catch((e: any) => ({
+        ok: false,
+        error: e?.message || String(e),
+      }));
+      if (!wsProbe.ok) {
+        return {
+          ok: false,
+          error: `鉴权成功，但飞书长连接（WebSocket）入口校验失败：${wsProbe.error}`,
+        };
+      }
+    }
+
     return {
       ok: true,
-      botName: `Feishu App (${cfg.appId})`,
+      botName,
+      ...(openId ? { openId } : {}),
+      ...(warning ? { warning } : {}),
     };
   } catch (err: any) {
+    if (err?.feishuCode === 21001 && cfg.connectionMode === "websocket") {
+      const wsProbe = await probeFeishuWsEndpoint(cfg, fetchImpl).catch(() => ({ ok: false }));
+      if (wsProbe.ok) {
+        return {
+          ok: false,
+          error: `App ID / App Secret 正确且飞书长连接入口可通，但获取发消息凭据 tenant_access_token 被飞书拦截：${err.message}`,
+        };
+      }
+    }
     return {
       ok: false,
       error: err?.message || String(err),
@@ -745,25 +975,33 @@ export async function sendFeishuMessage(
   cfg: Pick<FeishuChannelConfig, "appId" | "appSecret" | "domain" | "apiBaseUrl">,
   chatId: string,
   text: string,
-  tokenGetter: () => Promise<string>,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  clientOverride?: lark.Client
 ): Promise<void> {
   if (!cfg.appId || !cfg.appSecret || !chatId) return;
-  const base = resolveFeishuApiBase(cfg);
-  const token = await tokenGetter();
+  const client = clientOverride || createLarkClient(cfg, fetchImpl);
   const chunks = chunkChannelText(text, 3500);
   for (const chunk of chunks) {
-    await fetchImpl(`${base}/open-apis/im/v1/messages?receive_id_type=chat_id`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        receive_id: chatId,
-        msg_type: "text",
-        content: JSON.stringify({ text: chunk }),
-      }),
-    });
+    let data: any;
+    try {
+      data = await client.im.v1.message.create({
+        params: { receive_id_type: "chat_id" },
+        data: {
+          receive_id: chatId,
+          msg_type: "text",
+          content: JSON.stringify({ text: chunk }),
+        },
+      });
+    } catch (rawErr: any) {
+      const info = extractLarkErrorInfo(rawErr);
+      const err: any = new Error(formatFeishuApiError(info.code, info.msg, info.status));
+      if (info.code !== undefined) err.feishuCode = info.code;
+      throw err;
+    }
+    if (typeof data?.code === "number" && data.code !== 0) {
+      const err: any = new Error(formatFeishuApiError(data.code, data.msg, 200));
+      err.feishuCode = Number(data.code);
+      throw err;
+    }
   }
 }

@@ -836,3 +836,77 @@ export function getConfigurableSkillFromSettings(settings: any, id: string | nul
     null
   );
 }
+
+const ERROR_SUMMARY_MAX_CHARS = 140;
+
+export function formatErrorNotice(
+  rawMessage: string,
+  fallback = "任务中断或遇到异常"
+): { summary: string; detail: string | null } {
+  const raw = String(rawMessage || "").trim();
+  if (!raw) {
+    return { summary: fallback, detail: null };
+  }
+
+  const clip = (text: string) =>
+    text.length > ERROR_SUMMARY_MAX_CHARS
+      ? `${text.slice(0, ERROR_SUMMARY_MAX_CHARS - 1).trimEnd()}…`
+      : text;
+
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart !== -1 && raw.includes("}")) {
+    const jsonCandidate = raw.slice(jsonStart);
+    try {
+      const parsed = JSON.parse(jsonCandidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const nestedMsg =
+          typeof parsed?.error?.message === "string"
+            ? parsed.error.message.trim()
+            : typeof parsed?.message === "string"
+              ? parsed.message.trim()
+              : "";
+        const prefix = raw
+          .slice(0, jsonStart)
+          .replace(/[:\-\s]+$/, "")
+          .trim();
+        if (nestedMsg) {
+          const combined = prefix ? `${prefix}：${nestedMsg}` : nestedMsg;
+          const summary = clip(combined.split(/\r?\n/)[0]!.trim());
+          return {
+            summary: summary || fallback,
+            detail: summary !== raw ? raw : null,
+          };
+        }
+        if (prefix) {
+          const friendlyPrefix = /^402\b/.test(prefix)
+            ? `${prefix}（模型供应商账户余额不足或额度已用尽）`
+            : prefix;
+          const summary = clip(friendlyPrefix.split(/\r?\n/)[0]!.trim());
+          return {
+            summary: summary || fallback,
+            detail: raw,
+          };
+        }
+      }
+    } catch {
+      // Not valid trailing JSON; fall through to standard multi-line/length handling.
+    }
+  }
+
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const firstLine = lines[0] || raw;
+  const hasMultipleLines = lines.length > 1;
+
+  if (hasMultipleLines || firstLine.length > ERROR_SUMMARY_MAX_CHARS) {
+    const summary = clip(firstLine);
+    return {
+      summary: summary || fallback,
+      detail: summary !== raw ? raw : null,
+    };
+  }
+
+  return { summary: firstLine, detail: null };
+}

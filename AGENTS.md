@@ -2,7 +2,7 @@
 
 Multi-Bot AI desktop & mobile agent: orchestrates Gemini / OpenAI / DeepSeek / Anthropic / Vertex AI models with a local or cloud runtime, OrbStack Ubuntu XFCE sandbox (`:1`, 1440x900), and cross-platform Host Executor bridge.
 
-- **Stack & Build**: Node.js 22.13+, ESM, TypeScript (`tsc`). `tsconfig.json` compiles `src/` (server/agent/store/electron/shared/tests) to `dist-server/`; `tsconfig.web.json` compiles `src/web/` to `public/dist/`; `tsconfig.landing.json` compiles `src/landing/` to `landing/dist/`. Only runtime dependency: `@google/genai` (>= 2.29.1; use the Interactions API only for Gemini, never `generateContent` or legacy `@google/generative-ai`).
+- **Stack & Build**: Node.js 22.13+, ESM, TypeScript (`tsc`). `tsconfig.json` compiles `src/` (server/agent/store/electron/shared/tests) to `dist-server/`; `tsconfig.web.json` compiles `src/web/` to `public/dist/`; `tsconfig.landing.json` compiles `src/landing/` to `landing/dist/`. Pure-JS runtime dependencies only: `@google/genai` (>= 2.29.1; use the Interactions API only for Gemini, never `generateContent` or legacy `@google/generative-ai`), `@larksuiteoapi/node-sdk` (Feishu / Lark official SDK), and `grammy` (Telegram Bot SDK) — all bundled into `dist-server/core-runtime/server-bundle.mjs` so they ship via `ota-only`.
 - **Architecture**:
   - `src/shared/` holds shared entity types, DTOs, and browser-safe modules (`accounts-store.ts`, `skills-catalog.ts`, `context-compression.ts`).
   - `src/server/` serves `127.0.0.1:3230` (via `dist-server/src/server/index.js`, split into `context.ts`, `http-utils.ts`, `static.ts`, and `routes/*.ts`).

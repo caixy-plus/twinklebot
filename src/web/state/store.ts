@@ -128,8 +128,10 @@ export type StreamItem =
   | {
       kind: "error";
       id: string;
+      seq?: number;
       message: string;
       dismissKey?: string;
+      clientOnly?: boolean;
     };
 
 export type TraceItem =
@@ -850,7 +852,30 @@ function isErrorDismissed(dismissKey?: string): boolean {
   return readDismissedErrorKeys().includes(dismissKey);
 }
 
-export function dismissErrorCard(itemId: string, dismissKey?: string): void {
+function matchesDismissedError(
+  item: StreamItem,
+  targetSeq?: number,
+  targetKey?: string
+): boolean {
+  if (item.kind !== "error") return false;
+  if (
+    targetSeq !== undefined &&
+    item.seq !== undefined &&
+    item.seq === targetSeq
+  ) {
+    return true;
+  }
+  if (targetKey && item.dismissKey && item.dismissKey === targetKey) {
+    return true;
+  }
+  return false;
+}
+
+export function dismissErrorCard(
+  itemId: string,
+  dismissKey?: string,
+  targetSeq?: number
+): void {
   if (dismissKey) {
     try {
       if (typeof window !== "undefined" && window.localStorage) {
@@ -864,9 +889,14 @@ export function dismissErrorCard(itemId: string, dismissKey?: string): void {
       // ignore storage quota / private mode errors
     }
   }
-  setState((prev) => ({
-    streamItems: prev.streamItems.filter((item) => item.id !== itemId),
-  }));
+  setState((prev) => {
+    const nextItems = prev.streamItems.filter((item) => {
+      if (item.id === itemId) return false;
+      if (matchesDismissedError(item, targetSeq, dismissKey)) return false;
+      return true;
+    });
+    return nextItems.length !== prev.streamItems.length ? { streamItems: nextItems } : prev;
+  });
 }
 
 export function getState(): AppState {
@@ -1549,9 +1579,11 @@ export function reduceSessionEvent(
         sessionStatus = "error";
         liveThinkingSummary = "";
       }
+      const errSeq =
+        typeof evt.seq === "number" && Number.isFinite(evt.seq) ? evt.seq : undefined;
       const errMsg = evt.message || "任务中断或遇到异常";
       const errSession = String(evt.sessionId || prev.activeSessionId || "default");
-      const errMarker = evt.seq ?? evt.ts ?? evt.id ?? "";
+      const errMarker = errSeq ?? evt.ts ?? evt.id ?? "";
       const dismissKey = `${errSession}:${errMarker}:${String(errMsg).slice(0, 120)}`;
       if (!isErrorDismissed(dismissKey)) {
         streamItems = [
@@ -1559,10 +1591,33 @@ export function reduceSessionEvent(
           {
             kind: "error",
             id: nextStreamItemId("err"),
+            ...(errSeq !== undefined ? { seq: errSeq } : {}),
             message: errMsg,
             dismissKey,
+            ...(evt.clientOnly ? { clientOnly: true } : {}),
           },
         ];
+      }
+      break;
+    }
+
+    case "error_dismissed": {
+      const rawTargetSeq = evt.targetSeq ?? evt.seqToDismiss;
+      const targetSeq =
+        typeof rawTargetSeq === "number" && Number.isFinite(rawTargetSeq)
+          ? rawTargetSeq
+          : undefined;
+      const targetKey =
+        typeof evt.dismissKey === "string" && evt.dismissKey.trim()
+          ? evt.dismissKey.trim()
+          : "";
+      if (targetSeq !== undefined || targetKey) {
+        const filtered = streamItems.filter(
+          (item) => !matchesDismissedError(item, targetSeq, targetKey)
+        );
+        if (filtered.length !== streamItems.length) {
+          streamItems = filtered;
+        }
       }
       break;
     }

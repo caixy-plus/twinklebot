@@ -303,6 +303,90 @@ export async function handleSessionRoutes(
           return sendJson(res, 200, { ok: true, session: updated });
         }
 
+        // POST /api/sessions/:id/errors/dismiss
+        const dismissErrorMatch = pathname.match(
+          /^\/api\/sessions\/([^/]+)\/errors\/dismiss$/
+        );
+        if (method === "POST" && dismissErrorMatch) {
+          const id = dismissErrorMatch[1];
+          const existing = ctx.store?.getSession?.(id);
+          if (!existing) {
+            return sendJson(res, 404, { error: "session not found" });
+          }
+          let body: Record<string, any>;
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            return sendJson(res, 400, { error: "invalid json" });
+          }
+
+          const rawSeq = body?.seq ?? body?.targetSeq;
+          const parsedSeq =
+            rawSeq !== undefined && rawSeq !== null && rawSeq !== ""
+              ? Number(rawSeq)
+              : NaN;
+          const targetSeq =
+            Number.isInteger(parsedSeq) && parsedSeq > 0 ? parsedSeq : null;
+          const dismissKey =
+            typeof body?.dismissKey === "string"
+              ? body.dismissKey.trim().slice(0, 256)
+              : "";
+
+          if (targetSeq === null && !dismissKey) {
+            return sendJson(res, 400, { error: "seq or dismissKey is required" });
+          }
+
+          const events = ctx.store?.readEvents?.(id) || [];
+          const alreadyDismissed = events.some((ev: any) => {
+            if (!ev || ev.type !== "error_dismissed") return false;
+            if (
+              targetSeq !== null &&
+              typeof ev.targetSeq === "number" &&
+              ev.targetSeq === targetSeq
+            ) {
+              return true;
+            }
+            if (
+              dismissKey &&
+              typeof ev.dismissKey === "string" &&
+              ev.dismissKey === dismissKey
+            ) {
+              return true;
+            }
+            return false;
+          });
+          if (alreadyDismissed) {
+            return sendJson(res, 200, {
+              ok: true,
+              sessionId: id,
+              ...(targetSeq !== null ? { targetSeq } : {}),
+              ...(dismissKey ? { dismissKey } : {}),
+              alreadyDismissed: true,
+            });
+          }
+
+          const dismissEvent: Record<string, any> = {
+            type: "error_dismissed",
+            ...(targetSeq !== null ? { targetSeq } : {}),
+            ...(dismissKey ? { dismissKey } : {}),
+          };
+          const saved =
+            ctx.store?.appendEvent?.(id, dismissEvent) || dismissEvent;
+          try {
+            ctx.broadcastEvent?.({
+              sessionId: id,
+              ...saved,
+            });
+          } catch {
+            // ignore
+          }
+          return sendJson(res, 200, {
+            ok: true,
+            sessionId: id,
+            event: saved,
+          });
+        }
+
         // POST /api/sessions/:id/edit-message
         const editMsgMatch = pathname.match(
           /^\/api\/sessions\/([^/]+)\/edit-message$/

@@ -514,3 +514,85 @@ test("static file serving and path traversal protection", async () => {
   }
 });
 
+test("POST /api/sessions/:id/errors/dismiss persists error_dismissed, broadcasts, and is idempotent", async () => {
+  const broadcasted: any[] = [];
+  const ctx = await setupTestServer({
+    runner: {
+      status: () => ({ sessionId: null, state: "idle" }),
+      activeSessions: () => ({}),
+      subscribe: () => () => {},
+      broadcastGlobal(ev: any) {
+        broadcasted.push(ev);
+      },
+    },
+  });
+  try {
+    const session = ctx.store.createSession({ title: "ErrorSyncBot" });
+    const errEvt = ctx.store.appendEvent(session.id, {
+      type: "error",
+      message: "402 API error occurred",
+    });
+
+    // 404 for unknown session
+    const res404 = await fetch(`${ctx.baseUrl}/api/sessions/non-existent/errors/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seq: errEvt.seq }),
+    });
+    assert.equal(res404.status, 404);
+
+    // 400 when neither seq nor dismissKey is supplied
+    const res400 = await fetch(`${ctx.baseUrl}/api/sessions/${session.id}/errors/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res400.status, 400);
+
+    // 200 persists error_dismissed and broadcasts to all clients
+    const dismissKey = `${session.id}:${errEvt.seq}:402 API error occurred`;
+    const resOk = await fetch(`${ctx.baseUrl}/api/sessions/${session.id}/errors/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seq: errEvt.seq, dismissKey }),
+    });
+    assert.equal(resOk.status, 200);
+    const bodyOk: any = await resOk.json();
+    assert.equal(bodyOk.ok, true);
+    assert.equal(bodyOk.event?.type, "error_dismissed");
+    assert.equal(bodyOk.event?.targetSeq, errEvt.seq);
+    assert.equal(bodyOk.event?.dismissKey, dismissKey);
+
+    const eventsAfterFirst = ctx.store.readEvents(session.id);
+    const dismissEvents = eventsAfterFirst.filter((e: any) => e.type === "error_dismissed");
+    assert.equal(dismissEvents.length, 1);
+    assert.equal(dismissEvents[0].targetSeq, errEvt.seq);
+
+    const bcast = broadcasted.find((e) => e.type === "error_dismissed");
+    assert.ok(bcast, "must broadcast error_dismissed event globally");
+    assert.equal(bcast.sessionId, session.id);
+    assert.equal(bcast.targetSeq, errEvt.seq);
+    assert.equal(bcast.seq, bodyOk.event.seq);
+
+    // Second dismiss for same seq is idempotent (no duplicate NDJSON line, no extra broadcast)
+    const countBefore = broadcasted.length;
+    const resDup = await fetch(`${ctx.baseUrl}/api/sessions/${session.id}/errors/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seq: errEvt.seq, dismissKey }),
+    });
+    assert.equal(resDup.status, 200);
+    const bodyDup: any = await resDup.json();
+    assert.equal(bodyDup.ok, true);
+    assert.equal(bodyDup.alreadyDismissed, true);
+    assert.equal(
+      ctx.store.readEvents(session.id).filter((e: any) => e.type === "error_dismissed").length,
+      1
+    );
+    assert.equal(broadcasted.length, countBefore);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+

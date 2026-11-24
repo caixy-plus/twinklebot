@@ -87,7 +87,14 @@ export async function buildCoreBundle({
     minify: false,
     logLevel: "silent",
     banner: {
-      js: 'import { createRequire as __twinkleCreateRequire } from "node:module";\nconst require = __twinkleCreateRequire(import.meta.url);\n',
+      js: [
+        'import { createRequire as __twinkleCreateRequire } from "node:module";',
+        'import { fileURLToPath as __twinkleFileURLToPath } from "node:url";',
+        'import { dirname as __twinkleDirnameFn } from "node:path";',
+        'const require = __twinkleCreateRequire(import.meta.url);',
+        'var __filename = __twinkleFileURLToPath(import.meta.url);',
+        'var __dirname = __twinkleDirnameFn(__filename);',
+      ].join("\n") + "\n",
     },
   });
 

@@ -11,11 +11,14 @@ import {
   decodeFeishuPbFrame,
   decryptFeishuEvent,
   encodeFeishuPbFrame,
+  formatFeishuApiError,
   isSenderAllowed,
   parseApprovalCommand,
   parseFeishuWebhookPayload,
   parseTelegramUpdate,
   parseWhitelistIds,
+  sendFeishuMessage,
+  testFeishuChannel,
 } from "../src/lib/channel-integrations.js";
 import { createChannelManager } from "../src/lib/channel-manager.js";
 import { createRunner } from "../src/agent/runner.js";
@@ -457,8 +460,11 @@ test("Feishu WebSocket Long Connection handles binary pbbp2.Frame events, return
   const wsHttp = http.createServer();
   const ackFrames: Buffer[] = [];
   let pushBinaryFrameToClient: any = null;
+  let activeUpgradeSocket: any = null;
 
   wsHttp.on("upgrade", (req, socket) => {
+    activeUpgradeSocket = socket;
+    socket.on("error", () => {});
     const key = req.headers["sec-websocket-key"];
     const accept = crypto
       .createHash("sha1")
@@ -534,8 +540,8 @@ test("Feishu WebSocket Long Connection handles binary pbbp2.Frame events, return
       connectionMode: "websocket",
       domain: "feishu",
       apiBaseUrl: `http://127.0.0.1:${wsPort}`,
-      appId: "cli_ws_1",
-      appSecret: "sec_ws_1",
+      appId: "cli_a1b2c3d4e5f60708",
+      appSecret: "sec_ws_1234567890123456789012345",
       verificationToken: "",
       encryptKey: "",
       defaultSessionId: adminBot.id,
@@ -554,8 +560,13 @@ test("Feishu WebSocket Long Connection handles binary pbbp2.Frame events, return
           JSON.stringify({
             code: 0,
             data: {
-              URL: `ws://127.0.0.1:${wsPort}/ws?service_id=777`,
-              ClientConfig: { PingInterval: 60 },
+              URL: `ws://127.0.0.1:${wsPort}/ws?device_id=dev_1&service_id=777`,
+              ClientConfig: {
+                PingInterval: 60,
+                ReconnectCount: 3,
+                ReconnectInterval: 5,
+                ReconnectNonce: 1,
+              },
             },
           }),
           { status: 200 }
@@ -576,6 +587,10 @@ test("Feishu WebSocket Long Connection handles binary pbbp2.Frame events, return
   t.after(async () => {
     mgr.stopAll();
     realRunner.stop();
+    try {
+      activeUpgradeSocket?.destroy();
+    } catch {}
+    wsHttp.closeAllConnections?.();
     await new Promise<void>((resolve) => wsHttp.close(() => resolve()));
   });
 
@@ -594,6 +609,7 @@ test("Feishu WebSocket Long Connection handles binary pbbp2.Frame events, return
   // Push binary pbbp2 DATA frame split into 2 fragments (sum=2, seq=0 & seq=1)
   const fullEventBuf = Buffer.from(
     JSON.stringify({
+      schema: "2.0",
       header: { event_id: "ev-ws-bin-1", event_type: "im.message.receive_v1" },
       event: {
         sender: { sender_id: { open_id: "ou_ws_user" } },
@@ -634,17 +650,189 @@ test("Feishu WebSocket Long Connection handles binary pbbp2.Frame events, return
     })
   );
 
-  for (let i = 0; i < 40 && (ackFrames.length === 0 || feishuMessagesSent.length === 0); i++) {
+  for (let i = 0; i < 60 && (ackFrames.filter((b) => decodeFeishuPbFrame(b).method === 1).length === 0 || feishuMessagesSent.length === 0); i++) {
     await new Promise((r) => setTimeout(r, 25));
   }
 
-  assert.ok(ackFrames.length >= 1, "Client must send binary pbbp2 ACK frame back to Feishu server");
-  const ackDecoded = decodeFeishuPbFrame(ackFrames[0]);
+  const dataAckFrames = ackFrames.map(decodeFeishuPbFrame).filter((f) => f.method === 1);
+  assert.ok(dataAckFrames.length >= 1, "Official Lark WSClient must send binary pbbp2 DATA ACK frame back to server");
+  const ackDecoded = dataAckFrames[0];
   assert.equal(ackDecoded.seqId, 102n);
   assert.equal(ackDecoded.method, 1);
   assert.deepEqual(JSON.parse(ackDecoded.payload!.toString("utf8")), { code: 200 });
   assert.ok(
     feishuMessagesSent.some((s) => s.includes("WS回复：长连接二进制测试")),
     `Expected WS reply in ${JSON.stringify(feishuMessagesSent)}`
+  );
+});
+
+test("Feishu diagnostics: code 21001 guidance, WS endpoint probe in websocket test mode, and sendFeishuMessage error checking", async () => {
+  assert.match(formatFeishuApiError(21001, "Access denied due to platform policy", 200), /21001.*企业\/团队组织/);
+
+  // Simulate code 21001 on tenant_access_token while /callback/ws/endpoint succeeds
+  const mockFetch21001: any = async (url: string) => {
+    if (String(url).includes("/tenant_access_token/internal")) {
+      return new Response(
+        JSON.stringify({ code: 21001, msg: "Access denied due to platform policy." }),
+        { status: 200 }
+      );
+    }
+    if (String(url).includes("/callback/ws/endpoint")) {
+      return new Response(
+        JSON.stringify({ code: 0, data: { URL: "wss://msg-frontier.feishu.cn/ws/v2?service_id=1" } }),
+        { status: 200 }
+      );
+    }
+    return new Response("{}", { status: 200 });
+  };
+  const diag = await testFeishuChannel(
+    { appId: "cli_test", appSecret: "sec_test", domain: "feishu", apiBaseUrl: "", connectionMode: "websocket" },
+    mockFetch21001
+  );
+  assert.equal(diag.ok, false);
+  assert.match(diag.error || "", /长连接入口可通.*21001/);
+
+  // sendFeishuMessage (via @larksuiteoapi/node-sdk Client) must throw with feishuCode when Feishu returns non-zero code
+  const mockFailSend: any = async (url: string) => {
+    if (String(url).includes("/tenant_access_token/internal")) {
+      return new Response(JSON.stringify({ code: 0, tenant_access_token: "t-ok", expire: 7200 }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ code: 99991663, msg: "Invalid access token" }), { status: 200 });
+  };
+  await assert.rejects(
+    () =>
+      sendFeishuMessage(
+        { appId: "cli_test", appSecret: "sec_test", domain: "feishu", apiBaseUrl: "" },
+        "oc_chat_1",
+        "hello",
+        mockFailSend
+      ),
+    (err: any) => err?.feishuCode === 99991663
+  );
+});
+
+test("Telegram grammy Bot long-polling lifecycle: getMe -> getUpdates -> real Runner -> sendMessage -> clean stop", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-tg-grammy-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const store = createStore(tmpDir);
+  const adminBot = store.ensureAdminBot();
+  const sentReplies: Array<{ chat_id: any; text: string }> = [];
+  let deliveredUpdate = false;
+
+  const realRunner = createRunner({
+    store,
+    runTaskImpl: (async ({ userText, deps }: any) => {
+      deps.emit({ type: "answer", text: `Grammy回复：${userText}` });
+      deps.emit({ type: "status", status: "done" });
+      return { status: "done", text: `Grammy回复：${userText}` };
+    }) as any,
+  });
+
+  store.writeChannelsAuth({
+    "telegram-bot": {
+      enabled: true,
+      connectionMode: "polling",
+      botToken: "123456:GRAMMY_TEST_TOKEN",
+      webhookSecret: "",
+      apiBaseUrl: "http://127.0.0.1:9",
+      defaultSessionId: adminBot.id,
+      allowedSenderIds: ["tg_u_99"],
+      approvalMode: "channel_and_app",
+    },
+  });
+
+  let stateChanges = 0;
+  const mgr = createChannelManager({
+    store,
+    runner: realRunner,
+    getInstalledSkills: () => ["telegram-bot"],
+    onStateChange: () => {
+      stateChanges += 1;
+    },
+    fetchImpl: (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/getMe")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              id: 7001,
+              is_bot: true,
+              first_name: "TwinkleGrammy",
+              username: "twinkle_grammy_bot",
+              can_join_groups: true,
+              can_read_all_group_messages: false,
+              supports_inline_queries: false,
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      if (u.includes("/getUpdates")) {
+        if (!deliveredUpdate) {
+          deliveredUpdate = true;
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              result: [
+                {
+                  update_id: 501,
+                  message: {
+                    message_id: 1,
+                    date: Math.floor(Date.now() / 1000),
+                    chat: { id: 8899, type: "private" },
+                    from: { id: "tg_u_99", is_bot: false, first_name: "Bob" },
+                    text: "你好 Grammy",
+                  },
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        // Hold subsequent poll briefly until aborted by stopAll()
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 200);
+          timer.unref?.();
+          init?.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+        return new Response(JSON.stringify({ ok: true, result: [] }), { status: 200 });
+      }
+      if (u.includes("/sendMessage")) {
+        const parsed = JSON.parse(String(init?.body || "{}"));
+        sentReplies.push({ chat_id: parsed.chat_id, text: parsed.text });
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: { message_id: 2, date: 0, chat: { id: parsed.chat_id, type: "private" }, text: parsed.text },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+    }) as any,
+  });
+
+  t.after(() => {
+    mgr.stopAll();
+    realRunner.stop();
+  });
+
+  mgr.syncFromStore();
+  for (let i = 0; i < 60 && sentReplies.length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+
+  const rt = mgr.getStatusPayload()["telegram-bot"].runtime;
+  assert.equal(rt.status, "connected");
+  assert.equal(rt.botName, "TwinkleGrammy");
+  assert.ok(stateChanges >= 1, "onStateChange must fire on connected transition");
+  assert.ok(
+    sentReplies.some((r) => String(r.chat_id) === "8899" && r.text.includes("Grammy回复：你好 Grammy")),
+    `Expected Grammy reply, got ${JSON.stringify(sentReplies)}`
   );
 });

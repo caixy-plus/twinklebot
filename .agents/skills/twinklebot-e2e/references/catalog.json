@@ -126,7 +126,7 @@
           "priority": "P0",
           "featureTier": "F1",
           "difficulty": "D1",
-          "title": "F5 整页刷新后挂起审批态(awaiting_approval)无损恢复并继续完成任务",
+          "title": "F5 整页刷新后挂起审批态(awaiting_approval)无损恢复与错误提示跨端持久化同步关闭",
           "module": "Session Persistence / Reload Recovery"
         },
         {

@@ -7,7 +7,6 @@ import {
   showToast,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
-import { useI18n } from "../../services/i18n.js";
 import {
   formatClockTime,
   isImeConfirmEnter,
@@ -61,7 +60,6 @@ export function MessageGroup({
   const [editText, setEditText] = useState(item.text || "");
   const [editSubmitting, setEditSubmitting] = useState(false);
   const editTaRef = useRef<HTMLTextAreaElement | null>(null);
-  const { t } = useI18n();
 
   const isUser = item.isUser;
   const isGroup = activeSession?.type === "group";
@@ -221,6 +219,7 @@ export function MessageGroup({
     <div
       className={`msg-group ${isUser ? "is-user" : "is-bot"}${isActionsOpen ? " is-actions-open" : ""}`}
       data-seq={item.seq !== undefined ? String(item.seq) : undefined}
+      data-client-source={isUser && item.clientSource?.deviceKind ? item.clientSource.deviceKind : undefined}
     >
       {!isUser && isGroup && item.botName && (
         <div className="msg-speaker-header">
@@ -341,30 +340,6 @@ export function MessageGroup({
           );
         })}
       </div>
-
-      {isUser && item.clientSource?.deviceKind && (
-        <div
-          className="msg-source-tag"
-          data-client-source={item.clientSource.deviceKind}
-          title={
-            item.clientSource.platform === "feishu-bot"
-              ? t("source.feishu")
-              : item.clientSource.platform === "telegram-bot"
-                ? t("source.telegram")
-                : item.clientSource.deviceKind === "mobile"
-                  ? `${t("source.mobile")}${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
-                  : `${t("source.desktop")}${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
-          }
-        >
-          {item.clientSource.platform === "feishu-bot"
-            ? t("source.feishu")
-            : item.clientSource.platform === "telegram-bot"
-              ? t("source.telegram")
-              : item.clientSource.deviceKind === "mobile"
-                ? t("source.mobile")
-                : t("source.desktop")}
-        </div>
-      )}
     </div>
   );
 }

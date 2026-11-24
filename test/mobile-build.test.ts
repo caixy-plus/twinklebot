@@ -8,9 +8,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const _UP_ONE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = path.basename(_UP_ONE) === "dist-server" ? path.dirname(_UP_ONE) : _UP_ONE;
 
-test("package.json keeps @google/genai as sole runtime dependency and defines mobile scripts", () => {
+test("package.json keeps pure-JS runtime dependencies only and defines mobile scripts", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-  assert.deepEqual(Object.keys(pkg.dependencies), ["@google/genai"]);
+  assert.deepEqual(Object.keys(pkg.dependencies).sort(), [
+    "@google/genai",
+    "@larksuiteoapi/node-sdk",
+    "grammy",
+  ]);
   assert.ok(pkg.scripts["mobile:build:web"]);
   assert.ok(pkg.scripts["mobile:sync"]);
   assert.ok(pkg.scripts["mobile:apk:debug"]);

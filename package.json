@@ -148,7 +148,9 @@
     }
   },
   "dependencies": {
-    "@google/genai": "^2.29.1"
+    "@google/genai": "^2.29.1",
+    "@larksuiteoapi/node-sdk": "^1.77.0",
+    "grammy": "^1.48.0"
   },
   "devDependencies": {
     "@capacitor/android": "^8.6.2",

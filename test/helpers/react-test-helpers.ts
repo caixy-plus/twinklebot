@@ -15,6 +15,13 @@ export interface SsrTestModule {
   apiFetch: (url: string, options?: any) => Promise<Response>;
   triggerLanUnreachableFallback: (err?: unknown, opts?: { forceModal?: boolean; suppressModal?: boolean }) => void;
   dismissLanOfflineModal: () => void;
+  dismissSessionErrorCard: (
+    itemId: string,
+    dismissKey?: string,
+    seq?: number,
+    clientOnly?: boolean
+  ) => void;
+  handleRealtimePayload: (payload: any) => void;
   markLanReachable: () => void;
   retryActiveLanConnection: (epoch?: number) => Promise<boolean>;
   reloadWorkspaceForActiveAccount: (epoch?: number) => Promise<void>;

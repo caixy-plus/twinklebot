@@ -105,7 +105,6 @@
 }
 
 .event-stream .confirm-card,
-.event-stream .error-card,
 .event-stream .choice-card,
 .event-stream .draft-card,
 .event-stream .credential-card {
@@ -115,6 +114,15 @@
   max-height: min(62dvh, 460px);
   overflow-y: auto;
   overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.event-stream .error-card {
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  padding: 8px 9px 8px 12px;
+  border-radius: 12px;
   box-sizing: border-box;
 }
 

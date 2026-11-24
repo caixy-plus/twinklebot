@@ -48,6 +48,7 @@ import {
   teardownAllPreviewFrames,
 } from "../state/helpers.js";
 import {
+  dismissErrorCard,
   finalizeOrphanedInteractiveItems,
   getActiveSessionFromState,
   getPrimarySessionFromState,
@@ -581,7 +582,7 @@ export function renderEventForActiveSession(evt: any, { replay = false } = {}) {
       refreshUsageAndHealth().catch(() => {});
     }, 350);
   }
-  if (!replay && typeof document !== "undefined") {
+  if (!replay && evt?.type !== "error_dismissed" && typeof document !== "undefined") {
     const streamEl = document.getElementById("event-stream");
     if (getState().autoScrollPinned && streamEl) {
       streamEl.scrollTop = streamEl.scrollHeight;
@@ -595,6 +596,45 @@ export function renderEventForActiveSession(evt: any, { replay = false } = {}) {
       syncMobileChatBottomMetrics();
     }
   }
+}
+
+export function dismissSessionErrorCard(
+  itemId: string,
+  dismissKey?: string,
+  seq?: number,
+  clientOnly = false
+): void {
+  const s = getState();
+  const activeSessionId = s.activeSessionId;
+  const matchedItem = s.streamItems.find(
+    (item): item is Extract<StreamItem, { kind: "error" }> =>
+      item.kind === "error" && item.id === itemId
+  );
+  const resolvedSeq =
+    typeof seq === "number" && Number.isFinite(seq)
+      ? seq
+      : matchedItem && typeof matchedItem.seq === "number" && Number.isFinite(matchedItem.seq)
+        ? matchedItem.seq
+        : undefined;
+  const resolvedKey = dismissKey || matchedItem?.dismissKey;
+  const isClientOnly = Boolean(clientOnly || matchedItem?.clientOnly);
+
+  // Optimistic local dismissal + localStorage fallback for older backends / offline mode
+  dismissErrorCard(itemId, resolvedKey, resolvedSeq);
+
+  if (!activeSessionId || isClientOnly) return;
+  if (resolvedSeq === undefined && !resolvedKey) return;
+
+  apiJson(`/api/sessions/${activeSessionId}/errors/dismiss`, {
+    method: "POST",
+    suppressLanOfflineModal: true,
+    body: JSON.stringify({
+      ...(resolvedSeq !== undefined ? { seq: resolvedSeq } : {}),
+      ...(resolvedKey ? { dismissKey: resolvedKey } : {}),
+    }),
+  }).catch(() => {
+    // Graceful fallback: local dismissal already succeeded (e.g. older backend node)
+  });
 }
 
 function resolveFallbackObservedModel(session: any, fallbackObservedModel = ""): string {
@@ -1299,7 +1339,11 @@ export async function sendUserMessage(rawText?: string) {
       syncDerivedAccent();
     }
   } catch (err: any) {
-    renderEventForActiveSession({ type: "error", message: err?.message || "发送失败" });
+    renderEventForActiveSession({
+      type: "error",
+      message: err?.message || "发送失败",
+      clientOnly: true,
+    });
   } finally {
     if (msgInputEl) {
       msgInputEl.removeEventListener("blur", onBlurAfterSend);

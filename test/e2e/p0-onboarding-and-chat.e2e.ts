@@ -660,7 +660,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       priority: "P0",
       featureTier: "F1",
       difficulty: "D1",
-      title: "F5 整页刷新后挂起审批态(awaiting_approval)无损恢复并继续完成任务",
+      title: "F5 整页刷新后挂起审批态(awaiting_approval)无损恢复与错误提示跨端持久化同步关闭",
       module: "Session Persistence / Reload Recovery",
     },
     async ({ setEvidence }) => {
@@ -711,6 +711,70 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
         `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('刷新恢复并完成执行'))`,
         8000
       );
+
+      // Cross-client error dismissal: closing once persists on server and syncs live across devices
+      const err1 = ws.store.appendEvent(reloadBot.id, {
+        type: "error",
+        message: "Cross-device error notice 1",
+      });
+      ws.runner.broadcastGlobal({ sessionId: reloadBot.id, ...err1 });
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('.error-card-body')).some(el => el.textContent?.includes('Cross-device error notice 1'))`,
+        6000
+      );
+      await chrome!.click(".error-card .error-card-close-btn");
+      await chrome!.waitFor(`document.querySelectorAll('.error-card').length === 0`, 6000);
+      // Wait for server persistence of error_dismissed, then wipe localStorage and reload (simulating another device)
+      const deadline = Date.now() + 5000;
+      while (
+        !ws.store
+          .readEvents(reloadBot.id)
+          .some((ev: any) => ev.type === "error_dismissed" && ev.targetSeq === err1.seq) &&
+        Date.now() < deadline
+      ) {
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      assert.ok(
+        ws.store
+          .readEvents(reloadBot.id)
+          .some((ev: any) => ev.type === "error_dismissed" && ev.targetSeq === err1.seq),
+        "Closing .error-card must persist error_dismissed on the server"
+      );
+      await chrome!.evalJs(`window.localStorage.removeItem('twinklebot.dismissedErrorCards.v1')`);
+      await chrome!.reload(true);
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('刷新恢复并完成执行'))`,
+        8000
+      );
+      const errCountAfterFreshDeviceReload = await chrome!.evalJs<number>(
+        `document.querySelectorAll('.error-card').length`
+      );
+      assert.equal(
+        errCountAfterFreshDeviceReload,
+        0,
+        "Dismissed error must stay dismissed even with empty localStorage (fresh device)"
+      );
+
+      // Remote dismissal from another client removes .error-card live without reload
+      const err2 = ws.store.appendEvent(reloadBot.id, {
+        type: "error",
+        message: "Cross-device error notice 2",
+      });
+      ws.runner.broadcastGlobal({ sessionId: reloadBot.id, ...err2 });
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('.error-card-body')).some(el => el.textContent?.includes('Cross-device error notice 2'))`,
+        6000
+      );
+      const remoteDismissRes = await fetch(
+        `${ws.baseUrl}/api/sessions/${reloadBot.id}/errors/dismiss`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ seq: err2.seq }),
+        }
+      );
+      assert.equal(remoteDismissRes.status, 200);
+      await chrome!.waitFor(`document.querySelectorAll('.error-card').length === 0`, 6000);
       mockLlm.setHandler(undefined);
     },
     { getChrome: () => chrome }

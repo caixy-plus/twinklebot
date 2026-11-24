@@ -260,6 +260,7 @@ export function createServer({
     runner,
     getInstalledSkills,
     fetchImpl: billingFetchImpl || fetch,
+    onStateChange: () => broadcastSkillsUpdated(),
   });
 
   function broadcastSkillsUpdated() {

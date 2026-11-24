@@ -268,6 +268,49 @@ test("MessageGroup, MarkdownRenderer, MarkupPreviewCard, and InteractiveCards re
     peer: { title: "ReviewerBot" },
   });
   assert.ok(exHtml.includes("ReviewerBot"));
+
+  // User message preserves data-client-source metadata without showing a visible .msg-source-tag
+  const userMsgHtml = ssr.renderStreamItemToStaticMarkup({
+    kind: "message",
+    id: "u-src-1",
+    seq: 43,
+    text: "默认对话是发给主 bot 还是都可以",
+    isUser: true,
+    clientSource: { deviceKind: "desktop", platform: "darwin" },
+  });
+  assert.ok(userMsgHtml.includes('data-client-source="desktop"'));
+  assert.equal(userMsgHtml.includes("msg-source-tag"), false);
+  assert.equal(userMsgHtml.includes("电脑端"), false);
+
+  // Inline error notice: lightweight non-dialog strip, no legacy "提示" header, collapses verbose JSON details
+  const shortErrHtml = ssr.renderStreamItemToStaticMarkup({
+    kind: "error",
+    id: "err-short",
+    message: "请求超时，请检查网络连接",
+  });
+  assert.ok(shortErrHtml.includes('class="error-card"'));
+  assert.ok(shortErrHtml.includes('role="alert"'));
+  assert.ok(shortErrHtml.includes("请求超时，请检查网络连接"));
+  assert.equal(shortErrHtml.includes("confirm-header"), false);
+  assert.equal(shortErrHtml.includes("error-card-details"), false);
+
+  const jsonErrHtml = ssr.renderStreamItemToStaticMarkup({
+    kind: "error",
+    id: "err-json",
+    message: 'Gemini API error (429): {"error":{"code":429,"message":"You exceeded your current quota","status":"RESOURCE_EXHAUSTED"}}',
+  });
+  assert.ok(jsonErrHtml.includes("Gemini API error (429)：You exceeded your current quota"));
+  assert.ok(jsonErrHtml.includes('class="error-card-details"'));
+  assert.ok(jsonErrHtml.includes("RESOURCE_EXHAUSTED"));
+
+  const metaErrHtml = ssr.renderStreamItemToStaticMarkup({
+    kind: "error",
+    id: "err-402",
+    message: '402 API error occurred: {"httpMeta":{"response":{},"request":{}}}',
+  });
+  assert.ok(metaErrHtml.includes("402 API error occurred（模型供应商账户余额不足或额度已用尽）"));
+  assert.ok(metaErrHtml.includes('class="error-card-details"'));
+  assert.ok(metaErrHtml.includes("httpMeta"));
 });
 
 test("Native <dialog> elements, Settings 7 tabs, Skills Store 3 views, and App shell data attributes", async () => {
@@ -516,4 +559,102 @@ test("vite frontend production bundle is minified and ships zero source maps", (
   const appJs = fs.readFileSync(path.join(distDir, "app.js"), "utf8");
   assert.equal(appJs.includes("sourceMappingURL="), false);
   assert.equal(appJs.includes("triggerLanUnreachableFallback"), false, "internal identifiers must be mangled");
+});
+
+test("Cross-client error dismissal: replay filtering, live WS removal, and optimistic POST", async () => {
+  const sid = "sess-err-sync-1";
+
+  // 1. Replay of error + error_dismissed removes dismissed error on a fresh client (no localStorage)
+  // while preserving other undismissed errors in the same session.
+  let state = ssr.createInitialState();
+  state = { ...state, activeSessionId: sid };
+  const replayEvents = [
+    { type: "user", seq: 1, text: "hello" },
+    { type: "error", seq: 2, message: "First failure" },
+    { type: "error", seq: 3, message: "Second failure" },
+    { type: "error_dismissed", seq: 4, targetSeq: 2, dismissKey: `${sid}:2:First failure` },
+    // Legacy error without seq matched via dismissKey
+    { type: "error", message: "Legacy failure without seq" },
+    { type: "error_dismissed", seq: 5, dismissKey: `${sid}::Legacy failure without seq` },
+  ];
+  for (const ev of replayEvents) {
+    state = ssr.reduceSessionEvent(state, ev, { replay: true }).next;
+  }
+  const remainingErrors = state.streamItems.filter((it: any) => it.kind === "error");
+  assert.equal(remainingErrors.length, 1);
+  assert.equal(remainingErrors[0].seq, 3);
+  assert.equal(remainingErrors[0].message, "Second failure");
+
+  // 2. Live error_dismissed broadcast removes active error immediately on another open client
+  ssr.resetStoreForTest({
+    activeSessionId: sid,
+    streamItems: state.streamItems,
+    renderedSeqs: new Set([1, 2, 3, 4, 5]),
+  });
+  ssr.handleRealtimePayload({
+    sessionId: sid,
+    type: "error_dismissed",
+    targetSeq: 3,
+    dismissKey: `${sid}:3:Second failure`,
+    seq: 6,
+  });
+  assert.equal(
+    ssr.getState().streamItems.filter((it: any) => it.kind === "error").length,
+    0,
+    "live error_dismissed payload must remove the matching error card immediately"
+  );
+  assert.equal(ssr.getState().renderedSeqs.has(6), true);
+
+  // 3. dismissSessionErrorCard removes optimistically and POSTs to server (skips clientOnly errors)
+  const calls: Array<{ url: string; method: string; body: any }> = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: any, init?: any) => {
+    calls.push({
+      url: String(input),
+      method: String(init?.method || "GET"),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as any;
+  try {
+    ssr.resetStoreForTest({
+      activeSessionId: sid,
+      activeBaseUrl: "http://127.0.0.1:3230",
+      streamItems: [
+        {
+          kind: "error",
+          id: "err-server-10",
+          seq: 10,
+          message: "Server error",
+          dismissKey: `${sid}:10:Server error`,
+        },
+        {
+          kind: "error",
+          id: "err-local-1",
+          message: "发送失败",
+          dismissKey: `${sid}::发送失败`,
+          clientOnly: true,
+        },
+      ],
+    });
+    ssr.dismissSessionErrorCard("err-server-10", `${sid}:10:Server error`, 10, false);
+    assert.equal(ssr.getState().streamItems.length, 1);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, `http://127.0.0.1:3230/api/sessions/${sid}/errors/dismiss`);
+    assert.equal(calls[0].method, "POST");
+    assert.deepEqual(calls[0].body, {
+      seq: 10,
+      dismissKey: `${sid}:10:Server error`,
+    });
+
+    // clientOnly error dismisses locally without sending a server POST
+    ssr.dismissSessionErrorCard("err-local-1", `${sid}::发送失败`, undefined, true);
+    assert.equal(ssr.getState().streamItems.length, 0);
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });

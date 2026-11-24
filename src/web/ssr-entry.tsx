@@ -10,7 +10,10 @@ import {
 import { MarkdownRenderer } from "./components/chat/MarkdownRenderer.js";
 import { MarkupPreviewCard } from "./components/chat/MarkupPreviewCard.js";
 import { MessageGroup } from "./components/chat/MessageGroup.js";
+import { UiIcon } from "./components/common/Icon.js";
+import { formatErrorNotice } from "./state/helpers.js";
 import {
+  dismissSessionErrorCard,
   refreshActiveAccountConnection,
   reloadWorkspaceForActiveAccount,
   retryActiveLanConnection,
@@ -42,6 +45,7 @@ import {
   connectGlobalSse,
   connectRealtimeTransport,
   disconnectRealtimeTransport,
+  handleRealtimePayload,
   probeActiveTransportOnResume,
   reconnectRealtimeNow,
 } from "./services/realtime.js";
@@ -65,11 +69,13 @@ export {
   createInitialState,
   disconnectRealtimeTransport,
   dismissLanOfflineModal,
+  dismissSessionErrorCard,
   dismissWeakNetworkBanner,
   getActiveAccountMeta,
   getNetworkThresholds,
   getState,
   handleBrowserOnlineChange,
+  handleRealtimePayload,
   isRemoteAccountOffline,
   markLanReachable,
   probeActiveTransportOnResume,
@@ -131,8 +137,33 @@ export function renderStreamItemToStaticMarkup(
           {item.text || "本轮费用已接近预算上限"}
         </div>
       );
-    case "error":
-      return renderToStaticMarkup(<div className="error-card">{item.message}</div>);
+    case "error": {
+      const formatted = formatErrorNotice(item.message || "");
+      return renderToStaticMarkup(
+        <div className="error-card" role="alert">
+          <div className="error-card-main">
+            <span className="error-card-icon" aria-hidden="true">
+              <UiIcon name="alert-triangle" size={14} />
+            </span>
+            <div className="error-card-body">{formatted.summary}</div>
+            <button
+              type="button"
+              className="error-card-close-btn"
+              aria-label="关闭提示"
+              title="关闭提示"
+            >
+              <UiIcon name="x" size={12} />
+            </button>
+          </div>
+          {formatted.detail && (
+            <details className="error-card-details">
+              <summary className="error-card-details-summary">查看详情</summary>
+              <pre className="error-card-raw">{formatted.detail}</pre>
+            </details>
+          )}
+        </div>
+      );
+    }
     case "unread_divider":
       return renderToStaticMarkup(
         <div className="unread-divider">

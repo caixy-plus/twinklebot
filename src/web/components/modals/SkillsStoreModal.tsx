@@ -248,7 +248,9 @@ export function SkillsStoreModal() {
 
   useEffect(() => {
     if (!isChannelSkillDetail) return;
-    setChEnabled(Boolean(channelCfg.enabled));
+    setChEnabled(
+      !channelCfg.configured && !channelCfg.updatedAt ? true : Boolean(channelCfg.enabled)
+    );
     setChMode(
       channelCfg.connectionMode ||
         (detailSkillId === "feishu-bot" ? "websocket" : "polling")
@@ -611,6 +613,9 @@ export function SkillsStoreModal() {
     const rt = entry?.runtime;
     if (rt?.status === "connected") {
       return `${t("channel.statusConnected")}${rt.botName ? ` · ${rt.botName}` : ""} · ${skill.desc}`;
+    }
+    if (rt?.status === "connecting") {
+      return `${t("channel.statusConnecting")}${rt.botName ? ` · ${rt.botName}` : ""} · ${skill.desc}`;
     }
     if (rt?.status === "webhook_ready") {
       return `${t("channel.statusReady")}${rt.botName ? ` · ${rt.botName}` : ""} · ${skill.desc}`;
@@ -2639,11 +2644,13 @@ export function SkillsStoreModal() {
                     >
                       {channelRt.status === "connected"
                         ? t("channel.statusConnected")
-                        : channelRt.status === "webhook_ready"
-                          ? t("channel.statusReady")
-                          : channelRt.status === "error"
-                            ? channelRt.lastError || t("common.offline")
-                            : t("channel.statusStopped")}
+                        : channelRt.status === "connecting"
+                          ? t("channel.statusConnecting")
+                          : channelRt.status === "webhook_ready"
+                            ? t("channel.statusReady")
+                            : channelRt.status === "error"
+                              ? channelRt.lastError || t("common.offline")
+                              : t("channel.statusStopped")}
                     </span>
                   </div>
                   {channelRt.botName && (
@@ -3014,6 +3021,7 @@ export function SkillsStoreModal() {
                               ? { botToken: chTgToken.trim() || undefined }
                               : {
                                   domain: chFsDomain,
+                                  connectionMode: chMode,
                                   appId: chFsAppId.trim() || undefined,
                                   appSecret: chFsAppSecret.trim() || undefined,
                                 };
@@ -3025,7 +3033,9 @@ export function SkillsStoreModal() {
                             }
                           );
                           setChFeedback({
-                            text: `✓ ${res.botName || detailSkillId}`,
+                            text: res.warning
+                              ? `⚠️ ${res.botName || detailSkillId} · ${res.warning}`
+                              : `✓ ${res.botName || detailSkillId}`,
                             kind: "success",
                           });
                         } catch (err: any) {

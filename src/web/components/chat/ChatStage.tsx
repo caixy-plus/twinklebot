@@ -19,6 +19,7 @@ import {
   closeNewChatBar,
   continueFromMaxSteps,
   deleteSessionWithConfirm,
+  dismissSessionErrorCard,
   openSettingsModal,
   refreshLibrary,
   refreshSchedules,
@@ -34,10 +35,10 @@ import {
   computeClientSessionSummary,
   formatClockTime,
   formatCny,
+  formatErrorNotice,
   isSessionCurrentlyBusy,
 } from "../../state/helpers.js";
 import {
-  dismissErrorCard,
   getActiveSessionFromState,
   setState,
   useStore,
@@ -738,24 +739,46 @@ export function ChatStage({
                   </div>
                 );
               }
-              case "error":
+              case "error": {
+                const formatted = formatErrorNotice(
+                  item.message || "",
+                  t("card.errorFallback")
+                );
                 return (
                   <div key={item.id} className="error-card" role="alert">
-                    <div className="error-card-header">
-                      <div className="confirm-header">提示</div>
+                    <div className="error-card-main">
+                      <span className="error-card-icon" aria-hidden="true">
+                        <UiIcon name="alert-triangle" size={14} />
+                      </span>
+                      <div className="error-card-body">{formatted.summary}</div>
                       <button
                         type="button"
                         className="error-card-close-btn"
-                        aria-label="关闭提示"
-                        title="关闭提示"
-                        onClick={() => dismissErrorCard(item.id, item.dismissKey)}
+                        aria-label={t("card.errorClose")}
+                        title={t("card.errorClose")}
+                        onClick={() =>
+                          dismissSessionErrorCard(
+                            item.id,
+                            item.dismissKey,
+                            item.seq,
+                            item.clientOnly
+                          )
+                        }
                       >
-                        ×
+                        <UiIcon name="x" size={12} />
                       </button>
                     </div>
-                    <div className="error-card-body">{item.message || "任务中断或遇到异常"}</div>
+                    {formatted.detail && (
+                      <details className="error-card-details">
+                        <summary className="error-card-details-summary">
+                          {t("card.errorDetails")}
+                        </summary>
+                        <pre className="error-card-raw">{formatted.detail}</pre>
+                      </details>
+                    )}
                   </div>
                 );
+              }
               default:
                 return null;
             }

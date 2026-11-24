@@ -1,14 +1,16 @@
+import * as lark from "@larksuiteoapi/node-sdk";
+import { Bot as GrammyBot } from "grammy";
 import {
   DEFAULT_TELEGRAM_API_BASE,
-  decodeFeishuPbFrame,
-  encodeFeishuPbFrame,
-  fetchFeishuTenantAccessToken,
+  createLarkClient,
+  createLarkHttpInstance,
   isSenderAllowed,
   normalizeChannelsAuthStore,
   parseApprovalCommand,
+  parseFeishuSdkMessageEvent,
   parseFeishuWebhookPayload,
   parseTelegramUpdate,
-  resolveFeishuApiBase,
+  resolveFeishuSdkDomain,
   sanitizeChannelApiBaseUrl,
   sanitizeFeishuChannelConfig,
   sanitizeTelegramChannelConfig,
@@ -19,7 +21,6 @@ import {
   timingSafeEqualStr,
   type ChannelSkillId,
   type FeishuChannelConfig,
-  type FeishuPbFrame,
   type ParsedInboundChannelMessage,
   type TelegramChannelConfig,
 } from "./channel-integrations.js";
@@ -38,6 +39,7 @@ export interface CreateChannelManagerOptions {
   runner: any;
   getInstalledSkills: () => string[];
   fetchImpl?: typeof fetch;
+  onStateChange?: () => void;
 }
 
 interface PendingChannelApproval {
@@ -58,12 +60,6 @@ interface ActiveChannelTurn {
   resolveDone: () => void;
 }
 
-interface FeishuSplitBuffer {
-  createdAt: number;
-  total: number;
-  parts: Array<Buffer | undefined>;
-}
-
 const MAX_DEDUP_IDS = 500;
 const TERMINAL_SESSION_STATUSES = new Set([
   "done",
@@ -81,23 +77,25 @@ function sleepMs(ms: number): Promise<void> {
   });
 }
 
-function getHeaderVal(frame: FeishuPbFrame, key: string): string {
-  const hit = frame.headers.find((h) => h.key === key);
-  return hit ? hit.value : "";
-}
-
 export function createChannelManager({
   store,
   runner,
   getInstalledSkills,
   fetchImpl = fetch,
+  onStateChange,
 }: CreateChannelManagerOptions) {
+  function notifyStateChange(): void {
+    try {
+      onStateChange?.();
+    } catch {
+      // ignore listener errors
+    }
+  }
   const seenEventIds: string[] = [];
   const seenEventSet = new Set<string>();
   const pendingApprovals = new Map<string, PendingChannelApproval>();
   const activeTurns = new Map<string, ActiveChannelTurn>();
   const sessionChains = new Map<string, Promise<void>>();
-  const feishuSplitBuffers = new Map<string, FeishuSplitBuffer>();
 
   const runtimeState: Record<ChannelSkillId, ChannelRuntimeState> = {
     "telegram-bot": {
@@ -118,16 +116,12 @@ export function createChannelManager({
     },
   };
 
-  let tgAbort: AbortController | null = null;
-  let tgOffset = 0;
-  let lastTgBotToken = "";
-  let fsWs: WebSocket | null = null;
-  let fsEndpointAbort: AbortController | null = null;
-  let fsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let fsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let tgBot: GrammyBot | null = null;
+  let tgRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let tgConnEpoch = 0;
+  let fsWsClient: lark.WSClient | null = null;
   let fsConnEpoch = 0;
-  let fsStopping = false;
-  let fsTokenCache: { key: string; token: string; expiresAt: number } | null = null;
+  let fsClientCache: { key: string; client: lark.Client } | null = null;
   let unsubscribeRunner: (() => void) | null = null;
 
   function markEventSeen(eventId: string): boolean {
@@ -153,22 +147,14 @@ export function createChannelManager({
     return normalizeChannelsAuthStore(store?.readChannelsAuth?.() || {});
   }
 
-  async function getFeishuToken(cfg: FeishuChannelConfig): Promise<string> {
-    const cacheKey = `${cfg.appId}:${cfg.domain}:${cfg.apiBaseUrl}`;
-    if (
-      fsTokenCache &&
-      fsTokenCache.key === cacheKey &&
-      fsTokenCache.expiresAt > Date.now() + 60_000
-    ) {
-      return fsTokenCache.token;
+  function getFeishuClient(cfg: FeishuChannelConfig): lark.Client {
+    const cacheKey = `${cfg.appId}:${cfg.appSecret}:${cfg.domain}:${cfg.apiBaseUrl}`;
+    if (fsClientCache && fsClientCache.key === cacheKey) {
+      return fsClientCache.client;
     }
-    const { token, expireSec } = await fetchFeishuTenantAccessToken(cfg, fetchImpl);
-    fsTokenCache = {
-      key: cacheKey,
-      token,
-      expiresAt: Date.now() + expireSec * 1000,
-    };
-    return token;
+    const client = createLarkClient(cfg, fetchImpl);
+    fsClientCache = { key: cacheKey, client };
+    return client;
   }
 
   async function sendChannelReply(
@@ -181,13 +167,17 @@ export function createChannelManager({
       await sendTelegramMessage(configs["telegram-bot"], chatId, text, fetchImpl);
     } else {
       const fsCfg = configs["feishu-bot"];
-      await sendFeishuMessage(
-        fsCfg,
-        chatId,
-        text,
-        () => getFeishuToken(fsCfg),
-        fetchImpl
-      );
+      try {
+        await sendFeishuMessage(fsCfg, chatId, text, fetchImpl, getFeishuClient(fsCfg));
+      } catch (err: any) {
+        const code = Number(err?.feishuCode);
+        if (code === 99991663 || code === 99991664 || code === 99991661) {
+          fsClientCache = null;
+          await sendFeishuMessage(fsCfg, chatId, text, fetchImpl, getFeishuClient(fsCfg));
+          return;
+        }
+        throw err;
+      }
     }
   }
 
@@ -458,163 +448,121 @@ export function createChannelManager({
   }
 
   function stopTelegramPolling(): void {
-    if (tgAbort) {
-      tgAbort.abort();
-      tgAbort = null;
+    tgConnEpoch += 1;
+    if (tgRetryTimer) {
+      clearTimeout(tgRetryTimer);
+      tgRetryTimer = null;
+    }
+    if (tgBot) {
+      const old = tgBot;
+      tgBot = null;
+      void old.stop().catch(() => {});
     }
   }
 
   function startTelegramPolling(cfg: TelegramChannelConfig): void {
     stopTelegramPolling();
-    if (cfg.botToken !== lastTgBotToken) {
-      tgOffset = 0;
-      lastTgBotToken = cfg.botToken;
-    }
-    const abort = new AbortController();
-    tgAbort = abort;
+    const myEpoch = ++tgConnEpoch;
+    const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
     runtimeState["telegram-bot"] = {
       ...runtimeState["telegram-bot"],
-      connected: true,
-      status: "connected",
+      connected: false,
+      status: "connecting",
       mode: "polling",
       lastError: null,
     };
-    const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
 
-    const loop = async () => {
-      let backoffMs = 1500;
-      while (!abort.signal.aborted) {
-        try {
-          const url = `${base}/bot${encodeURIComponent(cfg.botToken)}/getUpdates?timeout=25&offset=${tgOffset}`;
-          const reqSignal =
-            typeof AbortSignal?.any === "function" && typeof AbortSignal?.timeout === "function"
-              ? AbortSignal.any([abort.signal, AbortSignal.timeout(35_000)])
-              : abort.signal;
-          const resp = await fetchImpl(url, { method: "GET", signal: reqSignal });
-          const data: any = await resp.json().catch(() => ({}));
-          if (abort.signal.aborted) break;
-          if (!resp.ok || !data?.ok) {
-            throw new Error(data?.description || `HTTP ${resp.status}`);
+    let backoffMs = 2000;
+    const launchOnce = () => {
+      if (myEpoch !== tgConnEpoch) return;
+      const bot = new GrammyBot(cfg.botToken, {
+        client: {
+          apiRoot: base,
+          fetch: fetchImpl as any,
+          baseFetchConfig: {},
+        },
+      });
+      tgBot = bot;
+
+      bot.on(
+        ["message:text", "message:caption", "edited_message:text", "edited_message:caption"],
+        (ctx) => {
+          if (myEpoch !== tgConnEpoch) return;
+          const parsed = parseTelegramUpdate(ctx.update);
+          if (parsed) {
+            void handleInboundMessage(parsed).catch(() => {});
           }
-          backoffMs = 1500;
-          runtimeState["telegram-bot"].connected = true;
-          runtimeState["telegram-bot"].status = "connected";
-          runtimeState["telegram-bot"].lastError = null;
-          const updates = Array.isArray(data.result) ? data.result : [];
-          for (const upd of updates) {
-            if (typeof upd?.update_id === "number" && upd.update_id >= tgOffset) {
-              tgOffset = upd.update_id + 1;
-            }
-            const parsed = parseTelegramUpdate(upd);
-            if (parsed) {
-              void handleInboundMessage(parsed).catch(() => {});
-            }
-          }
-        } catch (err: any) {
-          if (abort.signal.aborted) break;
-          runtimeState["telegram-bot"].connected = false;
-          runtimeState["telegram-bot"].status = "error";
-          runtimeState["telegram-bot"].lastError = err?.message || String(err);
-          await new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, backoffMs);
-            t.unref?.();
-            abort.signal.addEventListener(
-              "abort",
-              () => {
-                clearTimeout(t);
-                resolve();
-              },
-              { once: true }
-            );
-          });
-          backoffMs = Math.min(30_000, backoffMs * 2);
         }
-      }
+      );
+
+      bot.catch((botErr) => {
+        if (myEpoch !== tgConnEpoch) return;
+        const msg =
+          (botErr?.error as any)?.description ||
+          (botErr?.error as any)?.message ||
+          botErr?.message ||
+          "Telegram polling error";
+        runtimeState["telegram-bot"].lastError = String(msg);
+        notifyStateChange();
+      });
+
+      void bot
+        .start({
+          allowed_updates: ["message", "edited_message"],
+          onStart: (botInfo) => {
+            if (myEpoch !== tgConnEpoch) {
+              void bot.stop().catch(() => {});
+              return;
+            }
+            backoffMs = 2000;
+            runtimeState["telegram-bot"] = {
+              ...runtimeState["telegram-bot"],
+              connected: true,
+              status: "connected",
+              mode: "polling",
+              botName: botInfo.first_name || botInfo.username || "Telegram Bot",
+              lastError: null,
+            };
+            notifyStateChange();
+          },
+        })
+        .catch((err: any) => {
+          if (myEpoch !== tgConnEpoch) return;
+          const nextErr = err?.description || err?.message || String(err);
+          runtimeState["telegram-bot"] = {
+            ...runtimeState["telegram-bot"],
+            connected: false,
+            status: "error",
+            lastError: nextErr,
+          };
+          notifyStateChange();
+          tgRetryTimer = setTimeout(() => {
+            tgRetryTimer = null;
+            launchOnce();
+          }, backoffMs);
+          tgRetryTimer.unref?.();
+          backoffMs = Math.min(30_000, backoffMs * 2);
+        });
     };
-    void loop();
+
+    launchOnce();
   }
 
   function stopFeishuWebSocket(): void {
-    fsStopping = true;
     fsConnEpoch += 1;
-    if (fsEndpointAbort) {
-      fsEndpointAbort.abort();
-      fsEndpointAbort = null;
-    }
-    if (fsReconnectTimer) {
-      clearTimeout(fsReconnectTimer);
-      fsReconnectTimer = null;
-    }
-    if (fsHeartbeatTimer) {
-      clearInterval(fsHeartbeatTimer);
-      fsHeartbeatTimer = null;
-    }
-    if (fsWs) {
+    if (fsWsClient) {
+      const old = fsWsClient;
+      fsWsClient = null;
       try {
-        fsWs.close();
+        old.close({ force: true });
       } catch {
         // ignore
       }
-      fsWs = null;
     }
-    feishuSplitBuffers.clear();
-  }
-
-  function reassembleFeishuPayload(frame: FeishuPbFrame): Buffer | null {
-    const raw = frame.payload || Buffer.alloc(0);
-    const sum = Number(getHeaderVal(frame, "sum") || "1");
-    const seq = Number(getHeaderVal(frame, "seq") || "0");
-    const msgId = getHeaderVal(frame, "message_id");
-    if (!Number.isFinite(sum) || sum <= 1 || !msgId) {
-      return raw;
-    }
-    const now = Date.now();
-    for (const [k, entry] of feishuSplitBuffers.entries()) {
-      if (now - entry.createdAt > 15_000) feishuSplitBuffers.delete(k);
-    }
-    let state = feishuSplitBuffers.get(msgId);
-    if (!state || state.total !== sum) {
-      state = { createdAt: now, total: sum, parts: Array.from({ length: sum }, () => undefined) };
-      feishuSplitBuffers.set(msgId, state);
-    }
-    if (seq >= 0 && seq < sum) {
-      state.parts[seq] = raw;
-    }
-    if (state.parts.every((p) => Buffer.isBuffer(p))) {
-      feishuSplitBuffers.delete(msgId);
-      return Buffer.concat(state.parts as Buffer[]);
-    }
-    return null;
-  }
-
-  async function extractWsBinaryOrText(
-    rawData: unknown
-  ): Promise<{ kind: "text"; text: string } | { kind: "binary"; buf: Buffer } | null> {
-    if (typeof rawData === "string") {
-      return { kind: "text", text: rawData };
-    }
-    if (Buffer.isBuffer(rawData)) {
-      return { kind: "binary", buf: rawData };
-    }
-    if (rawData instanceof ArrayBuffer) {
-      return { kind: "binary", buf: Buffer.from(rawData) };
-    }
-    if (ArrayBuffer.isView(rawData)) {
-      return {
-        kind: "binary",
-        buf: Buffer.from(rawData.buffer, rawData.byteOffset, rawData.byteLength),
-      };
-    }
-    if (rawData && typeof (rawData as Blob).arrayBuffer === "function") {
-      const ab = await (rawData as Blob).arrayBuffer();
-      return { kind: "binary", buf: Buffer.from(ab) };
-    }
-    return null;
   }
 
   function startFeishuWebSocket(cfg: FeishuChannelConfig): void {
     stopFeishuWebSocket();
-    fsStopping = false;
     const myEpoch = ++fsConnEpoch;
     runtimeState["feishu-bot"] = {
       ...runtimeState["feishu-bot"],
@@ -624,175 +572,70 @@ export function createChannelManager({
       lastError: null,
     };
 
-    const connectOnce = async () => {
-      if (fsStopping || myEpoch !== fsConnEpoch) return;
-      const endpointCtrl = new AbortController();
-      fsEndpointAbort = endpointCtrl;
-      try {
-        const base = resolveFeishuApiBase(cfg);
-        const resp = await fetchImpl(`${base}/callback/ws/endpoint`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify({ AppID: cfg.appId, AppSecret: cfg.appSecret }),
-          signal: endpointCtrl.signal,
-        });
-        const data: any = await resp.json().catch(() => ({}));
-        if (fsStopping || myEpoch !== fsConnEpoch) return;
-        const wsUrl = String(data?.data?.URL || data?.URL || "").trim();
-        if (!resp.ok || !wsUrl) {
-          throw new Error(data?.msg || `Feishu WS endpoint failed (HTTP ${resp.status})`);
+    const eventDispatcher = new lark.EventDispatcher({
+      loggerLevel: lark.LoggerLevel.error,
+    }).register({
+      "im.message.receive_v1": async (data: any) => {
+        if (myEpoch !== fsConnEpoch) return;
+        const parsed = parseFeishuSdkMessageEvent(data);
+        if (parsed) {
+          // Return immediately so official WSClient ACKs within Feishu's 3-second SLA
+          void handleInboundMessage(parsed).catch(() => {});
         }
+      },
+    });
 
-        let serviceId = 0;
-        try {
-          serviceId = Number(new URL(wsUrl).searchParams.get("service_id") || "0") || 0;
-        } catch {
-          serviceId = 0;
+    const wsClient = new lark.WSClient({
+      appId: cfg.appId,
+      appSecret: cfg.appSecret,
+      domain: resolveFeishuSdkDomain(cfg),
+      loggerLevel: lark.LoggerLevel.error,
+      httpInstance: createLarkHttpInstance(fetchImpl),
+      autoReconnect: true,
+      handshakeTimeoutMs: 15_000,
+      wsConfig: { pingTimeout: 30 },
+      onReady: () => {
+        if (myEpoch !== fsConnEpoch) {
+          try {
+            wsClient.close({ force: true });
+          } catch {}
+          return;
         }
-        const rawPingSec = Number(
-          data?.data?.ClientConfig?.PingInterval ?? data?.ClientConfig?.PingInterval ?? 90
-        );
-        const pingIntervalMs = Math.max(15, Math.min(300, Number.isFinite(rawPingSec) ? rawPingSec : 90)) * 1000;
-
-        const WSImpl = globalThis.WebSocket;
-        if (typeof WSImpl !== "function") {
-          throw new Error("Global WebSocket unavailable");
-        }
-        const ws = new WSImpl(wsUrl);
-        try {
-          ws.binaryType = "arraybuffer";
-        } catch {
-          // ignore if custom mock WS has read-only binaryType
-        }
-        fsWs = ws;
-
-        ws.addEventListener("open", () => {
-          if (fsStopping || myEpoch !== fsConnEpoch) {
-            try {
-              ws.close();
-            } catch {}
-            return;
-          }
-          runtimeState["feishu-bot"].connected = true;
-          runtimeState["feishu-bot"].status = "connected";
-          runtimeState["feishu-bot"].lastError = null;
-
-          if (fsHeartbeatTimer) clearInterval(fsHeartbeatTimer);
-          fsHeartbeatTimer = setInterval(() => {
-            if (ws.readyState !== 1) return;
-            try {
-              const pingFrame = encodeFeishuPbFrame({
-                seqId: 0n,
-                logId: 0n,
-                service: serviceId,
-                method: 0,
-                headers: [{ key: "type", value: "ping" }],
-              });
-              ws.send(new Uint8Array(pingFrame));
-            } catch {
-              // ignore transient send error
-            }
-          }, pingIntervalMs);
-          fsHeartbeatTimer.unref?.();
-        });
-
-        ws.addEventListener("message", (evt: any) => {
-          void (async () => {
-            try {
-              const extracted = await extractWsBinaryOrText(evt?.data);
-              if (!extracted) return;
-
-              if (extracted.kind === "text") {
-                const payload = JSON.parse(extracted.text);
-                const parsed = parseFeishuWebhookPayload(payload, cfg, {
-                  requireVerificationToken: false,
-                  requireEncryptionIfConfigured: false,
-                });
-                if (parsed.kind === "message") {
-                  await handleInboundMessage(parsed.message);
-                }
-                return;
-              }
-
-              const startedAt = Date.now();
-              const frame = decodeFeishuPbFrame(extracted.buf);
-              if (frame.method === 0) {
-                // Control frame (pong / config update)
-                return;
-              }
-              const msgType = getHeaderVal(frame, "type");
-              const combined = reassembleFeishuPayload(frame);
-              if (!combined) return; // awaiting remaining fragments
-
-              // Acknowledge DATA frame within Feishu's 3-second SLA before running LLM work
-              if (ws.readyState === 1) {
-                const ackPayload = Buffer.from(JSON.stringify({ code: 200 }), "utf8");
-                const ackFrame = encodeFeishuPbFrame({
-                  seqId: frame.seqId,
-                  logId: frame.logId,
-                  service: frame.service || serviceId,
-                  method: frame.method,
-                  headers: [
-                    ...frame.headers,
-                    { key: "biz_rt", value: String(Math.max(1, Date.now() - startedAt)) },
-                  ],
-                  payload: ackPayload,
-                  ...(frame.logIdNew ? { logIdNew: frame.logIdNew } : {}),
-                });
-                try {
-                  ws.send(new Uint8Array(ackFrame));
-                } catch {
-                  // ignore send error
-                }
-              }
-
-              if (msgType && msgType !== "event") return;
-              if (combined.length === 0) return;
-
-              const payload = JSON.parse(combined.toString("utf8"));
-              const parsed = parseFeishuWebhookPayload(payload, cfg, {
-                requireVerificationToken: false,
-                requireEncryptionIfConfigured: false,
-              });
-              if (parsed.kind === "message") {
-                await handleInboundMessage(parsed.message);
-              }
-            } catch {
-              // ignore malformed or control frames
-            }
-          })();
-        });
-
-        ws.addEventListener("close", () => {
-          if (fsHeartbeatTimer) {
-            clearInterval(fsHeartbeatTimer);
-            fsHeartbeatTimer = null;
-          }
-          if (myEpoch !== fsConnEpoch) return;
-          runtimeState["feishu-bot"].connected = false;
-          if (!fsStopping) {
-            runtimeState["feishu-bot"].status = "connecting";
-            fsReconnectTimer = setTimeout(() => void connectOnce(), 5000);
-            fsReconnectTimer.unref?.();
-          }
-        });
-
-        ws.addEventListener("error", () => {
-          if (myEpoch !== fsConnEpoch) return;
-          runtimeState["feishu-bot"].connected = false;
-          runtimeState["feishu-bot"].status = "error";
-          runtimeState["feishu-bot"].lastError = "Feishu WebSocket connection error";
-        });
-      } catch (err: any) {
-        if (fsStopping || myEpoch !== fsConnEpoch) return;
+        runtimeState["feishu-bot"].connected = true;
+        runtimeState["feishu-bot"].status = "connected";
+        runtimeState["feishu-bot"].lastError = null;
+        notifyStateChange();
+      },
+      onReconnecting: () => {
+        if (myEpoch !== fsConnEpoch) return;
+        runtimeState["feishu-bot"].connected = false;
+        runtimeState["feishu-bot"].status = "connecting";
+        notifyStateChange();
+      },
+      onReconnected: () => {
+        if (myEpoch !== fsConnEpoch) return;
+        runtimeState["feishu-bot"].connected = true;
+        runtimeState["feishu-bot"].status = "connected";
+        runtimeState["feishu-bot"].lastError = null;
+        notifyStateChange();
+      },
+      onError: (err: Error) => {
+        if (myEpoch !== fsConnEpoch) return;
         runtimeState["feishu-bot"].connected = false;
         runtimeState["feishu-bot"].status = "error";
         runtimeState["feishu-bot"].lastError = err?.message || String(err);
-        fsReconnectTimer = setTimeout(() => void connectOnce(), 10_000);
-        fsReconnectTimer.unref?.();
-      }
-    };
-    void connectOnce();
+        notifyStateChange();
+      },
+    });
+
+    fsWsClient = wsClient;
+    void wsClient.start({ eventDispatcher }).catch((err: any) => {
+      if (myEpoch !== fsConnEpoch) return;
+      runtimeState["feishu-bot"].connected = false;
+      runtimeState["feishu-bot"].status = "error";
+      runtimeState["feishu-bot"].lastError = err?.message || String(err);
+      notifyStateChange();
+    });
   }
 
   function syncFromStore(): void {
@@ -1002,12 +845,17 @@ export function createChannelManager({
         };
       }
     }
+    const overrideMode =
+      overrideRaw?.connectionMode === "webhook" || overrideRaw?.connectionMode === "websocket"
+        ? overrideRaw.connectionMode
+        : undefined;
     const merged = {
       ...stored,
       ...(overrideRaw?.appId ? { appId: String(overrideRaw.appId).trim() } : {}),
       ...(explicitSecret ? { appSecret: explicitSecret } : {}),
       domain: overrideDomain,
       ...(overrideBase ? { apiBaseUrl: overrideBase } : {}),
+      ...(overrideMode ? { connectionMode: overrideMode } : {}),
     };
     const res = await testFeishuChannel(merged, fetchImpl);
     if (res.ok && res.botName) {

@@ -331,11 +331,13 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
       );
       ws.mockLlm.setHandler(undefined);
 
-      // PI-004: Mobile sent user message displays mobile source tag (`手机端`)
-      const mobSourceTag = await tab.evalJs<string>(
-        `document.querySelector('.msg-source-tag[data-client-source="mobile"]')?.textContent?.trim() || ''`
-      );
-      assert.equal(mobSourceTag, "手机端", "Mobile-sent message must display 手机端 source badge (PI-004)");
+      // PI-004: Mobile clientSource metadata is preserved on .msg-group without rendering a visible source label
+      const mobSourceMeta = await tab.evalJs<{ visibleTag: boolean; attr: string }>(`(() => ({
+        visibleTag: Boolean(document.querySelector('.msg-source-tag')),
+        attr: document.querySelector('.msg-group.is-user[data-client-source="mobile"]')?.getAttribute('data-client-source') || '',
+      }))()`);
+      assert.equal(mobSourceMeta.visibleTag, false, "User-facing .msg-source-tag must stay hidden");
+      assert.equal(mobSourceMeta.attr, "mobile", "Mobile-sent message must keep data-client-source metadata");
 
       // Issue #10: When idle (no #live-working-bubble), --mobile-live-bubble-reserve must be 0px
       const idleLiveReserve = await tab.evalJs<string>(
