@@ -66,10 +66,12 @@ import { handleLanHostRoutes } from "./routes/lan-host.js";
 import { handleSettingsProvidersRoutes } from "./routes/settings-providers.js";
 import { handleSkillsRoutes } from "./routes/skills.js";
 import { handleMailRoutes } from "./routes/mail.js";
+import { handleChannelRoutes } from "./routes/channels.js";
 import { handleSystemRoutes, runDueLiveBalanceRefreshes } from "./routes/system.js";
 import { handleSchedulesVaultRoutes } from "./routes/schedules-vault.js";
 import { handleMediaFilesRoutes } from "./routes/media-files.js";
 import { handleSessionRoutes } from "./routes/sessions.js";
+import { createChannelManager } from "../lib/channel-manager.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const _DIR = path.resolve(path.dirname(__filename));
@@ -91,6 +93,7 @@ const API_ROUTE_HANDLERS: RouteHandler[] = [
   handleSettingsProvidersRoutes,
   handleSkillsRoutes,
   handleMailRoutes,
+  handleChannelRoutes,
   handleSystemRoutes,
   handleSchedulesVaultRoutes,
   handleMediaFilesRoutes,
@@ -252,6 +255,13 @@ export function createServer({
     return resolveInstalledSkillIds(store?.readSettings?.() || {});
   }
 
+  const channelManager = createChannelManager({
+    store,
+    runner,
+    getInstalledSkills,
+    fetchImpl: billingFetchImpl || fetch,
+  });
+
   function broadcastSkillsUpdated() {
     try {
       runner?.broadcastGlobal?.({ type: "skills_updated" });
@@ -260,6 +270,7 @@ export function createServer({
 
   function getSanitizedMailState() {
     const installed = getInstalledSkills();
+    const channelStatus = channelManager.getStatusPayload() as Record<string, any>;
     const { accounts } = normalizeMailAuthStore(store?.readMailAuth?.() || {});
     const allSanitized = accounts.map((acct) =>
       sanitizeMailAccount(acct, acct.provider)
@@ -272,10 +283,18 @@ export function createServer({
     const skillsCatalog = {
       platform: PLATFORM_SKILLS.map((s) => {
         const isBuiltin = s.builtin !== false;
+        const chEntry = channelStatus[s.id];
         return {
           ...s,
           installed: isBuiltin ? true : installed.includes(s.id),
           removable: !isBuiltin,
+          ...(chEntry
+            ? {
+                configured: Boolean(chEntry.config?.configured),
+                connected: Boolean(chEntry.runtime?.connected),
+                accountCount: chEntry.config?.configured ? 1 : 0,
+              }
+            : {}),
         };
       }),
       office: OFFICE_SKILLS.map((s) => {
@@ -440,6 +459,7 @@ export function createServer({
       connectedApps,
       mailAccounts,
       mailIntegrations,
+      channelIntegrations: channelManager.getStatusPayload(),
       installedSkills,
       skillsCatalog,
       customSkills: store?.listCustomSkills?.() || [],
@@ -556,7 +576,13 @@ export function createServer({
         }
       }
 
+      const isExternalChannelWebhook =
+        method === "POST" &&
+        (pathname === "/api/channels/telegram/webhook" ||
+          pathname === "/api/channels/feishu/webhook");
+
       if (
+        !isExternalChannelWebhook &&
         runtimeState.deployEnv === "local" &&
         (pathname.startsWith("/api/") || pathname === "/ws") &&
         !deviceAuth.isAuthorized(req, url)
@@ -565,6 +591,7 @@ export function createServer({
       }
 
       if (
+        !isExternalChannelWebhook &&
         runtimeState.deployEnv === "cloud" &&
         finalConfig.cloudAuthToken &&
         (pathname.startsWith("/api/") || pathname === "/ws")
@@ -683,6 +710,7 @@ export function createServer({
     model,
     scheduler,
     activeMcpManager,
+    channelManager,
     hostBridge,
     updateBotComputerFn,
     probeBotComputerFn,
@@ -730,6 +758,9 @@ export function createServer({
 
   let lanResponder: any = null;
   server.on("listening", () => {
+    try {
+      channelManager.syncFromStore();
+    } catch {}
     if (
       runtimeState.deployEnv === "local" &&
       finalConfig.lanAccess &&
@@ -775,6 +806,7 @@ export function createServer({
     } catch {}
     wsServer.close();
     activeMcpManager?.closeAll?.();
+    channelManager.stopAll();
     void closeAllLocalBrowsers();
     stopWslKeepalive();
   });

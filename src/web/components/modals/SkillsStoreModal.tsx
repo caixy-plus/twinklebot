@@ -203,10 +203,64 @@ export function SkillsStoreModal() {
   const qqFormRef = useRef<HTMLFormElement | null>(null);
   const cmFormRef = useRef<HTMLFormElement | null>(null);
 
-  // MCP JSON editor
+  // Detail skill routing: Mail vs MCP (`kimi-cu`) vs Chat Channel (`feishu-bot` / `telegram-bot`)
+  const sessions = useStore((s) => s.sessions);
+  const activeBaseUrl = useStore((s) => s.activeBaseUrl);
   const detailSkill = getConfigurableSkillFromSettings(settings, detailSkillId);
-  const isMcpSkill = Boolean(detailSkill?.mcpServerId || detailSkill?.category === "platform");
+  const isChannelSkillDetail =
+    detailSkillId === "feishu-bot" || detailSkillId === "telegram-bot";
+  const isMcpSkill = Boolean(
+    detailSkill?.mcpServerId || (detailSkill?.category === "platform" && !isChannelSkillDetail)
+  );
   const mcpServerId = detailSkill?.mcpServerId || detailSkillId || "kimi-cu";
+
+  // Channel integration editor state (#13)
+  const channelEntry = isChannelSkillDetail
+    ? (settings?.channelIntegrations as any)?.[detailSkillId] || null
+    : null;
+  const channelCfg = channelEntry?.config || {};
+  const channelRt = channelEntry?.runtime || {};
+  const [chEnabled, setChEnabled] = useState(false);
+  const [chMode, setChMode] = useState("polling");
+  const [chTargetBotId, setChTargetBotId] = useState("");
+  const [chWhitelist, setChWhitelist] = useState("");
+  const [chApprovalMode, setChApprovalMode] = useState("channel_and_app");
+  const [chTgToken, setChTgToken] = useState("");
+  const [chTgSecret, setChTgSecret] = useState("");
+  const [chFsDomain, setChFsDomain] = useState("feishu");
+  const [chFsAppId, setChFsAppId] = useState("");
+  const [chFsAppSecret, setChFsAppSecret] = useState("");
+  const [chFsVerifyToken, setChFsVerifyToken] = useState("");
+  const [chFsEncryptKey, setChFsEncryptKey] = useState("");
+  const [chBusy, setChBusy] = useState<"save" | "test" | null>(null);
+  const [chFeedback, setChFeedback] = useState<{ text: string; kind: "info" | "success" | "error" }>({
+    text: "",
+    kind: "info",
+  });
+
+  useEffect(() => {
+    if (!isChannelSkillDetail) return;
+    setChEnabled(Boolean(channelCfg.enabled));
+    setChMode(
+      channelCfg.connectionMode ||
+        (detailSkillId === "feishu-bot" ? "websocket" : "polling")
+    );
+    setChTargetBotId(String(channelCfg.defaultSessionId || ""));
+    setChWhitelist(
+      Array.isArray(channelCfg.allowedSenderIds)
+        ? channelCfg.allowedSenderIds.join(", ")
+        : ""
+    );
+    setChApprovalMode(channelCfg.approvalMode || "channel_and_app");
+    setChTgToken("");
+    setChTgSecret("");
+    setChFsDomain(channelCfg.domain || "feishu");
+    setChFsAppId(String(channelCfg.appId || ""));
+    setChFsAppSecret("");
+    setChFsVerifyToken("");
+    setChFsEncryptKey("");
+    setChFeedback({ text: "", kind: "info" });
+  }, [detailSkillId, skillsView, channelCfg.updatedAt]);
   const [mcpJsonText, setMcpJsonText] = useState(() =>
     formatMcpServersJson(settings?.mcpServers, mcpServerId, hostPlatform)
   );
@@ -297,13 +351,13 @@ export function SkillsStoreModal() {
   };
 
   useEffect(() => {
-    if (skillsView === "detail" && detailSkillId && !isMcpSkill) {
+    if (skillsView === "detail" && detailSkillId && !isMcpSkill && !isChannelSkillDetail) {
       const pAccounts = getProviderAccounts(detailSkillId);
       if (pAccounts.length === 0 && !editingMailAccountId && !mailEditorOpen) {
         resetMailFormsForCreate(detailSkillId === "custom-mail" ? "custom-mail" : "qqmail");
       }
     }
-  }, [skillsView, detailSkillId, isMcpSkill]);
+  }, [skillsView, detailSkillId, isMcpSkill, isChannelSkillDetail]);
 
   const applyCustomPresetForEmail = (nextEmail: string, nextProto: "pop3" | "imap") => {
     if (editingMailAccountId || cmUserEditedHost) return;
@@ -713,12 +767,14 @@ export function SkillsStoreModal() {
 
   // Detail view mail & MCP state
   const detailProviderAccounts =
-    detailSkillId && !isMcpSkill ? getProviderAccounts(detailSkillId) : [];
+    detailSkillId && !isMcpSkill && !isChannelSkillDetail ? getProviderAccounts(detailSkillId) : [];
   const editingAccount = editingMailAccountId
     ? detailProviderAccounts.find((a: any) => a.id === editingMailAccountId) || null
     : null;
   const showMailCreateForm =
-    !isMcpSkill && ((mailEditorOpen && !editingMailAccountId) || detailProviderAccounts.length === 0);
+    !isMcpSkill &&
+    !isChannelSkillDetail &&
+    ((mailEditorOpen && !editingMailAccountId) || detailProviderAccounts.length === 0);
   const detailBackLabel = detailFrom === "manage" ? "管理已添加技能" : "技能商店";
 
   const srv = mcpStatusByServer?.[mcpServerId];
@@ -2353,7 +2409,7 @@ export function SkillsStoreModal() {
               id="mail-accounts-section"
               className="mail-accounts-section"
               aria-label="已绑定的邮箱账号"
-              hidden={isMcpSkill || showMailCreateForm}
+              hidden={isMcpSkill || isChannelSkillDetail || showMailCreateForm}
             >
               <div
                 id="mail-list-feedback-box"
@@ -2517,6 +2573,378 @@ export function SkillsStoreModal() {
 
             {(!mailEditorOpen || !editingMailAccountId) &&
               renderMailFormEditorShell(false, showMailCreateForm)}
+
+            {/* Chat Channel Skill Config Panel (Feishu / Telegram) (#13) */}
+            {isChannelSkillDetail && (
+              <section
+                id="channel-skill-config-panel"
+                className="mcp-skill-config-panel"
+                aria-label={detailSkill?.name || "对话渠道配置"}
+              >
+                <div className="mcp-status-card">
+                  <div className="mcp-status-head">
+                    <span className="mcp-status-title">
+                      {detailSkillId === "feishu-bot" ? "飞书机器人（Feishu / Lark）" : "Telegram Bot"}
+                    </span>
+                    <span
+                      id="channel-status-badge"
+                      className={`mcp-status-badge${
+                        channelRt.status === "connected" || channelRt.status === "webhook_ready"
+                          ? " is-online"
+                          : channelRt.status === "error"
+                            ? " is-offline"
+                            : ""
+                      }`}
+                    >
+                      {channelRt.status === "connected"
+                        ? t("channel.statusConnected")
+                        : channelRt.status === "webhook_ready"
+                          ? t("channel.statusReady")
+                          : channelRt.status === "error"
+                            ? channelRt.lastError || t("common.offline")
+                            : t("channel.statusStopped")}
+                    </span>
+                  </div>
+                  {channelRt.botName && (
+                    <div className="mcp-status-detail">Bot: {channelRt.botName}</div>
+                  )}
+                </div>
+
+                <form
+                  id="channel-config-form"
+                  className="mail-form"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!detailSkillId) return;
+                    setChBusy("save");
+                    setChFeedback({ text: "", kind: "info" });
+                    try {
+                      const payload =
+                        detailSkillId === "telegram-bot"
+                          ? {
+                              enabled: chEnabled,
+                              connectionMode: chMode,
+                              botToken: chTgToken.trim() || undefined,
+                              webhookSecret: chTgSecret.trim() || undefined,
+                              defaultSessionId: chTargetBotId,
+                              allowedSenderIds: chWhitelist,
+                              approvalMode: chApprovalMode,
+                            }
+                          : {
+                              enabled: chEnabled,
+                              connectionMode: chMode,
+                              domain: chFsDomain,
+                              appId: chFsAppId.trim(),
+                              appSecret: chFsAppSecret.trim() || undefined,
+                              verificationToken: chFsVerifyToken.trim() || undefined,
+                              encryptKey: chFsEncryptKey.trim() || undefined,
+                              defaultSessionId: chTargetBotId,
+                              allowedSenderIds: chWhitelist,
+                              approvalMode: chApprovalMode,
+                            };
+                      const res = await apiJson(
+                        `/api/integrations/channels/${encodeURIComponent(detailSkillId)}`,
+                        {
+                          method: "POST",
+                          body: JSON.stringify(payload),
+                        }
+                      );
+                      if (res?.settings) {
+                        setState((prev) => ({ settings: { ...prev.settings, ...res.settings } }));
+                      }
+                      setChTgToken("");
+                      setChTgSecret("");
+                      setChFsAppSecret("");
+                      setChFsVerifyToken("");
+                      setChFsEncryptKey("");
+                      setChFeedback({ text: `✓ ${t("channel.savedToast")}`, kind: "success" });
+                      showToast(t("channel.savedToast"));
+                    } catch (err: any) {
+                      setChFeedback({
+                        text: `❌ ${err?.message || "Save failed"}`,
+                        kind: "error",
+                      });
+                    } finally {
+                      setChBusy(null);
+                    }
+                  }}
+                >
+                  <label className="mail-checkbox-row">
+                    <input
+                      id="channel-enabled-toggle"
+                      type="checkbox"
+                      checked={chEnabled}
+                      onChange={(e) => setChEnabled(e.target.checked)}
+                    />
+                    <span>{t("channel.enabled")}</span>
+                  </label>
+
+                  <div className="mail-field">
+                    <label htmlFor="channel-mode-select">{t("channel.connectionMode")}</label>
+                    <select
+                      id="channel-mode-select"
+                      className="inline-text-input"
+                      value={chMode}
+                      onChange={(e) => setChMode(e.target.value)}
+                    >
+                      {detailSkillId === "telegram-bot" ? (
+                        <>
+                          <option value="polling">{t("channel.modePolling")}</option>
+                          <option value="webhook">{t("channel.modeWebhook")}</option>
+                        </>
+                      ) : (
+                        <>
+                          <option value="websocket">{t("channel.modeWebsocket")}</option>
+                          <option value="webhook">{t("channel.modeWebhook")}</option>
+                        </>
+                      )}
+                    </select>
+                    {chMode === "webhook" && (
+                      <span className="mail-field-hint">
+                        {t("channel.webhookUrlHint", {
+                          url: `${activeBaseUrl || (typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:3230")}${
+                            detailSkillId === "telegram-bot"
+                              ? "/api/channels/telegram/webhook"
+                              : "/api/channels/feishu/webhook"
+                          }`,
+                        })}
+                      </span>
+                    )}
+                  </div>
+
+                  {detailSkillId === "telegram-bot" ? (
+                    <>
+                      <div className="mail-field">
+                        <label htmlFor="channel-tg-token-input">{t("channel.telegramToken")}</label>
+                        <input
+                          id="channel-tg-token-input"
+                          type="password"
+                          className="inline-text-input"
+                          autoComplete="off"
+                          placeholder={
+                            channelCfg.hasBotToken
+                              ? t("channel.secretSavedPlaceholder")
+                              : "123456:ABC-DEF..."
+                          }
+                          value={chTgToken}
+                          onChange={(e) => setChTgToken(e.target.value)}
+                        />
+                      </div>
+                      {chMode === "webhook" && (
+                        <div className="mail-field">
+                          <label htmlFor="channel-tg-secret-input">{t("channel.telegramSecret")}</label>
+                          <input
+                            id="channel-tg-secret-input"
+                            type="password"
+                            className="inline-text-input"
+                            autoComplete="off"
+                            placeholder={
+                              channelCfg.hasWebhookSecret
+                                ? t("channel.secretSavedPlaceholder")
+                                : "X-Telegram-Bot-Api-Secret-Token"
+                            }
+                            value={chTgSecret}
+                            onChange={(e) => setChTgSecret(e.target.value)}
+                          />
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="mail-form-grid-two">
+                        <div className="mail-field">
+                          <label htmlFor="channel-fs-domain-select">{t("channel.feishuDomain")}</label>
+                          <select
+                            id="channel-fs-domain-select"
+                            className="inline-text-input"
+                            value={chFsDomain}
+                            onChange={(e) => setChFsDomain(e.target.value)}
+                          >
+                            <option value="feishu">飞书中国 (open.feishu.cn)</option>
+                            <option value="lark">Lark International (open.larksuite.com)</option>
+                          </select>
+                        </div>
+                        <div className="mail-field">
+                          <label htmlFor="channel-fs-appid-input">{t("channel.feishuAppId")}</label>
+                          <input
+                            id="channel-fs-appid-input"
+                            type="text"
+                            className="inline-text-input"
+                            placeholder="cli_a1b2c3d4..."
+                            value={chFsAppId}
+                            onChange={(e) => setChFsAppId(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="mail-field">
+                        <label htmlFor="channel-fs-secret-input">{t("channel.feishuAppSecret")}</label>
+                        <input
+                          id="channel-fs-secret-input"
+                          type="password"
+                          className="inline-text-input"
+                          autoComplete="off"
+                          placeholder={
+                            channelCfg.hasAppSecret
+                              ? t("channel.secretSavedPlaceholder")
+                              : "App Secret"
+                          }
+                          value={chFsAppSecret}
+                          onChange={(e) => setChFsAppSecret(e.target.value)}
+                        />
+                      </div>
+                      {chMode === "webhook" && (
+                        <div className="mail-form-grid-two">
+                          <div className="mail-field">
+                            <label htmlFor="channel-fs-verify-input">{t("channel.feishuVerifyToken")}</label>
+                            <input
+                              id="channel-fs-verify-input"
+                              type="password"
+                              className="inline-text-input"
+                              autoComplete="off"
+                              placeholder={
+                                channelCfg.hasVerificationToken
+                                  ? t("channel.secretSavedPlaceholder")
+                                  : "Verification Token"
+                              }
+                              value={chFsVerifyToken}
+                              onChange={(e) => setChFsVerifyToken(e.target.value)}
+                            />
+                          </div>
+                          <div className="mail-field">
+                            <label htmlFor="channel-fs-encrypt-input">{t("channel.feishuEncryptKey")}</label>
+                            <input
+                              id="channel-fs-encrypt-input"
+                              type="password"
+                              className="inline-text-input"
+                              autoComplete="off"
+                              placeholder={
+                                channelCfg.hasEncryptKey
+                                  ? t("channel.secretSavedPlaceholder")
+                                  : "Encrypt Key"
+                              }
+                              value={chFsEncryptKey}
+                              onChange={(e) => setChFsEncryptKey(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  <div className="mail-field">
+                    <label htmlFor="channel-default-session-select">{t("channel.targetBot")}</label>
+                    <select
+                      id="channel-default-session-select"
+                      className="inline-text-input"
+                      value={chTargetBotId}
+                      onChange={(e) => setChTargetBotId(e.target.value)}
+                    >
+                      <option value="">{t("channel.targetBotAdmin")}</option>
+                      {(sessions || [])
+                        .filter((s: any) => s && s.id)
+                        .map((s: any) => (
+                          <option key={s.id} value={s.id}>
+                            {s.title || s.id}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <div className="mail-field">
+                    <label htmlFor="channel-allowed-senders-input">{t("channel.whitelistLabel")}</label>
+                    <input
+                      id="channel-allowed-senders-input"
+                      type="text"
+                      className="inline-text-input"
+                      placeholder={t("channel.whitelistPlaceholder")}
+                      value={chWhitelist}
+                      onChange={(e) => setChWhitelist(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="mail-field">
+                    <label htmlFor="channel-approval-mode-select">{t("channel.approvalMode")}</label>
+                    <select
+                      id="channel-approval-mode-select"
+                      className="inline-text-input"
+                      value={chApprovalMode}
+                      onChange={(e) => setChApprovalMode(e.target.value)}
+                    >
+                      <option value="channel_and_app">{t("channel.approvalBoth")}</option>
+                      <option value="app_only">{t("channel.approvalAppOnly")}</option>
+                    </select>
+                  </div>
+
+                  <div
+                    id="channel-config-feedback"
+                    className={`mail-feedback-box${
+                      chFeedback.kind === "success"
+                        ? " is-success"
+                        : chFeedback.kind === "error"
+                          ? " is-error"
+                          : ""
+                    }`}
+                    role="status"
+                    aria-live="polite"
+                    hidden={!chFeedback.text}
+                  >
+                    <StatusText text={chFeedback.text} />
+                  </div>
+
+                  <div className="mail-form-actions">
+                    <button
+                      id="channel-test-btn"
+                      type="button"
+                      className="settings-pill-btn"
+                      disabled={Boolean(chBusy)}
+                      onClick={async () => {
+                        if (!detailSkillId) return;
+                        setChBusy("test");
+                        setChFeedback({ text: t("common.testing"), kind: "info" });
+                        try {
+                          const testBody =
+                            detailSkillId === "telegram-bot"
+                              ? { botToken: chTgToken.trim() || undefined }
+                              : {
+                                  domain: chFsDomain,
+                                  appId: chFsAppId.trim() || undefined,
+                                  appSecret: chFsAppSecret.trim() || undefined,
+                                };
+                          const res = await apiJson(
+                            `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/test`,
+                            {
+                              method: "POST",
+                              body: JSON.stringify(testBody),
+                            }
+                          );
+                          setChFeedback({
+                            text: `✓ ${res.botName || detailSkillId}`,
+                            kind: "success",
+                          });
+                        } catch (err: any) {
+                          setChFeedback({
+                            text: `❌ ${err?.message || "Test failed"}`,
+                            kind: "error",
+                          });
+                        } finally {
+                          setChBusy(null);
+                        }
+                      }}
+                    >
+                      {chBusy === "test" ? t("common.testing") : t("common.testConnection")}
+                    </button>
+                    <button
+                      id="channel-save-btn"
+                      type="submit"
+                      className="settings-blue-pill"
+                      disabled={Boolean(chBusy)}
+                    >
+                      {chBusy === "save" ? t("common.saving") : t("common.save")}
+                    </button>
+                  </div>
+                </form>
+              </section>
+            )}
 
             {/* MCP Skill Config Panel */}
             <section

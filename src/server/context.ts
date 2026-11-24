@@ -30,6 +30,7 @@ export interface ServerContext {
   model: any;
   scheduler: any;
   activeMcpManager: any;
+  channelManager?: any;
   hostBridge: any;
   updateBotComputerFn: typeof updateBotComputer;
   probeBotComputerFn: typeof probeBotComputerState;

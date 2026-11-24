@@ -111,6 +111,7 @@ export function createStore(dataDir: string) {
   const schedulesFile = path.join(rootDir, "schedules.json");
   const vaultFile = path.join(rootDir, "vault.json");
   const mailAuthFile = path.join(rootDir, "mail-auth.json");
+  const channelsAuthFile = path.join(rootDir, "channels-auth.json");
   const routeStatsFile = path.join(rootDir, "route-stats.ndjson");
 
   const customSkillsRepo = createCustomSkillsRepo(customSkillsDir, {
@@ -899,6 +900,23 @@ export function createStore(dataDir: string) {
     return clean;
   }
 
+  function readChannelsAuth(): Record<string, any> {
+    if (!fs.existsSync(channelsAuthFile)) return {};
+    const parsed = localCrypto.readEncryptedJsonFile<unknown>(channelsAuthFile, {});
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : {};
+  }
+
+  function writeChannelsAuth(nextData: unknown): Record<string, any> {
+    const clean =
+      nextData && typeof nextData === "object" && !Array.isArray(nextData)
+        ? (nextData as Record<string, any>)
+        : {};
+    localCrypto.writeEncryptedJsonFile(channelsAuthFile, clean);
+    return clean;
+  }
+
   function markInterrupted(): number {
     const sessions = listSessions();
     let count = 0;
@@ -945,6 +963,8 @@ export function createStore(dataDir: string) {
     readRouteStats,
     readMailAuth,
     writeMailAuth,
+    readChannelsAuth,
+    writeChannelsAuth,
     listCustomSkills: customSkillsRepo.listCustomSkills,
     getCustomSkill: customSkillsRepo.getCustomSkill,
     saveCustomSkill: customSkillsRepo.saveCustomSkill,

@@ -69,15 +69,17 @@ test("redactToolArgsForDisplay masks secrets", () => {
   assert.equal(redactToolArgsForDisplay("type_text", other), other);
 });
 
-test("skill_list reports platform (7 builtin + optional kimi-cu) and office categories without custom skills", async (t) => {
+test("skill_list reports platform (7 builtin + 3 optional platform skills) and office categories without custom skills", async (t) => {
   const { ctx, store } = setup(t, ["custom-mail"]);
   const r = await runBotCollabTool("skill_list", {}, ctx());
   assert.equal(r.ok, true);
-  assert.equal(r.platform.length, 8);
-  const kimiRow = r.platform.find((s: any) => s.id === "kimi-cu");
-  assert.ok(kimiRow);
-  assert.equal(kimiRow.removable, true);
-  assert.equal(kimiRow.installed, false);
+  assert.equal(r.platform.length, 10);
+  for (const optId of ["kimi-cu", "feishu-bot", "telegram-bot"]) {
+    const row = r.platform.find((s: any) => s.id === optId);
+    assert.ok(row, `missing optional platform skill ${optId}`);
+    assert.equal(row.removable, true);
+    assert.equal(row.installed, false);
+  }
   assert.deepEqual(
     r.office.map((s: any) => [s.id, s.installed]),
     [

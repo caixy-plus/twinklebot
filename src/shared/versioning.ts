@@ -13,6 +13,7 @@ export const CURRENT_API_CAPABILITIES = [
   "computer-remote-input-v1",
   "local-browser-automation-v1",
   "i18n-v1",
+  "channel-integrations-v1",
 ] as const;
 
 export const DEFAULT_GITHUB_OWNER = "caixy-plus";

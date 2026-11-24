@@ -1041,6 +1041,60 @@ test("P1 Suite 5: Skills Store, Custom SKILL.md, Multi-Account Mail (IMAP/POP3/S
       const evs = ws.store.readEvents(mcpBot.id);
       const clickResEv = evs.find((e: any) => e.type === "result" && e.name === "mcp__kimi_cu__click" && e.screenshot);
       assert.ok(clickResEv?.screenshot, "MCP image content block must be saved as step screenshot");
+
+      // 6. Chat Channels (#13): install feishu-bot & telegram-bot, verify GET/POST/test & webhook endpoints
+      assert.equal((await fetch(`${ws.baseUrl}/api/skills/feishu-bot/install`, { method: "POST" })).status, 200);
+      assert.equal((await fetch(`${ws.baseUrl}/api/skills/telegram-bot/install`, { method: "POST" })).status, 200);
+      const chList: any = await (await fetch(`${ws.baseUrl}/api/integrations/channels`)).json();
+      assert.equal(chList.ok, true);
+      assert.ok(chList.channels["feishu-bot"] && chList.channels["telegram-bot"]);
+
+      const tgSave = await fetch(`${ws.baseUrl}/api/integrations/channels/telegram-bot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: true,
+          connectionMode: "webhook",
+          botToken: "123:e2e-tok",
+          webhookSecret: "tg-sec",
+          allowedSenderIds: ["999001"],
+        }),
+      });
+      assert.equal(tgSave.status, 200);
+      const tgTestBad = await fetch(`${ws.baseUrl}/api/integrations/channels/telegram-bot/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ botToken: "" }),
+      });
+      assert.ok(tgTestBad.status === 400 || tgTestBad.status === 200);
+      const tgHookBad = await fetch(`${ws.baseUrl}/api/channels/telegram/webhook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "wrong" },
+        body: JSON.stringify({ update_id: 1 }),
+      });
+      assert.equal(tgHookBad.status, 401);
+
+      const fsSave = await fetch(`${ws.baseUrl}/api/integrations/channels/feishu-bot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: true,
+          connectionMode: "webhook",
+          appId: "cli_e2e",
+          appSecret: "sec_e2e",
+          verificationToken: "vtok_e2e",
+          allowedSenderIds: ["ou_e2e"],
+        }),
+      });
+      assert.equal(fsSave.status, 200);
+      const fsChallenge: any = await (
+        await fetch(`${ws.baseUrl}/api/channels/feishu/webhook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "url_verification", token: "vtok_e2e", challenge: "chal-123" }),
+        })
+      ).json();
+      assert.equal(fsChallenge.challenge, "chal-123");
     },
     { getChrome: () => chrome }
   );

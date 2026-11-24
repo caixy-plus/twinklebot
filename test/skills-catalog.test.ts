@@ -35,8 +35,8 @@ test("resolveInstalledSkillIds respects explicit lists including optional kimi-c
   );
 });
 
-test("catalog exposes 7 built-in platform skills + 1 optional kimi-cu platform skill and 2 office skills", () => {
-  assert.equal(PLATFORM_SKILLS.length, 8);
+test("catalog exposes 7 built-in platform skills + 3 optional platform skills (kimi-cu, feishu-bot, telegram-bot) and 2 office skills", () => {
+  assert.equal(PLATFORM_SKILLS.length, 10);
   assert.deepEqual(
     PLATFORM_SKILLS.map((s) => s.id),
     [
@@ -48,18 +48,28 @@ test("catalog exposes 7 built-in platform skills + 1 optional kimi-cu platform s
       "custom-skill-manager",
       "websearch",
       "kimi-cu",
+      "feishu-bot",
+      "telegram-bot",
     ]
   );
   assert.equal(isBuiltinPlatformSkill("custom-skill-manager"), true);
   assert.equal(isInstallableSkill("custom-skill-manager"), false);
   assert.deepEqual(OFFICE_SKILLS.map((s) => s.id), MAIL_SKILL_IDS);
-  assert.deepEqual(INSTALLABLE_SKILL_IDS, ["qqmail", "custom-mail", "kimi-cu"]);
+  assert.deepEqual(INSTALLABLE_SKILL_IDS, [
+    "qqmail",
+    "custom-mail",
+    "kimi-cu",
+    "feishu-bot",
+    "telegram-bot",
+  ]);
   assert.equal(isPlatformSkill("ai-image"), true);
   assert.equal(isBuiltinPlatformSkill("ai-image"), true);
   assert.equal(isInstallableSkill("ai-image"), false);
   assert.equal(isPlatformSkill("kimi-cu"), true);
   assert.equal(isBuiltinPlatformSkill("kimi-cu"), false);
   assert.equal(isHiddenBuiltinSkill("kimi-cu"), false);
+  assert.equal(isHiddenBuiltinSkill("feishu-bot"), false);
+  assert.equal(isHiddenBuiltinSkill("telegram-bot"), false);
   assert.equal(isHiddenBuiltinSkill("desktop-control"), true);
   assert.equal(SKILL_CATEGORIES.builtin.hidden, true);
   assert.deepEqual(
@@ -69,9 +79,11 @@ test("catalog exposes 7 built-in platform skills + 1 optional kimi-cu platform s
   assert.equal(BUILTIN_SKILLS.length, 7);
   assert.deepEqual(
     VISIBLE_PLATFORM_SKILLS.map((s) => s.id),
-    ["kimi-cu"]
+    ["kimi-cu", "feishu-bot", "telegram-bot"]
   );
   assert.equal(isInstallableSkill("kimi-cu"), true);
+  assert.equal(isInstallableSkill("feishu-bot"), true);
+  assert.equal(isInstallableSkill("telegram-bot"), true);
   assert.equal(isInstallableSkill("qqmail"), true);
   assert.equal(isInstallableSkill("bogus"), false);
 });

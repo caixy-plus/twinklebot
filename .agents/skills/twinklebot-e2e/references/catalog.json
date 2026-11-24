@@ -524,6 +524,9 @@
         "src/agent/bot-tools/declarations.ts",
         "src/server/routes/skills.ts",
         "src/server/routes/mail.ts",
+        "src/server/routes/channels.ts",
+        "src/lib/channel-integrations.ts",
+        "src/lib/channel-manager.ts",
         "src/web/components/modals/SkillsStoreModal.tsx",
         "src/web/styles/05-modals/skills-store.css"
       ],

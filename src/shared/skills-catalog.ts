@@ -107,6 +107,24 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     mcpServerId: "kimi-cu",
     toolCount: 20,
   },
+  {
+    id: "feishu-bot",
+    name: "飞书机器人",
+    desc: "将飞书（Feishu / Lark）机器人接入为对话渠道，支持 WebSocket 长连接与 Webhook 收发消息及审批确认",
+    icon: "💬",
+    category: "platform",
+    builtin: false,
+    removable: true,
+  },
+  {
+    id: "telegram-bot",
+    name: "Telegram 机器人",
+    desc: "将 Telegram Bot 接入为对话渠道，支持长轮询（免公网 IP）与 Webhook 与你的 Bot 直接收发消息",
+    icon: "✈️",
+    category: "platform",
+    builtin: false,
+    removable: true,
+  },
 ];
 
 export const BUILTIN_SKILLS: SkillMeta[] = PLATFORM_SKILLS.filter(
@@ -134,6 +152,7 @@ export const OFFICE_SKILLS: SkillMeta[] = [
 ];
 
 export const MAIL_SKILL_IDS = ["qqmail", "custom-mail"];
+export const CHANNEL_SKILL_IDS = ["feishu-bot", "telegram-bot"];
 export const OPTIONAL_PLATFORM_SKILL_IDS = PLATFORM_SKILLS.filter(
   (s) => s.builtin === false
 ).map((s) => s.id);
@@ -151,6 +170,10 @@ const INSTALLABLE_IDS = new Set(INSTALLABLE_SKILL_IDS);
 
 export function isPlatformSkill(id: unknown): boolean {
   return PLATFORM_IDS.has(String(id || ""));
+}
+
+export function isChannelSkill(id: unknown): boolean {
+  return CHANNEL_SKILL_IDS.includes(String(id || ""));
 }
 
 export function isBuiltinPlatformSkill(id: unknown): boolean {

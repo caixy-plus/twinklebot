@@ -358,6 +358,33 @@ export const ZH_CN_MESSAGES = {
   "memory.modalEditTitle": "编辑专属记忆",
   "schedule.modalCreateTitle": "新建例行任务",
   "schedule.modalEditTitle": "编辑例行任务",
+
+  // Chat Channels (Feishu / Telegram) (#13)
+  "channel.enabled": "启用此对话渠道",
+  "channel.connectionMode": "接入模式",
+  "channel.modePolling": "长轮询（Long Polling · 本机免公网开箱即用）",
+  "channel.modeWebsocket": "飞书长连接（WebSocket · 本机免公网开箱即用）",
+  "channel.modeWebhook": "Webhook 回调（适合已部署公网 HTTPS 服务）",
+  "channel.webhookUrlHint": "回调地址：{url}",
+  "channel.targetBot": "默认接入的 Bot",
+  "channel.targetBotAdmin": "默认管理员 Bot（Twinkle）",
+  "channel.whitelistLabel": "允许对话的用户 / 群 ID 白名单（必填，逗号或换行分隔）",
+  "channel.whitelistPlaceholder": "例如：123456789 或 ou_xxxx（陌生人私聊将被拦截并返回其 ID）",
+  "channel.approvalMode": "高危操作审批策略",
+  "channel.approvalBoth": "支持渠道内回复（允许 / 拒绝）+ App 同步审批",
+  "channel.approvalAppOnly": "仅限回 TwinkleBot App 审批（渠道内自动拒绝）",
+  "channel.telegramToken": "Telegram Bot Token（来自 @BotFather）",
+  "channel.telegramSecret": "Webhook Secret Token（可选）",
+  "channel.feishuDomain": "飞书区域",
+  "channel.feishuAppId": "App ID",
+  "channel.feishuAppSecret": "App Secret",
+  "channel.feishuVerifyToken": "Verification Token（Webhook 可选）",
+  "channel.feishuEncryptKey": "Encrypt Key（Webhook 加密可选）",
+  "channel.secretSavedPlaceholder": "已加密保存（留空则保持不变）",
+  "channel.statusConnected": "已连接",
+  "channel.statusReady": "Webhook 待命",
+  "channel.statusStopped": "未启用",
+  "channel.savedToast": "渠道配置已加密保存并应用",
 } as const;
 
 export type I18nKey = keyof typeof ZH_CN_MESSAGES;

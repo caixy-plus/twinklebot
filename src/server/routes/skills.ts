@@ -20,12 +20,18 @@ import {
   sendJson,
 } from "../http-utils.js";
 import {
+  CHANNEL_SKILL_IDS,
   INSTALLABLE_SKILL_IDS,
   MAIL_SKILL_IDS,
   isBuiltinPlatformSkill,
   isInstallableSkill,
 } from "../../shared/skills-catalog.js";
 import { purgeProviderAccounts } from "../../lib/mail-accounts.js";
+import {
+  normalizeChannelsAuthStore,
+  normalizeFeishuChannelConfig,
+  normalizeTelegramChannelConfig,
+} from "../../lib/channel-integrations.js";
 
 export async function handleSkillsRoutes(
   req: http.IncomingMessage,
@@ -270,6 +276,18 @@ export async function handleSkillsRoutes(
             }
             if (!isInstall && skillId === "kimi-cu") {
               await ctx.activeMcpManager?.stopServer?.("kimi-cu");
+            }
+            if (!isInstall && CHANNEL_SKILL_IDS.includes(skillId)) {
+              ctx.channelManager?.stopChannel?.(skillId);
+              if (purgeCredentials) {
+                const curCh = normalizeChannelsAuthStore(ctx.store?.readChannelsAuth?.() || {});
+                if (skillId === "telegram-bot") {
+                  curCh["telegram-bot"] = normalizeTelegramChannelConfig({});
+                } else if (skillId === "feishu-bot") {
+                  curCh["feishu-bot"] = normalizeFeishuChannelConfig({});
+                }
+                ctx.store?.writeChannelsAuth?.(curCh);
+              }
             }
             ctx.broadcastSkillsUpdated();
             return sendJson(res, 200, { ok: true, ...ctx.getMergedSettings() });

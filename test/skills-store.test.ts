@@ -72,17 +72,20 @@ function seedAccounts(store: any) {
   });
 }
 
-test("fresh install exposes catalog with both mail skills added by default and kimi-cu not added", async (t) => {
+test("fresh install exposes catalog with both mail skills added by default and optional platform skills not added", async (t) => {
   const { call } = await boot(t);
   const r = await call("GET", "/api/skills");
   assert.equal(r.status, 200);
   assert.deepEqual(r.json.installedSkills, ["qqmail", "custom-mail"]);
-  assert.equal(r.json.skillsCatalog.platform.length, 8);
+  assert.equal(r.json.skillsCatalog.platform.length, 10);
   assert.ok(r.json.skillsCatalog.platform.some((s: any) => s.id === "custom-skill-manager" && s.builtin && !s.removable));
   assert.ok(r.json.skillsCatalog.platform.some((s: any) => s.id === "websearch" && s.builtin && !s.removable));
-  const kimiSkill = r.json.skillsCatalog.platform.find((s: any) => s.id === "kimi-cu");
-  assert.equal(kimiSkill.installed, false);
-  assert.equal(kimiSkill.removable, true);
+  for (const optId of ["kimi-cu", "feishu-bot", "telegram-bot"]) {
+    const skill = r.json.skillsCatalog.platform.find((s: any) => s.id === optId);
+    assert.ok(skill, `missing optional platform skill ${optId}`);
+    assert.equal(skill.installed, false);
+    assert.equal(skill.removable, true);
+  }
   assert.deepEqual(
     r.json.skillsCatalog.office.map((s: any) => [s.id, s.installed, s.accountCount]),
     [
