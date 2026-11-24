@@ -348,6 +348,9 @@ export async function handleSessionRoutes(
             ...(Array.isArray(orig.attachments)
               ? { attachments: orig.attachments }
               : {}),
+            ...(orig.clientSource && typeof orig.clientSource === "object"
+              ? { clientSource: orig.clientSource }
+              : {}),
           };
           const cleanMeta = Object.keys(userMeta).length > 0 ? userMeta : null;
 
@@ -393,6 +396,13 @@ export async function handleSessionRoutes(
           }
 
           try {
+            const rawClientSource = body.clientSource;
+            const validDeviceKind =
+              rawClientSource &&
+              typeof rawClientSource === "object" &&
+              (rawClientSource.deviceKind === "mobile" || rawClientSource.deviceKind === "desktop")
+                ? rawClientSource.deviceKind
+                : null;
             const userMeta = {
               ...(body.replyTo && typeof body.replyTo === "object"
                 ? { replyTo: body.replyTo }
@@ -400,6 +410,16 @@ export async function handleSessionRoutes(
               ...(Array.isArray(body.quotes) ? { quotes: body.quotes } : {}),
               ...(Array.isArray(body.attachments)
                 ? { attachments: body.attachments }
+                : {}),
+              ...(validDeviceKind
+                ? {
+                    clientSource: {
+                      deviceKind: validDeviceKind,
+                      ...(rawClientSource.platform
+                        ? { platform: String(rawClientSource.platform).slice(0, 32) }
+                        : {}),
+                    },
+                  }
                 : {}),
             };
             const cleanMeta = Object.keys(userMeta).length > 0 ? userMeta : null;

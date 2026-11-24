@@ -109,7 +109,7 @@ body {
   padding-top: 0;
   padding-bottom: 0;
   --stage-header-height: calc(58px + max(8px, env(safe-area-inset-top)));
-  --mobile-live-bubble-reserve: 44px;
+  --mobile-live-bubble-reserve: 0px;
   --mobile-composer-bottom: calc(68px + var(--mobile-live-bubble-reserve) + env(safe-area-inset-bottom));
   --mobile-scroll-btn-height: 34px;
   will-change: transform;

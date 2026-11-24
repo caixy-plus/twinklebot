@@ -53,6 +53,10 @@
   object-fit: cover;
 }
 
+.attachment-chip-ext {
+  display: none;
+}
+
 .attachment-chip button {
   border: none;
   background: transparent;

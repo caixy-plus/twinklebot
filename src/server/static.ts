@@ -169,7 +169,8 @@ export function handleStaticAndNoVnc(
           proxyRes.on("end", () => {
             let htmlText = Buffer.concat(chunks).toString("utf8");
             const hideCss =
-              "<style>#noVNC_control_bar_anchor,#noVNC_control_bar,#noVNC_control_bar_handle,#noVNC_control_bar_hint,#noVNC_status,#noVNC_mobile_buttons,#top_bar{display:none!important;visibility:hidden!important;pointer-events:none!important;}</style>";
+              "<style>#noVNC_control_bar_anchor,#noVNC_control_bar,#noVNC_control_bar_handle,#noVNC_control_bar_hint,#noVNC_status,#noVNC_mobile_buttons,#top_bar{display:none!important;visibility:hidden!important;pointer-events:none!important;}</style>" +
+              `<script>(function(){window.addEventListener("message",function(e){if(e.origin!==window.location.origin)return;var d=e.data;if(d&&d.type==="twinklebot:focus_keyboard"){var el=document.getElementById("noVNC_keyboardinput");if(el){try{el.focus({preventScroll:true});}catch(_){try{el.focus();}catch(__){}}}}});})();</script>`;
             htmlText = htmlText.includes("</head>")
               ? htmlText.replace("</head>", `${hideCss}</head>`)
               : `${hideCss}${htmlText}`;

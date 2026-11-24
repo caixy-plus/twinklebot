@@ -759,6 +759,35 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       const updRes = await fetch(`${ws.baseUrl}/api/computer/update`, { method: "POST" });
       assert.ok([200, 400, 500].includes(updRes.status), `Expected handled status on /api/computer/update, got ${updRes.status}`);
 
+      // POST /api/computer/input (#12 / PI-005): validates input & forwards text/key to executor
+      const emptyInputRes = await fetch(`${ws.baseUrl}/api/computer/input`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assert.equal(emptyInputRes.status, 400);
+      const badKeyRes = await fetch(`${ws.baseUrl}/api/computer/input`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "rm -rf /" }),
+      });
+      assert.equal(badKeyRes.status, 400);
+      const okTypeRes = await fetch(`${ws.baseUrl}/api/computer/input`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "你好 TwinkleBot" }),
+      });
+      assert.equal(okTypeRes.status, 200);
+      const okTypeJson: any = await okTypeRes.json();
+      assert.equal(okTypeJson.ok, true);
+      assert.equal(okTypeJson.mode, "type");
+      const okKeyRes = await fetch(`${ws.baseUrl}/api/computer/input`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "Return" }),
+      });
+      assert.equal(okKeyRes.status, 200);
+
       // Verify Settings -> Computer tab health check & reset button UI
       await chrome!.navigate(ws.baseUrl);
       await chrome!.waitFor(`document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`, 8000);

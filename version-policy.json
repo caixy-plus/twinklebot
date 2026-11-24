@@ -32,7 +32,8 @@
       "ota-v1",
       "multi-display-v1",
       "vault-secret-v1",
-      "memory-suggest-v1"
+      "memory-suggest-v1",
+      "computer-remote-input-v1"
     ]
   }
 }

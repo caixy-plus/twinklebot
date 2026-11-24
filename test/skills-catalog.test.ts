@@ -2,13 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  SKILL_CATEGORIES,
+  VISIBLE_SKILL_CATEGORIES,
   PLATFORM_SKILLS,
+  BUILTIN_SKILLS,
+  VISIBLE_PLATFORM_SKILLS,
   OFFICE_SKILLS,
   MAIL_SKILL_IDS,
   INSTALLABLE_SKILL_IDS,
   DEFAULT_INSTALLED_SKILLS,
   isPlatformSkill,
   isBuiltinPlatformSkill,
+  isHiddenBuiltinSkill,
   isInstallableSkill,
   resolveInstalledSkillIds,
   inferMailServerPreset,
@@ -54,6 +59,18 @@ test("catalog exposes 7 built-in platform skills + 1 optional kimi-cu platform s
   assert.equal(isInstallableSkill("ai-image"), false);
   assert.equal(isPlatformSkill("kimi-cu"), true);
   assert.equal(isBuiltinPlatformSkill("kimi-cu"), false);
+  assert.equal(isHiddenBuiltinSkill("kimi-cu"), false);
+  assert.equal(isHiddenBuiltinSkill("desktop-control"), true);
+  assert.equal(SKILL_CATEGORIES.builtin.hidden, true);
+  assert.deepEqual(
+    VISIBLE_SKILL_CATEGORIES.map((c) => c.id),
+    ["office", "platform"]
+  );
+  assert.equal(BUILTIN_SKILLS.length, 7);
+  assert.deepEqual(
+    VISIBLE_PLATFORM_SKILLS.map((s) => s.id),
+    ["kimi-cu"]
+  );
   assert.equal(isInstallableSkill("kimi-cu"), true);
   assert.equal(isInstallableSkill("qqmail"), true);
   assert.equal(isInstallableSkill("bogus"), false);

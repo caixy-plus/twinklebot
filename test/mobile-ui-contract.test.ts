@@ -317,7 +317,7 @@ test("Desktop popover/inspector rows & mobile custom-skills/settings layouts pre
   // 5. Mobile .event-stream pads below floating stage header and above floating composer using --mobile-composer-bottom
   assert.match(
     mobileCss,
-    /\.event-stream\s*\{[^}]*padding:\s*calc\(var\(--stage-header-height\)\s*\+\s*10px\)\s+14px\s+calc\(var\(--mobile-composer-bottom\)\s*\+\s*12px\)\s*!important/s
+    /\.event-stream\s*\{[^}]*padding:\s*calc\(var\(--stage-header-height\)\s*\+\s*10px\)\s+14px\s+calc\(var\(--mobile-composer-bottom\)\s*\+\s*10px\)\s*!important/s
   );
   assert.equal(/\.event-stream\s*\{[^}]*padding:[^;]*--mobile-composer-bottom/s.test(mobileCss), true);
 });

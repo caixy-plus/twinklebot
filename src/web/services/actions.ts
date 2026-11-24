@@ -1204,10 +1204,21 @@ export async function sendUserMessage(rawText?: string) {
       }));
     }
 
+    const isMobClient = isMobileViewport() || isMobileAppTarget();
+    const clientSource = isMobClient
+      ? { deviceKind: "mobile" as const, platform: getMobilePlatform() || "mobile" }
+      : {
+          deviceKind: "desktop" as const,
+          platform:
+            (typeof window !== "undefined" ? (window as any)?.twinklebotDesktop?.platform : "") ||
+            "web",
+        };
+
     const msgRes = await apiJson(`/api/sessions/${activeSid}/messages`, {
       method: "POST",
       body: JSON.stringify({
         text,
+        clientSource,
         ...(stagedReplyTarget ? { replyTo: stagedReplyTarget } : {}),
         ...(stagedQuotes.length > 0 ? { quotes: stagedQuotes } : {}),
         ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),

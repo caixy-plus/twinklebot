@@ -563,9 +563,12 @@ export function SkillsStoreModal() {
       .includes(q);
   };
 
-  // Store counts
+  // Store counts — hide non-configurable built-in skills (`category === "builtin"` / `removable === false`, #14)
+  const visiblePlatform = catalog.platform.filter(
+    (s: any) => s && s.category !== "builtin" && s.removable !== false
+  );
   const installedOffice = catalog.office.filter((s: any) => s.installed);
-  const installedPlatform = catalog.platform.filter((s: any) => s.installed !== false);
+  const installedPlatform = visiblePlatform.filter((s: any) => s.installed);
   const totalAdded = installedOffice.length + installedPlatform.length;
   const searchTrim = skillSearch.trim();
   const filteredOffice =
@@ -574,7 +577,7 @@ export function SkillsStoreModal() {
       : [];
   const filteredPlatform =
     skillFilter === "all" || skillFilter === "platform"
-      ? catalog.platform.filter((s: any) => skillMatchesSearch(s, searchTrim))
+      ? visiblePlatform.filter((s: any) => skillMatchesSearch(s, searchTrim))
       : [];
 
   // Custom Skills calculations
@@ -728,9 +731,8 @@ export function SkillsStoreModal() {
 
   const removableInstalled = [
     ...catalog.office.filter((x: any) => x.installed),
-    ...catalog.platform.filter((x: any) => x.removable && x.installed),
+    ...visiblePlatform.filter((x: any) => x.removable && x.installed),
   ];
-  const builtinPlatform = catalog.platform.filter((x: any) => !x.removable);
 
   const renderCustomSkillEditorForm = (inline: boolean, visible: boolean) => (
     <form
@@ -2256,19 +2258,6 @@ export function SkillsStoreModal() {
                         onDone={() => setState({ pendingRemoveSkillId: null })}
                       />
                     )}
-                  </div>
-                ))}
-
-                {builtinPlatform.map((s: any) => (
-                  <div key={s.id} className="skill-row">
-                    <div className="skill-row-icon" aria-hidden="true">
-                      <SkillIconGraphic skillId={s.id} rawIcon={s.icon} />
-                    </div>
-                    <div className="skill-row-info">
-                      <div className="skill-row-name">{s.name}</div>
-                      <div className="skill-row-desc">{s.toolCount} 项工具</div>
-                    </div>
-                    <span className="skill-builtin-tag">内置常驻</span>
                   </div>
                 ))}
               </div>

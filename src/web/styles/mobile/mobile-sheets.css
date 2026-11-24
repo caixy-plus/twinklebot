@@ -238,6 +238,62 @@
   margin-top: auto;
 }
 
+.mobile-about-hero-row {
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+}
+
+.mobile-about-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border-hairline);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.mobile-about-avatar svg,
+.mobile-about-avatar img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+}
+
+.mobile-about-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mobile-about-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mobile-about-ver-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.08));
+  color: var(--text-secondary);
+}
+
+.mobile-about-guide {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  opacity: 0.84;
+  line-height: 1.35;
+}
+
 .mobile-card-row {
   width: 100%;
   border: none;

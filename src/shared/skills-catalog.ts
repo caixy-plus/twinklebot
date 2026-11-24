@@ -8,7 +8,7 @@ export interface SkillMeta {
   name: string;
   desc: string;
   icon: string;
-  category: "office" | "platform";
+  category: "office" | "platform" | "builtin";
   builtin?: boolean;
   removable?: boolean;
   mcpServerId?: string;
@@ -16,9 +16,14 @@ export interface SkillMeta {
 }
 
 export const SKILL_CATEGORIES = {
-  office: { id: "office", label: "办公" },
-  platform: { id: "platform", label: "平台技能" },
+  office: { id: "office", label: "办公", hidden: false },
+  platform: { id: "platform", label: "平台技能", hidden: false },
+  builtin: { id: "builtin", label: "内置", hidden: true },
 } as const;
+
+export const VISIBLE_SKILL_CATEGORIES = Object.values(SKILL_CATEGORIES).filter(
+  (c) => !c.hidden
+);
 
 export const PLATFORM_SKILLS: SkillMeta[] = [
   {
@@ -26,7 +31,7 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     name: "电脑桌面操控",
     desc: "截屏、点击、拖拽、键鼠输入与窗口和浏览器操作",
     icon: "🖥️",
-    category: "platform",
+    category: "builtin",
     builtin: true,
     removable: false,
     toolCount: 10,
@@ -36,7 +41,7 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     name: "终端与文件读写",
     desc: "在沙盒与授权目录内执行命令、读写工作区文件",
     icon: "⌨️",
-    category: "platform",
+    category: "builtin",
     builtin: true,
     removable: false,
     toolCount: 3,
@@ -46,7 +51,7 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     name: "AI 图像生成与重绘",
     desc: "优先调用生图模型，未配置或不可用时自动降级为大模型编写 SVG（支持按需转格式接口 /api/images/convert）",
     icon: "🎨",
-    category: "platform",
+    category: "builtin",
     builtin: true,
     removable: false,
     toolCount: 1,
@@ -56,7 +61,7 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     name: "多 Bot 派生与群聊协作",
     desc: "创建专职子 Bot、跨 Bot 委派与群聊协同",
     icon: "🤝",
-    category: "platform",
+    category: "builtin",
     builtin: true,
     removable: false,
     toolCount: 4,
@@ -66,7 +71,7 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     name: "交互提问与安全审批",
     desc: "多选提问卡、草稿审核卡与加密凭据输入卡",
     icon: "🛡️",
-    category: "platform",
+    category: "builtin",
     builtin: true,
     removable: false,
     toolCount: 3,
@@ -76,7 +81,7 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     name: "自定义技能与记忆管理",
     desc: "支持 Bot 自动判断沉淀可复用工作流（SKILL.md）或记忆，全 Bot 共享与按需读取",
     icon: "🧩",
-    category: "platform",
+    category: "builtin",
     builtin: true,
     removable: false,
     toolCount: 2,
@@ -86,7 +91,7 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     name: "联网搜索与网页读取",
     desc: "实时全网检索（web_search）与网页正文抓取（web_fetch），无需打开浏览器即可查证最新资讯",
     icon: "🌐",
-    category: "platform",
+    category: "builtin",
     builtin: true,
     removable: false,
     toolCount: 2,
@@ -103,6 +108,13 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     toolCount: 20,
   },
 ];
+
+export const BUILTIN_SKILLS: SkillMeta[] = PLATFORM_SKILLS.filter(
+  (s) => s.category === "builtin"
+);
+export const VISIBLE_PLATFORM_SKILLS: SkillMeta[] = PLATFORM_SKILLS.filter(
+  (s) => s.category !== "builtin"
+);
 
 export const OFFICE_SKILLS: SkillMeta[] = [
   {
@@ -143,6 +155,16 @@ export function isPlatformSkill(id: unknown): boolean {
 
 export function isBuiltinPlatformSkill(id: unknown): boolean {
   return BUILTIN_PLATFORM_IDS.has(String(id || ""));
+}
+
+export function isHiddenBuiltinSkill(skillOrId: unknown): boolean {
+  if (skillOrId && typeof skillOrId === "object") {
+    const obj = skillOrId as { id?: unknown; category?: unknown; removable?: unknown };
+    if (obj.category === "builtin") return true;
+    if (obj.removable === false) return true;
+    return BUILTIN_PLATFORM_IDS.has(String(obj.id || ""));
+  }
+  return BUILTIN_PLATFORM_IDS.has(String(skillOrId || ""));
 }
 
 export function isInstallableSkill(id: unknown): boolean {

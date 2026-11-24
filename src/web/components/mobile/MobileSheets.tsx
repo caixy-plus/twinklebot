@@ -32,7 +32,7 @@ import {
   setState,
   useStore,
 } from "../../state/store.js";
-import { MascotSvg } from "../common/AvatarView.js";
+import { AvatarNode, MascotSvg } from "../common/AvatarView.js";
 import { StatusText, UiIcon } from "../common/Icon.js";
 import {
   BotMemoriesList,
@@ -44,6 +44,7 @@ export function MobileSheets() {
   const mobileSheets = useStore((s) => s.mobileSheets);
   const mobileBotEditor = useStore((s) => s.mobileBotEditor);
   const activeSession = useStore((s) => getActiveSessionFromState(s));
+  const sessions = useStore((s) => s.sessions);
   const primarySessionId = useStore((s) => s.primarySessionId);
   const computerStatus = useStore((s) => s.computerStatus);
   const config = useStore((s) => s.config);
@@ -773,47 +774,64 @@ export function MobileSheets() {
           </div>
 
           <div className="mobile-grouped-card mobile-settings-about-card">
-            <button
-              id="mobile-settings-about-row"
-              type="button"
-              className="mobile-card-row"
-              onClick={() => {
-                setState({ mobileReturnToSettingsSheet: true });
-                closeSettings();
-                openSettingsModal("updates");
-              }}
-            >
-              <div>
-                <div className="mobile-card-row-title">
-                  关于与更新检测
-                  {hasVisibleUpdate && (
-                    <span className="settings-nav-update-dot" aria-label="有可用更新" />
-                  )}
-                </div>
-                <div className="mobile-card-row-sub" id="mobile-settings-about-sub">
-                  {hasVisibleUpdate
-                    ? updateDecision?.status === "ota-available"
-                      ? "发现 GitHub 纯前端热更新，点击一键生效"
-                      : "发现客户端新版本，点击查看详情"
-                    : updateState?.connectedNodeStatus?.nodeOutdated
-                      ? `所连服务端 v${updateState.connectedNodeStatus.nodeVersion}（GitHub 最新 v${updateState.connectedNodeStatus.latestBackendVersion}）`
-                      : `TwinkleBot v${updateState?.localMeta?.nativeVersion || "1.0.0"} · ${
-                          updateState?.localMeta?.activeWebBuild || "检查版本与热更新"
-                        }`}
-                </div>
-              </div>
-              <span className="menu-chevron" aria-hidden="true">
-                <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
-                  <path
-                    d="M7.8 5.2L12.6 10L7.8 14.8"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-            </button>
+            {(() => {
+              const mainBot =
+                sessions.find((item: any) => item?.isAdmin) ||
+                sessions.find((item: any) => item?.id === primarySessionId) ||
+                sessions[0] ||
+                null;
+              const mainBotAvatar = resolveBotAvatar(mainBot, primarySessionId);
+              const nativeVer = updateState?.localMeta?.nativeVersion || "1.0.4";
+              const guidanceText = hasVisibleUpdate
+                ? updateDecision?.status === "ota-available"
+                  ? "发现新热更新，点击一键生效"
+                  : "发现新版本，点击查看更新详情"
+                : "查看版本信息、检查更新与系统关于";
+              return (
+                <button
+                  id="mobile-settings-about-row"
+                  type="button"
+                  className="mobile-card-row mobile-about-hero-row"
+                  onClick={() => {
+                    setState({ mobileReturnToSettingsSheet: true });
+                    closeSettings();
+                    openSettingsModal("updates");
+                  }}
+                >
+                  <div className="mobile-about-avatar" id="mobile-about-bot-avatar" aria-hidden="true">
+                    <AvatarNode avatar={mainBotAvatar} />
+                  </div>
+                  <div className="mobile-about-body">
+                    <div className="mobile-card-row-title mobile-about-title-row">
+                      <span>关于 TwinkleBot</span>
+                      <span className="mobile-about-ver-pill">v{nativeVer}</span>
+                      {hasVisibleUpdate && (
+                        <span className="settings-nav-update-dot" aria-label="有可用更新" />
+                      )}
+                    </div>
+                    <div className="mobile-about-guide">{guidanceText}</div>
+                    <div className="mobile-card-row-sub" id="mobile-settings-about-sub">
+                      {updateState?.connectedNodeStatus?.nodeOutdated
+                        ? `所连服务端 v${updateState.connectedNodeStatus.nodeVersion}（GitHub 最新 v${updateState.connectedNodeStatus.latestBackendVersion}）`
+                        : `TwinkleBot v${nativeVer} · ${
+                            updateState?.localMeta?.activeWebBuild || "已是最新版本"
+                          }`}
+                    </div>
+                  </div>
+                  <span className="menu-chevron" aria-hidden="true">
+                    <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
+                      <path
+                        d="M7.8 5.2L12.6 10L7.8 14.8"
+                        stroke="currentColor"
+                        strokeWidth="1.75"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </span>
+                </button>
+              );
+            })()}
           </div>
         </div>
       </div>

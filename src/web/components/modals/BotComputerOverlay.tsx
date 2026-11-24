@@ -1,8 +1,10 @@
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { resolveBotAvatar } from "../../avatars.js";
 import {
   closeBotScreenOverlay,
   refreshComputerDisplays,
   setNovncMode,
+  showToast,
   stopCurrentSessionTask,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
@@ -45,6 +47,20 @@ export function BotComputerOverlay() {
     : [];
 
   const multiDisplayEnabled = hasConnectedNodeCapability("multi-display-v1", { diagnostics });
+  const remoteInputSupported = hasConnectedNodeCapability("computer-remote-input-v1", {
+    diagnostics,
+  });
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [remoteInputText, setRemoteInputText] = useState("");
+  const [sendingRemoteInput, setSendingRemoteInput] = useState(false);
+  const remoteInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!screenOverlayOpen) {
+      setKeyboardOpen(false);
+      setRemoteInputText("");
+    }
+  }, [screenOverlayOpen]);
   const activeSpeakerId = activeSessionId
     ? groupActiveSpeakerBySession?.[activeSessionId] || ""
     : "";
@@ -91,6 +107,72 @@ export function BotComputerOverlay() {
         )
       : "about:blank";
   const isRunning = isSessionCurrentlyBusy(sessionStatus);
+
+  const ensureTakeoverForKeyboard = () => {
+    if (!viewOnly) return;
+    setNovncMode(false);
+    void apiJson("/api/control", {
+      method: "POST",
+      body: JSON.stringify({ action: "pause", sessionId: activeSessionId }),
+    }).catch(() => {});
+  };
+
+  const handleToggleKeyboard = () => {
+    ensureTakeoverForKeyboard();
+    if (!remoteInputSupported) {
+      const frame = document.getElementById("novnc-frame") as HTMLIFrameElement | null;
+      try {
+        frame?.contentWindow?.postMessage(
+          { type: "twinklebot:focus_keyboard" },
+          window.location.origin
+        );
+      } catch {}
+      return;
+    }
+    const nextOpen = !keyboardOpen;
+    setKeyboardOpen(nextOpen);
+    if (nextOpen) {
+      requestAnimationFrame(() => {
+        remoteInputRef.current?.focus();
+      });
+    } else {
+      remoteInputRef.current?.blur();
+    }
+  };
+
+  const sendRemotePayload = async (payload: {
+    text?: string;
+    key?: string;
+    pressEnter?: boolean;
+  }) => {
+    if (sendingRemoteInput) return;
+    setSendingRemoteInput(true);
+    try {
+      await apiJson("/api/computer/input", {
+        method: "POST",
+        body: JSON.stringify({
+          ...payload,
+          sessionId: activeSessionId || undefined,
+          botId: targetDisplayBotId || undefined,
+        }),
+      });
+      if (payload.text) {
+        setRemoteInputText("");
+      }
+      remoteInputRef.current?.focus();
+    } catch (err: any) {
+      showToast(`发送输入失败：${err?.message || "连接异常"}`);
+    } finally {
+      setSendingRemoteInput(false);
+    }
+  };
+
+  const handleRemoteInputSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const val = remoteInputText;
+    if (!val) return;
+    void sendRemotePayload({ text: val, pressEnter: false });
+  };
 
   return (
     <section
@@ -286,6 +368,90 @@ export function BotComputerOverlay() {
           </button>
         </div>
       </div>
+
+      {keyboardOpen && remoteInputSupported && (
+        <form
+          id="screen-remote-input-bar"
+          className="screen-remote-input-bar"
+          onSubmit={handleRemoteInputSubmit}
+        >
+          <input
+            ref={remoteInputRef}
+            id="screen-remote-input"
+            type="text"
+            className="screen-remote-input"
+            placeholder="输入文字发送到 Bot 电脑…"
+            value={remoteInputText}
+            onChange={(e) => setRemoteInputText(e.target.value)}
+            autoComplete="off"
+            autoCapitalize="off"
+          />
+          <button
+            type="submit"
+            id="screen-remote-send-btn"
+            className="screen-remote-action-btn is-primary"
+            disabled={sendingRemoteInput || !remoteInputText}
+          >
+            发送
+          </button>
+          <button
+            type="button"
+            id="screen-remote-enter-btn"
+            className="screen-remote-action-btn"
+            disabled={sendingRemoteInput}
+            onClick={() => void sendRemotePayload({ key: "Return" })}
+          >
+            回车
+          </button>
+          <button
+            type="button"
+            id="screen-remote-backspace-btn"
+            className="screen-remote-action-btn"
+            disabled={sendingRemoteInput}
+            onClick={() => void sendRemotePayload({ key: "BackSpace" })}
+          >
+            退格
+          </button>
+          <button
+            type="button"
+            id="screen-remote-close-btn"
+            className="screen-remote-action-btn"
+            onClick={() => {
+              setKeyboardOpen(false);
+              remoteInputRef.current?.blur();
+            }}
+          >
+            收起
+          </button>
+        </form>
+      )}
+
+      <button
+        id="screen-keyboard-btn"
+        type="button"
+        className={`screen-keyboard-btn${keyboardOpen ? " is-active" : ""}`}
+        title={keyboardOpen ? "收起远程键盘输入" : "弹出键盘向 Bot 电脑输入"}
+        aria-label={keyboardOpen ? "收起远程键盘输入" : "弹出键盘向 Bot 电脑输入"}
+        onClick={handleToggleKeyboard}
+      >
+        <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <rect
+            x="2.2"
+            y="4.5"
+            width="15.6"
+            height="11"
+            rx="2.4"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M5.2 8H6.6M8.6 8H10M12 8H13.4M15.2 8H15.4M5.2 10.6H6.6M8.6 10.6H10M12 10.6H14.8M6.6 13H13.4"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
     </section>
   );
 }

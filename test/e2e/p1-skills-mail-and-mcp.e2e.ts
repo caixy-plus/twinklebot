@@ -121,10 +121,11 @@ test("P1 Suite 5: Skills Store, Custom SKILL.md, Multi-Account Mail (IMAP/POP3/S
       await chrome!.waitFor(`document.querySelector('#skills-store-sections')?.textContent?.includes('QQ 邮箱')`);
       await chrome!.click(`[data-skill-filter="platform"]`);
       await chrome!.waitFor(`document.querySelector('#skills-store-sections')?.textContent?.includes('KimiCU')`);
+      // Issue #14: Non-configurable built-in platform skills belong to hidden "builtin" category and must stay hidden from user UI
       const hasBuiltinTag = await chrome!.evalJs<boolean>(
-        `Array.from(document.querySelectorAll('#skills-store-sections .skill-builtin-tag')).some(el => el.textContent?.includes('内置'))`
+        `Array.from(document.querySelectorAll('#skills-store-sections .skill-builtin-tag')).length > 0`
       );
-      assert.equal(hasBuiltinTag, true, "Built-in platform skills must display .skill-builtin-tag");
+      assert.equal(hasBuiltinTag, false, "Hidden built-in skills must NOT be shown in Skills Store UI (#14)");
 
       await chrome!.click(`[data-skill-filter="all"]`);
       await chrome!.fill("#skills-search-input", "通用邮箱");
@@ -139,9 +140,9 @@ test("P1 Suite 5: Skills Store, Custom SKILL.md, Multi-Account Mail (IMAP/POP3/S
       await chrome!.click("#open-installed-plugins-btn");
       await chrome!.waitFor(`!document.querySelector('#skills-manage-view')?.hidden`, 4000);
       const hasPermanentTag = await chrome!.evalJs<boolean>(
-        `Array.from(document.querySelectorAll('#installed-plugins-grid .skill-builtin-tag')).some(el => el.textContent?.includes('内置常驻'))`
+        `Array.from(document.querySelectorAll('#installed-plugins-grid .skill-builtin-tag')).length > 0`
       );
-      assert.equal(hasPermanentTag, true, "Manage view must label built-in skills as 内置常驻");
+      assert.equal(hasPermanentTag, false, "Manage view must hide non-configurable built-in skills (#14)");
       await chrome!.click("#back-to-apps-btn");
       await chrome!.waitFor(`!document.querySelector('#skills-store-view')?.hidden`, 4000);
 

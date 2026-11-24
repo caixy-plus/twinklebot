@@ -241,6 +241,19 @@ export function createRunner({
     if (Array.isArray(userMeta?.attachments) && userMeta.attachments.length > 0) {
       cleanMeta.attachments = userMeta.attachments.slice(0, 10);
     }
+    if (
+      userMeta?.clientSource &&
+      typeof userMeta.clientSource === "object" &&
+      (userMeta.clientSource.deviceKind === "mobile" ||
+        userMeta.clientSource.deviceKind === "desktop")
+    ) {
+      cleanMeta.clientSource = {
+        deviceKind: userMeta.clientSource.deviceKind,
+        ...(userMeta.clientSource.platform
+          ? { platform: String(userMeta.clientSource.platform).slice(0, 32) }
+          : {}),
+      };
+    }
     return cleanMeta;
   }
 

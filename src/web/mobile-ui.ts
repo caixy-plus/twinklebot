@@ -21,7 +21,7 @@ export function isMobileViewport() {
   );
 }
 
-const MOBILE_LIVE_BUBBLE_RESERVE = 44;
+const MOBILE_LIVE_BUBBLE_GAP = 10;
 
 export function syncMobileChatBottomMetrics() {
   if (typeof document === "undefined") return;
@@ -29,8 +29,20 @@ export function syncMobileChatBottomMetrics() {
   if (!chatStage) return;
   if (!isMobileViewport()) {
     chatStage.style.removeProperty("--mobile-composer-bottom");
+    chatStage.style.removeProperty("--mobile-live-bubble-reserve");
     chatStage.style.removeProperty("--mobile-scroll-btn-height");
     return;
+  }
+  const liveBubble = el("live-working-bubble");
+  const liveBubbleVisible = Boolean(
+    liveBubble && !liveBubble.hidden && liveBubble.offsetHeight > 0
+  );
+  const liveReserve = liveBubbleVisible
+    ? Math.ceil(liveBubble!.offsetHeight) + MOBILE_LIVE_BUBBLE_GAP
+    : 0;
+  const nextLiveReserve = `${liveReserve}px`;
+  if (chatStage.style.getPropertyValue("--mobile-live-bubble-reserve") !== nextLiveReserve) {
+    chatStage.style.setProperty("--mobile-live-bubble-reserve", nextLiveReserve);
   }
   const composerWrap = el("composer-wrap");
   if (composerWrap && chatStage.clientHeight > 0 && composerWrap.offsetHeight > 0) {
@@ -38,7 +50,7 @@ export function syncMobileChatBottomMetrics() {
       composerWrap.offsetHeight,
       Math.round(chatStage.clientHeight - composerWrap.offsetTop)
     );
-    const nextComposerBottom = `${baseComposerBottom + MOBILE_LIVE_BUBBLE_RESERVE}px`;
+    const nextComposerBottom = `${baseComposerBottom + liveReserve}px`;
     if (chatStage.style.getPropertyValue("--mobile-composer-bottom") !== nextComposerBottom) {
       chatStage.style.setProperty("--mobile-composer-bottom", nextComposerBottom);
     }

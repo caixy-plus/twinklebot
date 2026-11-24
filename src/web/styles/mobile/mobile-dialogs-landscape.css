@@ -435,9 +435,20 @@
 }
 
 
-/* Bot Computer Desktop Overlay: portrait compact + landscape widescreen desktop mode */
+/* Bot Computer Desktop Overlay: portrait top-aligned (#12) + landscape widescreen desktop mode */
 .bot-screen-overlay {
-  padding: max(12px, env(safe-area-inset-top)) 10px max(14px, env(safe-area-inset-bottom));
+  justify-content: flex-start;
+  padding: calc(max(12px, env(safe-area-inset-top)) + 44px) 10px max(14px, env(safe-area-inset-bottom));
+}
+
+.bot-screen-overlay:not([data-landscape-desktop="true"]) .screen-stage-outer {
+  flex: 0 0 auto;
+  align-items: flex-start;
+  margin-top: 4px;
+}
+
+.bot-screen-overlay:not([data-landscape-desktop="true"]) .screen-bottom-pill-wrap {
+  margin-top: 14px;
 }
 
 .screen-exit-btn {
@@ -448,13 +459,21 @@
 .screen-stage-frame {
   width: 100% !important;
   height: auto;
-  max-height: calc(100dvh - 140px);
+  max-height: calc(100dvh - 180px);
   border-radius: 14px;
 }
 
 .bot-screen-overlay[data-landscape-desktop="true"] {
+  justify-content: center;
   padding: max(4px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   background: #000000;
+}
+
+.bot-screen-overlay[data-landscape-desktop="true"] .screen-keyboard-btn {
+  bottom: max(10px, env(safe-area-inset-bottom));
+  right: max(14px, env(safe-area-inset-right));
+  width: 40px;
+  height: 40px;
 }
 
 .bot-screen-overlay[data-landscape-desktop="true"] .screen-stage-outer {

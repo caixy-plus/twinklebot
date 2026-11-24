@@ -43,7 +43,7 @@
 | **P0** | `P0-CHAT-04` | `F1×D1` | `test/e2e/p0-onboarding-and-chat.e2e.ts` | Stop Detector / Control | 显式停止按钮 + 自然语言停止词('停下'/'stop')中止 vs 正常指令('stop nginx')区分 |
 | **P0** | `P0-RELOAD-01` | `F1×D1` | `test/e2e/p0-onboarding-and-chat.e2e.ts` | Session Persistence / Reload Recovery | F5 整页刷新后挂起审批态(awaiting_approval)无损恢复并继续完成任务 |
 | **P0** | `P0-CHAT-05` | `F1×D2` | `test/e2e/p0-onboarding-and-chat.e2e.ts` | Agent Loop / Max Steps Continue | 单轮最大步数上限暂停(.max-steps-card)、尾步提醒、历史封口与点击「继续执行」无缝接续 |
-| **P0** | `P0-CRYPTO-01` | `F1×D1` | `test/e2e/p0-onboarding-and-chat.e2e.ts` | Local Crypto & Capabilities | 本地 AES-256-GCM 静态加密落盘、明文自动迁移、篡改容错与 7 项 backend apiCapabilities 宣告 |
+| **P0** | `P0-CRYPTO-01` | `F1×D1` | `test/e2e/p0-onboarding-and-chat.e2e.ts` | Local Crypto & Capabilities | 本地 AES-256-GCM 静态加密落盘、明文自动迁移、篡改容错与 8 项 backend apiCapabilities 宣告 |
 | **P0** | `P0-SEC-01` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Policy / Static Guard | 硬编码安全禁区强制拦截：.ssh / .env / *auth*.json / accounts / vault / .aws / .gnupg / devices.json / Keychain dump |
 | **P0** | `P0-SEC-02` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Interactive Approval | ApprovalCard 审批闭环：单次允许、暂不允许与 Escape 快捷键拒绝 |
 | **P0** | `P0-SEC-03` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Policy AllowRules | ApprovalCard 始终允许持久化 allowRules 与 risk=high 不可绕过保护 |

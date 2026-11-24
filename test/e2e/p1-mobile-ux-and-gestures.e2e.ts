@@ -331,6 +331,24 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
       );
       ws.mockLlm.setHandler(undefined);
 
+      // PI-004: Mobile sent user message displays mobile source tag (`手机端`)
+      const mobSourceTag = await tab.evalJs<string>(
+        `document.querySelector('.msg-source-tag[data-client-source="mobile"]')?.textContent?.trim() || ''`
+      );
+      assert.equal(mobSourceTag, "手机端", "Mobile-sent message must display 手机端 source badge (PI-004)");
+
+      // Issue #10: When idle (no #live-working-bubble), --mobile-live-bubble-reserve must be 0px
+      const idleLiveReserve = await tab.evalJs<string>(
+        `getComputedStyle(document.querySelector('.chat-stage')).getPropertyValue('--mobile-live-bubble-reserve').trim()`
+      );
+      assert.equal(idleLiveReserve, "0px", "Idle mobile chat must not reserve dead 44px for hidden thinking bubble (#10)");
+
+      // Issue #12 / PI-005: Bot Computer Overlay mounts bottom-right remote keyboard button
+      const hasScreenKbBtn = await tab.evalJs<boolean>(
+        `Boolean(document.querySelector('#screen-keyboard-btn'))`
+      );
+      assert.equal(hasScreenKbBtn, true, "BotComputerOverlay must expose #screen-keyboard-btn (#12 / PI-005)");
+
       // 4. Open #mobile-inspector-btn ("...") -> #mobile-more-popover shows inspector / clear / delete
       await tab.click("#mobile-inspector-btn");
       await tab.waitFor(`!document.querySelector('#mobile-more-popover')?.hidden`, 4000);
@@ -361,9 +379,17 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
       await tab.navigate(mobSrv.origin);
       await tab.waitFor(`document.querySelector('#app-shell')?.dataset?.mobileView === 'list'`, 10_000);
 
-      // 1. Mobile Settings Sheet -> drill into all 6 Settings panes (standalone-pane) & close back to Settings Sheet!
+      // 1. Mobile Settings Sheet -> verify redesigned About hero entry (#15: main Bot avatar + guide + version)
       await tab.click("#mobile-settings-btn");
       await tab.waitFor(`!document.querySelector('#mobile-settings-sheet')?.hidden`, 5000);
+      const aboutCheck = await tab.evalJs<{ hasAvatar: boolean; hasVerPill: boolean; hasGuide: boolean }>(`({
+        hasAvatar: Boolean(document.querySelector('#mobile-settings-about-row #mobile-about-bot-avatar svg, #mobile-settings-about-row #mobile-about-bot-avatar img')),
+        hasVerPill: Boolean(document.querySelector('#mobile-settings-about-row .mobile-about-ver-pill')?.textContent?.includes('v')),
+        hasGuide: Boolean(document.querySelector('#mobile-settings-about-row .mobile-about-guide')?.textContent?.trim()),
+      })`);
+      assert.equal(aboutCheck.hasAvatar, true, "Mobile About entry must render main Bot avatar (#15)");
+      assert.equal(aboutCheck.hasVerPill, true, "Mobile About entry must render version pill (#15)");
+      assert.equal(aboutCheck.hasGuide, true, "Mobile About entry must render guidance text (#15)");
 
       for (const rowId of [
         "#mobile-settings-more-row",

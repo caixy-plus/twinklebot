@@ -55,6 +55,7 @@ export type StreamItem =
       botAvatar?: any;
       replyTo?: { seq?: number | null; author?: string; botId?: string | null; snippet?: string } | null;
       quotes?: string[];
+      clientSource?: { deviceKind: "mobile" | "desktop"; platform?: string } | null;
       interim?: boolean;
     }
   | {
@@ -1024,6 +1025,12 @@ export function reduceSessionEvent(
           isUser: true,
           replyTo: evt.replyTo || null,
           quotes: Array.isArray(evt.quotes) ? evt.quotes : undefined,
+          clientSource:
+            evt.clientSource &&
+            typeof evt.clientSource === "object" &&
+            (evt.clientSource.deviceKind === "mobile" || evt.clientSource.deviceKind === "desktop")
+              ? evt.clientSource
+              : null,
         },
       ];
       if (!replay) autoScrollPinned = true;

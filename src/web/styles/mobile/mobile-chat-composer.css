@@ -90,21 +90,21 @@
 }
 
 .event-stream {
-  padding: calc(var(--stage-header-height) + 10px) 14px calc(var(--mobile-composer-bottom) + 12px) !important;
+  padding: calc(var(--stage-header-height) + 10px) 14px calc(var(--mobile-composer-bottom) + 10px) !important;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   overflow-x: hidden;
   scroll-padding-top: calc(var(--stage-header-height) + 10px);
-  scroll-padding-bottom: calc(var(--mobile-composer-bottom) + 12px);
+  scroll-padding-bottom: calc(var(--mobile-composer-bottom) + 10px);
   gap: 10px;
 }
 
-.confirm-card,
-.error-card,
-.choice-card,
-.draft-card,
-.credential-card {
-  max-width: 100% !important;
+.event-stream .confirm-card,
+.event-stream .error-card,
+.event-stream .choice-card,
+.event-stream .draft-card,
+.event-stream .credential-card {
+  max-width: 100%;
   width: 100%;
   min-width: 0;
   max-height: min(62dvh, 460px);
@@ -114,12 +114,7 @@
 }
 
 .event-stream::after {
-  content: "";
-  display: block;
-  width: 100%;
-  height: 18px;
-  flex: 0 0 18px;
-  pointer-events: none;
+  content: none;
 }
 
 .scroll-bottom-btn,
@@ -247,10 +242,68 @@
 .composer-wrap > .live-activity-row {
   position: absolute;
   left: 14px;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 10px);
   max-width: calc(100% - 28px);
   margin: 0;
   z-index: 29;
+}
+
+/* Compact mobile attachment chips without filename (#16) */
+.composer-attachments-bar {
+  gap: 8px;
+  margin-bottom: 6px;
+  padding-top: 4px;
+}
+
+.attachment-chip {
+  position: relative;
+  padding: 2px;
+  gap: 0;
+  border-radius: 10px;
+}
+
+.attachment-chip-name {
+  display: none;
+}
+
+.attachment-chip img {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: block;
+}
+
+.attachment-chip.is-file {
+  width: 38px;
+  height: 38px;
+  justify-content: center;
+}
+
+.attachment-chip-ext {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
+.attachment-chip .attachment-chip-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--bg-stage, #1c1c1e);
+  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.2));
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .composer-pill {

@@ -20,10 +20,10 @@ import {
 } from "../src/agent/bot-tools.js";
 import { buildSystemInstruction } from "../src/agent/prompt.js";
 
-test("websearch is registered as a built-in platform skill in skills catalog", () => {
+test("websearch is registered as a hidden built-in skill in skills catalog", () => {
   const entry = PLATFORM_SKILLS.find((s) => s.id === "websearch");
   assert.ok(entry);
-  assert.equal(entry.category, "platform");
+  assert.equal(entry.category, "builtin");
   assert.equal(entry.builtin, true);
   assert.equal(entry.removable, false);
   assert.equal(entry.toolCount, 2);

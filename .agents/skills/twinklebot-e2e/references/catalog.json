@@ -138,7 +138,7 @@
           "priority": "P0",
           "featureTier": "F1",
           "difficulty": "D1",
-          "title": "本地 AES-256-GCM 静态加密落盘、明文自动迁移、篡改容错与 7 项 backend apiCapabilities 宣告",
+          "title": "本地 AES-256-GCM 静态加密落盘、明文自动迁移、篡改容错与 8 项 backend apiCapabilities 宣告",
           "module": "Local Crypto & Capabilities"
         }
       ]

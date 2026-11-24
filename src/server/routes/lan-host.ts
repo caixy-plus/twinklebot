@@ -488,5 +488,77 @@ export async function handleLanHostRoutes(
             status,
           });
         }
+
+        // POST /api/computer/input (Mobile/touch remote keyboard text & special key input -> executor /type or /key)
+        if (method === "POST" && pathname === "/api/computer/input") {
+          let body: any;
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            return sendJson(res, 400, { error: "invalid json" });
+          }
+          const text = typeof body?.text === "string" ? body.text : "";
+          const key = typeof body?.key === "string" ? body.key.trim() : "";
+          const pressEnter = Boolean(body?.pressEnter);
+          const botId = String(body?.botId || body?.sessionId || "").trim();
+          const SAFE_KEYS = new Set([
+            "Return",
+            "BackSpace",
+            "Escape",
+            "Tab",
+            "space",
+            "Left",
+            "Right",
+            "Up",
+            "Down",
+            "Delete",
+            "Home",
+            "End",
+            "ctrl+a",
+            "ctrl+c",
+            "ctrl+v",
+            "ctrl+z",
+          ]);
+          if (!text && !key) {
+            return sendJson(res, 400, { error: "text or key is required" });
+          }
+          if (text.length > 2000) {
+            return sendJson(res, 400, { error: "text exceeds 2000 characters" });
+          }
+          if (key && !SAFE_KEYS.has(key)) {
+            return sendJson(res, 400, { error: `unsupported key: ${key}` });
+          }
+          if (!ctx.executor?.call) {
+            return sendJson(res, 503, { ok: false, error: "executor unavailable" });
+          }
+          try {
+            if (text) {
+              await ctx.executor.call(
+                "/type",
+                {
+                  text,
+                  ...(pressEnter ? { press_enter: true } : {}),
+                  ...(botId ? { bot_id: botId } : {}),
+                },
+                { timeoutMs: 8000 }
+              );
+              return sendJson(res, 200, { ok: true, mode: "type", length: text.length });
+            }
+            await ctx.executor.call(
+              "/key",
+              {
+                key,
+                ...(botId ? { bot_id: botId } : {}),
+              },
+              { timeoutMs: 5000 }
+            );
+            return sendJson(res, 200, { ok: true, mode: "key", key });
+          } catch (err: any) {
+            return sendJson(res, 502, {
+              ok: false,
+              error: err?.message || "远程输入失败",
+            });
+          }
+        }
   return false;
 }

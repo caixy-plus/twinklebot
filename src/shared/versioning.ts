@@ -10,6 +10,7 @@ export const CURRENT_API_CAPABILITIES = [
   "multi-display-v1",
   "vault-secret-v1",
   "memory-suggest-v1",
+  "computer-remote-input-v1",
 ] as const;
 
 export const DEFAULT_GITHUB_OWNER = "caixy-plus";

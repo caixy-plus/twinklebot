@@ -339,6 +339,20 @@ export function MessageGroup({
           );
         })}
       </div>
+
+      {isUser && item.clientSource?.deviceKind && (
+        <div
+          className="msg-source-tag"
+          data-client-source={item.clientSource.deviceKind}
+          title={
+            item.clientSource.deviceKind === "mobile"
+              ? `来自手机端${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
+              : `来自电脑端${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
+          }
+        >
+          {item.clientSource.deviceKind === "mobile" ? "手机端" : "电脑端"}
+        </div>
+      )}
     </div>
   );
 }

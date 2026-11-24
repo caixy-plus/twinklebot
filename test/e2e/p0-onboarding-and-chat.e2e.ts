@@ -804,7 +804,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       priority: "P0",
       featureTier: "F1",
       difficulty: "D1",
-      title: "本地 AES-256-GCM 静态加密落盘、明文自动迁移、篡改容错与 7 项 backend apiCapabilities 宣告",
+      title: "本地 AES-256-GCM 静态加密落盘、明文自动迁移、篡改容错与 8 项 backend apiCapabilities 宣告",
       module: "Local Crypto & Capabilities",
     },
     async ({ setEvidence }) => {
@@ -842,7 +842,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
         const fallback = cryptoInst.readEncryptedJsonFile(tamperFile, [{ ok: "fallback" }]);
         assert.deepEqual(fallback, [{ ok: "fallback" }], "Tampered ciphertext must return fallback safely");
 
-        // 3. Verify GET /api/system/diagnostics advertises all 7 current backend apiCapabilities
+        // 3. Verify GET /api/system/diagnostics advertises all 8 current backend apiCapabilities
         const diag: any = await (await fetch(`${ws.baseUrl}/api/system/diagnostics`)).json();
         const caps: string[] = diag?.apiCapabilities || [];
         for (const expectedCap of [
@@ -853,6 +853,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
           "multi-display-v1",
           "vault-secret-v1",
           "memory-suggest-v1",
+          "computer-remote-input-v1",
         ]) {
           assert.ok(caps.includes(expectedCap), `Diagnostics must advertise capability '${expectedCap}', got ${caps.join(",")}`);
         }

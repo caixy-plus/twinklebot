@@ -8,7 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type RefObject,
 } from "react";
-import { isMobileViewport } from "../../mobile-ui.js";
+import { isMobileViewport, syncMobileChatBottomMetrics } from "../../mobile-ui.js";
 import {
   closeAllPopovers,
   sendUserMessage,
@@ -170,6 +170,15 @@ export function Composer({
     e.preventDefault();
     sendUserMessage(composerText);
   };
+
+  useEffect(() => {
+    syncMobileChatBottomMetrics();
+    if (typeof requestAnimationFrame === "function") {
+      const raf = requestAnimationFrame(() => syncMobileChatBottomMetrics());
+      return () => cancelAnimationFrame(raf);
+    }
+    return undefined;
+  }, [busy, liveThinkingSummary, pendingAttachments.length, pendingQuotes.length, queuedCount]);
 
   const showQueueBanner = queuedCount > 0 && busy;
   const waitHint =
@@ -339,23 +348,38 @@ export function Composer({
             className="composer-attachments-bar"
             hidden={!hasAtts}
           >
-            {pendingAttachments.map((att: any, idx: number) => (
-              <div key={`${att.url || att.name}-${idx}`} className="attachment-chip">
-                {att.isMedia && <img src={apiUrl(att.url)} alt={att.name} />}
-                <span>{att.name}</span>
-                <button
-                  type="button"
-                  aria-label={`移除附件 ${att.name}`}
-                  onClick={() =>
-                    setState((prev) => ({
-                      pendingAttachments: prev.pendingAttachments.filter((_, i) => i !== idx),
-                    }))
-                  }
+            {pendingAttachments.map((att: any, idx: number) => {
+              const extMatch = String(att.name || "").match(/\.([a-zA-Z0-9]{1,5})$/);
+              const fileExt = extMatch ? extMatch[1].toUpperCase() : "FILE";
+              return (
+                <div
+                  key={`${att.url || att.name}-${idx}`}
+                  className={`attachment-chip${att.isMedia ? " is-media" : " is-file"}`}
+                  title={att.name}
                 >
-                  <UiIcon name="x" size={12} />
-                </button>
-              </div>
-            ))}
+                  {att.isMedia ? (
+                    <img src={apiUrl(att.url)} alt={att.name} />
+                  ) : (
+                    <span className="attachment-chip-ext" aria-hidden="true">
+                      {fileExt}
+                    </span>
+                  )}
+                  <span className="attachment-chip-name">{att.name}</span>
+                  <button
+                    type="button"
+                    className="attachment-chip-remove"
+                    aria-label={`移除附件 ${att.name}`}
+                    onClick={() =>
+                      setState((prev) => ({
+                        pendingAttachments: prev.pendingAttachments.filter((_, i) => i !== idx),
+                      }))
+                    }
+                  >
+                    <UiIcon name="x" size={11} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
 
