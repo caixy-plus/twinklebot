@@ -37,6 +37,10 @@ import {
   VALID_BROWSER_AUTOMATION_MODES,
   normalizeBrowserAutomationSettings,
 } from "../../shared/browser-automation.js";
+import {
+  isExplicitLanguagePreference,
+  normalizeLanguagePreference,
+} from "../../shared/i18n.js";
 import { normalizeContextCompressionSettings } from "../../shared/context-compression.js";
 import { normalizeScreenPoolSettings } from "../../shared/screen-pool.js";
 
@@ -357,6 +361,7 @@ export async function handleSettingsProvidersRoutes(
 
           // Preserve backward-compatible validation when `model` is passed or when body has no recognized keys
           const hasExtendedKeys = [
+            "language",
             "theme",
             "accentMode",
             "spellcheckEnabled",
@@ -386,6 +391,12 @@ export async function handleSettingsProvidersRoutes(
 
           const patch: Record<string, any> = {};
           if (typeof body.model === "string") patch.model = body.model;
+          if ("language" in body) {
+            if (!isExplicitLanguagePreference(body.language)) {
+              return sendJson(res, 400, { error: "invalid language (expected system | zh-CN | en)" });
+            }
+            patch.language = normalizeLanguagePreference(body.language);
+          }
           if (typeof body.theme === "string") patch.theme = body.theme;
           if (typeof body.accentMode === "string") patch.accentMode = body.accentMode;
           if (typeof body.spellcheckEnabled === "boolean") {

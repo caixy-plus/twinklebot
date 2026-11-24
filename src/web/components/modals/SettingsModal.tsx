@@ -24,6 +24,7 @@ import {
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
+  applyLanguagePreference,
   applyThemePreference,
   bindScrollEndTracking,
   buildOptimisticUsagePayload,
@@ -69,6 +70,7 @@ import {
 } from "../../state/helpers.js";
 import { getState, setState, useStore } from "../../state/store.js";
 import { isRemoteAccountOffline } from "../../services/network-monitor.js";
+import { useI18n } from "../../services/i18n.js";
 import { StatusText, UiIcon } from "../common/Icon.js";
 import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
 import { TraceEventsList } from "../common/SharedPanels.js";
@@ -958,6 +960,16 @@ export function SettingsModal() {
   const localBrowserSupported = hasConnectedNodeCapability("local-browser-automation-v1", {
     diagnostics,
   });
+  const { language: currentLanguage, locale: currentLocale, t } = useI18n();
+  const settingsTabLabels: Record<string, string> = {
+    general: t("settings.tabGeneral"),
+    models: t("settings.tabModels"),
+    computer: t("settings.tabComputer"),
+    permissions: t("settings.tabPermissions"),
+    vault: t("settings.tabVault"),
+    usage: t("settings.tabUsage"),
+    updates: t("settings.tabUpdates"),
+  };
   const browserAutomationCfg = normalizeBrowserAutomationSettings(settings?.browserAutomation);
   const [browserPortDraft, setBrowserPortDraft] = useState<string>(
     String(browserAutomationCfg.debugPort)
@@ -2242,7 +2254,7 @@ export function SettingsModal() {
                   <span className="settings-nav-icon" aria-hidden="true">
                     <UiIcon name={iconName} />
                   </span>
-                  <span>{label}</span>
+                  <span>{settingsTabLabels[tabKey] || label}</span>
                   {tabKey === "updates" && hasVisibleUpdate && (
                     <span className="settings-nav-update-dot" aria-label="有可用更新" />
                   )}
@@ -2277,7 +2289,7 @@ export function SettingsModal() {
             data-settings-pane="general"
             hidden={activeTab !== "general"}
           >
-            <h2 className="settings-pane-title">通用</h2>
+            <h2 className="settings-pane-title">{t("settings.tabGeneral")}</h2>
 
             <fieldset
               className="remote-offline-fieldset"
@@ -2366,29 +2378,47 @@ export function SettingsModal() {
             </div>
             </fieldset>
 
-            <div className="settings-group-label">外观</div>
+            <div className="settings-group-label">{t("settings.generalGroupAppearance")}</div>
             <div className="settings-card">
               <div className="settings-item-row">
-                <span className="settings-row-title">主题</span>
+                <div>
+                  <div className="settings-row-title">{t("lang.label")}</div>
+                  <div className="settings-row-sub">{t("lang.desc")}</div>
+                </div>
                 <select
-                  id="setting-theme-select"
+                  id="setting-language-select"
                   className="settings-select"
-                  aria-label="主题"
-                  value={settings?.theme || "system"}
-                  onChange={(e) => applyThemePreference(e.target.value, true)}
+                  aria-label={t("lang.label")}
+                  value={currentLanguage}
+                  onChange={(e) => applyLanguagePreference(e.target.value, true)}
                 >
-                  <option value="system">跟随系统</option>
-                  <option value="light">浅色</option>
-                  <option value="dark">深色</option>
+                  <option value="system">{t("lang.system")}</option>
+                  <option value="zh-CN">{t("lang.zhCN")}</option>
+                  <option value="en">{t("lang.en")}</option>
                 </select>
               </div>
               <div className="settings-divider" />
               <div className="settings-item-row">
-                <span className="settings-row-title">强调色</span>
+                <span className="settings-row-title">{t("theme.label")}</span>
+                <select
+                  id="setting-theme-select"
+                  className="settings-select"
+                  aria-label={t("theme.label")}
+                  value={settings?.theme || "system"}
+                  onChange={(e) => applyThemePreference(e.target.value, true)}
+                >
+                  <option value="system">{t("theme.system")}</option>
+                  <option value="light">{t("theme.light")}</option>
+                  <option value="dark">{t("theme.dark")}</option>
+                </select>
+              </div>
+              <div className="settings-divider" />
+              <div className="settings-item-row">
+                <span className="settings-row-title">{t("accent.label")}</span>
                 <select
                   id="setting-accent-mode"
                   className="settings-select"
-                  aria-label="强调色"
+                  aria-label={t("accent.label")}
                   value={settings?.accentMode || "bot"}
                   onChange={async (e) => {
                     const accentMode = e.target.value;
@@ -2399,8 +2429,8 @@ export function SettingsModal() {
                     await commitSettingsPatch({ accentMode }, { silentError: true });
                   }}
                 >
-                  <option value="bot">Bot 颜色</option>
-                  <option value="default">默认</option>
+                  <option value="bot">{t("accent.bot")}</option>
+                  <option value="default">{t("accent.custom")}</option>
                 </select>
               </div>
               <div className="settings-divider" />
@@ -3173,21 +3203,21 @@ export function SettingsModal() {
               data-remote-offline-guard="computer"
               disabled={remoteAccountOffline}
             >
-            <h2 className="settings-pane-title">电脑</h2>
+            <h2 className="settings-pane-title">{t("settings.tabComputer")}</h2>
 
-            <div className="settings-group-label">你的电脑</div>
+            <div className="settings-group-label">{t("settings.computerYourPc")}</div>
             <div className="settings-card">
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">在这台电脑上执行</div>
+                  <div className="settings-row-title">{t("settings.computerHostExecTitle")}</div>
                   <div className="settings-row-sub">
-                    允许 TwinkleBot 在你的电脑上打开文件并运行任务，自动审核仍会先检查所有操作：选「始终允许」时查文件、编辑普通文件、重命名移动与常规命令直接执行，仅删除、提权、改敏感配置或高危外发操作需要确认。
+                    {t("settings.computerHostExecDesc")}
                   </div>
                 </div>
                 <select
                   id="host-exec-mode-select"
                   className="settings-select"
-                  aria-label="在这台电脑上执行"
+                  aria-label={t("settings.computerHostExecTitle")}
                   value={hostExecMode}
                   onChange={async (e) => {
                     const executionMode = e.target.value;
@@ -3200,26 +3230,31 @@ export function SettingsModal() {
                     }
                   }}
                 >
-                  <option value="always">始终允许</option>
-                  <option value="ask">每次询问</option>
-                  <option value="off">从不允许</option>
+                  <option value="always">{t("settings.computerExecAlways")}</option>
+                  <option value="ask">{t("settings.computerExecAsk")}</option>
+                  <option value="off">{t("settings.computerExecOff")}</option>
                 </select>
               </div>
             </div>
 
             {localBrowserSupported && (
               <>
-                <div className="settings-group-label">浏览器自动化引擎</div>
+                <div className="settings-group-label">{t("browser.sectionTitle")}</div>
                 <div className="settings-card" id="browser-automation-settings-card">
                   <div className="settings-item-row">
                     <div>
-                      <div className="settings-row-title">默认浏览器执行模式</div>
+                      <div className="settings-row-title">{t("browser.defaultModeTitle")}</div>
                       <div className="settings-row-sub">
                         {browserAutomationCfg.mode === "local_headless"
-                          ? "使用本机 Chrome Headless 原生渲染，显著降低 CPU 占用；每次使用临时洁净 Profile，不含历史登录态与 Cookie，亦不在 Bot 电脑画面中显示。"
+                          ? t("browser.descLocalHeadless")
                           : browserAutomationCfg.mode === "local_debug"
-                            ? `通过本机 CDP 端口（${browserAutomationCfg.debugPort}）连接独立调试 Profile（${computerStatus?.localBrowser?.profileDir || "data/chrome-debug-profile"}），省 CPU 且可保留该调试窗口内登录态，绝不读取个人主 Chrome 数据。`
-                            : "默认在 Bot 电脑（Ubuntu）Chrome 中执行，天然共享历史登录态与 Cookie，并支持通过「Bot 的电脑」画面可视化接管；也可在单个 Bot 详情页单独覆盖。"}
+                            ? t("browser.descLocalDebug", {
+                                port: browserAutomationCfg.debugPort,
+                                profileDir:
+                                  computerStatus?.localBrowser?.profileDir ||
+                                  "data/chrome-debug-profile",
+                              })
+                            : t("browser.descBotComputer")}
                       </div>
                       {computerStatus?.localBrowser && (
                         <div
@@ -3228,23 +3263,22 @@ export function SettingsModal() {
                           style={{ marginTop: "4px" }}
                         >
                           {computerStatus.localBrowser.available
-                            ? `本机 Chrome 已就绪${
-                                computerStatus.localBrowser.executablePath
-                                  ? `：${computerStatus.localBrowser.executablePath}`
-                                  : ""
-                              }${
-                                computerStatus.localBrowser.debugReachable
-                                  ? ` · CDP :${computerStatus.localBrowser.debugPort} 在线`
-                                  : ""
-                              }`
-                            : "未自动检测到本机 Chrome，可选择切回 Bot 电脑或在下方填写可执行文件路径。"}
+                            ? t("browser.detectedReady", {
+                                path: computerStatus.localBrowser.executablePath
+                                  ? ` (${computerStatus.localBrowser.executablePath})`
+                                  : "",
+                                cdp: computerStatus.localBrowser.debugReachable
+                                  ? ` · CDP :${computerStatus.localBrowser.debugPort}`
+                                  : "",
+                              })
+                            : t("browser.detectedMissing")}
                         </div>
                       )}
                     </div>
                     <select
                       id="browser-automation-mode-select"
                       className="settings-select"
-                      aria-label="默认浏览器执行模式"
+                      aria-label={t("browser.defaultModeTitle")}
                       value={browserAutomationCfg.mode}
                       onChange={async (e) => {
                         const mode = e.target.value;
@@ -3255,15 +3289,15 @@ export function SettingsModal() {
                               mode,
                             },
                           });
-                          showToast("已更新浏览器自动化模式");
+                          showToast(t("browser.modeUpdatedToast"));
                         } catch (err: any) {
-                          showToast(`保存浏览器模式失败：${err?.message || "请求异常"}`);
+                          showToast(`${err?.message || "Error"}`);
                         }
                       }}
                     >
-                      <option value="bot_computer">Bot 电脑 Chrome（默认 · 保留登录态）</option>
-                      <option value="local_headless">本机 Chrome Headless（省 CPU · 无登录态）</option>
-                      <option value="local_debug">本机 Chrome Debug（独立调试 Profile）</option>
+                      <option value="bot_computer">{t("browser.modeBotComputer")}</option>
+                      <option value="local_headless">{t("browser.modeLocalHeadless")}</option>
+                      <option value="local_debug">{t("browser.modeLocalDebug")}</option>
                     </select>
                   </div>
 
@@ -3273,7 +3307,7 @@ export function SettingsModal() {
                       <div className="settings-item-row" style={{ alignItems: "flex-end", gap: "10px" }}>
                         {browserAutomationCfg.mode === "local_debug" && (
                           <label style={{ display: "flex", flexDirection: "column", gap: "4px", width: "130px" }}>
-                            <span className="settings-row-sub">CDP 调试端口</span>
+                            <span className="settings-row-sub">{t("browser.debugPortLabel")}</span>
                             <input
                               id="browser-automation-debug-port"
                               type="number"
@@ -3286,12 +3320,12 @@ export function SettingsModal() {
                           </label>
                         )}
                         <label style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1, minWidth: 0 }}>
-                          <span className="settings-row-sub">本机 Chrome 路径（留空自动检测）</span>
+                          <span className="settings-row-sub">{t("browser.execPathLabel")}</span>
                           <input
                             id="browser-automation-exec-path"
                             type="text"
                             className="inline-text-input"
-                            placeholder="留空自动检测系统安装的 Google Chrome / Chromium"
+                            placeholder={t("browser.execPathPlaceholder")}
                             value={browserExecDraft}
                             onChange={(e) => setBrowserExecDraft(e.target.value)}
                           />
@@ -3311,14 +3345,14 @@ export function SettingsModal() {
                                 },
                               });
                               setBrowserPortDraft(String(nextPort));
-                              showToast("本机 Chrome 配置已保存");
+                              showToast(t("browser.configSavedToast"));
                               void refreshComputerStatus();
                             } catch (err: any) {
-                              showToast(`保存失败：${err?.message || "请求异常"}`);
+                              showToast(`${err?.message || "Error"}`);
                             }
                           }}
                         >
-                          保存
+                          {t("common.save")}
                         </button>
                       </div>
                     </>

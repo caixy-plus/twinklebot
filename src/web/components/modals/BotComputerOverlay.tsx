@@ -9,6 +9,7 @@ import {
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
 import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
+import { useI18n } from "../../services/i18n.js";
 import {
   buildNovncSrc,
   isSessionCurrentlyBusy,
@@ -54,6 +55,7 @@ export function BotComputerOverlay() {
   const [remoteInputText, setRemoteInputText] = useState("");
   const [sendingRemoteInput, setSendingRemoteInput] = useState(false);
   const remoteInputRef = useRef<HTMLInputElement | null>(null);
+  const { t } = useI18n();
 
   useEffect(() => {
     if (!screenOverlayOpen) {
@@ -189,8 +191,8 @@ export function BotComputerOverlay() {
         id="exit-fullscreen-btn"
         type="button"
         className="screen-exit-btn"
-        title="退出全屏"
-        aria-label="退出全屏"
+        title={t("computer.exitBtn")}
+        aria-label={t("computer.exitBtn")}
         onClick={closeBotScreenOverlay}
       >
         <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">

@@ -842,7 +842,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
         const fallback = cryptoInst.readEncryptedJsonFile(tamperFile, [{ ok: "fallback" }]);
         assert.deepEqual(fallback, [{ ok: "fallback" }], "Tampered ciphertext must return fallback safely");
 
-        // 3. Verify GET /api/system/diagnostics advertises all 9 current backend apiCapabilities
+        // 3. Verify GET /api/system/diagnostics advertises all 10 current backend apiCapabilities
         const diag: any = await (await fetch(`${ws.baseUrl}/api/system/diagnostics`)).json();
         const caps: string[] = diag?.apiCapabilities || [];
         for (const expectedCap of [
@@ -855,6 +855,7 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
           "memory-suggest-v1",
           "computer-remote-input-v1",
           "local-browser-automation-v1",
+          "i18n-v1",
         ]) {
           assert.ok(caps.includes(expectedCap), `Diagnostics must advertise capability '${expectedCap}', got ${caps.join(",")}`);
         }

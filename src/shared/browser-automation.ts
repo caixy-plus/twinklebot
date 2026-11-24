@@ -104,8 +104,21 @@ export function resolveEffectiveBrowserMode(
 }
 
 export function formatBrowserAutomationModeLabel(
-  mode: BrowserAutomationMode | BotBrowserModeOverride
+  mode: BrowserAutomationMode | BotBrowserModeOverride,
+  locale: "zh-CN" | "en" = "zh-CN"
 ): string {
+  if (locale === "en") {
+    switch (mode) {
+      case "local_headless":
+        return "Local Chrome Headless";
+      case "local_debug":
+        return "Local Chrome Debug";
+      case "bot_computer":
+        return "Bot's Computer Chrome";
+      default:
+        return "Follow Global";
+    }
+  }
   switch (mode) {
     case "local_headless":
       return "本机 Chrome Headless";

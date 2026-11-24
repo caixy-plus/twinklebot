@@ -7,6 +7,7 @@ import {
   showToast,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import {
   formatClockTime,
   isImeConfirmEnter,
@@ -60,6 +61,7 @@ export function MessageGroup({
   const [editText, setEditText] = useState(item.text || "");
   const [editSubmitting, setEditSubmitting] = useState(false);
   const editTaRef = useRef<HTMLTextAreaElement | null>(null);
+  const { t } = useI18n();
 
   const isUser = item.isUser;
   const isGroup = activeSession?.type === "group";
@@ -346,11 +348,11 @@ export function MessageGroup({
           data-client-source={item.clientSource.deviceKind}
           title={
             item.clientSource.deviceKind === "mobile"
-              ? `来自手机端${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
-              : `来自电脑端${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
+              ? `${t("source.mobile")}${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
+              : `${t("source.desktop")}${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
           }
         >
-          {item.clientSource.deviceKind === "mobile" ? "手机端" : "电脑端"}
+          {item.clientSource.deviceKind === "mobile" ? t("source.mobile") : t("source.desktop")}
         </div>
       )}
     </div>

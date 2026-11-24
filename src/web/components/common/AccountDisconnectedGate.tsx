@@ -15,6 +15,7 @@ import {
   shouldShowAccountDisconnectedGate,
 } from "../../services/network-monitor.js";
 import { getState, setState, useStore } from "../../state/store.js";
+import { useI18n } from "../../services/i18n.js";
 import { UiIcon } from "./Icon.js";
 
 type GateSubPanel = "none" | "add-cloud" | "lan-pair";
@@ -30,6 +31,7 @@ export function AccountDisconnectedGate() {
   const mobilePairModalOpen = useStore((s) => s.mobilePairModalOpen);
   const pendingPairingDevice = useStore((s) => s.pendingPairingDevice);
   const mobilePairFeedback = useStore((s) => s.mobilePairFeedback);
+  const { t } = useI18n();
 
   const gateSnapshot = {
     accountsState,
@@ -221,11 +223,11 @@ export function AccountDisconnectedGate() {
   );
 
   const titleText = networkHealth.browserOffline
-    ? "当前无网络连接"
-    : "账号已失去连接";
+    ? t("gate.titleOffline")
+    : t("gate.titleLost");
   const descText = networkHealth.browserOffline
-    ? `当前设备处于离线状态，无法访问「${accMeta.label}」。恢复网络后可刷新当前账号，或直接切换至其他可用账号。`
-    : `无法连接至「${accMeta.label}」。在连接恢复前，当前工作台已暂停交互；你可以刷新当前账号或切换至其他账号。`;
+    ? t("gate.descOffline", { label: accMeta.label })
+    : t("gate.descLost", { label: accMeta.label });
 
   return (
     <dialog

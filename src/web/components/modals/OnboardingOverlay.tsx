@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import {
+  applyLanguagePreference,
   refreshSettingsFromServer,
   showToast,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import { PROVIDER_PRESETS_UI } from "../../state/constants.js";
 import { parseModelsCsv } from "../../state/helpers.js";
 import { useStore } from "../../state/store.js";
@@ -20,6 +22,7 @@ export function OnboardingOverlay() {
   const required = useStore((s) => Boolean(s.settings?.onboardingRequired));
   const gcpVertexActive = useStore((s) => Boolean(s.settings?.gcpVertexActive));
   const blockedVertexReason = useStore((s) => String(s.settings?.blockedVertexReason || ""));
+  const { language: currentLanguage, t } = useI18n();
 
   const [type, setType] = useState("gemini");
   const [name, setName] = useState("Google Gemini");
@@ -144,15 +147,35 @@ export function OnboardingOverlay() {
     >
       <div className="onboarding-card">
         <div className="onboarding-header">
-          <div className="onboarding-badge">TwinkleBot</div>
-          <h1 className="onboarding-title">接入你的第一个大模型供应商</h1>
-          <p className="onboarding-sub">
-            支持 Google Gemini、OpenAI、DeepSeek 及任意 OpenAI 兼容接口；密钥仅保存在本地或你的私有云端服务端。
-          </p>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "12px",
+              width: "100%",
+            }}
+          >
+            <div className="onboarding-badge">TwinkleBot</div>
+            <select
+              id="onboarding-language-select"
+              className="settings-select"
+              aria-label={t("lang.label")}
+              value={currentLanguage}
+              onChange={(e) => applyLanguagePreference(e.target.value, true)}
+              style={{ width: "auto", minWidth: "110px" }}
+            >
+              <option value="system">{t("lang.system")}</option>
+              <option value="zh-CN">{t("lang.zhCN")}</option>
+              <option value="en">{t("lang.en")}</option>
+            </select>
+          </div>
+          <h1 className="onboarding-title">{t("onboarding.welcomeTitle")}</h1>
+          <p className="onboarding-sub">{t("onboarding.welcomeSub")}</p>
         </div>
 
         <div className="onboarding-field">
-          <span>选择模型供应商</span>
+          <span>{t("onboarding.providerType")}</span>
           <div className="provider-preset-pills" role="radiogroup" aria-label="模型供应商">
             {ONBOARDING_PROVIDER_KEYS.map((pKey) => {
               const pr = PROVIDER_PRESETS_UI[pKey];
@@ -319,7 +342,7 @@ export function OnboardingOverlay() {
             disabled={testing || submitting}
             onClick={handleTest}
           >
-            {testing ? "测试中…" : "测试连接"}
+            {testing ? t("common.testing") : t("onboarding.testBtn")}
           </button>
           <button
             id="onboarding-submit-btn"
@@ -328,7 +351,7 @@ export function OnboardingOverlay() {
             disabled={submitting}
             onClick={handleSubmit}
           >
-            {submitting ? "保存中…" : "完成连接并进入"}
+            {submitting ? t("onboarding.submitting") : t("onboarding.submitBtn")}
           </button>
         </div>
       </div>

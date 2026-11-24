@@ -29,6 +29,7 @@ import { SessionAvatar } from "../common/AvatarView.js";
 import { UiIcon } from "../common/Icon.js";
 import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
 import { getActiveAccountMeta } from "../../services/network-monitor.js";
+import { useI18n } from "../../services/i18n.js";
 
 export function LeftSidebar({
   onToggleCompact,
@@ -58,6 +59,7 @@ export function LeftSidebar({
       : networkHealth.status;
   const mobileNodeIsOnline = effectiveNetStatus !== "offline" && !lanNodeOffline;
   const updateState = useStore((s) => s.updateState);
+  const { t } = useI18n();
   const updateDecision = updateState?.decision;
   const hasVisibleUpdate = Boolean(
     updateDecision &&
@@ -82,10 +84,10 @@ export function LeftSidebar({
     Boolean(computerStatus?.detail) ||
     Boolean(computerStatus?.error);
   const accountCompText = !hasComputerProbe
-    ? "检测中…"
+    ? t("common.checking")
     : computerStatus?.online
-      ? `在线 · ${computerStatus.latencyMs ?? 0}ms`
-      : "离线";
+      ? `${t("common.online")} · ${computerStatus.latencyMs ?? 0}ms`
+      : t("common.offline");
 
   const pinnedLabel =
     primarySession &&
@@ -675,7 +677,7 @@ export function LeftSidebar({
             <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path d="M10 4.5V15.5M4.5 10H15.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
-            <span>添加云端账号</span>
+            <span>{t("sidebar.addCloudAccount")}</span>
           </span>
         </button>
         <div className="menu-divider" role="separator" />
@@ -690,7 +692,7 @@ export function LeftSidebar({
               <path d="M4 13.5A6 6 0 1 1 16 13.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
               <path d="M10 10.5L13 7.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
-            <span>用量与账单</span>
+            <span>{t("sidebar.accountUsage")}</span>
           </span>
           <span className="menu-item-trailing">
             <span id="account-usage-pct">{usageLabel}</span>{" "}
@@ -712,7 +714,7 @@ export function LeftSidebar({
               <rect x="3" y="4" width="14" height="9.5" rx="1.6" stroke="currentColor" strokeWidth="1.5" />
               <path d="M7.5 16.2H12.5M10 13.5V16.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
-            <span>电脑状态</span>
+            <span>{t("sidebar.accountComputer")}</span>
           </span>
           <span className="menu-item-trailing">
             <span
@@ -739,7 +741,7 @@ export function LeftSidebar({
               <rect x="2.8" y="5" width="14.4" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" />
               <path d="M6 8.5H7.2M9.4 8.5H10.6M12.8 8.5H14M6.5 12H13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
-            <span>快捷键与帮助</span>
+            <span>{t("sidebar.accountShortcuts")}</span>
           </span>
           <span className="menu-item-trailing">
             <span className="menu-chevron" aria-hidden="true">

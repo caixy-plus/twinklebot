@@ -1,5 +1,6 @@
 import type { BillingCurrency, ProviderEntry, RoutingSettings, SanitizedProvider, TokenUsage } from "./config.js";
 import type { BotBrowserModeOverride, BrowserAutomationSettings } from "./browser-automation.js";
+import type { LanguagePreference } from "./i18n.js";
 
 export type SessionType = "single" | "group";
 
@@ -104,6 +105,7 @@ export interface ProviderBillingEntry {
 }
 
 export interface AppSettings {
+  language?: LanguagePreference;
   theme: "system" | "light" | "dark" | string;
   accentMode: "bot" | "custom" | string;
   spellcheckEnabled?: boolean;

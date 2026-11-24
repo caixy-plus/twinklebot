@@ -5,6 +5,7 @@ import {
   getActiveAccountMeta,
 } from "../../services/network-monitor.js";
 import { reconnectRealtimeNow } from "../../services/realtime.js";
+import { useI18n } from "../../services/i18n.js";
 import { setState, useStore } from "../../state/store.js";
 
 export interface NetworkStatusBannerProps {
@@ -29,6 +30,7 @@ export function NetworkStatusBanner({
   const accountsState = useStore((s) => s.accountsState);
   const [retrying, setRetrying] = useState(false);
   const [nowTs, setNowTs] = useState(() => Date.now());
+  const { t } = useI18n();
 
   const accMeta = getActiveAccountMeta({
     accountsState,
@@ -93,34 +95,35 @@ export function NetworkStatusBanner({
   if (effectiveStatus === "weak") {
     const rttText = formatLatencyText(networkHealth.rttMs);
     message = rttText
-      ? `当前网络较慢（${rttText}），响应可能变慢`
-      : "当前网络较慢，响应可能变慢";
+      ? t("net.weakWithRtt", { rtt: rttText })
+      : t("net.weak");
   } else if (effectiveStatus === "reconnecting") {
     if (retrying) {
-      message = `正在重连${accountLabel}…`;
+      message = t("net.reconnectingNow", { label: accountLabel });
     } else {
       const remainSec = networkHealth.nextRetryAt
         ? Math.max(1, Math.ceil((networkHealth.nextRetryAt - nowTs) / 1000))
         : null;
+      const remainPart = remainSec ? t("net.reconnectingRemain", { sec: remainSec }) : "";
       const attemptPart =
         networkHealth.reconnectAttempt > 0
-          ? `第 ${networkHealth.reconnectAttempt} 次${remainSec ? `，${remainSec}s 后` : ""}`
+          ? t("net.reconnectingAttempt", { n: networkHealth.reconnectAttempt, remain: remainPart })
           : "";
-      message = `与${accountLabel}连接中断，正在重连${attemptPart ? `（${attemptPart}）` : ""}`;
+      message = t("net.reconnecting", { label: accountLabel, attempt: attemptPart });
     }
   } else if (effectiveStatus === "offline") {
     if (retrying) {
-      message = "正在重新连接…";
+      message = t("net.offlineRetrying");
     } else if (networkHealth.browserOffline) {
-      message = "当前无网络连接，请检查网络设置";
+      message = t("net.offlineBrowser");
     } else {
-      message = `无法连接至${accountLabel}`;
+      message = t("net.offlineAccount", { label: accountLabel });
     }
     if (contextHint && !retrying) {
-      message = `${message}，${contextHint}`;
+      message = `${message}, ${contextHint}`;
     }
   } else if (effectiveStatus === "recovered") {
-    message = "连接已恢复，已同步最新状态";
+    message = t("net.recovered");
   }
 
   return (
@@ -155,7 +158,7 @@ export function NetworkStatusBanner({
                 data-network-action="dismiss"
                 onClick={() => dismissWeakNetworkBanner()}
               >
-                收起
+                {t("common.dismiss")}
               </button>
             )}
             {effectiveStatus === "reconnecting" && (
@@ -167,7 +170,7 @@ export function NetworkStatusBanner({
                   disabled={retrying}
                   onClick={handleRetry}
                 >
-                  {retrying ? "重连中…" : "立即重连"}
+                  {retrying ? t("net.reconnectingBtn") : t("net.reconnectNow")}
                 </button>
                 {showSwitchBtn && (
                   <button
@@ -176,7 +179,7 @@ export function NetworkStatusBanner({
                     data-network-action="switch-account"
                     onClick={handleSwitchAccount}
                   >
-                    切换账号
+                    {t("net.switchAccount")}
                   </button>
                 )}
               </>
@@ -190,7 +193,7 @@ export function NetworkStatusBanner({
                   disabled={retrying}
                   onClick={handleRetry}
                 >
-                  {retrying ? "重连中…" : "重新连接"}
+                  {retrying ? t("net.reconnectingBtn") : t("net.reconnect")}
                 </button>
                 {showSwitchBtn && (
                   <button
@@ -199,7 +202,7 @@ export function NetworkStatusBanner({
                     data-network-action="switch-account"
                     onClick={handleSwitchAccount}
                   >
-                    切换账号
+                    {t("net.switchAccount")}
                   </button>
                 )}
               </>

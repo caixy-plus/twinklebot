@@ -886,6 +886,7 @@ export async function launchHeadlessChrome(opts: {
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--overscroll-history-navigation=0",
+    `--lang=${(opts as any).lang || "zh-CN"}`,
     "--use-gl=angle",
     "--use-angle=swiftshader",
     "--enable-unsafe-swiftshader",

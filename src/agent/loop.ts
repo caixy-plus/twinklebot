@@ -7,6 +7,7 @@ import {
   normalizeBrowserAutomationSettings,
   resolveEffectiveBrowserMode,
 } from "../shared/browser-automation.js";
+import { resolveEffectiveLocale } from "../shared/i18n.js";
 import { getDefaultLocalChromeManager } from "../lib/local-chrome-cdp.js";
 import {
   HOST_TOOL_DECLARATIONS,
@@ -1362,6 +1363,7 @@ async function runTaskInner({
         browserAutomationMode:
           config?.deployEnv === "cloud" ? "bot_computer" : effectiveBrowserMode,
         browserDebugPort: browserAutomationSettings.debugPort,
+        uiLocale: resolveEffectiveLocale(settings?.language || config?.language),
         kimiCuActive,
         mcpStatusNote,
         globalMemories:

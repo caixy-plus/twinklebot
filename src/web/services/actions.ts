@@ -1,5 +1,16 @@
 import { startTransition } from "react";
 import {
+  formatLanguageOptionLabel,
+  normalizeLanguagePreference,
+  type LanguagePreference,
+} from "/shared/i18n.js";
+import {
+  readStoredLanguagePreference,
+  setLocalLanguageState,
+  syncLanguageToDomAndStorage,
+  tr,
+} from "./i18n.js";
+import {
   getResolvedColorMeta,
   resolveBotAvatar,
 } from "../avatars.js";
@@ -328,6 +339,23 @@ export async function commitSettingsPatch(
       runtimeRefs.settingsMutationsInFlight - 1
     );
   }
+}
+
+export function applyLanguagePreference(
+  languageValue: string,
+  persist = false
+) {
+  const norm: LanguagePreference = normalizeLanguagePreference(languageValue);
+  const resolved = setLocalLanguageState(norm);
+  if (persist) {
+    void commitSettingsPatch({ language: norm }, { silentError: true });
+    showToast(
+      tr("lang.switchedToast", {
+        label: formatLanguageOptionLabel(norm, resolved),
+      })
+    );
+  }
+  return resolved;
 }
 
 export function applyThemePreference(themeValue: string, persist = false) {
@@ -2459,6 +2487,13 @@ export async function bootstrapApp() {
     }
   });
 
+  const storedLang = readStoredLanguagePreference();
+  if (storedLang) {
+    applyLanguagePreference(storedLang, false);
+  } else {
+    syncLanguageToDomAndStorage("system", false);
+  }
+
   const storedScheme = (() => {
     try {
       return localStorage.getItem("color-scheme");
@@ -2473,6 +2508,9 @@ export async function bootstrapApp() {
   const activeId = getState().accountsState?.activeAccountId || LOCAL_ACCOUNT_ID;
   await switchAccount(activeId, { skipRoleSwitch: activeId === LOCAL_ACCOUNT_ID, silent: true });
 
+  if (!storedLang && getState().settings?.language) {
+    applyLanguagePreference(getState().settings.language, false);
+  }
   if (!storedScheme && getState().settings?.theme) {
     applyThemePreference(getState().settings.theme, false);
   }

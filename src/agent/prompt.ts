@@ -8,9 +8,13 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
 
   const botIdentity = config.botIdentity || null;
   const botName = botIdentity?.name || "Twinkle";
+  const uiLocale = config.uiLocale === "en" ? "en" : "zh-CN";
 
   const sections: string[] = [
     `You are ${botName}, an AI desktop agent operating on an Ubuntu XFCE desktop environment.`,
+    uiLocale === "en"
+      ? `Language & Localization: The user's interface language is currently English. Always reply in the same language as the user's latest message; when the user's input has no explicit language (e.g., a bare URL, command, or scheduled routine), default to English.`
+      : `Language & Localization: The user's interface language is currently Simplified Chinese (中文). Always reply in the same language as the user's latest message; when the user's input has no explicit language (e.g., a bare URL, command, or scheduled routine), default to Simplified Chinese.`,
   ];
 
   if (botIdentity?.rolePrompt) {

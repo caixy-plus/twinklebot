@@ -28,6 +28,7 @@ import {
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import { STATUS_LABELS } from "../../state/constants.js";
 import {
   computeClientSessionSummary,
@@ -109,8 +110,9 @@ export function ChatStage({
       : isPrimaryOrAdmin
         ? "Twinkle"
         : "新 Bot";
+  const { t, tStatus } = useI18n();
   const statusKey = sessionStatus || "idle";
-  const statusLabel = STATUS_LABELS[statusKey] || statusKey;
+  const statusLabel = tStatus(statusKey) || STATUS_LABELS[statusKey] || statusKey;
   const busy = isSessionCurrentlyBusy(statusKey);
 
   const costSummary = computeClientSessionSummary({
@@ -365,7 +367,7 @@ export function ChatStage({
                 refreshLibrary();
               }}
             >
-              <span className="menu-item-leading">能力与电脑面板</span>
+              <span className="menu-item-leading">{t("chat.openInspector")}</span>
             </button>
             <button
               type="button"

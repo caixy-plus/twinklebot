@@ -27,6 +27,7 @@ import {
 import { normalizeContextCompressionSettings } from "../shared/context-compression.js";
 import { normalizeScreenPoolSettings } from "../shared/screen-pool.js";
 import { normalizeBrowserAutomationSettings } from "../shared/browser-automation.js";
+import { normalizeLanguagePreference } from "../shared/i18n.js";
 import { closeAllLocalBrowsers } from "../lib/local-chrome-cdp.js";
 import { getHostScreenPoolBudget } from "../agent/screen-pool-manager.js";
 import {
@@ -379,6 +380,7 @@ export function createServer({
         : raw.model || finalConfig.defaultModel;
     return {
       model: resolvedModel,
+      language: normalizeLanguagePreference(raw.language),
       theme: raw.theme || "system",
       accentMode: raw.accentMode || "bot",
       spellcheckEnabled: raw.spellcheckEnabled !== false,

@@ -8,6 +8,7 @@ import {
 import { useAnimatedSheet } from "../../hooks/useAnimatedSheet.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
+  applyLanguagePreference,
   bindScrollEndTracking,
   confirmAndRemoveCloudAccount,
   handleBotComputerCardActivate,
@@ -28,6 +29,7 @@ import {
   computeUpdateDecisionKey,
   hasConnectedNodeCapability,
 } from "../../services/ota-updater.js";
+import { useI18n } from "../../services/i18n.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import {
   formatBrowserAutomationModeLabel,
@@ -68,6 +70,7 @@ export function MobileSheets() {
   const accountEpoch = useStore((s) => s.accountEpoch);
   const settings = useStore((s) => s.settings);
   const diagnostics = useStore((s) => s.diagnostics);
+  const { language: currentLanguage, locale, t } = useI18n();
   const lastGlobalUsagePayload = useStore((s) => s.lastGlobalUsagePayload);
   const updateState = useStore((s) => s.updateState);
   const updateDecision = updateState?.decision;
@@ -433,12 +436,12 @@ export function MobileSheets() {
               hasConnectedNodeCapability("local-browser-automation-v1", { diagnostics }) && (
                 <section className="mobile-inspector-section" id="mobile-bot-browser-mode-section">
                   <div className="mobile-sheet-header">
-                    <span className="mobile-section-caption">浏览器引擎</span>
+                    <span className="mobile-section-caption">{t("inspector.browserEngineLabel")}</span>
                   </div>
                   <select
                     id="mobile-bot-browser-mode-select"
                     className="settings-select"
-                    aria-label="单 Bot 浏览器引擎"
+                    aria-label={t("inspector.browserEngineLabel")}
                     value={normalizeBotBrowserMode(activeSession?.browserMode)}
                     onChange={async (e) => {
                       if (!activeSession?.id) return;
@@ -450,21 +453,27 @@ export function MobileSheets() {
                         });
                         upsertLocalSession(updated);
                         showToast(
-                          `已切换浏览器引擎：${formatBrowserAutomationModeLabel(browserMode)}`
+                          `${t("inspector.browserEngineLabel")}: ${formatBrowserAutomationModeLabel(
+                            browserMode,
+                            locale
+                          )}`
                         );
                       } catch (err: any) {
-                        showToast(`保存失败：${err?.message || "请求异常"}`);
+                        showToast(`${err?.message || "Error"}`);
                       }
                     }}
                   >
                     <option value="inherit">
-                      跟随全局（{formatBrowserAutomationModeLabel(
-                        normalizeBrowserAutomationMode(settings?.browserAutomation?.mode)
-                      )}）
+                      {t("inspector.browserEngineFollow", {
+                        mode: formatBrowserAutomationModeLabel(
+                          normalizeBrowserAutomationMode(settings?.browserAutomation?.mode),
+                          locale
+                        ),
+                      })}
                     </option>
-                    <option value="bot_computer">Bot 电脑 Chrome（保留登录态）</option>
-                    <option value="local_headless">本机 Chrome Headless（省 CPU）</option>
-                    <option value="local_debug">本机 Chrome Debug（独立 Profile）</option>
+                    <option value="bot_computer">{t("browser.modeBotComputer")}</option>
+                    <option value="local_headless">{t("browser.modeLocalHeadless")}</option>
+                    <option value="local_debug">{t("browser.modeLocalDebug")}</option>
                   </select>
                 </section>
               )}
@@ -630,7 +639,7 @@ export function MobileSheets() {
             >
               <UiIcon name="chevron-left" />
             </button>
-            <h2 className="mobile-sheet-title">设置与工作台</h2>
+            <h2 className="mobile-sheet-title">{t("mobile.settingsTitle")}</h2>
             <span style={{ width: "42px" }} aria-hidden="true" />
           </div>
 
@@ -795,6 +804,25 @@ export function MobileSheets() {
               </span>
             </button>
 
+            <div className="mobile-card-row" id="mobile-settings-language-row">
+              <div>
+                <div className="mobile-card-row-title">{t("lang.label")}</div>
+                <div className="mobile-card-row-sub">{t("lang.desc")}</div>
+              </div>
+              <select
+                id="mobile-settings-language-select"
+                className="settings-select"
+                aria-label={t("lang.label")}
+                value={currentLanguage}
+                style={{ width: "auto", minWidth: "110px" }}
+                onChange={(e) => applyLanguagePreference(e.target.value, true)}
+              >
+                <option value="system">{t("lang.system")}</option>
+                <option value="zh-CN">{t("lang.zhCN")}</option>
+                <option value="en">{t("lang.en")}</option>
+              </select>
+            </div>
+
             <button
               id="mobile-settings-more-row"
               type="button"
@@ -806,8 +834,8 @@ export function MobileSheets() {
               }}
             >
               <div>
-                <div className="mobile-card-row-title">更多设置</div>
-                <div className="mobile-card-row-sub">个人资料、外观主题与全部系统设置</div>
+                <div className="mobile-card-row-title">{t("mobile.moreSettings")}</div>
+                <div className="mobile-card-row-sub">{t("mobile.moreSettingsSub")}</div>
               </div>
               <span className="menu-chevron" aria-hidden="true">
                 <svg className="icon-svg" viewBox="0 0 20 20" fill="none">

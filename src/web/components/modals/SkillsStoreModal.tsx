@@ -24,6 +24,7 @@ import {
 } from "../../state/helpers.js";
 import { getState, setState, useStore } from "../../state/store.js";
 import { isRemoteAccountOffline } from "../../services/network-monitor.js";
+import { useI18n } from "../../services/i18n.js";
 import {
   resolveSkillIconName,
   StatusText,
@@ -113,6 +114,7 @@ function SkillRemoveConfirmBox({
 }
 
 export function SkillsStoreModal() {
+  const { t } = useI18n();
   const appsModalOpen = useStore((s) => s.appsModalOpen);
   const skillsView = useStore((s) => s.skillsView);
   const skillFilter = useStore((s) => s.skillFilter);
@@ -1724,7 +1726,7 @@ export function SkillsStoreModal() {
               <UiIcon name="chevron-left" />
             </button>
             <h2 className="apps-modal-title" id="skills-store-title" tabIndex={-1}>
-              技能商店
+              {t("skills.title")}
             </h2>
             <button
               id="open-installed-plugins-btn"
@@ -1771,8 +1773,8 @@ export function SkillsStoreModal() {
                 id="skills-search-input"
                 type="search"
                 className="skills-search-input"
-                placeholder="在技能中搜索"
-                aria-label="在技能中搜索"
+                placeholder={t("skills.searchPlaceholder")}
+                aria-label={t("skills.searchPlaceholder")}
                 autoComplete="off"
                 enterKeyHint="search"
                 value={skillSearch}

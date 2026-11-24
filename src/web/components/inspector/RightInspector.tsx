@@ -23,6 +23,7 @@ import {
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
 import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
+import { useI18n } from "../../services/i18n.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import {
   formatBrowserAutomationModeLabel,
@@ -78,6 +79,7 @@ export function RightInspector({
   const routerUsage = useStore((s) => s.routerUsage);
   const libraryFilter = useStore((s) => s.libraryFilter);
   const diagnostics = useStore((s) => s.diagnostics);
+  const { locale, t } = useI18n();
   const computerDisplays = useStore((s) => s.computerDisplays);
 
   const displayName =
@@ -557,7 +559,7 @@ export function RightInspector({
           }}
         />
 
-        <div className="inspector-tabs" role="tablist" aria-label="对话详情">
+        <div className="inspector-tabs" role="tablist" aria-label={t("inspector.title")}>
           <button
             id="tab-activity"
             type="button"
@@ -566,7 +568,7 @@ export function RightInspector({
             className={`inspector-tab${inspectorTab === "activity" ? " is-active" : ""}`}
             onClick={() => setState({ inspectorTab: "activity" })}
           >
-            动态
+            {t("inspector.tabActivity")}
           </button>
           <button
             id="tab-library"
@@ -579,7 +581,7 @@ export function RightInspector({
               refreshLibrary();
             }}
           >
-            资料库
+            {t("inspector.tabLibrary")}
           </button>
         </div>
       </div>
@@ -631,7 +633,7 @@ export function RightInspector({
         {/* Bot Persona / Role Section */}
         <section className="inspector-section" id="bot-persona-section" hidden={isGroup}>
           <div className="section-header-row">
-            <h3 className="section-label">职责与人设</h3>
+            <h3 className="section-label">{t("inspector.personaLabel")}</h3>
             <button
               id="save-persona-btn"
               type="button"
@@ -639,14 +641,14 @@ export function RightInspector({
               hidden={!personaDirty}
               onClick={handleSavePersona}
             >
-              保存
+              {t("common.save")}
             </button>
           </div>
           <textarea
             id="bot-persona-input"
             className="persona-textarea"
             rows={2}
-            placeholder="设置该 Bot 的专属职责（例如：专门跟进工单、代码审查或管理某账号）..."
+            placeholder={t("inspector.personaPlaceholder")}
             value={personaInput}
             onChange={(e) => {
               setPersonaInput(e.target.value);
@@ -660,13 +662,13 @@ export function RightInspector({
           hasConnectedNodeCapability("local-browser-automation-v1", { diagnostics }) && (
             <section className="inspector-section" id="bot-browser-mode-section">
               <div className="section-header-row">
-                <h3 className="section-label">浏览器引擎</h3>
+                <h3 className="section-label">{t("inspector.browserEngineLabel")}</h3>
               </div>
               <select
                 id="bot-browser-mode-select"
                 className="settings-select"
                 style={{ width: "100%" }}
-                aria-label="单 Bot 浏览器引擎"
+                aria-label={t("inspector.browserEngineLabel")}
                 value={normalizeBotBrowserMode(activeSession?.browserMode)}
                 onChange={async (e) => {
                   if (!activeSessionId) return;
@@ -677,20 +679,28 @@ export function RightInspector({
                       body: JSON.stringify({ browserMode, touch: false }),
                     });
                     upsertLocalSession(updated);
-                    showToast(`已切换该 Bot 浏览器引擎：${formatBrowserAutomationModeLabel(browserMode)}`);
+                    showToast(
+                      `${t("inspector.browserEngineLabel")}: ${formatBrowserAutomationModeLabel(
+                        browserMode,
+                        locale
+                      )}`
+                    );
                   } catch (err: any) {
-                    showToast(`保存失败：${err?.message || "请求异常"}`);
+                    showToast(`${err?.message || "Error"}`);
                   }
                 }}
               >
                 <option value="inherit">
-                  跟随全局（{formatBrowserAutomationModeLabel(
-                    normalizeBrowserAutomationMode(settings?.browserAutomation?.mode)
-                  )}）
+                  {t("inspector.browserEngineFollow", {
+                    mode: formatBrowserAutomationModeLabel(
+                      normalizeBrowserAutomationMode(settings?.browserAutomation?.mode),
+                      locale
+                    ),
+                  })}
                 </option>
-                <option value="bot_computer">Bot 电脑 Chrome（保留登录态）</option>
-                <option value="local_headless">本机 Chrome Headless（省 CPU）</option>
-                <option value="local_debug">本机 Chrome Debug（独立 Profile）</option>
+                <option value="bot_computer">{t("browser.modeBotComputer")}</option>
+                <option value="local_headless">{t("browser.modeLocalHeadless")}</option>
+                <option value="local_debug">{t("browser.modeLocalDebug")}</option>
               </select>
             </section>
           )}

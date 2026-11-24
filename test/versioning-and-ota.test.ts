@@ -271,6 +271,7 @@ test("evaluateUpdateCompatibility decouples Desktop/Android/iOS shells, selects 
     "memory-suggest-v1",
     "computer-remote-input-v1",
     "local-browser-automation-v1",
+    "i18n-v1",
     "swarm-v2",
   ]);
   // v1.2.0 baseline features stay 100% enabled on LAN 1.2.0 while 1.3.0-only feature gracefully gates!

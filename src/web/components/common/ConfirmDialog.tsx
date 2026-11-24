@@ -1,9 +1,11 @@
 import { useEffect, useRef, type MouseEvent } from "react";
 import { resolveConfirmDialog } from "../../services/actions.js";
+import { useI18n } from "../../services/i18n.js";
 import { getState, useStore } from "../../state/store.js";
 
 export function ConfirmDialog() {
   const confirmDialog = useStore((s) => s.confirmDialog);
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const okBtnRef = useRef<HTMLButtonElement | null>(null);
 
@@ -109,7 +111,7 @@ export function ConfirmDialog() {
           </div>
           <div className="app-confirm-copy">
             <h2 id="app-confirm-title" className="app-confirm-title">
-              {confirmDialog.title || "确认操作"}
+              {confirmDialog.title || t("common.confirmAction")}
             </h2>
             <p id="app-confirm-message" className="app-confirm-message">
               {confirmDialog.message}
@@ -130,7 +132,7 @@ export function ConfirmDialog() {
             value="cancel"
             className="settings-pill-btn app-confirm-btn"
           >
-            {confirmDialog.cancelText || "取消"}
+            {confirmDialog.cancelText || t("common.cancel")}
           </button>
           <button
             ref={okBtnRef}
@@ -139,7 +141,7 @@ export function ConfirmDialog() {
             value="confirm"
             className={`${isPrimary ? "settings-blue-pill" : "settings-red-btn"} app-confirm-btn`}
           >
-            {confirmDialog.confirmText || "确认"}
+            {confirmDialog.confirmText || t("common.confirm")}
           </button>
         </div>
       </form>

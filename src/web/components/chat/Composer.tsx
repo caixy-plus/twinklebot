@@ -16,6 +16,7 @@ import {
   uploadAndStageFiles,
 } from "../../services/actions.js";
 import { apiUrl } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import {
   getLiveWorkingLabel,
   isImeConfirmEnter,
@@ -66,6 +67,7 @@ export function Composer({
 
   const [stopping, setStopping] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const busy = isSessionCurrentlyBusy(sessionStatus);
@@ -191,12 +193,10 @@ export function Composer({
           : `⏳ 已排队 ${queuedCount} 条消息，上一轮执行完成后将自动衔接`;
 
   const sendTitle = busy
-    ? mobileMode
-      ? "发送并排队等待当前任务完成"
-      : "发送并排队等待当前任务完成 (Enter)"
+    ? t("chat.sendMessage")
     : mobileMode
-      ? "发送消息"
-      : "发送消息 (Enter)";
+      ? t("chat.sendMessage")
+      : `${t("chat.sendMessage")} (Enter)`;
 
   return (
     <div className="composer-wrap" id="composer-wrap" ref={composerWrapRef}>
@@ -388,8 +388,8 @@ export function Composer({
             id="composer-ops-btn"
             type="button"
             className="composer-plus-btn"
-            title="添加附件 / 截图"
-            aria-label="添加附件 / 截图"
+            title={t("chat.attachFile")}
+            aria-label={t("chat.attachFile")}
             onClick={(e) => {
               e.stopPropagation();
               closeAllPopovers();
