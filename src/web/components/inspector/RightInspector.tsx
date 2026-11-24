@@ -25,6 +25,11 @@ import { apiJson } from "../../services/api-client.js";
 import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import {
+  formatBrowserAutomationModeLabel,
+  normalizeBotBrowserMode,
+  normalizeBrowserAutomationMode,
+} from "/shared/browser-automation.js";
+import {
   computeClientSessionSummary,
   formatClientRouteLabel,
   formatCny,
@@ -649,6 +654,46 @@ export function RightInspector({
             }}
           />
         </section>
+
+        {/* Per-Bot Browser Automation Mode Override (#8) */}
+        {!isGroup &&
+          hasConnectedNodeCapability("local-browser-automation-v1", { diagnostics }) && (
+            <section className="inspector-section" id="bot-browser-mode-section">
+              <div className="section-header-row">
+                <h3 className="section-label">浏览器引擎</h3>
+              </div>
+              <select
+                id="bot-browser-mode-select"
+                className="settings-select"
+                style={{ width: "100%" }}
+                aria-label="单 Bot 浏览器引擎"
+                value={normalizeBotBrowserMode(activeSession?.browserMode)}
+                onChange={async (e) => {
+                  if (!activeSessionId) return;
+                  const browserMode = normalizeBotBrowserMode(e.target.value);
+                  try {
+                    const updated = await apiJson(`/api/sessions/${activeSessionId}`, {
+                      method: "PATCH",
+                      body: JSON.stringify({ browserMode, touch: false }),
+                    });
+                    upsertLocalSession(updated);
+                    showToast(`已切换该 Bot 浏览器引擎：${formatBrowserAutomationModeLabel(browserMode)}`);
+                  } catch (err: any) {
+                    showToast(`保存失败：${err?.message || "请求异常"}`);
+                  }
+                }}
+              >
+                <option value="inherit">
+                  跟随全局（{formatBrowserAutomationModeLabel(
+                    normalizeBrowserAutomationMode(settings?.browserAutomation?.mode)
+                  )}）
+                </option>
+                <option value="bot_computer">Bot 电脑 Chrome（保留登录态）</option>
+                <option value="local_headless">本机 Chrome Headless（省 CPU）</option>
+                <option value="local_debug">本机 Chrome Debug（独立 Profile）</option>
+              </select>
+            </section>
+          )}
 
         {/* Per-Bot Dedicated Memory Section */}
         <section className="inspector-section" id="bot-memory-section" hidden={isGroup}>

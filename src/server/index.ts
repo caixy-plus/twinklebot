@@ -26,6 +26,8 @@ import {
 } from "../shared/skills-catalog.js";
 import { normalizeContextCompressionSettings } from "../shared/context-compression.js";
 import { normalizeScreenPoolSettings } from "../shared/screen-pool.js";
+import { normalizeBrowserAutomationSettings } from "../shared/browser-automation.js";
+import { closeAllLocalBrowsers } from "../lib/local-chrome-cdp.js";
 import { getHostScreenPoolBudget } from "../agent/screen-pool-manager.js";
 import {
   DEFAULT_MCP_SERVERS,
@@ -389,6 +391,7 @@ export function createServer({
       hostComputer: {
         executionMode,
       },
+      browserAutomation: normalizeBrowserAutomationSettings(raw.browserAutomation),
       contextCompression: normalizeContextCompressionSettings(raw.contextCompression),
       screenPool: normalizeScreenPoolSettings(
         raw.screenPool,
@@ -770,6 +773,7 @@ export function createServer({
     } catch {}
     wsServer.close();
     activeMcpManager?.closeAll?.();
+    void closeAllLocalBrowsers();
     stopWslKeepalive();
   });
 

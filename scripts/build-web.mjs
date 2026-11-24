@@ -15,6 +15,7 @@ const SHARED_BROWSER_MODULES = [
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "skills-catalog.js"), dest: "shared/skills-catalog.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "context-compression.js"), dest: "shared/context-compression.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "screen-pool.js"), dest: "shared/screen-pool.js" },
+  { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "browser-automation.js"), dest: "shared/browser-automation.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "computer-status.js"), dest: "shared/computer-status.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "policy-utils.js"), dest: "shared/policy-utils.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "versioning.js"), dest: "shared/versioning.js" },

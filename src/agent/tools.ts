@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { ExecutorClient } from "../shared/config.js";
+import { isBrowserAutomationTool } from "../shared/browser-automation.js";
 
 const RISK_PROPERTY = {
   type: "string",
@@ -538,13 +539,23 @@ export interface RunToolOptions {
   settleMs?: number;
   signal?: AbortSignal;
   prevScreenshotSha1?: string | null;
+  localBrowserExecutor?: (
+    name: string,
+    args: Record<string, any>,
+    signal?: AbortSignal
+  ) => Promise<any>;
 }
 
 export async function runTool(
   name: string,
   args: Record<string, any> | undefined,
   client: ExecutorClient,
-  { settleMs = 150, signal, prevScreenshotSha1 = null }: RunToolOptions = {}
+  {
+    settleMs = 150,
+    signal,
+    prevScreenshotSha1 = null,
+    localBrowserExecutor,
+  }: RunToolOptions = {}
 ): Promise<{ result: any; screenshot: Buffer | null }> {
   const route = ROUTE_MAP[name];
   if (!route) {
@@ -591,9 +602,12 @@ export async function runTool(
   const callOptions = signal ? { signal } : undefined;
 
   try {
-    const res: any = callOptions
-      ? await client.call(route, execArgs, callOptions)
-      : await client.call(route, execArgs);
+    const res: any =
+      localBrowserExecutor && isBrowserAutomationTool(name)
+        ? await localBrowserExecutor(name, execArgs, signal)
+        : callOptions
+          ? await client.call(route, execArgs, callOptions)
+          : await client.call(route, execArgs);
 
     if (name === "screenshot") {
       const screenshot = res?.png_base64

@@ -117,6 +117,14 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
           .join(", ")
       : "none (all office skills have been removed in the Skills Store)";
     const hostExecutionMode = config.hostExecutionMode || "always";
+    const browserAutomationMode = config.browserAutomationMode || "bot_computer";
+    const browserDebugPort = Number(config.browserDebugPort) || 9223;
+    const browserEngineLine =
+      browserAutomationMode === "local_headless"
+        ? `- Browser Automation Engine (\`browser_*\` tools — ACTIVE MODE: **Local Host Chrome Headless**): \`browser_snapshot\` / \`browser_click\` / \`browser_type\` / \`browser_tabs\` / \`browser_scroll\` / \`browser_wait\` / \`browser_select\` / \`browser_upload_file\` run directly in native host Chrome Headless (low CPU, fast rendering, no Ubuntu SwiftShader overhead). IMPORTANT trade-off: this uses an **ephemeral clean profile with NO pre-existing user cookies/login sessions** and is not shown inside Bot's Computer noVNC. If a task requires existing logged-in sessions or visual interactive takeover, tell the user clearly (they can switch to "Bot 电脑 Chrome" or "本机 Chrome Debug", or provide credentials via \`request_credential\`).`
+        : browserAutomationMode === "local_debug"
+          ? `- Browser Automation Engine (\`browser_*\` tools — ACTIVE MODE: **Local Host Chrome Debug CDP**, port \`${browserDebugPort}\`): \`browser_*\` tools run directly in a native host Chrome window using TwinkleBot's **dedicated isolated debug profile** (low CPU, persists logins made inside this debug profile, separate from the user's personal Chrome profile). Do NOT assume cookies from the user's personal Chrome are present unless the user has signed in inside this debug profile.`
+          : `- Browser Automation Engine (\`browser_*\` tools — ACTIVE MODE: **Bot's Computer Chrome**): \`browser_*\` tools run inside Bot's Computer Ubuntu Chrome (shared persistent cookies/login state and visible in noVNC).`;
     const kimiAdded = installedSkills.includes("kimi-cu");
     const kimiActive = Boolean(config.kimiCuActive ?? kimiAdded) && hostExecutionMode !== "off";
 
@@ -175,7 +183,7 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
         adminProvisioningLine,
         hostComputerLine,
         kimiCuLine,
-      }).trim()
+      }).trim() + `\n${browserEngineLine}`
     );
 
     sections.push(

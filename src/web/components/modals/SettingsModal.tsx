@@ -17,6 +17,10 @@ import {
   matchScreenPoolPreset,
   normalizeScreenPoolSettings,
 } from "/shared/screen-pool.js";
+import {
+  normalizeBrowserAutomationSettings,
+  normalizeBrowserDebugPort,
+} from "/shared/browser-automation.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
@@ -951,6 +955,20 @@ export function SettingsModal() {
   const matchedScreenPreset = matchScreenPoolPreset(screenPoolEffective, screenBudget);
   const multiDisplaySupported = hasConnectedNodeCapability("multi-display-v1", { diagnostics });
   const vaultSecretSupported = hasConnectedNodeCapability("vault-secret-v1", { diagnostics });
+  const localBrowserSupported = hasConnectedNodeCapability("local-browser-automation-v1", {
+    diagnostics,
+  });
+  const browserAutomationCfg = normalizeBrowserAutomationSettings(settings?.browserAutomation);
+  const [browserPortDraft, setBrowserPortDraft] = useState<string>(
+    String(browserAutomationCfg.debugPort)
+  );
+  const [browserExecDraft, setBrowserExecDraft] = useState<string>(
+    browserAutomationCfg.executablePath
+  );
+  useEffect(() => {
+    setBrowserPortDraft(String(browserAutomationCfg.debugPort));
+    setBrowserExecDraft(browserAutomationCfg.executablePath);
+  }, [browserAutomationCfg.debugPort, browserAutomationCfg.executablePath]);
   const networkHealth = useStore((s) => s.networkHealth);
   const lanNodeOffline = useStore((s) => s.lanNodeOffline);
   const accountsState = useStore((s) => s.accountsState);
@@ -3188,6 +3206,126 @@ export function SettingsModal() {
                 </select>
               </div>
             </div>
+
+            {localBrowserSupported && (
+              <>
+                <div className="settings-group-label">浏览器自动化引擎</div>
+                <div className="settings-card" id="browser-automation-settings-card">
+                  <div className="settings-item-row">
+                    <div>
+                      <div className="settings-row-title">默认浏览器执行模式</div>
+                      <div className="settings-row-sub">
+                        {browserAutomationCfg.mode === "local_headless"
+                          ? "使用本机 Chrome Headless 原生渲染，显著降低 CPU 占用；每次使用临时洁净 Profile，不含历史登录态与 Cookie，亦不在 Bot 电脑画面中显示。"
+                          : browserAutomationCfg.mode === "local_debug"
+                            ? `通过本机 CDP 端口（${browserAutomationCfg.debugPort}）连接独立调试 Profile（${computerStatus?.localBrowser?.profileDir || "data/chrome-debug-profile"}），省 CPU 且可保留该调试窗口内登录态，绝不读取个人主 Chrome 数据。`
+                            : "默认在 Bot 电脑（Ubuntu）Chrome 中执行，天然共享历史登录态与 Cookie，并支持通过「Bot 的电脑」画面可视化接管；也可在单个 Bot 详情页单独覆盖。"}
+                      </div>
+                      {computerStatus?.localBrowser && (
+                        <div
+                          className="settings-row-sub"
+                          id="local-browser-detect-status"
+                          style={{ marginTop: "4px" }}
+                        >
+                          {computerStatus.localBrowser.available
+                            ? `本机 Chrome 已就绪${
+                                computerStatus.localBrowser.executablePath
+                                  ? `：${computerStatus.localBrowser.executablePath}`
+                                  : ""
+                              }${
+                                computerStatus.localBrowser.debugReachable
+                                  ? ` · CDP :${computerStatus.localBrowser.debugPort} 在线`
+                                  : ""
+                              }`
+                            : "未自动检测到本机 Chrome，可选择切回 Bot 电脑或在下方填写可执行文件路径。"}
+                        </div>
+                      )}
+                    </div>
+                    <select
+                      id="browser-automation-mode-select"
+                      className="settings-select"
+                      aria-label="默认浏览器执行模式"
+                      value={browserAutomationCfg.mode}
+                      onChange={async (e) => {
+                        const mode = e.target.value;
+                        try {
+                          await commitSettingsPatch({
+                            browserAutomation: {
+                              ...browserAutomationCfg,
+                              mode,
+                            },
+                          });
+                          showToast("已更新浏览器自动化模式");
+                        } catch (err: any) {
+                          showToast(`保存浏览器模式失败：${err?.message || "请求异常"}`);
+                        }
+                      }}
+                    >
+                      <option value="bot_computer">Bot 电脑 Chrome（默认 · 保留登录态）</option>
+                      <option value="local_headless">本机 Chrome Headless（省 CPU · 无登录态）</option>
+                      <option value="local_debug">本机 Chrome Debug（独立调试 Profile）</option>
+                    </select>
+                  </div>
+
+                  {browserAutomationCfg.mode !== "bot_computer" && (
+                    <>
+                      <div className="settings-divider" />
+                      <div className="settings-item-row" style={{ alignItems: "flex-end", gap: "10px" }}>
+                        {browserAutomationCfg.mode === "local_debug" && (
+                          <label style={{ display: "flex", flexDirection: "column", gap: "4px", width: "130px" }}>
+                            <span className="settings-row-sub">CDP 调试端口</span>
+                            <input
+                              id="browser-automation-debug-port"
+                              type="number"
+                              min={1024}
+                              max={65535}
+                              className="inline-text-input"
+                              value={browserPortDraft}
+                              onChange={(e) => setBrowserPortDraft(e.target.value)}
+                            />
+                          </label>
+                        )}
+                        <label style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1, minWidth: 0 }}>
+                          <span className="settings-row-sub">本机 Chrome 路径（留空自动检测）</span>
+                          <input
+                            id="browser-automation-exec-path"
+                            type="text"
+                            className="inline-text-input"
+                            placeholder="留空自动检测系统安装的 Google Chrome / Chromium"
+                            value={browserExecDraft}
+                            onChange={(e) => setBrowserExecDraft(e.target.value)}
+                          />
+                        </label>
+                        <button
+                          id="browser-automation-save-btn"
+                          type="button"
+                          className="settings-pill-btn"
+                          onClick={async () => {
+                            try {
+                              const nextPort = normalizeBrowserDebugPort(browserPortDraft);
+                              await commitSettingsPatch({
+                                browserAutomation: {
+                                  ...browserAutomationCfg,
+                                  debugPort: nextPort,
+                                  executablePath: browserExecDraft.trim(),
+                                },
+                              });
+                              setBrowserPortDraft(String(nextPort));
+                              showToast("本机 Chrome 配置已保存");
+                              void refreshComputerStatus();
+                            } catch (err: any) {
+                              showToast(`保存失败：${err?.message || "请求异常"}`);
+                            }
+                          }}
+                        >
+                          保存
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
 
             {onlineCloudHosts.length > 0 && (
               <>

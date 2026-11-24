@@ -98,7 +98,7 @@ export function closeSheetAnimated(sheet) {
     sheet.hidden = true;
     sheet.classList.remove("is-closing");
     closeTimers.delete(sheet);
-  }, 220);
+  }, 300);
   closeTimers.set(sheet, timer);
 }
 
@@ -287,11 +287,13 @@ export function initKeyboardViewportSync({ onKeyboardOpen }: any = {}) {
       return;
     }
     const nextHeight = Math.round(vv.height);
+    const nextWidth = Math.round(vv.width || window.innerWidth);
     const shrank = nextHeight < prevHeight - 60;
     const offsetShifted = Math.abs(vv.offsetTop) > 1 || window.scrollY > 1;
     prevHeight = nextHeight;
     shell.style.height = `${nextHeight}px`;
     shell.classList.toggle("is-keyboard-open", nextHeight < window.innerHeight - 100);
+    shell.dataset.mobileOrientation = nextWidth > nextHeight ? "landscape" : "portrait";
     document.documentElement.style.setProperty("--mobile-vv-height", `${nextHeight}px`);
     resetWindowScroll();
     syncMobileChatBottomMetrics();
@@ -310,14 +312,26 @@ export function initKeyboardViewportSync({ onKeyboardOpen }: any = {}) {
       }, 180);
     }
   };
+  const handleOrientationSync = () => {
+    if (!isMobileViewport()) return;
+    requestAnimationFrame(syncHeight);
+    setTimeout(syncHeight, 80);
+    setTimeout(syncHeight, 260);
+  };
   vv.addEventListener("resize", syncHeight);
   vv.addEventListener("scroll", syncHeight);
   window.addEventListener("resize", syncHeight);
+  window.addEventListener("orientationchange", handleOrientationSync);
   window.addEventListener("scroll", resetWindowScroll, { passive: true });
   document.addEventListener("focusin", () => {
     if (!isMobileViewport()) return;
     requestAnimationFrame(syncHeight);
     setTimeout(syncHeight, 80);
+  });
+  document.addEventListener("focusout", () => {
+    if (!isMobileViewport()) return;
+    setTimeout(syncHeight, 80);
+    setTimeout(syncHeight, 240);
   });
   const blockPinchZoom = (e: Event) => {
     if (!isMobileViewport()) return;

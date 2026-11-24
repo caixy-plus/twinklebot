@@ -3,6 +3,12 @@ import path from "node:path";
 import { TOOL_DECLARATIONS, runTool, hashScreenshot } from "./tools.js";
 import { SCREEN_REQUIRED_TOOLS } from "../shared/screen-pool.js";
 import {
+  isBrowserAutomationTool,
+  normalizeBrowserAutomationSettings,
+  resolveEffectiveBrowserMode,
+} from "../shared/browser-automation.js";
+import { getDefaultLocalChromeManager } from "../lib/local-chrome-cdp.js";
+import {
   HOST_TOOL_DECLARATIONS,
   isHostTool,
   runHostTool,
@@ -1337,6 +1343,13 @@ async function runTaskInner({
           isDefault: Boolean(entry.isDefault),
         }));
       const sessionObj = speakerBot || store?.getSession?.(sessionId) || null;
+      const browserAutomationSettings = normalizeBrowserAutomationSettings(
+        settings?.browserAutomation || config?.browserAutomation
+      );
+      const effectiveBrowserMode = resolveEffectiveBrowserMode(
+        browserAutomationSettings,
+        sessionObj?.browserMode
+      );
       const promptConfig = {
         ...scopedRuntimeConfig,
         routing: settings.routing || config.routing,
@@ -1346,6 +1359,9 @@ async function runTaskInner({
         deployEnv: config?.deployEnv || "local",
         smartRouterActive: Boolean(smart),
         hostExecutionMode,
+        browserAutomationMode:
+          config?.deployEnv === "cloud" ? "bot_computer" : effectiveBrowserMode,
+        browserDebugPort: browserAutomationSettings.debugPort,
         kimiCuActive,
         mcpStatusNote,
         globalMemories:
@@ -1978,7 +1994,12 @@ async function runTaskInner({
         );
         let toolResult: any;
         let screenshotBuf: Buffer | null = null;
-        const needsScreenLock = SCREEN_REQUIRED_TOOLS.has(call.name);
+        const useLocalBrowser =
+          isBrowserAutomationTool(call.name) &&
+          effectiveBrowserMode !== "bot_computer" &&
+          config?.deployEnv !== "cloud";
+        const needsScreenLock =
+          SCREEN_REQUIRED_TOOLS.has(call.name) && !useLocalBrowser;
 
         const executeApprovedCall = async (approvedByUser = false): Promise<{ result: any; screenshot: Buffer | null }> => {
           executedToolCount += 1;
@@ -2069,6 +2090,22 @@ async function runTaskInner({
                 settleMs,
                 signal: ctrl.signal,
                 prevScreenshotSha1: lastScreenSha1,
+                ...(useLocalBrowser
+                  ? {
+                      localBrowserExecutor: (
+                        toolName: string,
+                        toolArgs: Record<string, any>,
+                        toolSignal?: AbortSignal
+                      ) =>
+                        getDefaultLocalChromeManager().executeTool(toolName, toolArgs, {
+                          mode: effectiveBrowserMode as "local_headless" | "local_debug",
+                          sessionKey: speakerBot?.id || sessionId,
+                          settings: browserAutomationSettings,
+                          dataDir: store?.dataDir || config?.dataDir,
+                          signal: toolSignal,
+                        }),
+                    }
+                  : {}),
               })
           );
           if (

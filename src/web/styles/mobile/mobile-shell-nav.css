@@ -1,42 +1,138 @@
 :root {
-  --glass-tint-strong: rgba(255, 255, 255, 0.88);
-  --glass-pill-bg: rgba(255, 255, 255, 0.72);
-  --glass-pill-border: rgba(255, 255, 255, 0.6);
+  --mobile-ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --mobile-dur-page: 0.3s;
+  --mobile-dur-sheet: 0.28s;
+  --mobile-dur-modal: 0.22s;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --glass-tint-strong: rgba(255, 255, 255, 0.84);
+  --glass-pill-bg: rgba(255, 255, 255, 0.62);
+  --glass-pill-border: rgba(255, 255, 255, 0.76);
+  --glass-specular-top: rgba(255, 255, 255, 0.9);
+  --glass-specular-bottom: rgba(15, 23, 42, 0.08);
+  --glass-surface-gradient: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.56) 0%,
+    rgba(255, 255, 255, 0.16) 52%,
+    rgba(255, 255, 255, 0.36) 100%
+  );
+  --glass-sheet-bg: rgba(248, 249, 252, 0.8);
+  --glass-shadow-pill:
+    0 4px 18px rgba(15, 23, 42, 0.09),
+    inset 0 1px 0 var(--glass-specular-top),
+    inset 0 -0.5px 0 var(--glass-specular-bottom);
+  --glass-shadow-composer:
+    0 10px 32px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 var(--glass-specular-top),
+    inset 0 -0.5px 0 var(--glass-specular-bottom);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --glass-tint-strong: rgba(22, 22, 24, 0.88);
-    --glass-pill-bg: rgba(28, 28, 30, 0.72);
-    --glass-pill-border: rgba(255, 255, 255, 0.14);
+    --glass-tint-strong: rgba(20, 20, 24, 0.84);
+    --glass-pill-bg: rgba(34, 34, 40, 0.56);
+    --glass-pill-border: rgba(255, 255, 255, 0.22);
+    --glass-specular-top: rgba(255, 255, 255, 0.28);
+    --glass-specular-bottom: rgba(0, 0, 0, 0.34);
+    --glass-surface-gradient: linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.16) 0%,
+      rgba(255, 255, 255, 0.03) 48%,
+      rgba(255, 255, 255, 0.09) 100%
+    );
+    --glass-sheet-bg: rgba(28, 28, 32, 0.82);
+    --glass-shadow-pill:
+      0 6px 20px rgba(0, 0, 0, 0.32),
+      inset 0 1px 0 var(--glass-specular-top),
+      inset 0 -0.5px 0 var(--glass-specular-bottom);
+    --glass-shadow-composer:
+      0 12px 34px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 var(--glass-specular-top),
+      inset 0 -0.5px 0 var(--glass-specular-bottom);
   }
 }
 
 @supports (color: light-dark(white, black)) {
   :root {
-    --glass-tint-strong: light-dark(rgba(255, 255, 255, 0.88), rgba(22, 22, 24, 0.88));
-    --glass-pill-bg: light-dark(rgba(255, 255, 255, 0.72), rgba(28, 28, 30, 0.72));
-    --glass-pill-border: light-dark(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.14));
+    --glass-tint-strong: light-dark(rgba(255, 255, 255, 0.84), rgba(20, 20, 24, 0.84));
+    --glass-pill-bg: light-dark(rgba(255, 255, 255, 0.62), rgba(34, 34, 40, 0.56));
+    --glass-pill-border: light-dark(rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.22));
+    --glass-specular-top: light-dark(rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.28));
+    --glass-specular-bottom: light-dark(rgba(15, 23, 42, 0.08), rgba(0, 0, 0, 0.34));
+    --glass-sheet-bg: light-dark(rgba(248, 249, 252, 0.8), rgba(28, 28, 32, 0.82));
   }
 }
 
 :root:has(> head > meta[name="color-scheme"][content="dark"]) {
-  --glass-tint-strong: rgba(22, 22, 24, 0.88);
-  --glass-pill-bg: rgba(28, 28, 30, 0.72);
-  --glass-pill-border: rgba(255, 255, 255, 0.14);
+  --glass-tint-strong: rgba(20, 20, 24, 0.84);
+  --glass-pill-bg: rgba(34, 34, 40, 0.56);
+  --glass-pill-border: rgba(255, 255, 255, 0.22);
+  --glass-specular-top: rgba(255, 255, 255, 0.28);
+  --glass-specular-bottom: rgba(0, 0, 0, 0.34);
+  --glass-surface-gradient: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.16) 0%,
+    rgba(255, 255, 255, 0.03) 48%,
+    rgba(255, 255, 255, 0.09) 100%
+  );
+  --glass-sheet-bg: rgba(28, 28, 32, 0.82);
+  --glass-shadow-pill:
+    0 6px 20px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 var(--glass-specular-top),
+    inset 0 -0.5px 0 var(--glass-specular-bottom);
+  --glass-shadow-composer:
+    0 12px 34px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 var(--glass-specular-top),
+    inset 0 -0.5px 0 var(--glass-specular-bottom);
 }
 
 :root:has(> head > meta[name="color-scheme"][content="light"]) {
-  --glass-tint-strong: rgba(255, 255, 255, 0.88);
-  --glass-pill-bg: rgba(255, 255, 255, 0.72);
-  --glass-pill-border: rgba(255, 255, 255, 0.6);
+  --glass-tint-strong: rgba(255, 255, 255, 0.84);
+  --glass-pill-bg: rgba(255, 255, 255, 0.62);
+  --glass-pill-border: rgba(255, 255, 255, 0.76);
+  --glass-specular-top: rgba(255, 255, 255, 0.9);
+  --glass-specular-bottom: rgba(15, 23, 42, 0.08);
+  --glass-surface-gradient: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.56) 0%,
+    rgba(255, 255, 255, 0.16) 52%,
+    rgba(255, 255, 255, 0.36) 100%
+  );
+  --glass-sheet-bg: rgba(248, 249, 252, 0.8);
+  --glass-shadow-pill:
+    0 4px 18px rgba(15, 23, 42, 0.09),
+    inset 0 1px 0 var(--glass-specular-top),
+    inset 0 -0.5px 0 var(--glass-specular-bottom);
+  --glass-shadow-composer:
+    0 10px 32px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 var(--glass-specular-top),
+    inset 0 -0.5px 0 var(--glass-specular-bottom);
 }
 
 :root[data-theme="dark"],
 [data-theme="dark"] {
-  --glass-tint-strong: rgba(22, 22, 24, 0.88);
-  --glass-pill-bg: rgba(28, 28, 30, 0.72);
-  --glass-pill-border: rgba(255, 255, 255, 0.14);
+  --glass-tint-strong: rgba(20, 20, 24, 0.84);
+  --glass-pill-bg: rgba(34, 34, 40, 0.56);
+  --glass-pill-border: rgba(255, 255, 255, 0.22);
+  --glass-specular-top: rgba(255, 255, 255, 0.28);
+  --glass-specular-bottom: rgba(0, 0, 0, 0.34);
+  --glass-surface-gradient: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.16) 0%,
+    rgba(255, 255, 255, 0.03) 48%,
+    rgba(255, 255, 255, 0.09) 100%
+  );
+  --glass-sheet-bg: rgba(28, 28, 32, 0.82);
+  --glass-shadow-pill:
+    0 6px 20px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 var(--glass-specular-top),
+    inset 0 -0.5px 0 var(--glass-specular-bottom);
+  --glass-shadow-composer:
+    0 12px 34px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 var(--glass-specular-top),
+    inset 0 -0.5px 0 var(--glass-specular-bottom);
 }
 
 
@@ -90,7 +186,7 @@ body {
   flex-direction: column;
   z-index: 10;
   will-change: transform, opacity;
-  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.26s ease;
+  transition: transform var(--mobile-dur-page) var(--mobile-ease-spring), opacity 0.26s ease;
 }
 
 .app-shell[data-mobile-view="chat"] .sidebar-left {
@@ -114,7 +210,7 @@ body {
   --mobile-scroll-btn-height: 34px;
   will-change: transform;
   box-shadow: none;
-  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1), box-shadow 0.28s ease;
+  transition: transform var(--mobile-dur-page) var(--mobile-ease-spring), box-shadow var(--mobile-dur-page) ease;
 }
 
 .app-shell[data-mobile-view="list"] .chat-stage {
@@ -133,8 +229,16 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px 6px;
+  padding: 12px calc(16px + var(--safe-right)) 6px calc(16px + var(--safe-left));
   flex-shrink: 0;
+}
+
+.mobile-list-topbar .mobile-circle-btn:not(.mobile-update-btn) {
+  background: var(--glass-surface-gradient), var(--glass-pill-bg);
+  -webkit-backdrop-filter: blur(26px) saturate(210%);
+  backdrop-filter: blur(26px) saturate(210%);
+  border: 0.5px solid var(--glass-pill-border);
+  box-shadow: var(--glass-shadow-pill);
 }
 
 .mobile-topbar-actions {
@@ -311,7 +415,7 @@ body {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   touch-action: pan-y;
-  padding: 4px 14px 4px;
+  padding: 4px calc(14px + var(--safe-right)) 4px calc(14px + var(--safe-left));
   gap: 4px;
 }
 
@@ -365,7 +469,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 16px calc(12px + env(safe-area-inset-bottom));
+  padding: 10px calc(16px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(16px + var(--safe-left));
   background: linear-gradient(to top, var(--bg-stage, #141416) 72%, transparent);
   pointer-events: none;
   z-index: 15;
@@ -383,8 +487,11 @@ body {
   height: 44px;
   padding: 0 14px;
   border-radius: 999px;
-  background: rgba(128, 128, 138, 0.16);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--glass-surface-gradient), var(--glass-pill-bg);
+  -webkit-backdrop-filter: blur(26px) saturate(210%);
+  backdrop-filter: blur(26px) saturate(210%);
+  border: 0.5px solid var(--glass-pill-border);
+  box-shadow: var(--glass-shadow-pill);
   color: var(--text-secondary);
 }
 
@@ -396,4 +503,113 @@ body {
   color: var(--text-primary);
   font-size: 15px;
   outline: none;
+}
+
+/* ==================== iPHONE MODEL MATRIX ADAPTATION (#11) ==================== */
+/* Compact narrow iPhones (iPhone SE 2/3 375x667, 12/13 mini 375x812) */
+@media (max-width: 375px) {
+  .mobile-list-topbar {
+    padding: 10px calc(12px + var(--safe-right)) 4px calc(12px + var(--safe-left));
+  }
+
+  .session-list {
+    padding-left: calc(10px + var(--safe-left));
+    padding-right: calc(10px + var(--safe-right));
+  }
+
+  .session-item {
+    padding: 9px 8px;
+    gap: 10px;
+  }
+
+  .session-item .bot-avatar {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* Short iPhone screens (iPhone SE 2/3 667px height) */
+@media (max-height: 700px) {
+  .pinned-bot-zone {
+    padding: 2px 16px 8px;
+  }
+
+  .pinned-avatar-wrap {
+    width: 72px;
+    height: 72px;
+  }
+
+  .pinned-avatar-wrap svg,
+  .pinned-avatar-wrap img {
+    width: 68px;
+    height: 68px;
+  }
+
+  .pinned-star-badge {
+    top: 52px;
+    right: calc(50% - 36px);
+    width: 22px;
+    height: 22px;
+    font-size: 12px;
+  }
+}
+
+/* Large iPhones (Plus / Pro Max: 414px–440px width) */
+@media (min-width: 414px) and (orientation: portrait) {
+  .mobile-list-topbar {
+    padding-left: calc(18px + var(--safe-left));
+    padding-right: calc(18px + var(--safe-right));
+  }
+
+  .session-list {
+    padding-left: calc(16px + var(--safe-left));
+    padding-right: calc(16px + var(--safe-right));
+  }
+}
+
+/* Landscape iPhone (all models: SE, Notch, Dynamic Island 14-17 Pro / Pro Max) */
+@media (orientation: landscape) and (max-height: 460px) {
+  .sidebar-left {
+    padding-top: max(4px, var(--safe-top));
+  }
+
+  .mobile-list-topbar {
+    padding: 6px calc(14px + var(--safe-right)) 4px calc(14px + var(--safe-left));
+  }
+
+  .pinned-bot-zone {
+    padding: 2px calc(16px + var(--safe-right)) 6px calc(16px + var(--safe-left));
+    align-items: stretch;
+  }
+
+  .pinned-bot-card {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 4px 10px;
+  }
+
+  .pinned-avatar-wrap {
+    width: 44px;
+    height: 44px;
+  }
+
+  .pinned-avatar-wrap svg,
+  .pinned-avatar-wrap img {
+    width: 42px;
+    height: 42px;
+  }
+
+  .pinned-star-badge {
+    top: 28px;
+    right: auto;
+    left: 28px;
+    width: 18px;
+    height: 18px;
+    font-size: 10px;
+  }
+
+  .chat-stage {
+    --stage-header-height: calc(48px + max(4px, var(--safe-top)));
+  }
 }

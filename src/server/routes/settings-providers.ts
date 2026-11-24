@@ -33,6 +33,10 @@ import {
   resetCategoryBiasCache,
 } from "../../agent/route-stats.js";
 import { normalizeGoogleBillingSettings } from "../../lib/gcp-billing.js";
+import {
+  VALID_BROWSER_AUTOMATION_MODES,
+  normalizeBrowserAutomationSettings,
+} from "../../shared/browser-automation.js";
 import { normalizeContextCompressionSettings } from "../../shared/context-compression.js";
 import { normalizeScreenPoolSettings } from "../../shared/screen-pool.js";
 
@@ -368,6 +372,7 @@ export async function handleSettingsProvidersRoutes(
             "routing",
             "contextCompression",
             "screenPool",
+            "browserAutomation",
           ].some((k) => k in body);
 
           if ("model" in body || !hasExtendedKeys) {
@@ -505,6 +510,23 @@ export async function handleSettingsProvidersRoutes(
               mode: normalizedSp.mode,
               maxConcurrentScreens: normalizedSp.maxConcurrentScreens,
             };
+          }
+          if ("browserAutomation" in body) {
+            const ba = body.browserAutomation;
+            if (!ba || typeof ba !== "object" || Array.isArray(ba)) {
+              return sendJson(res, 400, { error: "invalid browserAutomation payload" });
+            }
+            if (
+              ba.mode !== undefined &&
+              !VALID_BROWSER_AUTOMATION_MODES.includes(ba.mode)
+            ) {
+              return sendJson(res, 400, { error: "invalid browserAutomation.mode" });
+            }
+            const curBa = ctx.getMergedSettings().browserAutomation;
+            patch.browserAutomation = normalizeBrowserAutomationSettings({
+              ...curBa,
+              ...ba,
+            });
           }
 
           const saved = ctx.store?.writeSettings?.(patch) || patch;

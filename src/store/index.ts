@@ -24,6 +24,7 @@ export interface SessionRecord {
   type?: string;
   avatar?: Record<string, any>;
   rolePrompt?: string;
+  browserMode?: string;
   memories?: Array<Record<string, any>>;
   memberBotIds?: string[];
   createdByBotId?: string;
@@ -134,6 +135,7 @@ export function createStore(dataDir: string) {
       type,
       avatar,
       rolePrompt,
+      browserMode,
       memories,
       memberBotIds,
       createdByBotId,
@@ -154,6 +156,7 @@ export function createStore(dataDir: string) {
       ...(type ? { type } : {}),
       ...(avatar ? { avatar } : {}),
       ...(rolePrompt !== undefined ? { rolePrompt } : {}),
+      ...(typeof browserMode === "string" && browserMode ? { browserMode } : {}),
       ...(Array.isArray(memories) ? { memories: memories.map((m) => ({ ...m })) } : {}),
       ...(Array.isArray(memberBotIds) ? { memberBotIds } : {}),
       ...(createdByBotId ? { createdByBotId } : {}),

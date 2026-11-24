@@ -17,18 +17,18 @@
 
 /* Safe-area & dynamic viewport height for dialogs/onboarding on compact screens */
 .onboarding-overlay {
-  padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom));
+  padding: max(14px, var(--safe-top)) calc(14px + var(--safe-right)) max(14px, var(--safe-bottom)) calc(14px + var(--safe-left));
 }
 
 .onboarding-card {
   padding: 18px 16px;
-  max-height: calc(100dvh - 28px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  max-height: calc(var(--mobile-vv-height, 100dvh) - 28px - var(--safe-top) - var(--safe-bottom));
   -webkit-overflow-scrolling: touch;
 }
 
 .compact-dialog,
 .schedule-modal {
-  max-height: calc(100dvh - 28px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  max-height: calc(var(--mobile-vv-height, 100dvh) - 28px - var(--safe-top) - var(--safe-bottom));
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -37,11 +37,21 @@
 @keyframes mobileModalPop {
   from {
     opacity: 0;
-    transform: scale(0.94) translateY(10px);
+    transform: scale(0.95) translateY(8px);
   }
   to {
     opacity: 1;
     transform: scale(1) translateY(0);
+  }
+}
+
+/* Unified horizontal push transition for fullscreen sub-pages (#11) */
+@keyframes mobilePagePush {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
   }
 }
 
@@ -57,10 +67,10 @@
 #cloud-account-modal,
 #schedule-modal-backdrop,
 #bot-memory-modal-backdrop {
-  padding: 20px;
+  padding: 20px calc(20px + var(--safe-right)) 20px calc(20px + var(--safe-left));
   z-index: 400;
   backdrop-filter: none;
-  background: rgba(0, 0, 0, 0.68);
+  background: rgba(0, 0, 0, 0.64);
 }
 
 #mobile-pair-modal .compact-dialog,
@@ -68,16 +78,16 @@
 #cloud-account-modal .compact-dialog,
 #schedule-modal-backdrop .compact-dialog,
 #bot-memory-modal-backdrop .compact-dialog {
-  animation: mobileModalPop 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: mobileModalPop var(--mobile-dur-modal) var(--mobile-ease-spring);
 }
 
 .app-confirm-dialog {
-  width: min(360px, calc(100vw - 32px));
+  width: min(360px, calc(100vw - 32px - var(--safe-left) - var(--safe-right)));
   border-radius: 22px;
 }
 
 .app-confirm-dialog[open] {
-  animation: mobileModalPop 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: mobileModalPop var(--mobile-dur-modal) var(--mobile-ease-spring);
 }
 
 .app-confirm-dialog::backdrop {
@@ -128,16 +138,17 @@
 .apps-modal.skills-modal,
 .settings-modal {
   width: 100vw;
-  height: 100dvh;
+  height: var(--mobile-vv-height, 100dvh);
   max-width: none;
   max-height: none;
   border-radius: 0;
   border: none;
-  animation: mobileModalPop 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.28);
+  animation: mobilePagePush var(--mobile-dur-page) var(--mobile-ease-spring);
 }
 
 .apps-modal.skills-modal {
-  padding: calc(max(14px, env(safe-area-inset-top)) + 4px) 16px calc(max(12px, env(safe-area-inset-bottom)));
+  padding: calc(max(14px, var(--safe-top)) + 4px) calc(16px + var(--safe-right)) calc(max(12px, var(--safe-bottom))) calc(16px + var(--safe-left));
 }
 
 .apps-modal .modal-close-btn,
@@ -160,8 +171,11 @@
   height: 42px;
   padding: 0 !important;
   border-radius: 50%;
-  background: var(--bg-card, rgba(128, 128, 138, 0.14));
-  border: 1px solid var(--border-card, rgba(128, 128, 138, 0.22));
+  background: var(--glass-surface-gradient), var(--glass-pill-bg);
+  -webkit-backdrop-filter: blur(26px) saturate(210%);
+  backdrop-filter: blur(26px) saturate(210%);
+  border: 0.5px solid var(--glass-pill-border);
+  box-shadow: var(--glass-shadow-pill);
   color: var(--text-primary);
   justify-content: center;
   gap: 0;
@@ -189,20 +203,20 @@
 .settings-modal {
   display: flex;
   flex-direction: column !important;
-  padding: max(8px, env(safe-area-inset-top)) 0 max(8px, env(safe-area-inset-bottom));
+  padding: max(8px, var(--safe-top)) 0 max(8px, var(--safe-bottom));
 }
 
 .settings-mobile-topbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 12px 6px;
+  padding: 4px calc(12px + var(--safe-right)) 6px calc(12px + var(--safe-left));
   flex-shrink: 0;
   position: relative;
   z-index: 5;
-  background: color-mix(in srgb, var(--bg-modal) 88%, transparent);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--bg-modal) 80%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(200%);
+  backdrop-filter: blur(24px) saturate(200%);
 }
 
 .settings-nav-wrap {
@@ -311,15 +325,16 @@
 
 .settings-nav-item.is-active {
   opacity: 1;
-  border-color: var(--border-card);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  background: var(--glass-surface-gradient), var(--glass-pill-bg);
+  border-color: var(--glass-pill-border);
+  box-shadow: var(--glass-shadow-pill);
 }
 
 .settings-content {
   flex: 1 1 auto;
   min-height: 0;
   width: 100% !important;
-  padding: 16px 16px 24px;
+  padding: 16px calc(16px + var(--safe-right)) 24px calc(16px + var(--safe-left));
   border-top: 1px solid var(--border-hairline);
   overflow-y: auto;
   overflow-x: hidden;

@@ -7,6 +7,7 @@ import {
   type RefObject,
 } from "react";
 import { parsePromptToAvatar } from "../../avatars.js";
+import { useAnimatedSheet } from "../../hooks/useAnimatedSheet.js";
 import { useChatScrollPin } from "../../hooks/useChatScrollPin.js";
 import {
   isMobileViewport,
@@ -88,6 +89,11 @@ export function ChatStage({
 
   const [isDragOver, setIsDragOver] = useState(false);
   const eventStreamRef = useRef<HTMLDivElement | null>(null);
+  const closeExchangeSheet = () =>
+    setState((prev) => ({
+      botExchangeSheet: { ...prev.botExchangeSheet, open: false },
+    }));
+  const exchangeAnim = useAnimatedSheet(botExchangeSheet.open, closeExchangeSheet, { axis: "y" });
   const composerWrapRef = useRef<HTMLDivElement | null>(null);
   const newChatInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -889,22 +895,23 @@ export function ChatStage({
       {/* Bot-to-Bot Exchange Slide-up Drawer (`Bot 交流记录`) */}
       <div
         id="bot-exchange-sheet"
-        className="bot-exchange-sheet"
+        className={`bot-exchange-sheet${exchangeAnim.stateClass ? ` ${exchangeAnim.stateClass}` : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label="Bot 交流记录"
-        hidden={!botExchangeSheet.open}
+        hidden={exchangeAnim.hidden}
       >
         <div
           className="exchange-sheet-backdrop"
           id="exchange-sheet-backdrop"
-          onClick={() =>
-            setState((prev) => ({
-              botExchangeSheet: { ...prev.botExchangeSheet, open: false },
-            }))
-          }
+          onClick={closeExchangeSheet}
         />
-        <div className="exchange-sheet-panel">
+        <div ref={exchangeAnim.panelRef} className="exchange-sheet-panel">
+          <div
+            className="mobile-sheet-handle mobile-only"
+            aria-hidden="true"
+            {...exchangeAnim.handleProps}
+          />
           <div className="exchange-sheet-header">
             <div className="exchange-participants-bar" id="exchange-participants-bar">
               {botExchangeSheet.participants.map((p: any, i: number) => (

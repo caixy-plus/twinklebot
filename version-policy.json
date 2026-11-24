@@ -33,7 +33,8 @@
       "multi-display-v1",
       "vault-secret-v1",
       "memory-suggest-v1",
-      "computer-remote-input-v1"
+      "computer-remote-input-v1",
+      "local-browser-automation-v1"
     ]
   }
 }

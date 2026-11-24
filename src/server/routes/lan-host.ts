@@ -22,6 +22,7 @@ import {
 import { isHostTool, runHostTool } from "../../agent/host-tools.js";
 import { assessToolCall } from "../../agent/policy.js";
 import { probeBotComputerState, provisionBotComputer } from "../../lib/bot-computer-provisioner.js";
+import { probeLocalChromeStatus } from "../../lib/local-chrome-cdp.js";
 import {
   resolveBaseWorkspaceRoot,
   resolveBotWorkspaceRoot,
@@ -31,13 +32,19 @@ import {
 
 async function collectComputerStatusPayload(ctx: ServerContext) {
   const startMs = Date.now();
-  const executionMode = ctx.getMergedSettings().hostComputer.executionMode;
+  const mergedSettings = ctx.getMergedSettings();
+  const executionMode = mergedSettings.hostComputer.executionMode;
   const hostComputer = ctx.getHostDeviceInfo(executionMode);
-  const probed = await ctx.probeBotComputerFn({
-    deployEnv: ctx.runtimeState.deployEnv,
-    executor: ctx.executor,
-    store: ctx.store,
-  });
+  const [probed, localBrowser] = await Promise.all([
+    ctx.probeBotComputerFn({
+      deployEnv: ctx.runtimeState.deployEnv,
+      executor: ctx.executor,
+      store: ctx.store,
+    }),
+    ctx.runtimeState.deployEnv === "cloud"
+      ? Promise.resolve(null)
+      : probeLocalChromeStatus(mergedSettings.browserAutomation, ctx.finalConfig.dataDir),
+  ]);
   const latencyMs = Math.max(1, Date.now() - startMs);
   const commonFields = {
     online: Boolean(probed.online),
@@ -46,6 +53,7 @@ async function collectComputerStatusPayload(ctx: ServerContext) {
     latencyMs,
     detail: probed.detail,
     executorUrl: ctx.finalConfig.executorUrl || "http://127.0.0.1:7300",
+    ...(localBrowser ? { localBrowser } : {}),
     ...(probed.vmInstalled !== undefined ? { vmInstalled: probed.vmInstalled } : {}),
     ...(probed.vmRunning !== undefined ? { vmRunning: probed.vmRunning } : {}),
     ...(probed.errorCode ? { errorCode: probed.errorCode } : {}),

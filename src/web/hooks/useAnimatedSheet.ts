@@ -1,15 +1,44 @@
 import { useEffect, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 
-export function useAnimatedSheet(open: boolean, onClose: () => void) {
-  const [phase, setPhase] = useState<"closed" | "open" | "closing">(open ? "open" : "closed");
+export interface AnimatedSheetOptions {
+  /** Dismissal gesture axis: "y" for bottom sheets (drag down), "x" for fullscreen push pages (left-edge swipe back). */
+  axis?: "y" | "x";
+  /** Close transition duration in ms (matches --mobile-dur-page / --mobile-dur-sheet). */
+  closeDurationMs?: number;
+}
+
+export function useAnimatedSheet(
+  open: boolean,
+  onClose: () => void,
+  options?: AnimatedSheetOptions
+) {
+  const axis = options?.axis || "y";
+  const closeDurationMs = options?.closeDurationMs ?? 300;
+  const [phase, setPhase] = useState<"closed" | "opening" | "open" | "closing">(
+    open ? "open" : "closed"
+  );
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const dragStartYRef = useRef<number>(0);
-  const dragDyRef = useRef<number>(0);
+  const dragStartRef = useRef<{ x: number; y: number; active: boolean }>({
+    x: 0,
+    y: 0,
+    active: false,
+  });
+  const dragDeltaRef = useRef<number>(0);
 
   useEffect(() => {
     if (open) {
-      setPhase("open");
-      return;
+      let raf1 = 0;
+      let raf2 = 0;
+      setPhase((prev) => (prev === "open" ? "open" : "opening"));
+      raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => {
+          setPhase("open");
+        });
+      });
+      return () => {
+        if (raf1) cancelAnimationFrame(raf1);
+        if (raf2) cancelAnimationFrame(raf2);
+      };
     }
     setPhase((prev) => {
       if (prev === "closed") return "closed";
@@ -17,20 +46,42 @@ export function useAnimatedSheet(open: boolean, onClose: () => void) {
     });
     const timer = setTimeout(() => {
       setPhase("closed");
-    }, 220);
+    }, closeDurationMs);
     return () => clearTimeout(timer);
-  }, [open]);
+  }, [open, closeDurationMs]);
 
   const handleTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
-    dragStartYRef.current = e.touches?.[0]?.clientY || 0;
-    dragDyRef.current = 0;
+    const touch = e.touches?.[0];
+    if (!touch) return;
+    if (axis === "x" && touch.clientX > 36) {
+      dragStartRef.current = { x: 0, y: 0, active: false };
+      return;
+    }
+    dragStartRef.current = { x: touch.clientX, y: touch.clientY, active: true };
+    dragDeltaRef.current = 0;
   };
 
   const handleTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
-    const curY = e.touches?.[0]?.clientY || 0;
-    const dy = Math.max(0, curY - dragStartYRef.current);
-    dragDyRef.current = dy;
+    if (!dragStartRef.current.active) return;
+    const touch = e.touches?.[0];
+    if (!touch) return;
     const panel = panelRef.current;
+    if (axis === "x") {
+      const dx = Math.max(0, touch.clientX - dragStartRef.current.x);
+      const dy = Math.abs(touch.clientY - dragStartRef.current.y);
+      if (dx === 0 || (dragDeltaRef.current === 0 && dy > dx * 1.15)) {
+        if (dy > 16) dragStartRef.current.active = false;
+        return;
+      }
+      dragDeltaRef.current = dx;
+      if (panel && dx > 0) {
+        panel.style.transform = `translateX(${dx}px)`;
+        panel.style.transition = "none";
+      }
+      return;
+    }
+    const dy = Math.max(0, touch.clientY - dragStartRef.current.y);
+    dragDeltaRef.current = dy;
     if (panel && dy > 0) {
       panel.style.transform = `translateY(${dy}px)`;
       panel.style.transition = "none";
@@ -38,20 +89,29 @@ export function useAnimatedSheet(open: boolean, onClose: () => void) {
   };
 
   const handleTouchEnd = () => {
+    if (!dragStartRef.current.active) return;
+    dragStartRef.current.active = false;
     const panel = panelRef.current;
     if (panel) {
       panel.style.transition = "";
       panel.style.transform = "";
     }
-    if (dragDyRef.current > 80) {
+    const threshold = axis === "x" ? 72 : 80;
+    if (dragDeltaRef.current > threshold) {
       onClose();
     }
-    dragDyRef.current = 0;
+    dragDeltaRef.current = 0;
   };
 
   const hidden = phase === "closed";
   const stateClass =
-    phase === "open" ? "is-open" : phase === "closing" ? "is-closing" : "";
+    phase === "open"
+      ? "is-open"
+      : phase === "closing"
+        ? "is-closing"
+        : phase === "opening"
+          ? "is-opening"
+          : "";
 
   return {
     hidden,

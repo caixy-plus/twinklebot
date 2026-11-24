@@ -314,22 +314,29 @@ test("Desktop popover/inspector rows & mobile custom-skills/settings layouts pre
   );
   assert.match(styleCss, /@media\s*\(max-width:\s*919px\)\s*\{[\s\S]*?\.inspector-right\s*\{[\s\S]*?position:\s*absolute/);
 
-  // 5. Mobile .event-stream pads below floating stage header and above floating composer using --mobile-composer-bottom
+  // 5. Mobile .event-stream pads below floating stage header and above floating composer using --mobile-composer-bottom and horizontal safe areas
   assert.match(
     mobileCss,
-    /\.event-stream\s*\{[^}]*padding:\s*calc\(var\(--stage-header-height\)\s*\+\s*10px\)\s+14px\s+calc\(var\(--mobile-composer-bottom\)\s*\+\s*10px\)\s*!important/s
+    /\.event-stream\s*\{[^}]*padding:\s*calc\(var\(--stage-header-height\)\s*\+\s*10px\)\s+calc\(14px\s*\+\s*var\(--safe-right\)\)\s+calc\(var\(--mobile-composer-bottom\)\s*\+\s*10px\)\s+calc\(14px\s*\+\s*var\(--safe-left\)\)\s*!important/s
   );
   assert.equal(/\.event-stream\s*\{[^}]*padding:[^;]*--mobile-composer-bottom/s.test(mobileCss), true);
 });
 
-test("Mobile stage-header & composer-wrap use floating glass pills with mask-fade layers and @supports fallback", () => {
+test("Mobile stage-header & composer-wrap use enhanced liquid glass pills with mask-fade layers, unified transitions, iPhone safe-area matrix, and @supports fallback", () => {
   const mobileCss = fs.readFileSync(path.join(PROJECT_ROOT, "public/mobile.css"), "utf8");
+  const webSrc = readWebSourceTs();
 
   assert.ok(mobileCss.includes("--glass-tint-strong:"));
   assert.ok(mobileCss.includes("--glass-pill-bg:"));
   assert.ok(mobileCss.includes("--glass-pill-border:"));
-  assert.match(mobileCss, /@media\s*\(prefers-color-scheme:\s*dark\)[\s\S]*?--glass-pill-bg:\s*rgba\(28,\s*28,\s*30,\s*0\.72\)/);
-  assert.match(mobileCss, /\[data-theme="dark"\][\s\S]*?--glass-pill-bg:\s*rgba\(28,\s*28,\s*30,\s*0\.72\)/);
+  assert.ok(mobileCss.includes("--glass-specular-top:"));
+  assert.ok(mobileCss.includes("--glass-surface-gradient:"));
+  assert.ok(mobileCss.includes("--glass-shadow-pill:"));
+  assert.ok(mobileCss.includes("--mobile-ease-spring:"));
+  assert.ok(mobileCss.includes("--safe-left: env(safe-area-inset-left, 0px)"));
+  assert.ok(mobileCss.includes("--safe-right: env(safe-area-inset-right, 0px)"));
+  assert.match(mobileCss, /@media\s*\(prefers-color-scheme:\s*dark\)[\s\S]*?--glass-pill-bg:\s*rgba\(34,\s*34,\s*40,\s*0\.56\)/);
+  assert.match(mobileCss, /\[data-theme="dark"\][\s\S]*?--glass-pill-bg:\s*rgba\(34,\s*34,\s*40,\s*0\.56\)/);
 
   assert.equal(/\.stage-header\s*\{[^}]*background:\s*var\(--bg-bar-glass\)/s.test(mobileCss), false);
   assert.equal(/\.stage-header\s*\{[^}]*border-bottom:\s*1px/s.test(mobileCss), false);
@@ -340,22 +347,30 @@ test("Mobile stage-header & composer-wrap use floating glass pills with mask-fad
   assert.match(mobileCss, /\.composer-wrap\s*\{[^}]*background:\s*transparent;[^}]*border-top:\s*none;/s);
   assert.match(
     mobileCss,
-    /\.stage-header::before\s*\{[^}]*backdrop-filter:\s*blur\(20px\)\s+saturate\(180%\)[^}]*mask-image:\s*linear-gradient\(to bottom,\s*#000\s+50%,\s*transparent\s+100%\)/s
+    /\.stage-header::before\s*\{[^}]*backdrop-filter:\s*blur\(24px\)\s+saturate\(210%\)[^}]*mask-image:\s*linear-gradient\(to bottom,\s*#000\s+50%,\s*transparent\s+100%\)/s
   );
   assert.match(
     mobileCss,
-    /\.composer-wrap::before\s*\{[^}]*backdrop-filter:\s*blur\(20px\)\s+saturate\(180%\)[^}]*mask-image:\s*linear-gradient\(to top,\s*#000\s+55%,\s*transparent\s+100%\)/s
+    /\.composer-wrap::before\s*\{[^}]*backdrop-filter:\s*blur\(24px\)\s+saturate\(210%\)[^}]*mask-image:\s*linear-gradient\(to top,\s*#000\s+55%,\s*transparent\s+100%\)/s
   );
 
   assert.match(
     mobileCss,
-    /#mobile-back-btn,\s*#mobile-inspector-btn,\s*\.share-pill-btn,\s*\.stage-bot-pill\s*\{[^}]*backdrop-filter:\s*blur\(24px\)\s+saturate\(180%\)[^}]*border:\s*0\.5px\s+solid\s+var\(--glass-pill-border\)/s
+    /#mobile-back-btn,\s*#mobile-inspector-btn,\s*\.share-pill-btn,\s*\.stage-bot-pill\s*\{[^}]*backdrop-filter:\s*blur\(28px\)\s+saturate\(210%\)[^}]*border:\s*0\.5px\s+solid\s+var\(--glass-pill-border\)/s
   );
   const pillMatch = mobileCss.match(/\.composer-pill\s*\{[^}]*\}/s);
   assert.ok(pillMatch, "mobile.css must style .composer-pill");
   assert.ok(pillMatch[0].includes("backdrop-filter:"), ".composer-pill must include backdrop-filter");
   const radiusMatch = pillMatch[0].match(/border-radius:\s*(\d+)px/);
   assert.ok(radiusMatch && Number(radiusMatch[1]) >= 24, ".composer-pill border-radius must be >= 24px");
+
+  // Unified page push & bottom drawer transitions (#11)
+  assert.ok(mobileCss.includes("@keyframes mobilePagePush"), "fullscreen mobile modals must use unified mobilePagePush");
+  assert.match(mobileCss, /\.mobile-sheet\.is-fullscreen\s+\.mobile-sheet-panel\s*\{[^}]*transform:\s*translateX\(100%\)/s);
+  assert.match(mobileCss, /\.bot-exchange-sheet\s+\.exchange-sheet-panel\s*\{[^}]*transform:\s*translateY\(100%\)/s);
+  assert.ok(mobileCss.includes("@media (orientation: landscape) and (max-height: 460px)"), "mobile.css must adapt landscape iPhones");
+  assert.ok(webSrc.includes("is-opening"), "useAnimatedSheet must stage an opening frame before entering is-open");
+  assert.ok(webSrc.includes("data-mobile-orientation") || webSrc.includes("mobileOrientation"), "mobile-ui must track mobile orientation on viewport sync");
 
   assert.match(
     mobileCss,
@@ -378,7 +393,7 @@ test("Mobile topbar consolidates actions into #mobile-more-popover and prevents 
   assert.ok(html.includes('id="clear-session-btn"'));
 
   assert.match(mobileCss, /#clear-session-btn,[\s\S]*?display:\s*none\s*!important/);
-  assert.match(mobileCss, /\.stage-bot-pill\s*\{[^}]*max-width:\s*calc\(100vw\s*-\s*84px\)/s);
+  assert.match(mobileCss, /\.stage-bot-pill\s*\{[^}]*max-width:\s*calc\(100vw\s*-\s*84px(?:\s*-\s*var\(--safe-left\)\s*-\s*var\(--safe-right\))?\)/s);
   assert.match(mobileCss, /\.status-state\s*\{[^}]*white-space:\s*nowrap/s);
   assert.ok(mobileCss.includes(".mobile-more-popover"));
 

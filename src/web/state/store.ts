@@ -235,6 +235,14 @@ export interface AppState {
     vmInstalled?: boolean;
     vmRunning?: boolean;
     hostComputer?: { hostname?: string; platform?: string; executionMode?: string };
+    localBrowser?: {
+      available?: boolean;
+      executablePath?: string;
+      debugPort?: number;
+      debugReachable?: boolean;
+      activeSessions?: number;
+      profileDir?: string;
+    } | null;
   };
   computerDisplays: {
     bindings: Record<string, string>;

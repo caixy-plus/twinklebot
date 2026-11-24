@@ -1,4 +1,5 @@
 import type { BillingCurrency, ProviderEntry, RoutingSettings, SanitizedProvider, TokenUsage } from "./config.js";
+import type { BotBrowserModeOverride, BrowserAutomationSettings } from "./browser-automation.js";
 
 export type SessionType = "single" | "group";
 
@@ -27,6 +28,7 @@ export interface SessionSummary {
   status: SessionStatus;
   model?: string;
   persona?: string;
+  browserMode?: BotBrowserModeOverride;
   avatar?: BotAvatar;
   isAdmin?: boolean;
   pinned?: boolean;
@@ -109,6 +111,7 @@ export interface AppSettings {
   voice: VoiceSettings;
   autoExpandScreen?: boolean;
   hostComputer: { executionMode: HostExecutionMode | string };
+  browserAutomation?: BrowserAutomationSettings;
   contextCompression?: ContextCompressionSettings;
   screenPool?: ScreenPoolSettings;
   mcpServers: Record<string, unknown>;

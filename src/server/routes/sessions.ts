@@ -25,6 +25,10 @@ import {
 } from "../../lib/bot-workspace.js";
 import { buildSessionCostSummary } from "../../agent/pricing.js";
 import { detectSemanticStopIntent } from "../../agent/stop-detector.js";
+import {
+  VALID_BOT_BROWSER_MODES,
+  normalizeBotBrowserMode,
+} from "../../shared/browser-automation.js";
 
 export async function handleSessionRoutes(
   req: http.IncomingMessage,
@@ -188,6 +192,16 @@ export async function handleSessionRoutes(
             }
             if (typeof body.rolePrompt === "string") {
               allowedPatch.rolePrompt = body.rolePrompt;
+            }
+            if ("browserMode" in body) {
+              if (
+                body.browserMode !== null &&
+                body.browserMode !== "" &&
+                !VALID_BOT_BROWSER_MODES.includes(body.browserMode)
+              ) {
+                return sendJson(res, 400, { error: "invalid browserMode" });
+              }
+              allowedPatch.browserMode = normalizeBotBrowserMode(body.browserMode);
             }
             if (Array.isArray(body.memories)) {
               allowedPatch.memories = body.memories;

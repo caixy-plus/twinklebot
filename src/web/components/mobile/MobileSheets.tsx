@@ -24,8 +24,16 @@ import {
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson, dismissLanOfflineModal } from "../../services/api-client.js";
-import { computeUpdateDecisionKey } from "../../services/ota-updater.js";
+import {
+  computeUpdateDecisionKey,
+  hasConnectedNodeCapability,
+} from "../../services/ota-updater.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
+import {
+  formatBrowserAutomationModeLabel,
+  normalizeBotBrowserMode,
+  normalizeBrowserAutomationMode,
+} from "/shared/browser-automation.js";
 import { formatCny } from "../../state/helpers.js";
 import {
   getActiveSessionFromState,
@@ -59,6 +67,7 @@ export function MobileSheets() {
   const lanOfflineModalShown = useStore((s) => s.lanOfflineModalShown);
   const accountEpoch = useStore((s) => s.accountEpoch);
   const settings = useStore((s) => s.settings);
+  const diagnostics = useStore((s) => s.diagnostics);
   const lastGlobalUsagePayload = useStore((s) => s.lastGlobalUsagePayload);
   const updateState = useStore((s) => s.updateState);
   const updateDecision = updateState?.decision;
@@ -86,10 +95,10 @@ export function MobileSheets() {
       mobileSheets: { ...prev.mobileSheets, botEditorOpen: false },
     }));
 
-  const inspectorAnim = useAnimatedSheet(mobileSheets.inspectorOpen, closeInspector);
-  const settingsAnim = useAnimatedSheet(mobileSheets.settingsOpen, closeSettings);
-  const nodeAnim = useAnimatedSheet(mobileSheets.nodeOpen, closeNode);
-  const botEditorAnim = useAnimatedSheet(mobileSheets.botEditorOpen, closeBotEditor);
+  const inspectorAnim = useAnimatedSheet(mobileSheets.inspectorOpen, closeInspector, { axis: "y" });
+  const settingsAnim = useAnimatedSheet(mobileSheets.settingsOpen, closeSettings, { axis: "x" });
+  const nodeAnim = useAnimatedSheet(mobileSheets.nodeOpen, closeNode, { axis: "y" });
+  const botEditorAnim = useAnimatedSheet(mobileSheets.botEditorOpen, closeBotEditor, { axis: "x" });
 
   const [personaDraft, setPersonaDraft] = useState(activeSession?.rolePrompt || "");
   useEffect(() => {
@@ -420,6 +429,46 @@ export function MobileSheets() {
               />
             </section>
 
+            {activeSession?.type !== "group" &&
+              hasConnectedNodeCapability("local-browser-automation-v1", { diagnostics }) && (
+                <section className="mobile-inspector-section" id="mobile-bot-browser-mode-section">
+                  <div className="mobile-sheet-header">
+                    <span className="mobile-section-caption">浏览器引擎</span>
+                  </div>
+                  <select
+                    id="mobile-bot-browser-mode-select"
+                    className="settings-select"
+                    aria-label="单 Bot 浏览器引擎"
+                    value={normalizeBotBrowserMode(activeSession?.browserMode)}
+                    onChange={async (e) => {
+                      if (!activeSession?.id) return;
+                      const browserMode = normalizeBotBrowserMode(e.target.value);
+                      try {
+                        const updated = await apiJson(`/api/sessions/${activeSession.id}`, {
+                          method: "PATCH",
+                          body: JSON.stringify({ browserMode, touch: false }),
+                        });
+                        upsertLocalSession(updated);
+                        showToast(
+                          `已切换浏览器引擎：${formatBrowserAutomationModeLabel(browserMode)}`
+                        );
+                      } catch (err: any) {
+                        showToast(`保存失败：${err?.message || "请求异常"}`);
+                      }
+                    }}
+                  >
+                    <option value="inherit">
+                      跟随全局（{formatBrowserAutomationModeLabel(
+                        normalizeBrowserAutomationMode(settings?.browserAutomation?.mode)
+                      )}）
+                    </option>
+                    <option value="bot_computer">Bot 电脑 Chrome（保留登录态）</option>
+                    <option value="local_headless">本机 Chrome Headless（省 CPU）</option>
+                    <option value="local_debug">本机 Chrome Debug（独立 Profile）</option>
+                  </select>
+                </section>
+              )}
+
             <section className="mobile-inspector-section">
               <div className="mobile-sheet-header">
                 <span className="mobile-section-caption">
@@ -568,6 +617,7 @@ export function MobileSheets() {
             bindScrollEndTracking(node);
           }}
           className="mobile-sheet-panel"
+          {...settingsAnim.handleProps}
         >
           <div className="mobile-sheet-header">
             <button
@@ -1231,7 +1281,11 @@ export function MobileSheets() {
         aria-label="创建或编辑 Bot"
         hidden={botEditorAnim.hidden}
       >
-        <div ref={botEditorAnim.panelRef} className="mobile-sheet-panel">
+        <div
+          ref={botEditorAnim.panelRef}
+          className="mobile-sheet-panel"
+          {...botEditorAnim.handleProps}
+        >
           <div className="mobile-sheet-header">
             <button
               id="mobile-bot-editor-close-btn"
