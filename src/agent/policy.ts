@@ -36,7 +36,7 @@ const DENIED_DIRS = Array.from(
   ])
 );
 
-const DENIED_SEGMENTS = new Set([".ssh", ".aws", ".gnupg", "keychains"]);
+const DENIED_SEGMENTS = new Set([".ssh", ".aws", ".gnupg", "keychains", "chrome-debug-profile"]);
 
 const SENSITIVE_CONFIG_BASENAMES = new Set([
   ".zshrc",
@@ -540,9 +540,22 @@ export function assessToolCall(
   if (name === "browser_upload_file") {
     const rawPaths = Array.isArray(safeArgs.paths)
       ? safeArgs.paths
-      : typeof safeArgs.path === "string"
-        ? [safeArgs.path]
-        : [];
+      : typeof safeArgs.paths === "string"
+        ? [safeArgs.paths]
+        : typeof safeArgs.path === "string"
+          ? [safeArgs.path]
+          : [];
+    const isLocalHostBrowser =
+      Boolean(config?.browserAutomationMode) &&
+      config?.browserAutomationMode !== "bot_computer";
+    const hostMode = String(config?.hostExecutionMode || "ask");
+    if (isLocalHostBrowser && hostMode === "off") {
+      return {
+        decision: "deny",
+        reason: "当前「你的电脑」执行权限已设为「从不允许」，禁止本机浏览器读取上传宿主机文件",
+      };
+    }
+    let needsHostConfirm = false;
     for (const p of rawPaths) {
       if (isPathDenied(p)) {
         return {
@@ -564,6 +577,24 @@ export function assessToolCall(
           reason: "待上传文件属于其他 Bot 的专属工作区/资料库，需用户确认后方可访问",
         };
       }
+      if (isLocalHostBrowser && hostMode === "ask") {
+        const resolved = normalizeCandidatePath(p);
+        const ownWs = config?.botWorkspaceRoot
+          ? path.resolve(String(config.botWorkspaceRoot))
+          : "";
+        const insideOwnWs =
+          Boolean(ownWs) &&
+          (resolved === ownWs || resolved.startsWith(ownWs + path.sep));
+        if (!insideOwnWs) {
+          needsHostConfirm = true;
+        }
+      }
+    }
+    if (needsHostConfirm) {
+      return {
+        decision: "confirm",
+        reason: "本机浏览器即将读取并上传宿主机文件，需用户确认后方可继续",
+      };
     }
   }
 

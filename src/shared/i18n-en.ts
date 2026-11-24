@@ -72,6 +72,7 @@ export const EN_MESSAGES: Record<I18nKey, string> = {
   "status.awaiting_approval": "Needs Approval",
   "status.awaiting_choice": "Waiting for Choice",
   "status.completed": "Completed",
+  "status.max_steps": "Step limit reached",
   "status.stopped": "Stopped",
   "status.error": "Error",
   "status.interrupted": "Interrupted",
@@ -79,6 +80,8 @@ export const EN_MESSAGES: Record<I18nKey, string> = {
   // Client device source badges
   "source.mobile": "Mobile",
   "source.desktop": "Desktop",
+  "source.feishu": "Feishu",
+  "source.telegram": "Telegram",
 
   // Navigation & LeftSidebar
   "sidebar.compactToggle": "Toggle Compact Sidebar",

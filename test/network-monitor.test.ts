@@ -337,4 +337,20 @@ test("Issue #4: silent reconnects, weak->online settling, and rapid recovery coo
   ssr.reportTransportDisconnected({ attempt: 1, nextRetryDelayMs: 1000, reason: "ws_closed" });
   ssr.reportTransportConnected("ws", true);
   assert.equal(ssr.getState().networkHealth.status, "online");
+
+  // 5. Healthy WS pong clears stuck reconnecting/offline AND shields against late pre-recovery HTTP timeouts
+  ssr.reportTransportDisconnected({ attempt: 3, nextRetryDelayMs: 4000, reason: "ws_closed" });
+  assert.equal(ssr.getState().networkHealth.status, "offline");
+  ssr.reportHeartbeatRtt(120);
+  assert.ok(
+    ssr.getState().networkHealth.status === "online" || ssr.getState().networkHealth.status === "recovered",
+    "Live WS pong must clear stuck offline/reconnecting status"
+  );
+  ssr.reportHttpOutcome({ ok: false, elapsedMs: 15000, timedOut: true, accountType: "cloud" });
+  ssr.reportHttpOutcome({ ok: false, elapsedMs: 15000, timedOut: true, accountType: "cloud" });
+  assert.notEqual(
+    ssr.getState().networkHealth.status,
+    "offline",
+    "Late pre-recovery HTTP timeouts must not pop AccountDisconnectedGate while WS pong is fresh"
+  );
 });

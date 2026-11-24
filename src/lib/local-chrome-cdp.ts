@@ -21,6 +21,7 @@ export interface LocalBrowserExecutionOptions {
   sessionKey: string;
   settings?: Partial<BrowserAutomationSettings>;
   dataDir?: string;
+  blockedLocalPorts?: number[];
   signal?: AbortSignal;
 }
 
@@ -37,6 +38,7 @@ interface ManagedBrowserSession {
   mode: "local_headless" | "local_debug";
   port: number;
   targetId: string | null;
+  callerTargets: Map<string, string>;
   child: ChildProcess | null;
   profileDir: string | null;
   ephemeralProfile: boolean;
@@ -76,21 +78,43 @@ function getCandidateChromePaths(platform = process.platform): string[] {
   ];
 }
 
+function isRegularFile(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
 export function detectLocalChromeExecutable(
   customPath?: string,
   platform = process.platform
 ): string {
   const explicit = String(customPath || "").trim();
-  if (explicit && fs.existsSync(explicit)) {
-    return explicit;
+  if (explicit) {
+    if (isRegularFile(explicit)) {
+      return explicit;
+    }
+    // macOS convenience: if user points to "/Applications/Google Chrome.app" bundle directory, resolve inner binary
+    if (platform === "darwin" && explicit.toLowerCase().endsWith(".app")) {
+      const appBase = path.basename(explicit, path.extname(explicit));
+      const bundleCandidates = [
+        path.join(explicit, "Contents", "MacOS", appBase),
+        path.join(explicit, "Contents", "MacOS", "Google Chrome"),
+        path.join(explicit, "Contents", "MacOS", "Chromium"),
+        path.join(explicit, "Contents", "MacOS", "Brave Browser"),
+        path.join(explicit, "Contents", "MacOS", "Microsoft Edge"),
+      ];
+      for (const bc of bundleCandidates) {
+        if (isRegularFile(bc)) return bc;
+      }
+    }
+    // If customPath was explicitly configured to an invalid/directory path, do not spawn it
+    return "";
   }
   for (const candidate of getCandidateChromePaths(platform)) {
-    try {
-      if (candidate && fs.existsSync(candidate)) {
-        return candidate;
-      }
-    } catch {
-      // ignore permission errors on individual candidate paths
+    if (candidate && isRegularFile(candidate)) {
+      return candidate;
     }
   }
   return "";
@@ -113,7 +137,7 @@ function normalizeElementRef(raw: unknown): string {
   return s.toLowerCase();
 }
 
-function validateHttpUrl(rawUrl: unknown): string {
+function validateHttpUrl(rawUrl: unknown, blockedLocalPorts: number[] = [3230, 7300]): string {
   if (typeof rawUrl !== "string" || !rawUrl.trim()) {
     throw new Error("url must be a non-empty string");
   }
@@ -126,6 +150,28 @@ function validateHttpUrl(rawUrl: unknown): string {
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`invalid url scheme: ${parsed.protocol} (only http/https allowed)`);
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    host === "169.254.169.254" ||
+    host === "::ffff:169.254.169.254" ||
+    host === "::ffff:a9fe:a9fe"
+  ) {
+    throw new Error(`blocked cloud metadata url: ${trimmed}`);
+  }
+  const isLoopback =
+    host === "127.0.0.1" ||
+    host === "localhost" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host.startsWith("127.") ||
+    host === "::ffff:7f00:1" ||
+    host.startsWith("::ffff:127.");
+  if (isLoopback && blockedLocalPorts.length > 0) {
+    const portNum = parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+    if (blockedLocalPorts.includes(portNum)) {
+      throw new Error(`blocked internal service port on loopback (${portNum})`);
+    }
   }
   return parsed.toString();
 }
@@ -434,13 +480,17 @@ function collectTbSnapshot(maxElements, maxText) {
       const ref = 'e' + seq++;
       try { el.setAttribute('data-tb-ref', ref); } catch {}
       const r = el.getBoundingClientRect();
+      const inputType = tag === 'input' ? (el.type || 'text').toLowerCase() : '';
+      const isSensitive =
+        inputType === 'password' ||
+        Boolean(el.dataset && el.dataset.tbSensitive === '1');
       const rawName =
         el.getAttribute('aria-label') ||
         el.getAttribute('placeholder') ||
         el.getAttribute('title') ||
         el.innerText ||
         el.textContent ||
-        el.value ||
+        (!isSensitive ? el.value : '') ||
         '';
       const item = {
         ref,
@@ -451,9 +501,9 @@ function collectTbSnapshot(maxElements, maxText) {
       };
       const role = el.getAttribute('role');
       if (role) item.role = role;
-      if (tag === 'input') item.type = (el.type || 'text').toLowerCase();
+      if (tag === 'input') item.type = inputType;
       if (tag === 'a' && el.href) item.href = String(el.href).slice(0, 180);
-      if (['input', 'textarea', 'select'].includes(tag) && el.type !== 'password') {
+      if (['input', 'textarea', 'select'].includes(tag) && !isSensitive) {
         const val = String(el.value || '').slice(0, 100);
         if (val) item.value = val;
       }
@@ -512,8 +562,35 @@ function findTbRef(ref) {
 }
 `;
 
+const DENIED_UPLOAD_SEGMENTS = new Set([
+  ".ssh",
+  ".aws",
+  ".gnupg",
+  "keychains",
+  "chrome-debug-profile",
+]);
+
+function isSensitiveLocalUploadPath(rawPath: string): boolean {
+  const resolved = path.resolve(rawPath);
+  const segs = resolved.split(path.sep);
+  if (segs.some((s) => DENIED_UPLOAD_SEGMENTS.has(s.toLowerCase()))) return true;
+  const base = path.basename(resolved).toLowerCase();
+  return (
+    base === ".env" ||
+    base.startsWith(".env.") ||
+    base === "accounts.json" ||
+    base === "desktop-config.json" ||
+    base === "devices.json" ||
+    base === "vault.json" ||
+    base === ".vault.key" ||
+    base === ".vault.dpapi" ||
+    /.*auth.*\.json$/i.test(base)
+  );
+}
+
 export class LocalChromeManager {
   private sessions = new Map<string, ManagedBrowserSession>();
+  private inflightLaunches = new Map<string, Promise<ManagedBrowserSession>>();
   private reaperTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
@@ -536,31 +613,40 @@ export class LocalChromeManager {
     }
   }
 
-  async closeSession(key: string): Promise<void> {
+  async closeSession(key: string, immediateCleanup = false): Promise<void> {
     const sess = this.sessions.get(key);
     if (!sess) return;
     this.sessions.delete(key);
     if (sess.child && !sess.child.killed) {
       try {
-        sess.child.kill("SIGTERM");
+        sess.child.kill(immediateCleanup ? "SIGKILL" : "SIGTERM");
       } catch {
         // ignore
       }
     }
     if (sess.ephemeralProfile && sess.profileDir) {
-      setTimeout(() => {
+      const dir = sess.profileDir;
+      if (immediateCleanup) {
         try {
-          fs.rmSync(sess.profileDir!, { recursive: true, force: true });
+          fs.rmSync(dir, { recursive: true, force: true });
         } catch {
           // ignore
         }
-      }, 300).unref?.();
+      } else {
+        setTimeout(() => {
+          try {
+            fs.rmSync(dir, { recursive: true, force: true });
+          } catch {
+            // ignore
+          }
+        }, 250).unref?.();
+      }
     }
   }
 
   async closeAll(): Promise<void> {
     const keys = [...this.sessions.keys()];
-    await Promise.all(keys.map((k) => this.closeSession(k)));
+    await Promise.all(keys.map((k) => this.closeSession(k, true)));
     if (this.reaperTimer) {
       clearInterval(this.reaperTimer);
       this.reaperTimer = null;
@@ -581,9 +667,62 @@ export class LocalChromeManager {
         existing.lastUsedAt = Date.now();
         return existing;
       }
-      await this.closeSession(key);
+      await this.closeSession(key, true);
     }
 
+    const inflight = this.inflightLaunches.get(key);
+    if (inflight) {
+      return await inflight;
+    }
+
+    const launchPromise = this.launchSessionInternal(key, norm, opts).finally(() => {
+      this.inflightLaunches.delete(key);
+    });
+    this.inflightLaunches.set(key, launchPromise);
+    return await launchPromise;
+  }
+
+  private async spawnChromeAndWaitReady(
+    chromePath: string,
+    args: string[],
+    port: number,
+    signal?: AbortSignal
+  ): Promise<ChildProcess> {
+    const child = spawn(chromePath, args, {
+      stdio: "ignore",
+      detached: false,
+    });
+    let spawnErr: Error | null = null;
+    child.on("error", (err) => {
+      spawnErr = err instanceof Error ? err : new Error(String(err));
+    });
+    child.unref?.();
+
+    const deadline = Date.now() + CHROME_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error("aborted");
+      if (spawnErr) {
+        throw new Error(`启动本机 Chrome 失败 (${chromePath}): ${(spawnErr as Error).message}`);
+      }
+      if (child.exitCode !== null) {
+        throw new Error(`本机 Chrome 进程提前退出 (exitCode=${child.exitCode})`);
+      }
+      if (await isCdpPortReachable(port, 450)) {
+        return child;
+      }
+      await sleep(140, signal);
+    }
+    try {
+      child.kill("SIGTERM");
+    } catch {}
+    throw new Error(`Timed out waiting for local Chrome CDP on 127.0.0.1:${port}`);
+  }
+
+  private async launchSessionInternal(
+    key: string,
+    norm: BrowserAutomationSettings,
+    opts: LocalBrowserExecutionOptions
+  ): Promise<ManagedBrowserSession> {
     if (opts.mode === "local_debug") {
       const port = norm.debugPort || DEFAULT_BROWSER_DEBUG_PORT;
       const alreadyListening = await isCdpPortReachable(port, 500);
@@ -593,6 +732,7 @@ export class LocalChromeManager {
           mode: "local_debug",
           port,
           targetId: null,
+          callerTargets: new Map(),
           child: null,
           profileDir: resolveDebugProfileDir(opts.dataDir),
           ephemeralProfile: false,
@@ -605,15 +745,18 @@ export class LocalChromeManager {
       const chromePath = detectLocalChromeExecutable(norm.executablePath);
       if (!chromePath) {
         throw new Error(
-          "未检测到本机 Chrome/Chromium 可执行文件；请在「设置 → 电脑 → 浏览器自动化引擎」中填写 Chrome 路径，或切回「Bot 电脑 Chrome」模式。"
+          norm.executablePath
+            ? `配置的 Chrome 可执行文件路径无效或不存在：${norm.executablePath}`
+            : "未检测到本机 Chrome/Chromium 可执行文件；请在「设置 → 电脑 → 浏览器自动化引擎」中填写 Chrome 路径，或切回「Bot 电脑 Chrome」模式。"
         );
       }
       const profileDir = resolveDebugProfileDir(opts.dataDir);
       fs.mkdirSync(profileDir, { recursive: true });
-      const child = spawn(
+      const child = await this.spawnChromeAndWaitReady(
         chromePath,
         [
           `--remote-debugging-port=${port}`,
+          "--remote-debugging-address=127.0.0.1",
           `--user-data-dir=${profileDir}`,
           "--no-first-run",
           "--no-default-browser-check",
@@ -621,18 +764,15 @@ export class LocalChromeManager {
           "--window-size=1360,900",
           "about:blank",
         ],
-        {
-          stdio: "ignore",
-          detached: false,
-        }
+        port,
+        opts.signal
       );
-      child.unref?.();
-      await waitForCdpReady(port, CHROME_READY_TIMEOUT_MS, opts.signal);
       const sess: ManagedBrowserSession = {
         key,
         mode: "local_debug",
         port,
         targetId: null,
+        callerTargets: new Map(),
         child,
         profileDir,
         ephemeralProfile: false,
@@ -646,7 +786,9 @@ export class LocalChromeManager {
     const chromePath = detectLocalChromeExecutable(norm.executablePath);
     if (!chromePath) {
       throw new Error(
-        "未检测到本机 Chrome/Chromium 可执行文件；请在「设置 → 电脑 → 浏览器自动化引擎」中填写 Chrome 路径，或切回「Bot 电脑 Chrome」模式。"
+        norm.executablePath
+          ? `配置的 Chrome 可执行文件路径无效或不存在：${norm.executablePath}`
+          : "未检测到本机 Chrome/Chromium 可执行文件；请在「设置 → 电脑 → 浏览器自动化引擎」中填写 Chrome 路径，或切回「Bot 电脑 Chrome」模式。"
       );
     }
     const port = await allocateFreeLocalPort();
@@ -658,32 +800,27 @@ export class LocalChromeManager {
       `twinklebot-chrome-headless-${safeSessionSlug}-${crypto.randomBytes(4).toString("hex")}`
     );
     fs.mkdirSync(profileDir, { recursive: true });
-    const child = spawn(
-      chromePath,
-      [
-        "--headless=new",
-        `--remote-debugging-port=${port}`,
-        `--user-data-dir=${profileDir}`,
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-networking",
-        "--disable-sync",
-        "--disable-extensions",
-        "--window-size=1440,900",
-        "about:blank",
-      ],
-      {
-        stdio: "ignore",
-        detached: false,
-      }
-    );
-    child.unref?.();
+    let child: ChildProcess;
     try {
-      await waitForCdpReady(port, CHROME_READY_TIMEOUT_MS, opts.signal);
+      child = await this.spawnChromeAndWaitReady(
+        chromePath,
+        [
+          "--headless=new",
+          `--remote-debugging-port=${port}`,
+          "--remote-debugging-address=127.0.0.1",
+          `--user-data-dir=${profileDir}`,
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--disable-background-networking",
+          "--disable-sync",
+          "--disable-extensions",
+          "--window-size=1440,900",
+          "about:blank",
+        ],
+        port,
+        opts.signal
+      );
     } catch (err) {
-      try {
-        child.kill("SIGTERM");
-      } catch {}
       try {
         fs.rmSync(profileDir, { recursive: true, force: true });
       } catch {}
@@ -694,6 +831,7 @@ export class LocalChromeManager {
       mode: "local_headless",
       port,
       targetId: null,
+      callerTargets: new Map(),
       child,
       profileDir,
       ephemeralProfile: true,
@@ -703,21 +841,53 @@ export class LocalChromeManager {
     return sess;
   }
 
+  private getSessionTargetId(sess: ManagedBrowserSession, callerKey: string): string | null {
+    if (sess.mode === "local_debug" && callerKey) {
+      return sess.callerTargets.get(callerKey) || sess.targetId;
+    }
+    return sess.targetId;
+  }
+
+  private setSessionTargetId(sess: ManagedBrowserSession, callerKey: string, targetId: string | null): void {
+    sess.targetId = targetId;
+    if (sess.mode === "local_debug" && callerKey) {
+      if (targetId) sess.callerTargets.set(callerKey, targetId);
+      else sess.callerTargets.delete(callerKey);
+    }
+  }
+
   private async resolveActiveTarget(
     sess: ManagedBrowserSession,
+    callerKey: string,
     signal?: AbortSignal
   ): Promise<CdpTargetInfo> {
     const targets = await listPageTargets(sess.port, signal);
-    if (sess.targetId) {
-      const matched = targets.find((t) => t.id === sess.targetId);
+    const preferredId = this.getSessionTargetId(sess, callerKey);
+    if (preferredId) {
+      const matched = targets.find((t) => t.id === preferredId);
       if (matched) return matched;
     }
+    if (sess.mode === "local_debug" && callerKey && targets.length > 0 && sess.callerTargets.size > 0) {
+      const usedByOthers = new Set(
+        [...sess.callerTargets.entries()]
+          .filter(([k]) => k !== callerKey)
+          .map(([, tid]) => tid)
+      );
+      const freeTab = targets.find((t) => !usedByOthers.has(t.id));
+      if (freeTab) {
+        this.setSessionTargetId(sess, callerKey, freeTab.id);
+        return freeTab;
+      }
+      const dedicated = await createPageTarget(sess.port, "about:blank", signal);
+      this.setSessionTargetId(sess, callerKey, dedicated.id);
+      return dedicated;
+    }
     if (targets.length > 0) {
-      sess.targetId = targets[0].id;
+      this.setSessionTargetId(sess, callerKey, targets[0].id);
       return targets[0];
     }
     const created = await createPageTarget(sess.port, "about:blank", signal);
-    sess.targetId = created.id;
+    this.setSessionTargetId(sess, callerKey, created.id);
     return created;
   }
 
@@ -764,29 +934,33 @@ export class LocalChromeManager {
     opts: LocalBrowserExecutionOptions
   ): Promise<Record<string, any>> {
     const params = args || {};
+    const callerKey = String(opts.sessionKey || "default");
+    const blockedPorts = opts.blockedLocalPorts ?? [3230, 7300];
     const sess = await this.ensureSession(opts);
     sess.lastUsedAt = Date.now();
 
     if (toolName === "browser_tabs") {
       const action = String(params.action || "list").trim().toLowerCase();
+      const curTargetId = this.getSessionTargetId(sess, callerKey);
       if (action === "list") {
         const targets = await listPageTargets(sess.port, opts.signal);
         return {
           ok: true,
           browser_engine: sess.mode,
-          active_target_id: sess.targetId || targets[0]?.id || null,
-          tabs: targets.map((t) => ({
+          active_target_id: curTargetId || targets[0]?.id || null,
+          tabs: targets.map((t, idx) => ({
+            index: idx,
             id: t.id,
             title: t.title || "",
             url: t.url || "",
-            active: t.id === sess.targetId,
+            active: t.id === curTargetId,
           })),
         };
       }
       if (action === "new") {
-        const targetUrl = params.url ? validateHttpUrl(params.url) : "about:blank";
+        const targetUrl = params.url ? validateHttpUrl(params.url, blockedPorts) : "about:blank";
         const created = await createPageTarget(sess.port, targetUrl, opts.signal);
-        sess.targetId = created.id;
+        this.setSessionTargetId(sess, callerKey, created.id);
         return await withCdpSocket(
           created.webSocketDebuggerUrl!,
           async (call) => {
@@ -800,10 +974,11 @@ export class LocalChromeManager {
       }
       if (action === "switch") {
         const tid = String(params.target_id || "").trim();
+        const idx = typeof params.index === "number" && Number.isInteger(params.index) ? params.index : -1;
         const targets = await listPageTargets(sess.port, opts.signal);
-        const hit = targets.find((t) => t.id === tid);
-        if (!hit) return { ok: false, error: `tab ${tid} not found` };
-        sess.targetId = hit.id;
+        const hit = tid ? targets.find((t) => t.id === tid) : idx >= 0 ? targets[idx] : undefined;
+        if (!hit) return { ok: false, error: `tab ${tid || idx} not found` };
+        this.setSessionTargetId(sess, callerKey, hit.id);
         try {
           await fetchJsonWithTimeout(`http://127.0.0.1:${sess.port}/json/activate/${encodeURIComponent(hit.id)}`, {
             timeoutMs: 2000,
@@ -819,8 +994,15 @@ export class LocalChromeManager {
         );
       }
       if (action === "close") {
-        const tid = String(params.target_id || sess.targetId || "").trim();
-        if (!tid) return { ok: false, error: "target_id is required to close a tab" };
+        const targets = await listPageTargets(sess.port, opts.signal);
+        const idx = typeof params.index === "number" && Number.isInteger(params.index) ? params.index : -1;
+        const tid = String(
+          params.target_id || (idx >= 0 ? targets[idx]?.id : "") || curTargetId || ""
+        ).trim();
+        if (!tid) return { ok: false, error: "target_id or index is required to close a tab" };
+        if (targets.length <= 1 && targets.some((t) => t.id === tid)) {
+          return { ok: false, error: "cannot close the last tab" };
+        }
         try {
           await fetchJsonWithTimeout(`http://127.0.0.1:${sess.port}/json/close/${encodeURIComponent(tid)}`, {
             timeoutMs: 2000,
@@ -829,27 +1011,27 @@ export class LocalChromeManager {
         } catch {
           // ignore
         }
-        if (sess.targetId === tid) sess.targetId = null;
+        if (curTargetId === tid) this.setSessionTargetId(sess, callerKey, null);
         const remaining = await listPageTargets(sess.port, opts.signal);
-        sess.targetId = remaining[0]?.id || null;
+        this.setSessionTargetId(sess, callerKey, remaining[0]?.id || null);
         return {
           ok: true,
           closed_target_id: tid,
-          active_target_id: sess.targetId,
+          active_target_id: this.getSessionTargetId(sess, callerKey),
           browser_engine: sess.mode,
         };
       }
       return { ok: false, error: `unknown browser_tabs action: ${action}` };
     }
 
-    const target = await this.resolveActiveTarget(sess, opts.signal);
+    const target = await this.resolveActiveTarget(sess, callerKey, opts.signal);
     const wsUrl = target.webSocketDebuggerUrl;
     if (!wsUrl) {
       throw new Error("Local Chrome target is missing webSocketDebuggerUrl");
     }
 
     if (toolName === "browser_snapshot") {
-      const urlToOpen = params.url ? validateHttpUrl(params.url) : null;
+      const urlToOpen = params.url ? validateHttpUrl(params.url, blockedPorts) : null;
       return await withCdpSocket(
         wsUrl,
         async (call) => {
@@ -928,8 +1110,8 @@ export class LocalChromeManager {
       // Auto-follow newly opened popup tab if click triggered target="_blank" / window.open
       const afterTargets = await listPageTargets(sess.port, opts.signal);
       const newTab = afterTargets.find((t) => !beforeIds.has(t.id));
-      const activeAfter = newTab || (await this.resolveActiveTarget(sess, opts.signal));
-      if (newTab) sess.targetId = newTab.id;
+      const activeAfter = newTab || (await this.resolveActiveTarget(sess, callerKey, opts.signal));
+      if (newTab) this.setSessionTargetId(sess, callerKey, newTab.id);
       return await withCdpSocket(
         activeAfter.webSocketDebuggerUrl!,
         async (call) => {
@@ -946,6 +1128,7 @@ export class LocalChromeManager {
       const text = String(params.text ?? "");
       const clear = params.clear !== false;
       const submit = Boolean(params.submit);
+      const sensitive = Boolean(params.sensitive);
       return await withCdpSocket(
         wsUrl,
         async (call) => {
@@ -957,6 +1140,9 @@ export class LocalChromeManager {
               if (!el) return { ok: false, error: 'element ' + ${JSON.stringify(ref)} + ' not found (call browser_snapshot to refresh refs)' };
               el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
               el.focus();
+              if (${JSON.stringify(sensitive)} && el.dataset) {
+                el.dataset.tbSensitive = '1';
+              }
               const val = ${JSON.stringify(text)};
               const shouldClear = ${JSON.stringify(clear)};
               if (el.isContentEditable) {
@@ -1107,10 +1293,18 @@ export class LocalChromeManager {
         ? params.paths
         : typeof params.paths === "string"
           ? [params.paths]
-          : [];
+          : typeof params.path === "string"
+            ? [params.path]
+            : [];
+      for (const candidate of rawPaths) {
+        const trimmed = String(candidate || "").trim();
+        if (trimmed && isSensitiveLocalUploadPath(trimmed)) {
+          return { ok: false, error: `denied uploading sensitive local path: ${trimmed}` };
+        }
+      }
       const files = rawPaths
         .map((p: any) => String(p || "").trim())
-        .filter((p: string) => p && fs.existsSync(p));
+        .filter((p: string) => p && isRegularFile(p));
       if (files.length === 0) {
         return { ok: false, error: "no existing local file paths provided for browser_upload_file" };
       }

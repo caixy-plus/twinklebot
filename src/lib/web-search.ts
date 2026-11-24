@@ -86,11 +86,15 @@ function decodeHtmlEntities(str = ""): string {
     .replace(/&nbsp;/gi, " ")
     .replace(/&#(\d+);/g, (_m, n) => {
       const code = Number(n);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+      return Number.isInteger(code) && code >= 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : "";
     })
     .replace(/&#x([0-9a-f]+);/gi, (_m, hex) => {
       const code = parseInt(hex, 16);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+      return Number.isInteger(code) && code >= 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : "";
     });
 }
 
@@ -113,12 +117,31 @@ export function extractDateHint(raw = ""): string | undefined {
 function isPrivateIpv4(host = ""): boolean {
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return false;
-  const [a, b] = [Number(m[1]), Number(m[2])];
+  const [a, b, c, d] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  if ([a, b, c, d].some((oct) => oct > 255)) return true;
   if (a === 10 || a === 127 || a === 0) return true;
   if (a === 169 && b === 254) return true;
   if (a === 192 && b === 168) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a >= 224) return true;
   return false;
+}
+
+function extractMappedIpv4FromIpv6(hostLower: string): string | null {
+  const prefixMatch = hostLower.match(/^(?:::ffff:|0:0:0:0:0:ffff:)(.+)$/);
+  if (!prefixMatch) return null;
+  const tail = prefixMatch[1];
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(tail)) {
+    return tail;
+  }
+  const hexPair = tail.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hexPair) {
+    const hi = parseInt(hexPair[1], 16);
+    const lo = parseInt(hexPair[2], 16);
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  }
+  return "127.0.0.1";
 }
 
 export function isSafePublicWebUrl(rawUrl = ""): boolean {
@@ -135,6 +158,10 @@ export function isSafePublicWebUrl(rawUrl = ""): boolean {
   }
   const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (!host) return false;
+  const mappedIpv4 = extractMappedIpv4FromIpv6(host);
+  if (mappedIpv4) {
+    return !isPrivateIpv4(mappedIpv4);
+  }
   if (
     host === "localhost" ||
     host === "::1" ||
@@ -144,6 +171,7 @@ export function isSafePublicWebUrl(rawUrl = ""): boolean {
     host.startsWith("fe80:") ||
     host.startsWith("fc") ||
     host.startsWith("fd") ||
+    host.startsWith("ff") ||
     isPrivateIpv4(host)
   ) {
     return false;
@@ -355,9 +383,12 @@ export async function probeGoogleReachability({
     return googleProbeCache.reachable;
   }
 
-  const probeTimeout = Math.min(Math.max(Number(timeoutMs) || 2500, 300), 6000);
+  const proxyConfigured = detectProxyConfigured(env);
+  const effectiveTimeout = proxyConfigured
+    ? Math.min(Math.max(Number(timeoutMs) || 2500, 300), 6000)
+    : Math.min(Math.max(Number(timeoutMs) || 900, 300), 1200);
   const timeoutSig =
-    typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(probeTimeout) : null;
+    typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(effectiveTimeout) : null;
   const combinedSignal =
     signal && timeoutSig && typeof AbortSignal?.any === "function"
       ? AbortSignal.any([signal, timeoutSig])
@@ -377,8 +408,6 @@ export async function probeGoogleReachability({
     reachable = false;
   }
 
-  // If no proxy is configured and probe failed, cache quickly so domestic direct users skip Google
-  void env;
   if (isDefaultFetch) {
     googleProbeCache = { reachable, checkedAt: Date.now() };
   }
@@ -646,18 +675,75 @@ export async function fetchWebPage(
       : signal || timeoutSig;
 
   try {
-    const res = await fetchImpl(url, {
-      method: "GET",
-      headers: {
-        "User-Agent": buildNeutralUserAgent(platform),
-        Accept: "text/html,application/xhtml+xml,text/plain,application/json",
-      },
-      ...(combinedSignal ? { signal: combinedSignal } : {}),
-    });
+    let currentUrl = url;
+    let res: Response | null = null;
+    for (let hop = 0; hop <= 5; hop++) {
+      res = await fetchImpl(currentUrl, {
+        method: "GET",
+        redirect: "manual",
+        headers: {
+          "User-Agent": buildNeutralUserAgent(platform),
+          Accept: "text/html,application/xhtml+xml,text/plain,application/json",
+        },
+        ...(combinedSignal ? { signal: combinedSignal } : {}),
+      });
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers?.get?.("location");
+        if (!loc) {
+          return { ok: false, url: currentUrl, error: `HTTP ${res.status} redirect missing Location` };
+        }
+        let nextUrl: string;
+        try {
+          nextUrl = new URL(loc, currentUrl).toString();
+        } catch {
+          return { ok: false, url: currentUrl, error: "Invalid redirect URL" };
+        }
+        if (!isSafePublicWebUrl(nextUrl)) {
+          return {
+            ok: false,
+            url: nextUrl,
+            error: "Blocked unsafe redirect to private or non-public URL",
+          };
+        }
+        currentUrl = nextUrl;
+        continue;
+      }
+      break;
+    }
+    if (!res) {
+      return { ok: false, url, error: "Too many redirects" };
+    }
+    if (res.status >= 300 && res.status < 400) {
+      return { ok: false, url: currentUrl, error: "Too many redirects" };
+    }
+    if (res.url && !isSafePublicWebUrl(res.url)) {
+      return {
+        ok: false,
+        url: res.url,
+        error: "Blocked unsafe redirect to private or non-public URL",
+      };
+    }
     if (!res.ok) {
-      return { ok: false, url, error: `HTTP ${res.status}` };
+      return { ok: false, url: currentUrl, error: `HTTP ${res.status}` };
     }
     const contentType = String(res.headers?.get?.("content-type") || "").toLowerCase();
+    if (
+      /^(image|video|audio|font)\//i.test(contentType) ||
+      contentType.includes("application/octet-stream") ||
+      contentType.includes("application/zip") ||
+      contentType.includes("application/pdf") ||
+      contentType.includes("application/x-gzip")
+    ) {
+      return {
+        ok: false,
+        url: currentUrl,
+        error: `Unsupported binary content-type: ${contentType.split(";")[0]}`,
+      };
+    }
+    const contentLen = Number(res.headers?.get?.("content-length") || 0);
+    if (Number.isFinite(contentLen) && contentLen > 5 * 1024 * 1024) {
+      return { ok: false, url: currentUrl, error: "Response body exceeds 5MB limit" };
+    }
     const rawText = await res.text();
 
     let title = "";
@@ -685,7 +771,7 @@ export async function fetchWebPage(
     const truncated = bodyText.length > limit;
     return {
       ok: true,
-      url: res.url || url,
+      url: res.url || currentUrl,
       title,
       content: truncated ? `${bodyText.slice(0, limit)}\n...[truncated]` : bodyText,
       truncated,

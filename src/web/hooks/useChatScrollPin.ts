@@ -53,6 +53,11 @@ export function useChatScrollPin(
 
     const handleTouchEnd = () => {
       touchStartY = null;
+      userInteractingWithStream = false;
+    };
+
+    const handlePointerUp = () => {
+      userInteractingWithStream = false;
     };
 
     const handleScroll = () => {
@@ -85,6 +90,8 @@ export function useChatScrollPin(
     };
 
     streamEl.addEventListener("pointerdown", clearScrollPinGuard, { passive: true });
+    streamEl.addEventListener("pointerup", handlePointerUp, { passive: true });
+    streamEl.addEventListener("pointercancel", handlePointerUp, { passive: true });
     streamEl.addEventListener("touchstart", handleTouchStart, { passive: true });
     streamEl.addEventListener("touchmove", handleTouchMove, { passive: true });
     streamEl.addEventListener("touchend", handleTouchEnd, { passive: true });
@@ -109,6 +116,8 @@ export function useChatScrollPin(
 
     return () => {
       streamEl.removeEventListener("pointerdown", clearScrollPinGuard);
+      streamEl.removeEventListener("pointerup", handlePointerUp);
+      streamEl.removeEventListener("pointercancel", handlePointerUp);
       streamEl.removeEventListener("touchstart", handleTouchStart);
       streamEl.removeEventListener("touchmove", handleTouchMove);
       streamEl.removeEventListener("touchend", handleTouchEnd);

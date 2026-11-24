@@ -783,6 +783,7 @@ export const runtimeRefs: {
   wsReconnectAttempt: number;
   lastHiddenAt: number;
   lastForegroundProbeAt: number;
+  lastVisibilityProbeAt: number;
   wsHasOpenedInEpoch: boolean;
   inflightReconnectSync: Promise<any> | null;
   eventSource: EventSource | null;
@@ -811,6 +812,7 @@ export const runtimeRefs: {
   wsReconnectAttempt: 0,
   lastHiddenAt: 0,
   lastForegroundProbeAt: 0,
+  lastVisibilityProbeAt: 0,
   wsHasOpenedInEpoch: false,
   inflightReconnectSync: null,
   eventSource: null,

@@ -12,6 +12,7 @@ import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
 import { useI18n } from "../../services/i18n.js";
 import {
   buildNovncSrc,
+  isImeConfirmEnter,
   isSessionCurrentlyBusy,
 } from "../../state/helpers.js";
 import {
@@ -54,15 +55,38 @@ export function BotComputerOverlay() {
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [remoteInputText, setRemoteInputText] = useState("");
   const [sendingRemoteInput, setSendingRemoteInput] = useState(false);
+  const [kbBottomOffset, setKbBottomOffset] = useState(0);
   const remoteInputRef = useRef<HTMLInputElement | null>(null);
+  const remoteImeCompEndRef = useRef(0);
   const { t } = useI18n();
 
   useEffect(() => {
     if (!screenOverlayOpen) {
       setKeyboardOpen(false);
       setRemoteInputText("");
+      setKbBottomOffset(0);
     }
   }, [screenOverlayOpen]);
+
+  useEffect(() => {
+    if (!screenOverlayOpen || !keyboardOpen || typeof window === "undefined") {
+      setKbBottomOffset(0);
+      return;
+    }
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const syncKbOffset = () => {
+      const inset = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)));
+      setKbBottomOffset(inset);
+    };
+    syncKbOffset();
+    vv.addEventListener("resize", syncKbOffset);
+    vv.addEventListener("scroll", syncKbOffset);
+    return () => {
+      vv.removeEventListener("resize", syncKbOffset);
+      vv.removeEventListener("scroll", syncKbOffset);
+    };
+  }, [screenOverlayOpen, keyboardOpen]);
   const activeSpeakerId = activeSessionId
     ? groupActiveSpeakerBySession?.[activeSessionId] || ""
     : "";
@@ -124,9 +148,13 @@ export function BotComputerOverlay() {
     if (!remoteInputSupported) {
       const frame = document.getElementById("novnc-frame") as HTMLIFrameElement | null;
       try {
+        const targetOrigin =
+          novncSrc && novncSrc !== "about:blank"
+            ? new URL(novncSrc, window.location.href).origin
+            : window.location.origin;
         frame?.contentWindow?.postMessage(
           { type: "twinklebot:focus_keyboard" },
-          window.location.origin
+          targetOrigin
         );
       } catch {}
       return;
@@ -375,6 +403,11 @@ export function BotComputerOverlay() {
         <form
           id="screen-remote-input-bar"
           className="screen-remote-input-bar"
+          style={
+            kbBottomOffset > 0
+              ? { bottom: `${kbBottomOffset + 10}px` }
+              : undefined
+          }
           onSubmit={handleRemoteInputSubmit}
         >
           <input
@@ -382,9 +415,20 @@ export function BotComputerOverlay() {
             id="screen-remote-input"
             type="text"
             className="screen-remote-input"
-            placeholder="输入文字发送到 Bot 电脑…"
+            placeholder={t("computer.remoteInputPlaceholder")}
             value={remoteInputText}
             onChange={(e) => setRemoteInputText(e.target.value)}
+            onCompositionEnd={(e) => {
+              remoteImeCompEndRef.current = e.timeStamp;
+            }}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                isImeConfirmEnter(e.nativeEvent, remoteImeCompEndRef.current)
+              ) {
+                e.preventDefault();
+              }
+            }}
             autoComplete="off"
             autoCapitalize="off"
           />
@@ -394,7 +438,7 @@ export function BotComputerOverlay() {
             className="screen-remote-action-btn is-primary"
             disabled={sendingRemoteInput || !remoteInputText}
           >
-            发送
+            {t("common.send")}
           </button>
           <button
             type="button"
@@ -403,7 +447,7 @@ export function BotComputerOverlay() {
             disabled={sendingRemoteInput}
             onClick={() => void sendRemotePayload({ key: "Return" })}
           >
-            回车
+            {t("computer.keyEnter")}
           </button>
           <button
             type="button"
@@ -412,7 +456,7 @@ export function BotComputerOverlay() {
             disabled={sendingRemoteInput}
             onClick={() => void sendRemotePayload({ key: "BackSpace" })}
           >
-            退格
+            {t("computer.keyBackspace")}
           </button>
           <button
             type="button"
@@ -423,7 +467,7 @@ export function BotComputerOverlay() {
               remoteInputRef.current?.blur();
             }}
           >
-            收起
+            {t("computer.collapseBar")}
           </button>
         </form>
       )}

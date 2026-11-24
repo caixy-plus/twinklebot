@@ -40,9 +40,21 @@ export function useMobileViewport(chatStageRef: RefObject<HTMLElement | null>) {
       if (!isMobileViewport() || getState().mobileView !== "chat") return;
       const touch = e.touches?.[0];
       if (!touch || touch.clientX > 36) return;
+      const targetEl = e.target as HTMLElement | null;
+      if (
+        targetEl?.closest?.(
+          "#bot-exchange-sheet, #trace-drawer-sheet, pre, code, table, .msg-code-pre, .msg-table-scroll"
+        )
+      ) {
+        return;
+      }
       startX = touch.clientX;
       startY = touch.clientY;
       tracking = true;
+    };
+
+    const handleTouchCancel = () => {
+      tracking = false;
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
@@ -59,6 +71,7 @@ export function useMobileViewport(chatStageRef: RefObject<HTMLElement | null>) {
 
     chatStage?.addEventListener("touchstart", handleTouchStart, { passive: true });
     chatStage?.addEventListener("touchend", handleTouchEnd, { passive: true });
+    chatStage?.addEventListener("touchcancel", handleTouchCancel, { passive: true });
 
     const unsubBack = onHardwareBackButton(() => {
       const s = getState();

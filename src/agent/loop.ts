@@ -1985,6 +1985,9 @@ async function runTaskInner({
         const policyConfig = {
           ...scopedRuntimeConfig,
           hostExecutionMode,
+          browserAutomationMode:
+            config?.deployEnv === "cloud" ? "bot_computer" : effectiveBrowserMode,
+          botWorkspaceRoot,
           sandboxMode: config?.sandboxMode || settings?.sandboxMode || "full",
           isAdminBot: Boolean(speakerBot?.isAdmin || store?.getSession?.(sessionId)?.isAdmin),
           policy: settings.policy || config.policy,
@@ -2104,6 +2107,7 @@ async function runTaskInner({
                           sessionKey: speakerBot?.id || sessionId,
                           settings: browserAutomationSettings,
                           dataDir: store?.dataDir || config?.dataDir,
+                          blockedLocalPorts: [Number(config?.port) || 3230, 7300],
                           signal: toolSignal,
                         }),
                     }

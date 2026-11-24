@@ -8,6 +8,8 @@ import {
   type ChannelSkillId,
 } from "../../lib/channel-integrations.js";
 
+const WEBHOOK_MAX_BODY_BYTES = 64 * 1024;
+
 function isChannelId(id: string): id is ChannelSkillId {
   return id === "feishu-bot" || id === "telegram-bot";
 }
@@ -64,15 +66,27 @@ export async function handleChannelRoutes(
     const curStore = normalizeChannelsAuthStore(ctx.store?.readChannelsAuth?.() || {});
     const nowIso = new Date().toISOString();
     if (channelId === "telegram-bot") {
-      curStore["telegram-bot"] = {
+      const nextTg = {
         ...normalizeTelegramChannelConfig(body, curStore["telegram-bot"]),
         updatedAt: nowIso,
       };
+      if (nextTg.enabled && nextTg.connectionMode === "webhook" && !nextTg.webhookSecret) {
+        return sendJson(res, 400, {
+          error: "启用 Telegram Webhook 模式时必须配置 Webhook Secret Token，以防未授权伪造调用",
+        });
+      }
+      curStore["telegram-bot"] = nextTg;
     } else {
-      curStore["feishu-bot"] = {
+      const nextFs = {
         ...normalizeFeishuChannelConfig(body, curStore["feishu-bot"]),
         updatedAt: nowIso,
       };
+      if (nextFs.enabled && nextFs.connectionMode === "webhook" && !nextFs.verificationToken) {
+        return sendJson(res, 400, {
+          error: "启用飞书 Webhook 模式时必须配置 Verification Token，以防未授权伪造调用",
+        });
+      }
+      curStore["feishu-bot"] = nextFs;
     }
     ctx.store?.writeChannelsAuth?.(curStore);
     ctx.channelManager?.syncFromStore?.();
@@ -84,25 +98,27 @@ export async function handleChannelRoutes(
     });
   }
 
-  // POST /api/channels/telegram/webhook
+  // POST /api/channels/telegram/webhook (unauthenticated external callback -> strict 64KB cap)
   if (method === "POST" && pathname === "/api/channels/telegram/webhook") {
     let body: Record<string, any> = {};
     try {
-      body = await parseJsonBody(req);
-    } catch {
-      return sendJson(res, 400, { error: "invalid json" });
+      body = await parseJsonBody(req, WEBHOOK_MAX_BODY_BYTES);
+    } catch (err: any) {
+      const status = err?.statusCode === 413 ? 413 : 400;
+      return sendJson(res, status, { error: status === 413 ? "payload too large" : "invalid json" });
     }
     const out = await ctx.channelManager?.handleTelegramWebhook?.(body, req.headers);
     return sendJson(res, out?.status || 200, out?.body || { ok: true });
   }
 
-  // POST /api/channels/feishu/webhook
+  // POST /api/channels/feishu/webhook (unauthenticated external callback -> strict 64KB cap)
   if (method === "POST" && pathname === "/api/channels/feishu/webhook") {
     let body: Record<string, any> = {};
     try {
-      body = await parseJsonBody(req);
-    } catch {
-      return sendJson(res, 400, { error: "invalid json" });
+      body = await parseJsonBody(req, WEBHOOK_MAX_BODY_BYTES);
+    } catch (err: any) {
+      const status = err?.statusCode === 413 ? 413 : 400;
+      return sendJson(res, status, { error: status === 413 ? "payload too large" : "invalid json" });
     }
     const out = await ctx.channelManager?.handleFeishuWebhook?.(body);
     return sendJson(res, out?.status || 200, out?.body || { ok: true });

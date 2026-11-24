@@ -293,6 +293,13 @@ export function createServer({
                 configured: Boolean(chEntry.config?.configured),
                 connected: Boolean(chEntry.runtime?.connected),
                 accountCount: chEntry.config?.configured ? 1 : 0,
+                savedAccountCount:
+                  chEntry.config?.configured ||
+                  chEntry.config?.hasWebhookSecret ||
+                  chEntry.config?.hasVerificationToken ||
+                  chEntry.config?.hasEncryptKey
+                    ? 1
+                    : 0,
               }
             : {}),
         };
@@ -860,6 +867,14 @@ if (
       `TwinkleBot server listening on http://${config.host}:${config.port}`
     );
   });
+  const shutdownStandalone = () => {
+    void closeAllLocalBrowsers().finally(() => {
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 1500).unref();
+    });
+  };
+  process.once("SIGINT", shutdownStandalone);
+  process.once("SIGTERM", shutdownStandalone);
 }
 
 export default { createServer };

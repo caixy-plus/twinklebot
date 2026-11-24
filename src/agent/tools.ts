@@ -43,14 +43,16 @@ export function resolveEphemeralSecretPlaceholders(text: string): {
   resolved: string;
   hadSecret: boolean;
   missingSecret: boolean;
+  secretValues: string[];
 } {
   if (typeof text !== "string" || !text.includes("{{secret:")) {
-    return { resolved: text, hadSecret: false, missingSecret: false };
+    return { resolved: text, hadSecret: false, missingSecret: false, secretValues: [] };
   }
   const now = Date.now();
   pruneExpiredSecrets(now);
   let hadSecret = false;
   let missingSecret = false;
+  const secretValues: string[] = [];
   const resolved = text.replace(SECRET_PLACEHOLDER_RE, (full, key) => {
     hadSecret = true;
     const entry = ephemeralSecrets.get(key);
@@ -58,9 +60,34 @@ export function resolveEphemeralSecretPlaceholders(text: string): {
       missingSecret = true;
       return full;
     }
+    if (entry.value) secretValues.push(entry.value);
     return entry.value;
   });
-  return { resolved, hadSecret, missingSecret };
+  return { resolved, hadSecret, missingSecret, secretValues };
+}
+
+function scrubSecretValuesDeep(val: any, secrets: string[]): any {
+  if (!secrets.length || val === null || val === undefined) return val;
+  if (typeof val === "string") {
+    let out = val;
+    for (const s of secrets) {
+      if (s && out.includes(s)) {
+        out = out.split(s).join("[REDACTED_SECRET]");
+      }
+    }
+    return out;
+  }
+  if (Array.isArray(val)) {
+    return val.map((item) => scrubSecretValuesDeep(item, secrets));
+  }
+  if (typeof val === "object") {
+    const copy: Record<string, any> = {};
+    for (const [k, v] of Object.entries(val)) {
+      copy[k] = scrubSecretValuesDeep(v, secrets);
+    }
+    return copy;
+  }
+  return val;
 }
 
 export function clearEphemeralSecrets(): void {
@@ -579,12 +606,15 @@ export async function runTool(
     };
   }
   let execArgs = cleanArgs;
+  let injectedSecrets: string[] = [];
   if (
     SECRET_INJECTABLE_TOOLS.has(name) &&
     typeof cleanArgs.text === "string" &&
     cleanArgs.text.includes("{{secret:")
   ) {
-    const { resolved, missingSecret } = resolveEphemeralSecretPlaceholders(cleanArgs.text);
+    const { resolved, missingSecret, secretValues } = resolveEphemeralSecretPlaceholders(
+      cleanArgs.text
+    );
     if (missingSecret) {
       return {
         result: {
@@ -594,20 +624,21 @@ export async function runTool(
         screenshot: null,
       };
     }
-    execArgs =
-      name === "type_text"
-        ? { ...cleanArgs, text: resolved, sensitive: true }
-        : { ...cleanArgs, text: resolved };
+    injectedSecrets = secretValues;
+    execArgs = { ...cleanArgs, text: resolved, sensitive: true };
   }
   const callOptions = signal ? { signal } : undefined;
 
   try {
-    const res: any =
+    const rawRes: any =
       localBrowserExecutor && isBrowserAutomationTool(name)
         ? await localBrowserExecutor(name, execArgs, signal)
         : callOptions
           ? await client.call(route, execArgs, callOptions)
           : await client.call(route, execArgs);
+    const res: any = injectedSecrets.length
+      ? scrubSecretValuesDeep(rawRes, injectedSecrets)
+      : rawRes;
 
     if (name === "screenshot") {
       const screenshot = res?.png_base64

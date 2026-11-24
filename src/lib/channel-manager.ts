@@ -1,5 +1,7 @@
 import {
   DEFAULT_TELEGRAM_API_BASE,
+  decodeFeishuPbFrame,
+  encodeFeishuPbFrame,
   fetchFeishuTenantAccessToken,
   isSenderAllowed,
   normalizeChannelsAuthStore,
@@ -7,14 +9,17 @@ import {
   parseFeishuWebhookPayload,
   parseTelegramUpdate,
   resolveFeishuApiBase,
+  sanitizeChannelApiBaseUrl,
   sanitizeFeishuChannelConfig,
   sanitizeTelegramChannelConfig,
   sendFeishuMessage,
   sendTelegramMessage,
   testFeishuChannel,
   testTelegramChannel,
+  timingSafeEqualStr,
   type ChannelSkillId,
   type FeishuChannelConfig,
+  type FeishuPbFrame,
   type ParsedInboundChannelMessage,
   type TelegramChannelConfig,
 } from "./channel-integrations.js";
@@ -46,10 +51,40 @@ interface ActiveChannelTurn {
   chatId: string;
   sessionId: string;
   buffer: string[];
+  lastError: string;
   delivered: boolean;
+  choiceNotified: boolean;
+  donePromise: Promise<void>;
+  resolveDone: () => void;
+}
+
+interface FeishuSplitBuffer {
+  createdAt: number;
+  total: number;
+  parts: Array<Buffer | undefined>;
 }
 
 const MAX_DEDUP_IDS = 500;
+const TERMINAL_SESSION_STATUSES = new Set([
+  "done",
+  "max_steps",
+  "completed",
+  "idle",
+  "error",
+  "stopped",
+]);
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
+}
+
+function getHeaderVal(frame: FeishuPbFrame, key: string): string {
+  const hit = frame.headers.find((h) => h.key === key);
+  return hit ? hit.value : "";
+}
 
 export function createChannelManager({
   store,
@@ -61,6 +96,8 @@ export function createChannelManager({
   const seenEventSet = new Set<string>();
   const pendingApprovals = new Map<string, PendingChannelApproval>();
   const activeTurns = new Map<string, ActiveChannelTurn>();
+  const sessionChains = new Map<string, Promise<void>>();
+  const feishuSplitBuffers = new Map<string, FeishuSplitBuffer>();
 
   const runtimeState: Record<ChannelSkillId, ChannelRuntimeState> = {
     "telegram-bot": {
@@ -83,9 +120,12 @@ export function createChannelManager({
 
   let tgAbort: AbortController | null = null;
   let tgOffset = 0;
+  let lastTgBotToken = "";
   let fsWs: WebSocket | null = null;
+  let fsEndpointAbort: AbortController | null = null;
   let fsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let fsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let fsConnEpoch = 0;
   let fsStopping = false;
   let fsTokenCache: { key: string; token: string; expiresAt: number } | null = null;
   let unsubscribeRunner: (() => void) | null = null;
@@ -99,6 +139,14 @@ export function createChannelManager({
       if (oldest) seenEventSet.delete(oldest);
     }
     return true;
+  }
+
+  function clearPendingApprovalsForSession(sessionId: string, matchCallId?: string): void {
+    for (const [key, entry] of pendingApprovals.entries()) {
+      if (entry.sessionId === sessionId && (!matchCallId || entry.callId === matchCallId)) {
+        pendingApprovals.delete(key);
+      }
+    }
   }
 
   function readConfigs() {
@@ -157,19 +205,34 @@ export function createChannelManager({
     return created.id;
   }
 
+  function invokeRunnerApprove(callId: string, allowed: boolean): Promise<any> {
+    if (typeof runner?.approve !== "function") return Promise.resolve();
+    return Promise.resolve(runner.approve(callId, Boolean(allowed)));
+  }
+
   function ensureRunnerSubscribed(): void {
     if (unsubscribeRunner || typeof runner?.subscribe !== "function") return;
     unsubscribeRunner = runner.subscribe((event: any) => {
       if (!event || !event.sessionId) return;
+
+      if (event.type === "approval" && event.callId) {
+        clearPendingApprovalsForSession(event.sessionId, event.callId);
+      }
+
       const turn = activeTurns.get(event.sessionId);
-      if (!turn) return;
+      if (!turn) {
+        if (event.type === "status" && TERMINAL_SESSION_STATUSES.has(String(event.status || ""))) {
+          clearPendingApprovalsForSession(event.sessionId);
+        }
+        return;
+      }
 
       if (event.type === "approval_request" && event.callId) {
         const configs = readConfigs();
         const cfg = configs[turn.channel];
         const key = `${turn.channel}:${turn.chatId}`;
         if (cfg.approvalMode === "app_only") {
-          void runner?.approve?.(event.sessionId, event.callId, false);
+          void invokeRunnerApprove(event.callId, false);
           void sendChannelReply(
             turn.channel,
             turn.chatId,
@@ -190,43 +253,150 @@ export function createChannelManager({
         return;
       }
 
-      if (event.type === "approval" && event.callId) {
-        const key = `${turn.channel}:${turn.chatId}`;
-        const pending = pendingApprovals.get(key);
-        if (pending && pending.callId === event.callId) {
-          pendingApprovals.delete(key);
-        }
+      if (event.type === "status" && event.status === "awaiting_choice" && !turn.choiceNotified) {
+        turn.choiceNotified = true;
+        void sendChannelReply(
+          turn.channel,
+          turn.chatId,
+          "🔔 当前任务需要你在 TwinkleBot App 中完成交互选择、草稿确认或填写安全凭据。"
+        ).catch(() => {});
         return;
       }
 
-      if (event.type === "assistant_message" && typeof event.text === "string" && event.text.trim()) {
+      if (event.type === "error" && typeof event.message === "string" && event.message.trim()) {
+        turn.lastError = event.message.trim();
+        return;
+      }
+
+      if (
+        (event.type === "answer" || event.type === "assistant_message") &&
+        typeof event.text === "string" &&
+        event.text.trim()
+      ) {
         turn.buffer.push(event.text.trim());
         return;
       }
 
       if (
-        event.type === "status" &&
-        (event.status === "completed" ||
-          event.status === "idle" ||
-          event.status === "error" ||
-          event.status === "stopped")
+        event.type === "route_notice" &&
+        event.level === "max_steps" &&
+        typeof event.text === "string" &&
+        event.text.trim()
       ) {
+        turn.buffer.push(event.text.trim());
+        return;
+      }
+
+      if (event.type === "status" && TERMINAL_SESSION_STATUSES.has(String(event.status || ""))) {
+        clearPendingApprovalsForSession(event.sessionId);
         if (!turn.delivered) {
           turn.delivered = true;
           activeTurns.delete(event.sessionId);
           const replyText =
             turn.buffer.join("\n\n").trim() ||
             (event.status === "error"
-              ? "执行任务时发生错误，请在 TwinkleBot App 查看详情。"
+              ? `执行任务时发生错误${turn.lastError ? `：${turn.lastError}` : "，请在 TwinkleBot App 查看详情。"}`
               : event.status === "stopped"
                 ? "任务已停止。"
                 : "");
           if (replyText) {
-            void sendChannelReply(turn.channel, turn.chatId, replyText).catch(() => {});
+            void sendChannelReply(turn.channel, turn.chatId, replyText)
+              .catch(() => {})
+              .finally(() => turn.resolveDone());
+          } else {
+            turn.resolveDone();
           }
         }
       }
     });
+  }
+
+  async function waitUntilSessionIdle(sessionId: string, maxWaitMs = 60_000): Promise<void> {
+    if (typeof runner?.isSessionBusy !== "function") return;
+    const deadline = Date.now() + maxWaitMs;
+    while (runner.isSessionBusy(sessionId) && Date.now() < deadline) {
+      await sleepMs(60);
+    }
+  }
+
+  function enqueueSessionChannelTurn(
+    sessionId: string,
+    msg: ParsedInboundChannelMessage
+  ): Promise<void> {
+    let resolveDone!: () => void;
+    const donePromise = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+
+    const prevChain = sessionChains.get(sessionId) || Promise.resolve();
+    const nextChain = prevChain
+      .catch(() => {})
+      .then(async () => {
+        await waitUntilSessionIdle(sessionId, 60_000);
+        ensureRunnerSubscribed();
+
+        const turn: ActiveChannelTurn = {
+          channel: msg.channel,
+          chatId: msg.chatId,
+          sessionId,
+          buffer: [],
+          lastError: "",
+          delivered: false,
+          choiceNotified: false,
+          donePromise,
+          resolveDone,
+        };
+        activeTurns.set(sessionId, turn);
+
+        // Safety timer so a stalled mock/session cannot permanently block subsequent turns
+        const safetyTimer = setTimeout(() => {
+          if (activeTurns.get(sessionId) === turn) {
+            activeTurns.delete(sessionId);
+          }
+          resolveDone();
+        }, 5 * 60_000);
+        safetyTimer.unref?.();
+
+        const userMeta = {
+          clientSource: {
+            deviceKind: "mobile" as const,
+            platform: msg.channel,
+          },
+          channelMeta: {
+            channel: msg.channel,
+            chatId: msg.chatId,
+            senderId: msg.senderId,
+            senderName: msg.senderName,
+          },
+        };
+
+        try {
+          if (typeof runner?.enqueue === "function") {
+            await runner.enqueue(sessionId, msg.text, userMeta);
+          } else if (typeof runner?.start === "function") {
+            await runner.start(sessionId, msg.text, userMeta);
+          } else {
+            activeTurns.delete(sessionId);
+            resolveDone();
+          }
+          await donePromise;
+        } catch (err: any) {
+          if (activeTurns.get(sessionId) === turn) {
+            activeTurns.delete(sessionId);
+          }
+          void sendChannelReply(
+            msg.channel,
+            msg.chatId,
+            `执行任务失败：${err?.message || String(err)}`
+          ).catch(() => {});
+          resolveDone();
+        } finally {
+          clearTimeout(safetyTimer);
+        }
+      });
+
+    sessionChains.set(sessionId, nextChain);
+    return donePromise;
   }
 
   async function handleInboundMessage(
@@ -264,7 +434,8 @@ export function createChannelManager({
       const decision = parseApprovalCommand(msg.text);
       if (decision !== null) {
         pendingApprovals.delete(pendingKey);
-        await runner?.approve?.(pending.sessionId, pending.callId, decision);
+        const runningTurn = activeTurns.get(pending.sessionId);
+        await invokeRunnerApprove(pending.callId, decision);
         await sendChannelReply(
           msg.channel,
           msg.chatId,
@@ -272,38 +443,17 @@ export function createChannelManager({
             ? `✅ 已允许执行：${pending.toolName}`
             : `❌ 已拒绝执行：${pending.toolName}`
         ).catch(() => {});
+        if (runningTurn) {
+          await Promise.race([runningTurn.donePromise, sleepMs(150)]);
+        }
         return { handled: true };
       }
     }
 
-    ensureRunnerSubscribed();
     const sessionId = resolveTargetSessionId(cfg.defaultSessionId);
-    activeTurns.set(sessionId, {
-      channel: msg.channel,
-      chatId: msg.chatId,
-      sessionId,
-      buffer: [],
-      delivered: false,
-    });
-
-    const userMeta = {
-      clientSource: {
-        deviceKind: "mobile",
-        platform: msg.channel,
-      },
-      channelMeta: {
-        channel: msg.channel,
-        chatId: msg.chatId,
-        senderId: msg.senderId,
-        senderName: msg.senderName,
-      },
-    };
-
-    if (typeof runner?.start === "function") {
-      await runner.start(sessionId, msg.text, userMeta);
-    } else if (typeof runner?.enqueue === "function") {
-      await runner.enqueue(sessionId, msg.text, userMeta);
-    }
+    const donePromise = enqueueSessionChannelTurn(sessionId, msg);
+    // Allow fast/mock runs to flush synchronously while returning quickly (<150ms) for long LLM runs
+    await Promise.race([donePromise, sleepMs(150)]);
     return { handled: true };
   }
 
@@ -316,6 +466,10 @@ export function createChannelManager({
 
   function startTelegramPolling(cfg: TelegramChannelConfig): void {
     stopTelegramPolling();
+    if (cfg.botToken !== lastTgBotToken) {
+      tgOffset = 0;
+      lastTgBotToken = cfg.botToken;
+    }
     const abort = new AbortController();
     tgAbort = abort;
     runtimeState["telegram-bot"] = {
@@ -325,15 +479,20 @@ export function createChannelManager({
       mode: "polling",
       lastError: null,
     };
-    const base = (cfg.apiBaseUrl || DEFAULT_TELEGRAM_API_BASE).replace(/\/+$/, "");
+    const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
 
     const loop = async () => {
       let backoffMs = 1500;
       while (!abort.signal.aborted) {
         try {
           const url = `${base}/bot${encodeURIComponent(cfg.botToken)}/getUpdates?timeout=25&offset=${tgOffset}`;
-          const resp = await fetchImpl(url, { method: "GET", signal: abort.signal });
+          const reqSignal =
+            typeof AbortSignal?.any === "function" && typeof AbortSignal?.timeout === "function"
+              ? AbortSignal.any([abort.signal, AbortSignal.timeout(35_000)])
+              : abort.signal;
+          const resp = await fetchImpl(url, { method: "GET", signal: reqSignal });
           const data: any = await resp.json().catch(() => ({}));
+          if (abort.signal.aborted) break;
           if (!resp.ok || !data?.ok) {
             throw new Error(data?.description || `HTTP ${resp.status}`);
           }
@@ -359,10 +518,14 @@ export function createChannelManager({
           await new Promise<void>((resolve) => {
             const t = setTimeout(resolve, backoffMs);
             t.unref?.();
-            abort.signal.addEventListener("abort", () => {
-              clearTimeout(t);
-              resolve();
-            }, { once: true });
+            abort.signal.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(t);
+                resolve();
+              },
+              { once: true }
+            );
           });
           backoffMs = Math.min(30_000, backoffMs * 2);
         }
@@ -373,6 +536,11 @@ export function createChannelManager({
 
   function stopFeishuWebSocket(): void {
     fsStopping = true;
+    fsConnEpoch += 1;
+    if (fsEndpointAbort) {
+      fsEndpointAbort.abort();
+      fsEndpointAbort = null;
+    }
     if (fsReconnectTimer) {
       clearTimeout(fsReconnectTimer);
       fsReconnectTimer = null;
@@ -389,11 +557,65 @@ export function createChannelManager({
       }
       fsWs = null;
     }
+    feishuSplitBuffers.clear();
+  }
+
+  function reassembleFeishuPayload(frame: FeishuPbFrame): Buffer | null {
+    const raw = frame.payload || Buffer.alloc(0);
+    const sum = Number(getHeaderVal(frame, "sum") || "1");
+    const seq = Number(getHeaderVal(frame, "seq") || "0");
+    const msgId = getHeaderVal(frame, "message_id");
+    if (!Number.isFinite(sum) || sum <= 1 || !msgId) {
+      return raw;
+    }
+    const now = Date.now();
+    for (const [k, entry] of feishuSplitBuffers.entries()) {
+      if (now - entry.createdAt > 15_000) feishuSplitBuffers.delete(k);
+    }
+    let state = feishuSplitBuffers.get(msgId);
+    if (!state || state.total !== sum) {
+      state = { createdAt: now, total: sum, parts: Array.from({ length: sum }, () => undefined) };
+      feishuSplitBuffers.set(msgId, state);
+    }
+    if (seq >= 0 && seq < sum) {
+      state.parts[seq] = raw;
+    }
+    if (state.parts.every((p) => Buffer.isBuffer(p))) {
+      feishuSplitBuffers.delete(msgId);
+      return Buffer.concat(state.parts as Buffer[]);
+    }
+    return null;
+  }
+
+  async function extractWsBinaryOrText(
+    rawData: unknown
+  ): Promise<{ kind: "text"; text: string } | { kind: "binary"; buf: Buffer } | null> {
+    if (typeof rawData === "string") {
+      return { kind: "text", text: rawData };
+    }
+    if (Buffer.isBuffer(rawData)) {
+      return { kind: "binary", buf: rawData };
+    }
+    if (rawData instanceof ArrayBuffer) {
+      return { kind: "binary", buf: Buffer.from(rawData) };
+    }
+    if (ArrayBuffer.isView(rawData)) {
+      return {
+        kind: "binary",
+        buf: Buffer.from(rawData.buffer, rawData.byteOffset, rawData.byteLength),
+      };
+    }
+    if (rawData && typeof (rawData as Blob).arrayBuffer === "function") {
+      const ab = await (rawData as Blob).arrayBuffer();
+      return { kind: "binary", buf: Buffer.from(ab) };
+    }
+    return null;
   }
 
   function startFeishuWebSocket(cfg: FeishuChannelConfig): void {
     stopFeishuWebSocket();
     fsStopping = false;
+    const myEpoch = ++fsConnEpoch;
     runtimeState["feishu-bot"] = {
       ...runtimeState["feishu-bot"],
       connected: false,
@@ -403,50 +625,150 @@ export function createChannelManager({
     };
 
     const connectOnce = async () => {
-      if (fsStopping) return;
+      if (fsStopping || myEpoch !== fsConnEpoch) return;
+      const endpointCtrl = new AbortController();
+      fsEndpointAbort = endpointCtrl;
       try {
         const base = resolveFeishuApiBase(cfg);
         const resp = await fetchImpl(`${base}/callback/ws/endpoint`, {
           method: "POST",
           headers: { "Content-Type": "application/json; charset=utf-8" },
           body: JSON.stringify({ AppID: cfg.appId, AppSecret: cfg.appSecret }),
+          signal: endpointCtrl.signal,
         });
         const data: any = await resp.json().catch(() => ({}));
+        if (fsStopping || myEpoch !== fsConnEpoch) return;
         const wsUrl = String(data?.data?.URL || data?.URL || "").trim();
         if (!resp.ok || !wsUrl) {
           throw new Error(data?.msg || `Feishu WS endpoint failed (HTTP ${resp.status})`);
         }
+
+        let serviceId = 0;
+        try {
+          serviceId = Number(new URL(wsUrl).searchParams.get("service_id") || "0") || 0;
+        } catch {
+          serviceId = 0;
+        }
+        const rawPingSec = Number(
+          data?.data?.ClientConfig?.PingInterval ?? data?.ClientConfig?.PingInterval ?? 90
+        );
+        const pingIntervalMs = Math.max(15, Math.min(300, Number.isFinite(rawPingSec) ? rawPingSec : 90)) * 1000;
+
         const WSImpl = globalThis.WebSocket;
         if (typeof WSImpl !== "function") {
           throw new Error("Global WebSocket unavailable");
         }
         const ws = new WSImpl(wsUrl);
+        try {
+          ws.binaryType = "arraybuffer";
+        } catch {
+          // ignore if custom mock WS has read-only binaryType
+        }
         fsWs = ws;
+
         ws.addEventListener("open", () => {
+          if (fsStopping || myEpoch !== fsConnEpoch) {
+            try {
+              ws.close();
+            } catch {}
+            return;
+          }
           runtimeState["feishu-bot"].connected = true;
           runtimeState["feishu-bot"].status = "connected";
           runtimeState["feishu-bot"].lastError = null;
-        });
-        ws.addEventListener("message", (evt: any) => {
-          try {
-            const rawStr = typeof evt?.data === "string"
-              ? evt.data
-              : Buffer.from(evt?.data || "").toString("utf8");
-            // Extract JSON object from plain text or protobuf-framed payload
-            const jsonStart = rawStr.indexOf("{");
-            const jsonEnd = rawStr.lastIndexOf("}");
-            if (jsonStart >= 0 && jsonEnd > jsonStart) {
-              const payload = JSON.parse(rawStr.slice(jsonStart, jsonEnd + 1));
-              const parsed = parseFeishuWebhookPayload(payload, cfg);
-              if (parsed.kind === "message") {
-                void handleInboundMessage(parsed.message).catch(() => {});
-              }
+
+          if (fsHeartbeatTimer) clearInterval(fsHeartbeatTimer);
+          fsHeartbeatTimer = setInterval(() => {
+            if (ws.readyState !== 1) return;
+            try {
+              const pingFrame = encodeFeishuPbFrame({
+                seqId: 0n,
+                logId: 0n,
+                service: serviceId,
+                method: 0,
+                headers: [{ key: "type", value: "ping" }],
+              });
+              ws.send(new Uint8Array(pingFrame));
+            } catch {
+              // ignore transient send error
             }
-          } catch {
-            // ignore control/ping frames
-          }
+          }, pingIntervalMs);
+          fsHeartbeatTimer.unref?.();
         });
+
+        ws.addEventListener("message", (evt: any) => {
+          void (async () => {
+            try {
+              const extracted = await extractWsBinaryOrText(evt?.data);
+              if (!extracted) return;
+
+              if (extracted.kind === "text") {
+                const payload = JSON.parse(extracted.text);
+                const parsed = parseFeishuWebhookPayload(payload, cfg, {
+                  requireVerificationToken: false,
+                  requireEncryptionIfConfigured: false,
+                });
+                if (parsed.kind === "message") {
+                  await handleInboundMessage(parsed.message);
+                }
+                return;
+              }
+
+              const startedAt = Date.now();
+              const frame = decodeFeishuPbFrame(extracted.buf);
+              if (frame.method === 0) {
+                // Control frame (pong / config update)
+                return;
+              }
+              const msgType = getHeaderVal(frame, "type");
+              const combined = reassembleFeishuPayload(frame);
+              if (!combined) return; // awaiting remaining fragments
+
+              // Acknowledge DATA frame within Feishu's 3-second SLA before running LLM work
+              if (ws.readyState === 1) {
+                const ackPayload = Buffer.from(JSON.stringify({ code: 200 }), "utf8");
+                const ackFrame = encodeFeishuPbFrame({
+                  seqId: frame.seqId,
+                  logId: frame.logId,
+                  service: frame.service || serviceId,
+                  method: frame.method,
+                  headers: [
+                    ...frame.headers,
+                    { key: "biz_rt", value: String(Math.max(1, Date.now() - startedAt)) },
+                  ],
+                  payload: ackPayload,
+                  ...(frame.logIdNew ? { logIdNew: frame.logIdNew } : {}),
+                });
+                try {
+                  ws.send(new Uint8Array(ackFrame));
+                } catch {
+                  // ignore send error
+                }
+              }
+
+              if (msgType && msgType !== "event") return;
+              if (combined.length === 0) return;
+
+              const payload = JSON.parse(combined.toString("utf8"));
+              const parsed = parseFeishuWebhookPayload(payload, cfg, {
+                requireVerificationToken: false,
+                requireEncryptionIfConfigured: false,
+              });
+              if (parsed.kind === "message") {
+                await handleInboundMessage(parsed.message);
+              }
+            } catch {
+              // ignore malformed or control frames
+            }
+          })();
+        });
+
         ws.addEventListener("close", () => {
+          if (fsHeartbeatTimer) {
+            clearInterval(fsHeartbeatTimer);
+            fsHeartbeatTimer = null;
+          }
+          if (myEpoch !== fsConnEpoch) return;
           runtimeState["feishu-bot"].connected = false;
           if (!fsStopping) {
             runtimeState["feishu-bot"].status = "connecting";
@@ -454,19 +776,20 @@ export function createChannelManager({
             fsReconnectTimer.unref?.();
           }
         });
+
         ws.addEventListener("error", () => {
+          if (myEpoch !== fsConnEpoch) return;
           runtimeState["feishu-bot"].connected = false;
           runtimeState["feishu-bot"].status = "error";
           runtimeState["feishu-bot"].lastError = "Feishu WebSocket connection error";
         });
       } catch (err: any) {
+        if (fsStopping || myEpoch !== fsConnEpoch) return;
         runtimeState["feishu-bot"].connected = false;
         runtimeState["feishu-bot"].status = "error";
         runtimeState["feishu-bot"].lastError = err?.message || String(err);
-        if (!fsStopping) {
-          fsReconnectTimer = setTimeout(() => void connectOnce(), 10_000);
-          fsReconnectTimer.unref?.();
-        }
+        fsReconnectTimer = setTimeout(() => void connectOnce(), 10_000);
+        fsReconnectTimer.unref?.();
       }
     };
     void connectOnce();
@@ -485,10 +808,10 @@ export function createChannelManager({
         stopTelegramPolling();
         runtimeState["telegram-bot"] = {
           ...runtimeState["telegram-bot"],
-          connected: true,
-          status: "webhook_ready",
+          connected: Boolean(tgCfg.webhookSecret),
+          status: tgCfg.webhookSecret ? "webhook_ready" : "error",
           mode: "webhook",
-          lastError: null,
+          lastError: tgCfg.webhookSecret ? null : "Webhook Secret 未配置",
         };
       }
     } else {
@@ -510,10 +833,10 @@ export function createChannelManager({
         stopFeishuWebSocket();
         runtimeState["feishu-bot"] = {
           ...runtimeState["feishu-bot"],
-          connected: true,
-          status: "webhook_ready",
+          connected: Boolean(fsCfg.verificationToken),
+          status: fsCfg.verificationToken ? "webhook_ready" : "error",
           mode: "webhook",
-          lastError: null,
+          lastError: fsCfg.verificationToken ? null : "Verification Token 未配置",
         };
       }
     } else {
@@ -552,13 +875,21 @@ export function createChannelManager({
     if (!getInstalledSkills().includes("telegram-bot") || !cfg.enabled) {
       return { status: 403, body: { ok: false, error: "telegram-bot channel is disabled" } };
     }
-    if (cfg.webhookSecret) {
-      const supplied = String(
-        headers["x-telegram-bot-api-secret-token"] || ""
-      ).trim();
-      if (supplied !== cfg.webhookSecret) {
-        return { status: 401, body: { ok: false, error: "invalid telegram webhook secret" } };
-      }
+    if (cfg.connectionMode !== "webhook") {
+      return {
+        status: 403,
+        body: { ok: false, error: "telegram-bot webhook mode is not active" },
+      };
+    }
+    if (!cfg.webhookSecret) {
+      return {
+        status: 401,
+        body: { ok: false, error: "telegram webhook secret is not configured" },
+      };
+    }
+    const supplied = String(headers["x-telegram-bot-api-secret-token"] || "").trim();
+    if (!timingSafeEqualStr(supplied, cfg.webhookSecret)) {
+      return { status: 401, body: { ok: false, error: "invalid telegram webhook secret" } };
     }
     const parsed = parseTelegramUpdate(body);
     if (!parsed) {
@@ -576,9 +907,24 @@ export function createChannelManager({
     if (!getInstalledSkills().includes("feishu-bot")) {
       return { status: 403, body: { ok: false, error: "feishu-bot skill is not installed" } };
     }
+    if (cfg.connectionMode !== "webhook") {
+      return {
+        status: 403,
+        body: { ok: false, error: "feishu-bot webhook mode is not active" },
+      };
+    }
+    if (!cfg.verificationToken) {
+      return {
+        status: 401,
+        body: { ok: false, error: "feishu verificationToken is not configured" },
+      };
+    }
     let parsed: ReturnType<typeof parseFeishuWebhookPayload>;
     try {
-      parsed = parseFeishuWebhookPayload(body, cfg);
+      parsed = parseFeishuWebhookPayload(body, cfg, {
+        requireVerificationToken: true,
+        requireEncryptionIfConfigured: true,
+      });
     } catch (err: any) {
       return { status: 401, body: { ok: false, error: err?.message || "invalid feishu event" } };
     }
@@ -601,10 +947,27 @@ export function createChannelManager({
   ) {
     const configs = readConfigs();
     if (channelId === "telegram-bot") {
+      const stored = configs["telegram-bot"];
+      const overrideBase =
+        typeof overrideRaw?.apiBaseUrl === "string" && overrideRaw.apiBaseUrl.trim()
+          ? sanitizeChannelApiBaseUrl(overrideRaw.apiBaseUrl, "")
+          : "";
+      if (overrideRaw?.apiBaseUrl && !overrideBase) {
+        return { ok: false, error: "不安全的自定义 Telegram API Base URL（仅允许公网 HTTPS 或本机回环）" };
+      }
+      const explicitToken =
+        typeof overrideRaw?.botToken === "string" ? overrideRaw.botToken.trim() : "";
+      // Prevent exfiltrating stored decrypted token to an overridden apiBaseUrl
+      if (overrideBase && overrideBase !== stored.apiBaseUrl && !explicitToken) {
+        return {
+          ok: false,
+          error: "修改 API Base URL 测试连接时必须同时重新填写 Bot Token",
+        };
+      }
       const merged = {
-        ...configs["telegram-bot"],
-        ...(overrideRaw?.botToken ? { botToken: String(overrideRaw.botToken).trim() } : {}),
-        ...(overrideRaw?.apiBaseUrl ? { apiBaseUrl: String(overrideRaw.apiBaseUrl).trim() } : {}),
+        ...stored,
+        ...(explicitToken ? { botToken: explicitToken } : {}),
+        ...(overrideBase ? { apiBaseUrl: overrideBase } : {}),
       };
       const res = await testTelegramChannel(merged, fetchImpl);
       if (res.ok && res.botName) {
@@ -612,12 +975,39 @@ export function createChannelManager({
       }
       return res;
     }
+
+    const stored = configs["feishu-bot"];
+    const overrideBase =
+      typeof overrideRaw?.apiBaseUrl === "string" && overrideRaw.apiBaseUrl.trim()
+        ? sanitizeChannelApiBaseUrl(overrideRaw.apiBaseUrl, "")
+        : "";
+    if (overrideRaw?.apiBaseUrl && !overrideBase) {
+      return { ok: false, error: "不安全的自定义飞书 API Base URL（仅允许公网 HTTPS 或本机回环）" };
+    }
+    const explicitSecret =
+      typeof overrideRaw?.appSecret === "string" ? overrideRaw.appSecret.trim() : "";
+    const overrideDomain =
+      overrideRaw?.domain === "lark" || overrideRaw?.domain === "feishu"
+        ? overrideRaw.domain
+        : stored.domain;
+    if (
+      ((overrideBase && overrideBase !== stored.apiBaseUrl) || overrideDomain !== stored.domain) &&
+      !explicitSecret &&
+      stored.appSecret
+    ) {
+      if (overrideBase && overrideBase !== stored.apiBaseUrl) {
+        return {
+          ok: false,
+          error: "修改自定义飞书 API 地址测试连接时必须同时重新填写 App Secret",
+        };
+      }
+    }
     const merged = {
-      ...configs["feishu-bot"],
+      ...stored,
       ...(overrideRaw?.appId ? { appId: String(overrideRaw.appId).trim() } : {}),
-      ...(overrideRaw?.appSecret ? { appSecret: String(overrideRaw.appSecret).trim() } : {}),
-      ...(overrideRaw?.domain ? { domain: overrideRaw.domain } : {}),
-      ...(overrideRaw?.apiBaseUrl ? { apiBaseUrl: String(overrideRaw.apiBaseUrl).trim() } : {}),
+      ...(explicitSecret ? { appSecret: explicitSecret } : {}),
+      domain: overrideDomain,
+      ...(overrideBase ? { apiBaseUrl: overrideBase } : {}),
     };
     const res = await testFeishuChannel(merged, fetchImpl);
     if (res.ok && res.botName) {
@@ -648,7 +1038,11 @@ export function createChannelManager({
       unsubscribeRunner = null;
     }
     pendingApprovals.clear();
+    for (const turn of activeTurns.values()) {
+      turn.resolveDone();
+    }
     activeTurns.clear();
+    sessionChains.clear();
   }
 
   return {

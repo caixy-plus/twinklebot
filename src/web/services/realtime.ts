@@ -158,6 +158,11 @@ export function handleRealtimePayload(payload: any) {
           errorCode: nextOnline
             ? undefined
             : payload.errorCode ?? prev.computerStatus?.errorCode,
+          ...(payload.localBrowser !== undefined
+            ? { localBrowser: payload.localBrowser }
+            : prev.computerStatus?.localBrowser
+              ? { localBrowser: prev.computerStatus.localBrowser }
+              : {}),
         },
         ...(Array.isArray(payload.connectedHosts) ? { onlineCloudHosts: payload.connectedHosts } : {}),
         ...(payload.selectedHostId !== undefined ? { selectedCloudHostId: payload.selectedHostId } : {}),
@@ -648,10 +653,10 @@ export async function reconnectRealtimeNow(): Promise<boolean> {
 
 export function probeActiveTransportOnResume() {
   const now = Date.now();
-  if (runtimeRefs.lastForegroundProbeAt && now - runtimeRefs.lastForegroundProbeAt < 2000) {
+  if (runtimeRefs.lastVisibilityProbeAt && now - runtimeRefs.lastVisibilityProbeAt < 2000) {
     return;
   }
-  runtimeRefs.lastForegroundProbeAt = now;
+  runtimeRefs.lastVisibilityProbeAt = now;
   const s = getState();
   const epoch = s.accountEpoch;
   if (typeof navigator !== "undefined" && navigator.onLine === false) return;

@@ -237,6 +237,94 @@ test("HTTP settings, per-Bot session PATCH, and /api/computer/status persist & r
 
   const probe = await probeLocalChromeStatus({ mode: "local_debug", debugPort: 9445 }, tmpDir);
   assert.equal(probe.debugPort, 9445);
+
+  // 6. /api/computer/input forwards special keys via `combo` + `is_admin` headers/body (P0-4 regression)
+  const adminSess = store.ensureAdminBot();
+  const capturedExecCalls: Array<{ route: string; body: any; opts: any }> = [];
+  const srvInput = createServer({
+    config: {
+      port: 0,
+      host: "127.0.0.1",
+      dataDir: tmpDir,
+      deployEnv: "local",
+      models: ["gemini-4-hydrogen"],
+      defaultModel: "gemini-4-hydrogen",
+      writeRoots: [tmpDir],
+      screen: { width: 1440, height: 900 },
+    },
+    store,
+    executor: {
+      health: async () => ({ ok: true }),
+      call: async (route: string, body: any, opts: any) => {
+        capturedExecCalls.push({ route, body, opts });
+        return { ok: true };
+      },
+    } as any,
+  });
+  await new Promise<void>((r) => srvInput.listen(0, "127.0.0.1", r));
+  t.after(async () => {
+    await new Promise<void>((r) => srvInput.close(() => r()));
+  });
+  const inputBaseUrl = `http://127.0.0.1:${(srvInput.address() as AddressInfo).port}`;
+  const keyResp = await fetch(`${inputBaseUrl}/api/computer/input`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: "Return", botId: adminSess.id }),
+  });
+  assert.equal(keyResp.status, 200);
+  assert.equal(capturedExecCalls.length, 1);
+  assert.equal(capturedExecCalls[0].route, "/key");
+  assert.equal(capturedExecCalls[0].body.combo, "Return");
+  assert.equal(capturedExecCalls[0].body.is_admin, true);
+  assert.equal(capturedExecCalls[0].opts?.headers?.["X-Twinkle-Bot-Admin"], "1");
+});
+
+test("Local Chrome security guardrails: directory executablePath safety, loopback SSRF block, and browser_upload_file policy enforcement", async (t) => {
+  const { assessToolCall } = await import("../src/agent/policy.js");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-browser-sec-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  // 1. Directory path (not a regular file) must not pass detectLocalChromeExecutable or crash spawn
+  assert.equal(detectLocalChromeExecutable(tmpDir, "linux"), "");
+  const mgr = getDefaultLocalChromeManager();
+  await assert.rejects(
+    () =>
+      mgr.executeTool(
+        "browser_snapshot",
+        { url: "https://example.com" },
+        { mode: "local_headless", sessionKey: "bad-exec", settings: { executablePath: tmpDir } }
+      ),
+    /无效或不存在|未检测到/
+  );
+
+  // 2. String `paths` parameter on browser_upload_file must NOT bypass sensitive path blacklist!
+  const sshBlocked = assessToolCall(
+    "browser_upload_file",
+    { ref: "e1", paths: path.join(os.homedir(), ".ssh", "id_rsa") },
+    { sandboxMode: "full", hostExecutionMode: "always" }
+  );
+  assert.equal(sshBlocked.decision, "deny");
+
+  const debugCookiesBlocked = assessToolCall(
+    "browser_upload_file",
+    { ref: "e1", paths: "/tmp/data/chrome-debug-profile/Default/Cookies" },
+    { sandboxMode: "full", hostExecutionMode: "always" }
+  );
+  assert.equal(debugCookiesBlocked.decision, "deny");
+
+  // 3. When running in local_headless/local_debug and hostExecutionMode === "off", host file uploads are denied
+  const dummyDoc = path.join(tmpDir, "report.txt");
+  fs.writeFileSync(dummyDoc, "hello", "utf8");
+  const offBlocked = assessToolCall(
+    "browser_upload_file",
+    { ref: "e1", paths: [dummyDoc] },
+    {
+      sandboxMode: "full",
+      hostExecutionMode: "off",
+      browserAutomationMode: "local_headless",
+    }
+  );
+  assert.equal(offBlocked.decision, "deny");
 });
 
 test("LocalChromeManager live headless smoke test (snapshot + type + click) when host Chrome is present", async (t) => {
@@ -252,6 +340,8 @@ test("LocalChromeManager live headless smoke test (snapshot + type + click) when
       <html><head><title>Local Chrome Smoke</title></head>
       <body>
         <input id="q" type="text" placeholder="Search box" />
+        <input id="otp" type="text" placeholder="OTP code" />
+        <input id="pwd" type="password" value="PreFilledTopSecretPwd!" />
         <button id="go" type="button" onclick="document.getElementById('out').textContent='Hello ' + document.getElementById('q').value">Run</button>
         <div id="out">Waiting</div>
       </body></html>`);
@@ -294,5 +384,44 @@ test("LocalChromeManager live headless smoke test (snapshot + type + click) when
   assert.ok(
     String(clicked.text || "").includes("Hello TwinkleBot"),
     `expected click result text to contain 'Hello TwinkleBot', got: ${clicked.text}`
+  );
+  // Password input without placeholder/aria-label must NEVER leak its value in elements[].name or elements[].value
+  assert.ok(
+    !JSON.stringify(clicked).includes("PreFilledTopSecretPwd!"),
+    "Password input value must never leak into snapshot elements"
+  );
+
+  // Typing an ephemeral {{secret:cred_...}} into a text OTP input via runTool must redact secret from returned snapshot!
+  const otpEl = (snap.elements || []).find((e: any) => e.name === "OTP code");
+  assert.ok(otpEl?.ref);
+  const secretToken = registerEphemeralSecret("OTP_SUPER_SECRET_889900");
+  const secretTyped = await runTool(
+    "browser_type",
+    { ref: otpEl.ref, text: secretToken },
+    { health: async () => ({ ok: true }), call: async () => ({ ok: true }) } as any,
+    {
+      localBrowserExecutor: (toolName, toolArgs, sig) =>
+        mgr.executeTool(toolName, toolArgs, {
+          mode: "local_headless",
+          sessionKey: "unit-smoke",
+          signal: sig,
+        }),
+    }
+  );
+  assert.equal(secretTyped.result?.ok, true);
+  assert.ok(
+    !JSON.stringify(secretTyped).includes("OTP_SUPER_SECRET_889900"),
+    "Ephemeral secret typed into <input type='text'> must never echo back in browser_type snapshot"
+  );
+
+  // Loopback TwinkleBot API port (3230) and metadata IP must be blocked in LocalChromeManager
+  await assert.rejects(
+    () =>
+      mgr.executeTool(
+        "browser_snapshot",
+        { url: "http://127.0.0.1:3230/api/settings" },
+        { mode: "local_headless", sessionKey: "unit-smoke", blockedLocalPorts: [3230, 7300] }
+      ),
+    /blocked internal service port/i
   );
 });

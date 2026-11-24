@@ -213,9 +213,15 @@ export async function handleLanHostRoutes(
                 try {
                   ctx.scheduler?.stop?.();
                 } catch {}
+                try {
+                  ctx.channelManager?.stopAll?.();
+                } catch {}
               } else {
                 try {
                   ctx.scheduler?.start?.();
+                } catch {}
+                try {
+                  ctx.channelManager?.syncFromStore?.();
                 } catch {}
               }
               ctx.runner?.broadcastGlobal?.({
@@ -509,6 +515,8 @@ export async function handleLanHostRoutes(
           const key = typeof body?.key === "string" ? body.key.trim() : "";
           const pressEnter = Boolean(body?.pressEnter);
           const botId = String(body?.botId || body?.sessionId || "").trim();
+          const targetSession = botId ? ctx.store?.getSession?.(botId) : null;
+          const isAdmin = Boolean(targetSession?.isAdmin);
           const SAFE_KEYS = new Set([
             "Return",
             "BackSpace",
@@ -539,6 +547,10 @@ export async function handleLanHostRoutes(
           if (!ctx.executor?.call) {
             return sendJson(res, 503, { ok: false, error: "executor unavailable" });
           }
+          const scopeHeaders: Record<string, string> = {
+            ...(botId ? { "X-Twinkle-Bot-Id": botId } : {}),
+            "X-Twinkle-Bot-Admin": isAdmin ? "1" : "0",
+          };
           try {
             if (text) {
               await ctx.executor.call(
@@ -546,19 +558,19 @@ export async function handleLanHostRoutes(
                 {
                   text,
                   ...(pressEnter ? { press_enter: true } : {}),
-                  ...(botId ? { bot_id: botId } : {}),
+                  ...(botId ? { bot_id: botId, is_admin: isAdmin } : {}),
                 },
-                { timeoutMs: 8000 }
+                { timeoutMs: 8000, headers: scopeHeaders }
               );
               return sendJson(res, 200, { ok: true, mode: "type", length: text.length });
             }
             await ctx.executor.call(
               "/key",
               {
-                key,
-                ...(botId ? { bot_id: botId } : {}),
+                combo: key,
+                ...(botId ? { bot_id: botId, is_admin: isAdmin } : {}),
               },
-              { timeoutMs: 5000 }
+              { timeoutMs: 5000, headers: scopeHeaders }
             );
             return sendJson(res, 200, { ok: true, mode: "key", key });
           } catch (err: any) {

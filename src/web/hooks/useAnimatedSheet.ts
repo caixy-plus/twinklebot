@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
+import { isMobileViewport } from "../mobile-ui.js";
 
 export interface AnimatedSheetOptions {
   /** Dismissal gesture axis: "y" for bottom sheets (drag down), "x" for fullscreen push pages (left-edge swipe back). */
@@ -40,6 +41,10 @@ export function useAnimatedSheet(
         if (raf2) cancelAnimationFrame(raf2);
       };
     }
+    if (!isMobileViewport()) {
+      setPhase("closed");
+      return;
+    }
     setPhase((prev) => {
       if (prev === "closed") return "closed";
       return "closing";
@@ -53,9 +58,16 @@ export function useAnimatedSheet(
   const handleTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
     const touch = e.touches?.[0];
     if (!touch) return;
-    if (axis === "x" && touch.clientX > 36) {
-      dragStartRef.current = { x: 0, y: 0, active: false };
-      return;
+    if (axis === "x") {
+      if (touch.clientX > 36) {
+        dragStartRef.current = { x: 0, y: 0, active: false };
+        return;
+      }
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl?.closest?.("pre, code, table, .msg-code-pre, .msg-table-scroll, input[type='range']")) {
+        dragStartRef.current = { x: 0, y: 0, active: false };
+        return;
+      }
     }
     dragStartRef.current = { x: touch.clientX, y: touch.clientY, active: true };
     dragDeltaRef.current = 0;
@@ -121,6 +133,7 @@ export function useAnimatedSheet(
       onTouchStart: handleTouchStart,
       onTouchMove: handleTouchMove,
       onTouchEnd: handleTouchEnd,
+      onTouchCancel: handleTouchEnd,
     },
   };
 }

@@ -70,6 +70,7 @@ export const ZH_CN_MESSAGES = {
   "status.awaiting_approval": "待确认",
   "status.awaiting_choice": "待选择",
   "status.completed": "已完成",
+  "status.max_steps": "已达步数上限",
   "status.stopped": "已停止",
   "status.error": "执行出错",
   "status.interrupted": "已中断",
@@ -77,6 +78,8 @@ export const ZH_CN_MESSAGES = {
   // Client device source badges
   "source.mobile": "手机端",
   "source.desktop": "电脑端",
+  "source.feishu": "飞书",
+  "source.telegram": "Telegram",
 
   // Navigation & LeftSidebar
   "sidebar.compactToggle": "切换紧凑侧边栏",

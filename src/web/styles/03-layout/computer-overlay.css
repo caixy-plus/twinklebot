@@ -135,8 +135,8 @@
 
 .screen-remote-input-bar {
   position: fixed;
-  left: 12px;
-  right: 12px;
+  left: max(12px, env(safe-area-inset-left));
+  right: calc(max(16px, env(safe-area-inset-right)) + 52px);
   bottom: max(12px, env(safe-area-inset-bottom));
   display: flex;
   align-items: center;

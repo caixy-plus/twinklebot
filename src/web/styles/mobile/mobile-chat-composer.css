@@ -258,6 +258,7 @@
   z-index: 29;
 }
 
+.composer-wrap > .live-activity-row,
 .composer-wrap > .live-activity-row .live-working-bubble {
   background: var(--glass-surface-gradient), var(--glass-pill-bg);
   -webkit-backdrop-filter: blur(26px) saturate(210%);
@@ -399,6 +400,7 @@
   .mobile-search-pill,
   .scroll-bottom-btn,
   .mobile-list-topbar .mobile-circle-btn:not(.mobile-update-btn),
+  .composer-wrap > .live-activity-row,
   .composer-wrap > .live-activity-row .live-working-bubble {
     background: var(--glass-pill-bg);
   }

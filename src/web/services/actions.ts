@@ -299,6 +299,9 @@ export function applyServerSettingsSnapshot(
     (saved.theme === "light" || saved.theme === "dark" || saved.theme === "system")
       ? saved.theme
       : null;
+  if (typeof saved.language === "string" && !readStoredLanguagePreference()) {
+    syncLanguageToDomAndStorage(normalizeLanguagePreference(saved.language), false);
+  }
 
   setState((prev) => ({
     settings: { ...prev.settings, ...saved },
@@ -1512,8 +1515,13 @@ export function openAppsModal(
   });
 
   if (normalized === "detail" && detailSkillId) {
+    const isChannelSkill =
+      detailSkillId === "feishu-bot" || detailSkillId === "telegram-bot";
     const targetSkill = getConfigurableSkillFromSettings(getState().settings, detailSkillId);
-    if (targetSkill?.mcpServerId || targetSkill?.category === "platform") {
+    if (isChannelSkill) {
+      // Channel skills use /api/integrations/channels, not MCP stdio servers
+      void refreshSettingsFromServer({ retries: 0 });
+    } else if (targetSkill?.mcpServerId || targetSkill?.category === "platform") {
       refreshMcpSkillStatus(targetSkill.mcpServerId || targetSkill.id, true);
     } else {
       setState({
@@ -1677,6 +1685,7 @@ function applyComputerStatusPayload(c: any) {
       vmInstalled: c.vmInstalled,
       vmRunning: c.vmRunning,
       hostComputer: c.hostComputer || prev.computerStatus?.hostComputer,
+      localBrowser: c.localBrowser || prev.computerStatus?.localBrowser,
     },
   }));
 }

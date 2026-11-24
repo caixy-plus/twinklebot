@@ -3319,7 +3319,7 @@ export function SettingsModal() {
                             />
                           </label>
                         )}
-                        <label style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1, minWidth: 0 }}>
+                        <label style={{ display: "flex", flexDirection: "column", gap: "4px", flex: "1 1 200px", minWidth: 0 }}>
                           <span className="settings-row-sub">{t("browser.execPathLabel")}</span>
                           <input
                             id="browser-automation-exec-path"

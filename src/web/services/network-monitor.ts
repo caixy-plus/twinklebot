@@ -21,6 +21,7 @@ let weakClearTimer: any = null;
 let recoveredClearTimer: any = null;
 let weakShownAt = 0;
 let lastRecoveredShownAt = 0;
+let lastHealthyWsPongAt = 0;
 let consecutiveHttpFailures = 0;
 
 export function clearNetworkMonitorTimers() {
@@ -38,6 +39,7 @@ export function clearNetworkMonitorTimers() {
   }
   weakShownAt = 0;
   lastRecoveredShownAt = 0;
+  lastHealthyWsPongAt = 0;
   consecutiveHttpFailures = 0;
 }
 
@@ -275,6 +277,12 @@ export function reportHttpOutcome({
   }
 
   const cur = getState().networkHealth;
+  // If WebSocket heartbeat just proved live reachability within the last 6 seconds,
+  // treat late/stale HTTP timeouts as weak latency rather than falsely popping AccountDisconnectedGate.
+  if (lastHealthyWsPongAt > 0 && Date.now() - lastHealthyWsPongAt < 6000) {
+    enterWeakStatus(Math.round(elapsedMs), timedOut ? "timeout" : "network_error", true);
+    return;
+  }
   if (timedOut && consecutiveHttpFailures < 2 && cur.status === "online") {
     enterWeakStatus(Math.round(elapsedMs), "timeout", true);
     return;
@@ -295,6 +303,11 @@ export function reportHttpOutcome({
 }
 
 export function reportHeartbeatRtt(rttMs: number) {
+  lastHealthyWsPongAt = Date.now();
+  const cur = getState().networkHealth;
+  if (cur.status === "reconnecting" || cur.status === "offline") {
+    reportTransportConnected("ws", true);
+  }
   const meta = getActiveAccountMeta();
   if (!isRemoteAccountType(meta.type)) return;
   const cleanRtt = Math.max(1, Math.round(rttMs));

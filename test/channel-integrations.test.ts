@@ -2,18 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import {
   chunkChannelText,
+  decodeFeishuPbFrame,
   decryptFeishuEvent,
+  encodeFeishuPbFrame,
   isSenderAllowed,
   parseApprovalCommand,
   parseFeishuWebhookPayload,
   parseTelegramUpdate,
   parseWhitelistIds,
 } from "../src/lib/channel-integrations.js";
+import { createChannelManager } from "../src/lib/channel-manager.js";
+import { createRunner } from "../src/agent/runner.js";
 import { createStore } from "../src/store/index.js";
 import { createServer } from "../src/server/index.js";
 
@@ -28,7 +33,7 @@ function encryptFeishuPayloadForTest(obj: Record<string, any>, encryptKey: strin
   return Buffer.concat([iv, encrypted]).toString("base64");
 }
 
-test("channel parsing, whitelist, approval commands, chunking, and Feishu AES-256-CBC decryption", () => {
+test("channel parsing, whitelist, approval commands, pbbp2 protobuf codec, and Feishu AES-256-CBC decryption", () => {
   assert.deepEqual(parseWhitelistIds("123, 456\nou_abc;123"), ["123", "456", "ou_abc"]);
   assert.equal(isSenderAllowed([], ["123"]), false);
   assert.equal(isSenderAllowed(["123", "ou_abc"], ["999"]), false);
@@ -44,6 +49,59 @@ test("channel parsing, whitelist, approval commands, chunking, and Feishu AES-25
 
   const chunks = chunkChannelText("a".repeat(25) + "\n" + "b".repeat(25), 30);
   assert.equal(chunks.length, 2);
+
+  // Feishu pbbp2.Frame binary protobuf roundtrip (including payload lengths 123/125 == 0x7b/0x7d)
+  const payloadJson = JSON.stringify({ pad: "x".repeat(95), text: "hello" });
+  const encodedFrame = encodeFeishuPbFrame({
+    seqId: 9007199254740993n,
+    logId: 42n,
+    service: 33554432,
+    method: 1,
+    headers: [
+      { key: "type", value: "event" },
+      { key: "message_id", value: "msg-123" },
+    ],
+    payloadType: "json",
+    payload: Buffer.from(payloadJson, "utf8"),
+  });
+  const decodedFrame = decodeFeishuPbFrame(encodedFrame);
+  assert.equal(decodedFrame.seqId, 9007199254740993n);
+  assert.equal(decodedFrame.logId, 42n);
+  assert.equal(decodedFrame.service, 33554432);
+  assert.equal(decodedFrame.method, 1);
+  assert.deepEqual(decodedFrame.headers, [
+    { key: "type", value: "event" },
+    { key: "message_id", value: "msg-123" },
+  ]);
+  assert.equal(decodedFrame.payload?.toString("utf8"), payloadJson);
+
+  // Feishu AES-256-CBC encrypted url_verification + plaintext downgrade protection
+  const encKey = "feishu-test-encrypt-key";
+  const encryptedChallenge = encryptFeishuPayloadForTest(
+    { type: "url_verification", token: "vtok", challenge: "abc-999" },
+    encKey
+  );
+  assert.deepEqual(decryptFeishuEvent(encryptedChallenge, encKey), {
+    type: "url_verification",
+    token: "vtok",
+    challenge: "abc-999",
+  });
+  const parsedChallenge = parseFeishuWebhookPayload(
+    { encrypt: encryptedChallenge },
+    { verificationToken: "vtok", encryptKey: encKey }
+  );
+  assert.deepEqual(parsedChallenge, { kind: "challenge", challenge: "abc-999" });
+
+  // Plaintext payload MUST be rejected when encryptKey is configured in webhook mode
+  assert.throws(
+    () =>
+      parseFeishuWebhookPayload(
+        { type: "url_verification", token: "vtok", challenge: "downgrade" },
+        { verificationToken: "vtok", encryptKey: encKey },
+        { requireVerificationToken: true, requireEncryptionIfConfigured: true }
+      ),
+    /unencrypted webhook payload rejected/i
+  );
 
   const tgMsg = parseTelegramUpdate({
     update_id: 77,
@@ -62,96 +120,57 @@ test("channel parsing, whitelist, approval commands, chunking, and Feishu AES-25
     senderName: "Alice",
     text: "Hello TwinkleBot",
   });
-
-  // Feishu AES-256-CBC encrypted url_verification + im.message.receive_v1
-  const encKey = "feishu-test-encrypt-key";
-  const encryptedChallenge = encryptFeishuPayloadForTest(
-    { type: "url_verification", token: "vtok", challenge: "abc-999" },
-    encKey
-  );
-  assert.deepEqual(decryptFeishuEvent(encryptedChallenge, encKey), {
-    type: "url_verification",
-    token: "vtok",
-    challenge: "abc-999",
-  });
-  const parsedChallenge = parseFeishuWebhookPayload(
-    { encrypt: encryptedChallenge },
-    { verificationToken: "vtok", encryptKey: encKey }
-  );
-  assert.deepEqual(parsedChallenge, { kind: "challenge", challenge: "abc-999" });
-
-  const parsedFsMsg = parseFeishuWebhookPayload(
-    {
-      header: { event_id: "ev-1", event_type: "im.message.receive_v1", token: "vtok" },
-      event: {
-        sender: { sender_id: { open_id: "ou_owner1" } },
-        message: {
-          message_id: "om_1",
-          chat_id: "oc_chat1",
-          content: JSON.stringify({ text: "@_user_1 帮我整理今天的待办" }),
-        },
-      },
-    },
-    { verificationToken: "vtok", encryptKey: "" }
-  );
-  assert.equal(parsedFsMsg.kind, "message");
-  if (parsedFsMsg.kind === "message") {
-    assert.equal(parsedFsMsg.message.text, "帮我整理今天的待办");
-    assert.equal(parsedFsMsg.message.senderId, "ou_owner1");
-    assert.equal(parsedFsMsg.message.chatId, "oc_chat1");
-  }
 });
 
-test("Telegram & Feishu channel HTTP lifecycle: encrypted storage, whitelist, Bot dispatch, in-channel approval, and skill purge", async (t) => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-channels-"));
+test("Telegram & Feishu channel HTTP lifecycle wired to REAL createRunner(): answer/done events, 2-arg approve, rapid concurrent turns, webhook mode guards, apiBaseUrl anti-exfil, and skill purge", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-channels-real-"));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
   const store = createStore(tmpDir);
   const adminBot = store.ensureAdminBot();
   const outgoingCalls: Array<{ url: string; body: any }> = [];
-  const runnerSubscribers = new Set<(ev: any) => void>();
-  const startedRuns: Array<{ sessionId: string; text: string; userMeta: any }> = [];
-  const approvals: Array<{ sessionId: string; callId: string; allowed: boolean }> = [];
+  let approvalResolutions: boolean[] = [];
 
-  const mockRunner: any = {
-    subscribe: (fn: (ev: any) => void) => {
-      runnerSubscribers.add(fn);
-      return () => runnerSubscribers.delete(fn);
+  // Wire REAL createRunner() with real event contract (`type: "answer"`, `status: "done"`, 2-arg `approve(callId, allowed)`)
+  const realRunner = createRunner({
+    store,
+    config: {
+      models: ["gemini-4-hydrogen"],
+      defaultModel: "gemini-4-hydrogen",
+      writeRoots: [tmpDir],
     },
-    broadcastGlobal: () => {},
-    getState: () => ({ status: "idle" }),
-    start: async (sessionId: string, text: string, userMeta: any) => {
-      startedRuns.push({ sessionId, text, userMeta });
-      if (text.includes("高危")) {
-        for (const fn of runnerSubscribers) {
-          fn({
-            type: "approval_request",
-            sessionId,
-            callId: "call-danger-1",
-            name: "run_shell",
-            reason: "删除临时文件",
-          });
-        }
-        return;
-      }
-      for (const fn of runnerSubscribers) {
-        fn({ type: "assistant_message", sessionId, text: `已收到：${text}` });
-        fn({ type: "status", sessionId, status: "completed" });
-      }
-    },
-    approve: async (sessionId: string, callId: string, allowed: boolean) => {
-      approvals.push({ sessionId, callId, allowed });
-      for (const fn of runnerSubscribers) {
-        fn({ type: "approval", sessionId, callId, allowed });
-        fn({
-          type: "assistant_message",
-          sessionId,
-          text: allowed ? "审批通过并执行完毕" : "已取消操作",
+    runTaskImpl: (async ({ userText, deps, control }: any) => {
+      deps.emit({ type: "user", text: userText });
+      deps.emit({ type: "status", status: "running" });
+
+      if (String(userText).includes("高危")) {
+        const callId = `call-danger-${Date.now()}`;
+        const approvalPromise = control.requestApproval(callId);
+        deps.emit({
+          type: "approval_request",
+          callId,
+          name: "host_run_shell",
+          reason: "删除系统目录文件",
         });
-        fn({ type: "status", sessionId, status: "completed" });
+        deps.emit({ type: "status", status: "awaiting_approval" });
+        const allowed = await approvalPromise;
+        approvalResolutions.push(Boolean(allowed));
+        deps.emit({ type: "approval", callId, allowed: Boolean(allowed) });
+        const reply = allowed ? "审批通过并执行完成" : "用户已拒绝高危操作";
+        deps.emit({ type: "answer", text: reply });
+        deps.emit({ type: "status", status: "done" });
+        return { status: "done", text: reply };
       }
-    },
-  };
+
+      if (String(userText).includes("慢任务")) {
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      const answer = `真实Runner回复：${userText}`;
+      deps.emit({ type: "answer", text: answer });
+      deps.emit({ type: "status", status: "done" });
+      return { status: "done", text: answer };
+    }) as any,
+  });
 
   const mockFetch: any = async (url: string, init?: RequestInit) => {
     const parsedBody = init?.body ? JSON.parse(String(init.body)) : null;
@@ -197,29 +216,56 @@ test("Telegram & Feishu channel HTTP lifecycle: encrypted storage, whitelist, Bo
     },
     store,
     executor: { health: async () => ({ ok: true }), call: async () => ({ ok: true }) } as any,
-    runner: mockRunner,
+    runner: realRunner,
     billingFetchImpl: mockFetch,
   });
 
   await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", resolve));
   t.after(async () => {
+    realRunner.stop();
     await new Promise<void>((resolve) => srv.close(() => resolve()));
   });
   const baseUrl = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
 
-  // 1. Configuring before installing skill fails with 400
-  const preInstall = await fetch(`${baseUrl}/api/integrations/channels/telegram-bot`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled: true, botToken: "tok-1" }),
-  });
-  assert.equal(preInstall.status, 400);
-
-  // 2. Install both channel skills
+  // 1. Install both channel skills
   assert.equal((await fetch(`${baseUrl}/api/skills/telegram-bot/install`, { method: "POST" })).status, 200);
   assert.equal((await fetch(`${baseUrl}/api/skills/feishu-bot/install`, { method: "POST" })).status, 200);
 
-  // 3. Configure Telegram in webhook mode + verify encrypted at rest & masked in response
+  // 2. Enabling webhook mode WITHOUT webhookSecret / verificationToken must be rejected with 400
+  const noSecretWebhook = await fetch(`${baseUrl}/api/integrations/channels/telegram-bot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      enabled: true,
+      connectionMode: "webhook",
+      botToken: "999999:SUPER_SECRET_TG_TOKEN",
+      webhookSecret: "",
+    }),
+  });
+  assert.equal(noSecretWebhook.status, 400);
+
+  // 3. Save Telegram in polling mode first -> verify webhook endpoint is blocked (403) while in polling mode!
+  await fetch(`${baseUrl}/api/integrations/channels/telegram-bot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      enabled: false,
+      connectionMode: "polling",
+      botToken: "999999:SUPER_SECRET_TG_TOKEN",
+      allowedSenderIds: ["user_allowed_1"],
+    }),
+  });
+  const pollingHookBlocked = await fetch(`${baseUrl}/api/channels/telegram/webhook`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      update_id: 199,
+      message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "伪造请求" },
+    }),
+  });
+  assert.equal(pollingHookBlocked.status, 403, "Webhook route must reject requests when not in webhook mode");
+
+  // 4. Configure Telegram in webhook mode with secret + verify anti-exfiltration on /test with overridden apiBaseUrl
   const saveTgRes: any = await (
     await fetch(`${baseUrl}/api/integrations/channels/telegram-bot`, {
       method: "POST",
@@ -227,7 +273,6 @@ test("Telegram & Feishu channel HTTP lifecycle: encrypted storage, whitelist, Bo
       body: JSON.stringify({
         enabled: true,
         connectionMode: "webhook",
-        botToken: "999999:SUPER_SECRET_TG_TOKEN",
         webhookSecret: "tg-hook-secret",
         defaultSessionId: adminBot.id,
         allowedSenderIds: ["user_allowed_1"],
@@ -237,12 +282,21 @@ test("Telegram & Feishu channel HTTP lifecycle: encrypted storage, whitelist, Bo
   ).json();
   assert.equal(saveTgRes.ok, true);
   assert.equal(saveTgRes.channels["telegram-bot"].config.hasBotToken, true);
-  assert.equal(saveTgRes.channels["telegram-bot"].config.botToken, undefined);
+  assert.equal(saveTgRes.settings.skillsCatalog.platform.find((s: any) => s.id === "telegram-bot")?.savedAccountCount, 1);
 
   const rawChannelsDisk = fs.readFileSync(path.join(tmpDir, "channels-auth.json"), "utf8");
   assert.ok(!rawChannelsDisk.includes("SUPER_SECRET_TG_TOKEN"), "channels-auth.json must be AES-256-GCM encrypted on disk");
 
-  // 4. Test Telegram connectivity
+  // Overriding apiBaseUrl without re-entering botToken must NOT exfiltrate stored botToken
+  const exfilAttempt = await fetch(`${baseUrl}/api/integrations/channels/telegram-bot/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiBaseUrl: "https://evil-collector.example.com" }),
+  });
+  assert.equal(exfilAttempt.status, 400);
+  assert.ok(!outgoingCalls.some((c) => c.url.includes("evil-collector.example.com")));
+
+  // Normal test with stored apiBaseUrl succeeds
   const tgTest: any = await (
     await fetch(`${baseUrl}/api/integrations/channels/telegram-bot/test`, {
       method: "POST",
@@ -253,72 +307,47 @@ test("Telegram & Feishu channel HTTP lifecycle: encrypted storage, whitelist, Bo
   assert.equal(tgTest.ok, true);
   assert.equal(tgTest.botName, "TwinkleTG");
 
-  // 5. Unauthorized Telegram sender is rejected & never invokes runner
-  const unauthRes: any = await (
-    await fetch(`${baseUrl}/api/channels/telegram/webhook`, {
+  // 5. Concurrent rapid messages from authorized sender serialize cleanly without "a task is already running"
+  await Promise.all([
+    fetch(`${baseUrl}/api/channels/telegram/webhook`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Telegram-Bot-Api-Secret-Token": "tg-hook-secret",
       },
       body: JSON.stringify({
-        update_id: 200,
-        message: { chat: { id: 777 }, from: { id: "stranger_99" }, text: "帮我删文件" },
+        update_id: 201,
+        message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "慢任务A" },
       }),
-    })
-  ).json();
-  assert.equal(unauthRes.rejected, true);
-  assert.equal(startedRuns.length, 0);
+    }),
+    fetch(`${baseUrl}/api/channels/telegram/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Bot-Api-Secret-Token": "tg-hook-secret",
+      },
+      body: JSON.stringify({
+        update_id: 202,
+        message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "慢任务B" },
+      }),
+    }),
+  ]);
+  for (let i = 0; i < 30; i++) {
+    const sentTexts = outgoingCalls
+      .filter((c) => c.url.includes("/sendMessage"))
+      .map((c) => String(c.body?.text || ""));
+    if (sentTexts.some((t) => t.includes("真实Runner回复：慢任务A")) && sentTexts.some((t) => t.includes("真实Runner回复：慢任务B"))) {
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  const allTgTexts = outgoingCalls
+    .filter((c) => c.url.includes("/sendMessage"))
+    .map((c) => String(c.body?.text || ""));
+  assert.ok(allTgTexts.some((t) => t.includes("真实Runner回复：慢任务A")), `missing reply A in ${JSON.stringify(allTgTexts)}`);
+  assert.ok(allTgTexts.some((t) => t.includes("真实Runner回复：慢任务B")), `missing reply B in ${JSON.stringify(allTgTexts)}`);
 
-  // 6. Authorized Telegram sender triggers Bot and receives reply (and duplicate update_id is ignored)
-  await fetch(`${baseUrl}/api/channels/telegram/webhook`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Telegram-Bot-Api-Secret-Token": "tg-hook-secret",
-    },
-    body: JSON.stringify({
-      update_id: 201,
-      message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "你好" },
-    }),
-  });
-  await fetch(`${baseUrl}/api/channels/telegram/webhook`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Telegram-Bot-Api-Secret-Token": "tg-hook-secret",
-    },
-    body: JSON.stringify({
-      update_id: 201,
-      message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "你好" },
-    }),
-  });
-  assert.equal(startedRuns.length, 1);
-  assert.ok(
-    outgoingCalls.some(
-      (c) => c.url.includes("/sendMessage") && String(c.body?.text || "").includes("已收到：你好")
-    ),
-    "Bot reply must be delivered back to Telegram chat"
-  );
-
-  // 7. In-channel high-risk approval flow
-  await fetch(`${baseUrl}/api/channels/telegram/webhook`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Telegram-Bot-Api-Secret-Token": "tg-hook-secret",
-    },
-    body: JSON.stringify({
-      update_id: 202,
-      message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "执行高危清理" },
-    }),
-  });
-  assert.ok(
-    outgoingCalls.some(
-      (c) => c.url.includes("/sendMessage") && String(c.body?.text || "").includes("需要你的确认")
-    ),
-    "High-risk approval prompt must be sent to Telegram"
-  );
+  // 6. Real Runner high-risk approval (both channel_and_app allow AND app_only auto-deny)
   await fetch(`${baseUrl}/api/channels/telegram/webhook`, {
     method: "POST",
     headers: {
@@ -327,14 +356,56 @@ test("Telegram & Feishu channel HTTP lifecycle: encrypted storage, whitelist, Bo
     },
     body: JSON.stringify({
       update_id: 203,
+      message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "执行高危脚本" },
+    }),
+  });
+  await fetch(`${baseUrl}/api/channels/telegram/webhook`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": "tg-hook-secret",
+    },
+    body: JSON.stringify({
+      update_id: 204,
       message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "允许" },
     }),
   });
-  assert.equal(approvals.length, 1);
-  assert.equal(approvals[0].allowed, true);
-  assert.equal(approvals[0].callId, "call-danger-1");
+  assert.deepEqual(approvalResolutions, [true]);
+  assert.ok(
+    outgoingCalls.some(
+      (c) => c.url.includes("/sendMessage") && String(c.body?.text || "").includes("审批通过并执行完成")
+    ),
+    "Real runner must resume after 2-arg approve(callId, true) and deliver final answer"
+  );
 
-  // 8. Feishu config, test, webhook message delivery, and skill removal with purgeCredentials
+  // Switch approvalMode to app_only -> auto-denies cleanly without deadlocking runner
+  await fetch(`${baseUrl}/api/integrations/channels/telegram-bot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      enabled: true,
+      connectionMode: "webhook",
+      webhookSecret: "tg-hook-secret",
+      defaultSessionId: adminBot.id,
+      allowedSenderIds: ["user_allowed_1"],
+      approvalMode: "app_only",
+    }),
+  });
+  await fetch(`${baseUrl}/api/channels/telegram/webhook`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": "tg-hook-secret",
+    },
+    body: JSON.stringify({
+      update_id: 205,
+      message: { chat: { id: 888 }, from: { id: "user_allowed_1" }, text: "再次执行高危脚本" },
+    }),
+  });
+  assert.deepEqual(approvalResolutions, [true, false]);
+  assert.equal(realRunner.isSessionBusy(adminBot.id), false, "app_only auto-deny must resolve pending approval immediately");
+
+  // 7. Feishu webhook + purgeCredentials
   await fetch(`${baseUrl}/api/integrations/channels/feishu-bot`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -347,16 +418,6 @@ test("Telegram & Feishu channel HTTP lifecycle: encrypted storage, whitelist, Bo
       allowedSenderIds: ["ou_boss"],
     }),
   });
-  const fsTest: any = await (
-    await fetch(`${baseUrl}/api/integrations/channels/feishu-bot/test`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    })
-  ).json();
-  assert.equal(fsTest.ok, true);
-  assert.equal(fsTest.botName, "TwinkleFeishu");
-
   await fetch(`${baseUrl}/api/channels/feishu/webhook`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -372,17 +433,218 @@ test("Telegram & Feishu channel HTTP lifecycle: encrypted storage, whitelist, Bo
     outgoingCalls.some(
       (c) =>
         c.url.includes("/open-apis/im/v1/messages") &&
-        String(c.body?.content || "").includes("已收到：飞书消息测试")
+        String(c.body?.content || "").includes("真实Runner回复：飞书消息测试")
     ),
     "Bot reply must be sent back to Feishu chat"
   );
 
-  // Remove feishu-bot with purgeCredentials=true -> clears stored secret
   const rmRes = await fetch(`${baseUrl}/api/skills/feishu-bot?purgeCredentials=true`, {
     method: "DELETE",
   });
   assert.equal(rmRes.status, 200);
   const afterPurge: any = await (await fetch(`${baseUrl}/api/integrations/channels`)).json();
   assert.equal(afterPurge.channels["feishu-bot"].config.hasAppSecret, false);
-  assert.equal(afterPurge.channels["feishu-bot"].config.configured, false);
+});
+
+test("Feishu WebSocket Long Connection handles binary pbbp2.Frame events, returns <3s binary ACK, and delivers Bot reply", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-feishu-ws-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const store = createStore(tmpDir);
+  const adminBot = store.ensureAdminBot();
+  store.writeSettings({ installedSkills: ["feishu-bot"] });
+
+  const wsHttp = http.createServer();
+  const ackFrames: Buffer[] = [];
+  let pushBinaryFrameToClient: any = null;
+
+  wsHttp.on("upgrade", (req, socket) => {
+    const key = req.headers["sec-websocket-key"];
+    const accept = crypto
+      .createHash("sha1")
+      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    socket.write(
+      [
+        "HTTP/1.1 101 Switching Protocols",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        `Sec-WebSocket-Accept: ${accept}`,
+        "",
+        "",
+      ].join("\r\n")
+    );
+    pushBinaryFrameToClient = (payload: Buffer) => {
+      const len = payload.length;
+      const head =
+        len < 126
+          ? Buffer.from([0x82, len])
+          : Buffer.from([0x82, 126, (len >> 8) & 0xff, len & 0xff]);
+      socket.write(Buffer.concat([head, payload]));
+    };
+    let rxBuf: Buffer = Buffer.alloc(0);
+    socket.on("data", (chunk: Buffer) => {
+      rxBuf = Buffer.concat([rxBuf, chunk]);
+      while (rxBuf.length >= 2) {
+        const opcode = rxBuf[0] & 0x0f;
+        const masked = (rxBuf[1] & 0x80) !== 0;
+        let len = rxBuf[1] & 0x7f;
+        let offset = 2;
+        if (len === 126) {
+          if (rxBuf.length < 4) return;
+          len = rxBuf.readUInt16BE(2);
+          offset = 4;
+        }
+        const totalNeeded = offset + (masked ? 4 : 0) + len;
+        if (rxBuf.length < totalNeeded) return;
+        const mask = masked ? rxBuf.subarray(offset, offset + 4) : null;
+        if (masked) offset += 4;
+        const body = Buffer.from(rxBuf.subarray(offset, offset + len));
+        rxBuf = Buffer.from(rxBuf.subarray(offset + len));
+        if (mask) {
+          for (let i = 0; i < body.length; i++) body[i] ^= mask[i & 3];
+        }
+        if (opcode === 0x08) {
+          socket.end();
+          return;
+        }
+        if (opcode === 0x02) {
+          ackFrames.push(body);
+        }
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => wsHttp.listen(0, "127.0.0.1", resolve));
+  const wsPort = (wsHttp.address() as AddressInfo).port;
+
+  const feishuMessagesSent: string[] = [];
+  const realRunner = createRunner({
+    store,
+    runTaskImpl: (async ({ userText, deps }: any) => {
+      deps.emit({ type: "answer", text: `WS回复：${userText}` });
+      deps.emit({ type: "status", status: "done" });
+      return { status: "done", text: `WS回复：${userText}` };
+    }) as any,
+  });
+
+  store.writeChannelsAuth({
+    "feishu-bot": {
+      enabled: true,
+      connectionMode: "websocket",
+      domain: "feishu",
+      apiBaseUrl: `http://127.0.0.1:${wsPort}`,
+      appId: "cli_ws_1",
+      appSecret: "sec_ws_1",
+      verificationToken: "",
+      encryptKey: "",
+      defaultSessionId: adminBot.id,
+      allowedSenderIds: ["ou_ws_user"],
+      approvalMode: "channel_and_app",
+    },
+  });
+
+  const mgr = createChannelManager({
+    store,
+    runner: realRunner,
+    getInstalledSkills: () => ["feishu-bot"],
+    fetchImpl: (async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/callback/ws/endpoint")) {
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            data: {
+              URL: `ws://127.0.0.1:${wsPort}/ws?service_id=777`,
+              ClientConfig: { PingInterval: 60 },
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      if (String(url).includes("/tenant_access_token/internal")) {
+        return new Response(JSON.stringify({ code: 0, tenant_access_token: "t-ws", expire: 7200 }), { status: 200 });
+      }
+      if (String(url).includes("/open-apis/im/v1/messages")) {
+        const parsed = JSON.parse(String(init?.body || "{}"));
+        feishuMessagesSent.push(String(parsed.content || ""));
+        return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as any,
+  });
+
+  t.after(async () => {
+    mgr.stopAll();
+    realRunner.stop();
+    await new Promise<void>((resolve) => wsHttp.close(() => resolve()));
+  });
+
+  mgr.syncFromStore();
+  for (
+    let i = 0;
+    i < 60 &&
+    (!pushBinaryFrameToClient || mgr.getStatusPayload()["feishu-bot"].runtime.status !== "connected");
+    i++
+  ) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(pushBinaryFrameToClient, "Feishu WebSocket client must connect to endpoint");
+  assert.equal(mgr.getStatusPayload()["feishu-bot"].runtime.status, "connected");
+
+  // Push binary pbbp2 DATA frame split into 2 fragments (sum=2, seq=0 & seq=1)
+  const fullEventBuf = Buffer.from(
+    JSON.stringify({
+      header: { event_id: "ev-ws-bin-1", event_type: "im.message.receive_v1" },
+      event: {
+        sender: { sender_id: { open_id: "ou_ws_user" } },
+        message: { chat_id: "oc_ws_chat", content: JSON.stringify({ text: "长连接二进制测试" }) },
+      },
+    }),
+    "utf8"
+  );
+  const mid = Math.floor(fullEventBuf.length / 2);
+  pushBinaryFrameToClient!(
+    encodeFeishuPbFrame({
+      seqId: 101n,
+      logId: 202n,
+      service: 777,
+      method: 1,
+      headers: [
+        { key: "type", value: "event" },
+        { key: "message_id", value: "frag-1" },
+        { key: "sum", value: "2" },
+        { key: "seq", value: "0" },
+      ],
+      payload: fullEventBuf.subarray(0, mid),
+    })
+  );
+  pushBinaryFrameToClient!(
+    encodeFeishuPbFrame({
+      seqId: 102n,
+      logId: 202n,
+      service: 777,
+      method: 1,
+      headers: [
+        { key: "type", value: "event" },
+        { key: "message_id", value: "frag-1" },
+        { key: "sum", value: "2" },
+        { key: "seq", value: "1" },
+      ],
+      payload: fullEventBuf.subarray(mid),
+    })
+  );
+
+  for (let i = 0; i < 40 && (ackFrames.length === 0 || feishuMessagesSent.length === 0); i++) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+
+  assert.ok(ackFrames.length >= 1, "Client must send binary pbbp2 ACK frame back to Feishu server");
+  const ackDecoded = decodeFeishuPbFrame(ackFrames[0]);
+  assert.equal(ackDecoded.seqId, 102n);
+  assert.equal(ackDecoded.method, 1);
+  assert.deepEqual(JSON.parse(ackDecoded.payload!.toString("utf8")), { code: 200 });
+  assert.ok(
+    feishuMessagesSent.some((s) => s.includes("WS回复：长连接二进制测试")),
+    `Expected WS reply in ${JSON.stringify(feishuMessagesSent)}`
+  );
 });

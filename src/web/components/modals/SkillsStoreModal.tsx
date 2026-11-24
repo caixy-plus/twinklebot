@@ -62,6 +62,7 @@ function SkillRemoveConfirmBox({
   const [purge, setPurge] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const saved = Number(skill?.savedAccountCount) || 0;
+  const isChannel = skill?.id === "feishu-bot" || skill?.id === "telegram-bot";
 
   return (
     <div
@@ -79,7 +80,11 @@ function SkillRemoveConfirmBox({
             checked={purge}
             onChange={(e) => setPurge(e.target.checked)}
           />
-          <span>同时清除已保存的 {saved} 个邮箱凭据</span>
+          <span>
+            {isChannel
+              ? "同时清除已保存的机器人凭据与配置"
+              : `同时清除已保存的 ${saved} 个邮箱凭据`}
+          </span>
         </label>
       )}
       <div className="skill-remove-actions">
@@ -227,11 +232,14 @@ export function SkillsStoreModal() {
   const [chApprovalMode, setChApprovalMode] = useState("channel_and_app");
   const [chTgToken, setChTgToken] = useState("");
   const [chTgSecret, setChTgSecret] = useState("");
+  const [chClearTgSecret, setChClearTgSecret] = useState(false);
   const [chFsDomain, setChFsDomain] = useState("feishu");
   const [chFsAppId, setChFsAppId] = useState("");
   const [chFsAppSecret, setChFsAppSecret] = useState("");
   const [chFsVerifyToken, setChFsVerifyToken] = useState("");
   const [chFsEncryptKey, setChFsEncryptKey] = useState("");
+  const [chClearFsVerify, setChClearFsVerify] = useState(false);
+  const [chClearFsEncrypt, setChClearFsEncrypt] = useState(false);
   const [chBusy, setChBusy] = useState<"save" | "test" | null>(null);
   const [chFeedback, setChFeedback] = useState<{ text: string; kind: "info" | "success" | "error" }>({
     text: "",
@@ -254,13 +262,16 @@ export function SkillsStoreModal() {
     setChApprovalMode(channelCfg.approvalMode || "channel_and_app");
     setChTgToken("");
     setChTgSecret("");
+    setChClearTgSecret(false);
     setChFsDomain(channelCfg.domain || "feishu");
     setChFsAppId(String(channelCfg.appId || ""));
     setChFsAppSecret("");
     setChFsVerifyToken("");
     setChFsEncryptKey("");
+    setChClearFsVerify(false);
+    setChClearFsEncrypt(false);
     setChFeedback({ text: "", kind: "info" });
-  }, [detailSkillId, skillsView, channelCfg.updatedAt]);
+  }, [appsModalOpen, detailSkillId, skillsView, channelCfg.updatedAt]);
   const [mcpJsonText, setMcpJsonText] = useState(() =>
     formatMcpServersJson(settings?.mcpServers, mcpServerId, hostPlatform)
   );
@@ -588,7 +599,35 @@ export function SkillsStoreModal() {
     return n > 0 ? `已配置 ${n} 个账号` : "IMAP / POP3 + SMTP · 待配置";
   };
 
+  const isChannelSkillItem = (skill: any) =>
+    skill?.id === "feishu-bot" || skill?.id === "telegram-bot";
+
+  const channelSkillSubtitle = (skill: any) => {
+    if (!skill?.installed) {
+      return `手动添加启用 · ${skill?.desc || ""}`;
+    }
+    const entry = (settings?.channelIntegrations as any)?.[skill.id];
+    const cfg = entry?.config;
+    const rt = entry?.runtime;
+    if (rt?.status === "connected") {
+      return `${t("channel.statusConnected")}${rt.botName ? ` · ${rt.botName}` : ""} · ${skill.desc}`;
+    }
+    if (rt?.status === "webhook_ready") {
+      return `${t("channel.statusReady")}${rt.botName ? ` · ${rt.botName}` : ""} · ${skill.desc}`;
+    }
+    if (rt?.status === "error" && rt.lastError) {
+      return `${rt.lastError}`;
+    }
+    if (cfg?.configured) {
+      return cfg.enabled ? `${t("channel.statusStopped")} · 点击「配置」检查连接` : `已保存凭据（未启用） · 点击「配置」开启`;
+    }
+    return `待配置凭据与白名单 · ${skill.desc}`;
+  };
+
   const platformSkillSubtitle = (skill: any) => {
+    if (isChannelSkillItem(skill)) {
+      return channelSkillSubtitle(skill);
+    }
     if (!skill.removable) {
       return `${skill.toolCount} 项工具 · ${skill.desc}`;
     }
@@ -2362,9 +2401,11 @@ export function SkillsStoreModal() {
               </h2>
               <div className="skill-row-desc" id="skill-detail-sub">
                 {detailSkill
-                  ? isMcpSkill
-                    ? platformSkillSubtitle(detailSkill)
-                    : officeSkillSubtitle(detailSkill)
+                  ? isChannelSkillDetail
+                    ? channelSkillSubtitle(detailSkill)
+                    : isMcpSkill
+                      ? platformSkillSubtitle(detailSkill)
+                      : officeSkillSubtitle(detailSkill)
                   : ""}
               </div>
             </div>
@@ -2612,7 +2653,7 @@ export function SkillsStoreModal() {
 
                 <form
                   id="channel-config-form"
-                  className="mail-form"
+                  className="mail-config-form"
                   onSubmit={async (e) => {
                     e.preventDefault();
                     if (!detailSkillId) return;
@@ -2626,6 +2667,9 @@ export function SkillsStoreModal() {
                               connectionMode: chMode,
                               botToken: chTgToken.trim() || undefined,
                               webhookSecret: chTgSecret.trim() || undefined,
+                              ...(chClearTgSecret && !chTgSecret.trim()
+                                ? { clearWebhookSecret: true }
+                                : {}),
                               defaultSessionId: chTargetBotId,
                               allowedSenderIds: chWhitelist,
                               approvalMode: chApprovalMode,
@@ -2638,6 +2682,12 @@ export function SkillsStoreModal() {
                               appSecret: chFsAppSecret.trim() || undefined,
                               verificationToken: chFsVerifyToken.trim() || undefined,
                               encryptKey: chFsEncryptKey.trim() || undefined,
+                              ...(chClearFsVerify && !chFsVerifyToken.trim()
+                                ? { clearVerificationToken: true }
+                                : {}),
+                              ...(chClearFsEncrypt && !chFsEncryptKey.trim()
+                                ? { clearEncryptKey: true }
+                                : {}),
                               defaultSessionId: chTargetBotId,
                               allowedSenderIds: chWhitelist,
                               approvalMode: chApprovalMode,
@@ -2654,9 +2704,12 @@ export function SkillsStoreModal() {
                       }
                       setChTgToken("");
                       setChTgSecret("");
+                      setChClearTgSecret(false);
                       setChFsAppSecret("");
                       setChFsVerifyToken("");
                       setChFsEncryptKey("");
+                      setChClearFsVerify(false);
+                      setChClearFsEncrypt(false);
                       setChFeedback({ text: `✓ ${t("channel.savedToast")}`, kind: "success" });
                       showToast(t("channel.savedToast"));
                     } catch (err: any) {
@@ -2669,7 +2722,10 @@ export function SkillsStoreModal() {
                     }
                   }}
                 >
-                  <label className="mail-checkbox-row">
+                  <label
+                    className="mail-checkbox-row"
+                    style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                  >
                     <input
                       id="channel-enabled-toggle"
                       type="checkbox"
@@ -2700,7 +2756,10 @@ export function SkillsStoreModal() {
                       )}
                     </select>
                     {chMode === "webhook" && (
-                      <span className="mail-field-hint">
+                      <span
+                        className="mail-field-hint"
+                        style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
+                      >
                         {t("channel.webhookUrlHint", {
                           url: `${activeBaseUrl || (typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:3230")}${
                             detailSkillId === "telegram-bot"
@@ -2739,13 +2798,29 @@ export function SkillsStoreModal() {
                             className="inline-text-input"
                             autoComplete="off"
                             placeholder={
-                              channelCfg.hasWebhookSecret
+                              channelCfg.hasWebhookSecret && !chClearTgSecret
                                 ? t("channel.secretSavedPlaceholder")
                                 : "X-Telegram-Bot-Api-Secret-Token"
                             }
                             value={chTgSecret}
-                            onChange={(e) => setChTgSecret(e.target.value)}
+                            onChange={(e) => {
+                              setChTgSecret(e.target.value);
+                              if (e.target.value) setChClearTgSecret(false);
+                            }}
                           />
+                          {channelCfg.hasWebhookSecret && !chEnabled && (
+                            <label
+                              className="mail-checkbox-row"
+                              style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px", fontSize: "12px" }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={chClearTgSecret}
+                                onChange={(e) => setChClearTgSecret(e.target.checked)}
+                              />
+                              <span>保存时清除已配置的 Webhook Secret</span>
+                            </label>
+                          )}
                         </div>
                       )}
                     </>
@@ -2802,13 +2877,29 @@ export function SkillsStoreModal() {
                               className="inline-text-input"
                               autoComplete="off"
                               placeholder={
-                                channelCfg.hasVerificationToken
+                                channelCfg.hasVerificationToken && !chClearFsVerify
                                   ? t("channel.secretSavedPlaceholder")
                                   : "Verification Token"
                               }
                               value={chFsVerifyToken}
-                              onChange={(e) => setChFsVerifyToken(e.target.value)}
+                              onChange={(e) => {
+                                setChFsVerifyToken(e.target.value);
+                                if (e.target.value) setChClearFsVerify(false);
+                              }}
                             />
+                            {channelCfg.hasVerificationToken && !chEnabled && (
+                              <label
+                                className="mail-checkbox-row"
+                                style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px", fontSize: "12px" }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={chClearFsVerify}
+                                  onChange={(e) => setChClearFsVerify(e.target.checked)}
+                                />
+                                <span>保存时清除已配置的 Verification Token</span>
+                              </label>
+                            )}
                           </div>
                           <div className="mail-field">
                             <label htmlFor="channel-fs-encrypt-input">{t("channel.feishuEncryptKey")}</label>
@@ -2818,13 +2909,29 @@ export function SkillsStoreModal() {
                               className="inline-text-input"
                               autoComplete="off"
                               placeholder={
-                                channelCfg.hasEncryptKey
+                                channelCfg.hasEncryptKey && !chClearFsEncrypt
                                   ? t("channel.secretSavedPlaceholder")
                                   : "Encrypt Key"
                               }
                               value={chFsEncryptKey}
-                              onChange={(e) => setChFsEncryptKey(e.target.value)}
+                              onChange={(e) => {
+                                setChFsEncryptKey(e.target.value);
+                                if (e.target.value) setChClearFsEncrypt(false);
+                              }}
                             />
+                            {channelCfg.hasEncryptKey && (
+                              <label
+                                className="mail-checkbox-row"
+                                style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px", fontSize: "12px" }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={chClearFsEncrypt}
+                                  onChange={(e) => setChClearFsEncrypt(e.target.checked)}
+                                />
+                                <span>保存时清除已配置的 Encrypt Key</span>
+                              </label>
+                            )}
                           </div>
                         </div>
                       )}

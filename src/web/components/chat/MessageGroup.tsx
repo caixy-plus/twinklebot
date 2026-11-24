@@ -347,12 +347,22 @@ export function MessageGroup({
           className="msg-source-tag"
           data-client-source={item.clientSource.deviceKind}
           title={
-            item.clientSource.deviceKind === "mobile"
-              ? `${t("source.mobile")}${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
-              : `${t("source.desktop")}${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
+            item.clientSource.platform === "feishu-bot"
+              ? t("source.feishu")
+              : item.clientSource.platform === "telegram-bot"
+                ? t("source.telegram")
+                : item.clientSource.deviceKind === "mobile"
+                  ? `${t("source.mobile")}${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
+                  : `${t("source.desktop")}${item.clientSource.platform ? ` (${item.clientSource.platform})` : ""}`
           }
         >
-          {item.clientSource.deviceKind === "mobile" ? t("source.mobile") : t("source.desktop")}
+          {item.clientSource.platform === "feishu-bot"
+            ? t("source.feishu")
+            : item.clientSource.platform === "telegram-bot"
+              ? t("source.telegram")
+              : item.clientSource.deviceKind === "mobile"
+                ? t("source.mobile")
+                : t("source.desktop")}
         </div>
       )}
     </div>

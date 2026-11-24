@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { isSafePublicWebUrl } from "./web-search.js";
 
 export type ChannelSkillId = "feishu-bot" | "telegram-bot";
 export type ChannelApprovalMode = "channel_and_app" | "app_only";
@@ -42,6 +43,22 @@ export const DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org";
 export const DEFAULT_FEISHU_API_BASE = "https://open.feishu.cn";
 export const DEFAULT_LARK_API_BASE = "https://open.larksuite.com";
 
+export function timingSafeEqualStr(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const ha = crypto.createHash("sha256").update(a, "utf8").digest();
+  const hb = crypto.createHash("sha256").update(b, "utf8").digest();
+  return crypto.timingSafeEqual(ha, hb) && a.length === b.length;
+}
+
+function cleanSecretInput(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const s = raw.trim();
+  if (!s) return "";
+  // Guard against accidental submission of UI masked placeholders (e.g. "••••••••" or "******")
+  if (/^[•*·]+$/.test(s)) return "";
+  return s;
+}
+
 export function parseWhitelistIds(raw: unknown): string[] {
   const list = Array.isArray(raw)
     ? raw.map((x) => String(x || ""))
@@ -60,12 +77,21 @@ export function parseWhitelistIds(raw: unknown): string[] {
   return out;
 }
 
-function sanitizeBaseUrl(raw: unknown, fallback = ""): string {
+export function sanitizeChannelApiBaseUrl(raw: unknown, fallback = ""): string {
   const s = String(raw || "").trim().replace(/\/+$/, "");
   if (!s) return fallback;
   try {
     const u = new URL(s);
-    if (u.protocol === "http:" || u.protocol === "https:") {
+    if (u.protocol !== "https:" && u.protocol !== "http:") {
+      return fallback;
+    }
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    const isLoopback = host === "127.0.0.1" || host === "localhost";
+    // Only allow public HTTPS endpoints (or explicit local loopback for self-hosted Bot API proxy / tests)
+    if (u.protocol === "https:" && isSafePublicWebUrl(u.toString())) {
+      return u.toString().replace(/\/+$/, "");
+    }
+    if (isLoopback) {
       return u.toString().replace(/\/+$/, "");
     }
   } catch {
@@ -80,9 +106,8 @@ export function normalizeTelegramChannelConfig(
 ): TelegramChannelConfig {
   const src = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as any) : {};
   const prev = existing || {};
-  const incomingToken = typeof src.botToken === "string" ? src.botToken.trim() : "";
-  const incomingSecret =
-    typeof src.webhookSecret === "string" ? src.webhookSecret.trim() : "";
+  const incomingToken = cleanSecretInput(src.botToken);
+  const incomingSecret = cleanSecretInput(src.webhookSecret);
   return {
     enabled:
       typeof src.enabled === "boolean" ? src.enabled : Boolean(prev.enabled),
@@ -92,12 +117,15 @@ export function normalizeTelegramChannelConfig(
         : prev.connectionMode === "webhook"
           ? "webhook"
           : "polling",
-    botToken: incomingToken || String(prev.botToken || ""),
+    botToken:
+      src.clearBotToken === true
+        ? ""
+        : incomingToken || String(prev.botToken || ""),
     webhookSecret:
       src.clearWebhookSecret === true
         ? ""
         : incomingSecret || String(prev.webhookSecret || ""),
-    apiBaseUrl: sanitizeBaseUrl(
+    apiBaseUrl: sanitizeChannelApiBaseUrl(
       src.apiBaseUrl !== undefined ? src.apiBaseUrl : prev.apiBaseUrl,
       DEFAULT_TELEGRAM_API_BASE
     ),
@@ -134,11 +162,9 @@ export function normalizeFeishuChannelConfig(
       : prev.domain === "lark"
         ? "lark"
         : "feishu";
-  const incomingSecret = typeof src.appSecret === "string" ? src.appSecret.trim() : "";
-  const incomingVerify =
-    typeof src.verificationToken === "string" ? src.verificationToken.trim() : "";
-  const incomingEncrypt =
-    typeof src.encryptKey === "string" ? src.encryptKey.trim() : "";
+  const incomingSecret = cleanSecretInput(src.appSecret);
+  const incomingVerify = cleanSecretInput(src.verificationToken);
+  const incomingEncrypt = cleanSecretInput(src.encryptKey);
   return {
     enabled:
       typeof src.enabled === "boolean" ? src.enabled : Boolean(prev.enabled),
@@ -149,7 +175,7 @@ export function normalizeFeishuChannelConfig(
           ? "webhook"
           : "websocket",
     domain,
-    apiBaseUrl: sanitizeBaseUrl(
+    apiBaseUrl: sanitizeChannelApiBaseUrl(
       src.apiBaseUrl !== undefined ? src.apiBaseUrl : prev.apiBaseUrl,
       ""
     ),
@@ -157,7 +183,10 @@ export function normalizeFeishuChannelConfig(
       typeof src.appId === "string"
         ? src.appId.trim().slice(0, 128)
         : String(prev.appId || ""),
-    appSecret: incomingSecret || String(prev.appSecret || ""),
+    appSecret:
+      src.clearAppSecret === true
+        ? ""
+        : incomingSecret || String(prev.appSecret || ""),
     verificationToken:
       src.clearVerificationToken === true
         ? ""
@@ -314,6 +343,184 @@ export function decryptFeishuEvent(encryptedBase64: string, encryptKey: string):
   return JSON.parse(decrypted);
 }
 
+/**
+ * Minimal zero-dependency Protocol Buffers codec for Feishu / Lark WebSocket Long Connection (`pbbp2.Frame`).
+ * Official schema (`@larksuiteoapi/node-sdk` `ws-client/proto-buf/pbbp2.proto`):
+ *   Header: 1=key (string), 2=value (string)
+ *   Frame:  1=SeqID (uint64), 2=LogID (uint64), 3=service (int32), 4=method (int32: 0=CONTROL, 1=DATA),
+ *           5=headers (repeated Header), 6=payloadEncoding (string), 7=payloadType (string),
+ *           8=payload (bytes), 9=LogIDNew (string)
+ */
+export interface FeishuPbHeader {
+  key: string;
+  value: string;
+}
+
+export interface FeishuPbFrame {
+  seqId: bigint;
+  logId: bigint;
+  service: number;
+  method: number;
+  headers: FeishuPbHeader[];
+  payloadEncoding?: string;
+  payloadType?: string;
+  payload?: Buffer;
+  logIdNew?: string;
+}
+
+function encodeVarint(val: bigint | number): Buffer {
+  let n = typeof val === "bigint" ? val : BigInt(Math.max(0, Math.trunc(val)));
+  if (n < 0n) n = BigInt.asUintN(64, n);
+  const bytes: number[] = [];
+  while (n >= 0x80n) {
+    bytes.push(Number(n & 0x7fn) | 0x80);
+    n >>= 7n;
+  }
+  bytes.push(Number(n));
+  return Buffer.from(bytes);
+}
+
+function readVarint(buf: Buffer, offset: number): { value: bigint; nextOffset: number } {
+  let result = 0n;
+  let shift = 0n;
+  let pos = offset;
+  while (pos < buf.length) {
+    const byte = buf[pos++];
+    result |= BigInt(byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) {
+      return { value: result, nextOffset: pos };
+    }
+    shift += 7n;
+    if (shift > 70n) {
+      throw new Error("Feishu pbbp2 varint overflow");
+    }
+  }
+  throw new Error("Unexpected EOF reading Feishu pbbp2 varint");
+}
+
+function encodeTag(fieldNumber: number, wireType: number): Buffer {
+  return encodeVarint((fieldNumber << 3) | wireType);
+}
+
+function encodeBytesField(fieldNumber: number, data: Buffer): Buffer {
+  return Buffer.concat([encodeTag(fieldNumber, 2), encodeVarint(data.length), data]);
+}
+
+function encodeStringField(fieldNumber: number, str: string): Buffer {
+  return encodeBytesField(fieldNumber, Buffer.from(str, "utf8"));
+}
+
+export function encodeFeishuPbFrame(frame: FeishuPbFrame): Buffer {
+  const parts: Buffer[] = [
+    Buffer.concat([encodeTag(1, 0), encodeVarint(frame.seqId)]),
+    Buffer.concat([encodeTag(2, 0), encodeVarint(frame.logId)]),
+    Buffer.concat([encodeTag(3, 0), encodeVarint(frame.service)]),
+    Buffer.concat([encodeTag(4, 0), encodeVarint(frame.method)]),
+  ];
+  for (const h of frame.headers || []) {
+    const hBuf = Buffer.concat([
+      encodeStringField(1, String(h.key || "")),
+      encodeStringField(2, String(h.value || "")),
+    ]);
+    parts.push(encodeBytesField(5, hBuf));
+  }
+  if (frame.payloadEncoding) {
+    parts.push(encodeStringField(6, frame.payloadEncoding));
+  }
+  if (frame.payloadType) {
+    parts.push(encodeStringField(7, frame.payloadType));
+  }
+  if (frame.payload && frame.payload.length > 0) {
+    parts.push(encodeBytesField(8, frame.payload));
+  }
+  if (frame.logIdNew) {
+    parts.push(encodeStringField(9, frame.logIdNew));
+  }
+  return Buffer.concat(parts);
+}
+
+function skipUnknownField(buf: Buffer, offset: number, wireType: number): number {
+  if (wireType === 0) return readVarint(buf, offset).nextOffset;
+  if (wireType === 1) {
+    if (offset + 8 > buf.length) throw new Error("EOF in fixed64");
+    return offset + 8;
+  }
+  if (wireType === 2) {
+    const { value: len, nextOffset } = readVarint(buf, offset);
+    const end = nextOffset + Number(len);
+    if (end > buf.length) throw new Error("EOF in length-delimited field");
+    return end;
+  }
+  if (wireType === 5) {
+    if (offset + 4 > buf.length) throw new Error("EOF in fixed32");
+    return offset + 4;
+  }
+  throw new Error(`Unsupported protobuf wireType ${wireType}`);
+}
+
+function decodeFeishuPbHeader(buf: Buffer): FeishuPbHeader {
+  let pos = 0;
+  let key = "";
+  let value = "";
+  while (pos < buf.length) {
+    const { value: tag, nextOffset } = readVarint(buf, pos);
+    pos = nextOffset;
+    const fieldNo = Number(tag >> 3n);
+    const wireType = Number(tag & 0x07n);
+    if (wireType === 2 && (fieldNo === 1 || fieldNo === 2)) {
+      const { value: len, nextOffset: dataStart } = readVarint(buf, pos);
+      const dataEnd = dataStart + Number(len);
+      if (dataEnd > buf.length) throw new Error("EOF in Feishu header string");
+      const str = buf.subarray(dataStart, dataEnd).toString("utf8");
+      if (fieldNo === 1) key = str;
+      else value = str;
+      pos = dataEnd;
+    } else {
+      pos = skipUnknownField(buf, pos, wireType);
+    }
+  }
+  return { key, value };
+}
+
+export function decodeFeishuPbFrame(buf: Buffer): FeishuPbFrame {
+  let pos = 0;
+  const out: FeishuPbFrame = {
+    seqId: 0n,
+    logId: 0n,
+    service: 0,
+    method: 0,
+    headers: [],
+  };
+  while (pos < buf.length) {
+    const { value: tag, nextOffset } = readVarint(buf, pos);
+    pos = nextOffset;
+    const fieldNo = Number(tag >> 3n);
+    const wireType = Number(tag & 0x07n);
+    if (wireType === 0 && (fieldNo >= 1 && fieldNo <= 4)) {
+      const { value, nextOffset: afterVar } = readVarint(buf, pos);
+      pos = afterVar;
+      if (fieldNo === 1) out.seqId = value;
+      else if (fieldNo === 2) out.logId = value;
+      else if (fieldNo === 3) out.service = Number(BigInt.asIntN(32, value));
+      else if (fieldNo === 4) out.method = Number(BigInt.asIntN(32, value));
+    } else if (wireType === 2 && fieldNo >= 5 && fieldNo <= 9) {
+      const { value: len, nextOffset: dataStart } = readVarint(buf, pos);
+      const dataEnd = dataStart + Number(len);
+      if (dataEnd > buf.length) throw new Error("EOF in Feishu frame bytes");
+      const slice = Buffer.from(buf.subarray(dataStart, dataEnd));
+      pos = dataEnd;
+      if (fieldNo === 5) out.headers.push(decodeFeishuPbHeader(slice));
+      else if (fieldNo === 6) out.payloadEncoding = slice.toString("utf8");
+      else if (fieldNo === 7) out.payloadType = slice.toString("utf8");
+      else if (fieldNo === 8) out.payload = slice;
+      else if (fieldNo === 9) out.logIdNew = slice.toString("utf8");
+    } else {
+      pos = skipUnknownField(buf, pos, wireType);
+    }
+  }
+  return out;
+}
+
 export interface ParsedInboundChannelMessage {
   channel: ChannelSkillId;
   eventId: string;
@@ -348,21 +555,37 @@ export function parseTelegramUpdate(update: any): ParsedInboundChannelMessage | 
   };
 }
 
+export interface ParseFeishuPayloadOptions {
+  requireVerificationToken?: boolean;
+  requireEncryptionIfConfigured?: boolean;
+}
+
 export function parseFeishuWebhookPayload(
   rawBody: any,
-  cfg: Pick<FeishuChannelConfig, "verificationToken" | "encryptKey">
+  cfg: Pick<FeishuChannelConfig, "verificationToken" | "encryptKey">,
+  opts: ParseFeishuPayloadOptions = {}
 ):
   | { kind: "challenge"; challenge: string }
   | { kind: "message"; message: ParsedInboundChannelMessage }
   | { kind: "ignore" } {
+  const requireEncryption = opts.requireEncryptionIfConfigured !== false;
   let payload = rawBody;
-  if (payload && typeof payload.encrypt === "string" && payload.encrypt.trim()) {
+  const hasEncryptedEnvelope = Boolean(
+    payload && typeof payload.encrypt === "string" && payload.encrypt.trim()
+  );
+  if (cfg.encryptKey && requireEncryption && !hasEncryptedEnvelope) {
+    throw new Error("Feishu encryptKey is configured; unencrypted webhook payload rejected");
+  }
+  if (hasEncryptedEnvelope) {
     payload = decryptFeishuEvent(payload.encrypt, cfg.encryptKey);
   }
   if (!payload || typeof payload !== "object") return { kind: "ignore" };
 
   const token = String(payload.token || payload.header?.token || "").trim();
-  if (cfg.verificationToken && token !== cfg.verificationToken) {
+  if (opts.requireVerificationToken && !cfg.verificationToken) {
+    throw new Error("Feishu verificationToken is not configured");
+  }
+  if (cfg.verificationToken && !timingSafeEqualStr(token, cfg.verificationToken)) {
     throw new Error("invalid Feishu verification token");
   }
 
@@ -421,7 +644,7 @@ export async function testTelegramChannel(
   if (!cfg.botToken) {
     return { ok: false, error: "请先填写 Telegram Bot Token" };
   }
-  const base = (cfg.apiBaseUrl || DEFAULT_TELEGRAM_API_BASE).replace(/\/+$/, "");
+  const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
   const resp = await fetchImpl(`${base}/bot${encodeURIComponent(cfg.botToken)}/getMe`, {
     method: "GET",
   });
@@ -447,7 +670,7 @@ export async function sendTelegramMessage(
   fetchImpl: typeof fetch = fetch
 ): Promise<void> {
   if (!cfg.botToken || !chatId) return;
-  const base = (cfg.apiBaseUrl || DEFAULT_TELEGRAM_API_BASE).replace(/\/+$/, "");
+  const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
   const chunks = chunkChannelText(text, 3900);
   for (const chunk of chunks) {
     await fetchImpl(`${base}/bot${encodeURIComponent(cfg.botToken)}/sendMessage`, {

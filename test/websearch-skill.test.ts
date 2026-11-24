@@ -46,6 +46,9 @@ test("isSafePublicWebUrl blocks loopback, link-local, RFC1918 private IPs, and n
     "http://192.168.1.1/",
     "http://172.16.0.5/",
     "http://[::1]/",
+    "http://[::ffff:127.0.0.1]:3230/api/settings",
+    "http://[::ffff:169.254.169.254]/latest/meta-data/",
+    "http://[0:0:0:0:0:ffff:192.168.1.1]/",
   ]) {
     assert.equal(isSafePublicWebUrl(unsafe), false, `expected blocked: ${unsafe}`);
   }
@@ -189,6 +192,38 @@ test("fetchWebPage extracts title and readable text while stripping scripts/styl
   assert.match(okRes.content!, /Hello world from TwinkleBot websearch/);
   assert.ok(!okRes.content!.includes("console.log"));
   assert.ok(!okRes.content!.includes("color: red"));
+
+  // Redirect SSRF guard: 302 redirect from public URL to 127.0.0.1 must be blocked!
+  const redirectBlocked = await fetchWebPage("https://example.com/jump", {
+    fetchImpl: async () =>
+      new Response(null, {
+        status: 302,
+        headers: { Location: "http://127.0.0.1:3230/api/settings" },
+      }),
+  });
+  assert.equal(redirectBlocked.ok, false);
+  assert.match(redirectBlocked.error!, /unsafe redirect|blocked/i);
+
+  // Binary Content-Type rejection + out-of-range numeric HTML entity resilience (no RangeError)
+  const pdfBlocked = await fetchWebPage("https://example.com/file.pdf", {
+    fetchImpl: async () =>
+      new Response("binary", {
+        status: 200,
+        headers: { "Content-Type": "application/pdf" },
+      }),
+  });
+  assert.equal(pdfBlocked.ok, false);
+  assert.match(pdfBlocked.error!, /binary content-type/i);
+
+  const entityRes = await fetchWebPage("https://example.com/entities", {
+    fetchImpl: async () =>
+      new Response("<html><title>Bad &#9999999; &#xFFFFFF; Entity</title><body>Safe text &#65;</body></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+  });
+  assert.equal(entityRes.ok, true);
+  assert.match(entityRes.content!, /Safe text A/);
 });
 
 test("BOT_COLLAB_TOOL_DECLARATIONS, runBotCollabTool, and prompt expose web_search and web_fetch", async () => {
