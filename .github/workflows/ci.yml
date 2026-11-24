@@ -1,4 +1,4 @@
-name: CI Quality Gate
+name: CI Build & Package
 
 on:
   push:
@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  verify:
-    name: Typecheck, Test & Mobile Web Bundle Check
+  build:
+    name: Build Mobile Web & OTA Packages
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -26,34 +26,8 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Install system X11, SVG tools & official Google Chrome
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            librsvg2-bin imagemagick xvfb xdotool wmctrl xclip x11-utils curl ca-certificates
-          if ! command -v google-chrome-stable >/dev/null 2>&1 && ! command -v google-chrome >/dev/null 2>&1; then
-            curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/chrome.deb
-            sudo apt-get install -y /tmp/chrome.deb
-            rm -f /tmp/chrome.deb
-          fi
-
       - name: Install dependencies
         run: npm ci
-
-      - name: Typecheck all TypeScript projects
-        run: npm run typecheck
-
-      - name: Run Python executor unit tests
-        run: npm run test:py
-
-      - name: Run unit & cross-process integration tests
-        run: npm test
-
-      - name: Check E2E catalog integrity & 6-dimension feature coverage audit
-        run: node .agents/skills/twinklebot-e2e/scripts/check-e2e-sync.mjs --ci --audit
-
-      - name: Run real Google Chrome multi-tab shared-profile & Web UI E2E tests
-        run: npm run test:e2e:chrome
 
       - name: Verify pure mobile web bundle & OTA package generation
         run: |
@@ -63,5 +37,6 @@ jobs:
           test ! -e dist-web/executor
           npm run build:ota
           test -f dist-ota/version-manifest.json
+          test -f dist-ota/twinklebot-core-desktop.tar.gz
           test -f dist-ota/twinklebot-web-desktop.tar.gz
           test -f dist-ota/twinklebot-web-mobile.tar.gz

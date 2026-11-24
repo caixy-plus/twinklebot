@@ -818,12 +818,16 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       module: "Electron Desktop Shell",
     },
     async ({ setEvidence }) => {
-      const electronBin = path.join(
-        PROJECT_ROOT,
-        "node_modules",
-        ".bin",
-        process.platform === "win32" ? "electron.cmd" : "electron"
-      );
+      const winElectronExe = path.join(PROJECT_ROOT, "node_modules", "electron", "dist", "electron.exe");
+      const electronBin =
+        process.platform === "win32" && fs.existsSync(winElectronExe)
+          ? winElectronExe
+          : path.join(
+              PROJECT_ROOT,
+              "node_modules",
+              ".bin",
+              process.platform === "win32" ? "electron.cmd" : "electron"
+            );
       if (!fs.existsSync(electronBin)) {
         throw new EnvSkipSignal("Electron binary not installed");
       }
@@ -862,6 +866,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
       const elecProc: ChildProcess = spawn(electronBin, elecArgs, {
         cwd: PROJECT_ROOT,
         env: { ...process.env, TWINKLEBOT_ENV_FILE: envFile },
+        shell: process.platform === "win32" && electronBin.endsWith(".cmd"),
         stdio: ["ignore", "pipe", "pipe"],
       });
       let elecStderr = "";
@@ -1405,6 +1410,10 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         body: JSON.stringify({ hostComputer: { executionMode: "always" } }),
       });
       let step = 0;
+      const envCheckCmd =
+        process.platform === "win32"
+          ? 'Write-Output ("BRIDGE_OK:" + $env:GEMINI_API_KEY + ":" + $env:TWINKLEBOT_LOCAL_TOKEN)'
+          : "echo BRIDGE_OK:$GEMINI_API_KEY:$TWINKLEBOT_LOCAL_TOKEN";
       cloudWs.mockLlm.setHandler(async ({ body }) => {
         const s = JSON.stringify(body?.messages || "");
         if (
@@ -1418,7 +1427,7 @@ test("P1 Suite 3: Fullstack Real Sandbox, Electron v45 Shell, Web OTA Watchdog &
         if (step === 1) {
           return {
             toolCalls: [
-              { id: "br-1", name: "host_run_shell", args: { command: "echo BRIDGE_OK:$GEMINI_API_KEY:$TWINKLEBOT_LOCAL_TOKEN", risk: "low" } },
+              { id: "br-1", name: "host_run_shell", args: { command: envCheckCmd, risk: "low" } },
             ],
           };
         }

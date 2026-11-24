@@ -932,11 +932,15 @@ export async function launchHeadlessChrome(opts: {
       throw new Error(`Chrome exited early (${proc.exitCode}): ${stderrBuf}`);
     }
     if (fs.existsSync(devToolsFile)) {
-      const lines = fs.readFileSync(devToolsFile, "utf8").trim().split(/\r?\n/);
-      const p = Number(lines[0]);
-      if (Number.isInteger(p) && p > 0) {
-        cdpPort = p;
-        break;
+      try {
+        const lines = fs.readFileSync(devToolsFile, "utf8").trim().split(/\r?\n/);
+        const p = Number(lines[0]);
+        if (Number.isInteger(p) && p > 0) {
+          cdpPort = p;
+          break;
+        }
+      } catch {
+        // Windows Chrome briefly holds an exclusive lock on DevToolsActivePort while writing it
       }
     }
     const m = stderrBuf.match(/ws:\/\/127\.0\.0\.1:(\d+)\/devtools/);

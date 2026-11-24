@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { createStore } from "../src/store/index.js";
 import { createServer } from "../src/server/index.js";
+import { DEFAULT_MCP_SERVERS } from "../src/lib/mcp-client.js";
 
 async function bootServer(t: any, extra: any = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gb-host-mcp-"));
@@ -147,9 +148,10 @@ test("settings persist hostComputer executionMode (without traffic forwarding) a
   assert.deepEqual(initial.json.hostComputer, { executionMode: "always" });
   assert.deepEqual(initial.json.mcpServers["kimi-cu"], {
     type: "stdio",
-    command: "/Applications/KimiCU.app/Contents/MacOS/kimi-cu",
+    command: process.platform === "darwin" ? "/Applications/KimiCU.app/Contents/MacOS/kimi-cu" : "",
     args: ["mcp", "-s", "user"],
   });
+  assert.deepEqual(initial.json.mcpServers["kimi-cu"], DEFAULT_MCP_SERVERS["kimi-cu"]);
 
   // Switch hostComputer executionMode to "ask"
   const updated = await call("POST", "/api/settings", {

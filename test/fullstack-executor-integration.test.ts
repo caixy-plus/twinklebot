@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -225,6 +225,17 @@ print(json.dumps({"exec_port": exec_port, "cdp_port": CDP_PORT}), flush=True)
 srv.serve_forever()
 `;
 
+function resolvePython3Binary(): string {
+  const candidates = process.platform === "win32" ? ["python", "python3"] : ["python3", "python"];
+  for (const cmd of candidates) {
+    const probe = spawnSync(cmd, ["--version"], { encoding: "utf8" });
+    if (probe.status === 0 && /Python 3\./i.test(`${probe.stdout || ""}${probe.stderr || ""}`)) {
+      return cmd;
+    }
+  }
+  return "python3";
+}
+
 async function spawnRealPythonExecutorHarness(tmpDir: string): Promise<{
   execPort: number;
   cdpPort: number;
@@ -236,7 +247,7 @@ async function spawnRealPythonExecutorHarness(tmpDir: string): Promise<{
   const executorDir = path.join(PROJECT_ROOT, "executor");
 
   const proc: ChildProcess = spawn(
-    "python3",
+    resolvePython3Binary(),
     ["-u", "-c", PY_CDP_HARNESS, executorDir, profileDir, mapPath, EXECUTOR_TOKEN],
     { stdio: ["ignore", "pipe", "pipe"] }
   );

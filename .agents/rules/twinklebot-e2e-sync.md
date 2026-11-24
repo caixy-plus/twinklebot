@@ -30,7 +30,7 @@ You MUST execute this automatic analysis + interactive confirmation flow **befor
    - **`skip`**: 跳过 E2E，直接进行 GitHub 版本构建
 3. **Honor the chosen level**:
    - Local pre-release verification: `node scripts/run-e2e.mjs --tier=<chosen-level> --since-last-tag` (or `npm run test:e2e:release` for default `affected+p0`).
-   - GitHub Actions dispatch: pass `-f e2e_level=<chosen-level>` to `.github/workflows/release.yml`.
+   - GitHub Actions dispatch: `release.yml` defaults `e2e_level=skip` (build-only; E2E runs locally). Optionally pass `-f e2e_level=<chosen-level>` to run in CI as well.
 
 ## 3. Keeping the E2E Catalog Synchronized on Brand-New Features
 When committing genuinely **new** user-facing features (new API route files/endpoints under `src/server/routes/`, new UI components/modals under `src/web/components/`, new bot tools under `src/agent/bot-tools/`, or new `executor/executor.py` endpoints):

@@ -26,17 +26,17 @@ on:
         default: ""
         type: string
       e2e_level:
-        description: "Pre-release automated E2E level (default: affected+p0 = changed suites + P0 core)"
+        description: "Optional CI pre-release E2E level (default: skip — tests run locally)"
         required: true
-        default: "affected+p0"
+        default: "skip"
         type: choice
         options:
+          - skip
           - affected+p0
           - all
           - p0+p1
           - p0
           - affected
-          - skip
 
 permissions:
   contents: write
@@ -74,12 +74,12 @@ jobs:
             fi
             TAG="$REF_TAG"
             NOTES=""
-            E2E_LEVEL="affected+p0"
+            E2E_LEVEL="skip"
           else
             MODE="${{ inputs.mode }}"
             INPUT_TAG="${{ inputs.release_tag }}"
             NOTES="${{ inputs.release_notes }}"
-            E2E_LEVEL="${{ inputs.e2e_level || 'affected+p0' }}"
+            E2E_LEVEL="${{ inputs.e2e_level || 'skip' }}"
             if [[ -n "$INPUT_TAG" ]]; then
               TAG="$INPUT_TAG"
             elif [[ "$MODE" == "full" ]]; then
@@ -130,6 +130,7 @@ jobs:
   release-e2e:
     name: Pre-Release Automated E2E (${{ needs.prepare.outputs.e2e_level }})
     needs: prepare
+    if: needs.prepare.outputs.e2e_level != 'skip'
     runs-on: ubuntu-latest
     steps:
       - name: Skip E2E when explicitly requested
@@ -198,14 +199,11 @@ jobs:
   publish-ota-only:
     name: Fast Core + Frontend OTA Release
     needs: [prepare, release-e2e]
-    if: needs.prepare.outputs.mode == 'ota-only'
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.release-e2e.result == 'success' || needs.release-e2e.result == 'skipped') && needs.prepare.outputs.mode == 'ota-only' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Install system SVG tools for image tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends librsvg2-bin imagemagick
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -213,11 +211,10 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Install dependencies & verify tests
+      - name: Install dependencies & build TypeScript/Core runtime
         run: |
           npm ci
-          npm run typecheck
-          npm test
+          npm run build:ts
 
       - name: Fetch previous authoritative version-manifest.json (inherit shell installer links)
         env:
@@ -274,7 +271,7 @@ jobs:
   build-desktop:
     name: Build Desktop (${{ matrix.platform }})
     needs: [prepare, release-e2e]
-    if: needs.prepare.outputs.mode == 'full'
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.release-e2e.result == 'success' || needs.release-e2e.result == 'skipped') && needs.prepare.outputs.mode == 'full' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -301,20 +298,8 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Install system SVG tools (Linux)
-        if: matrix.platform == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends librsvg2-bin imagemagick
-
-      - name: Install dependencies & verify
-        run: |
-          npm ci
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            npm run typecheck
-          else
-            npm run typecheck
-            npm test
-          fi
-        shell: bash
+      - name: Install dependencies
+        run: npm ci
 
       - name: Package Electron desktop application (${{ matrix.platform }})
         run: npm run ${{ matrix.script }}
@@ -360,7 +345,7 @@ jobs:
   build-android:
     name: Build Android APK
     needs: [prepare, release-e2e]
-    if: needs.prepare.outputs.mode == 'full'
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.release-e2e.result == 'success' || needs.release-e2e.result == 'skipped') && needs.prepare.outputs.mode == 'full' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

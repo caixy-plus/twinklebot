@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_MCP_SERVERS,
+  getDefaultMcpServers,
   toMcpFunctionName,
   parseMcpFunctionName,
   isMcpToolName,
@@ -162,7 +163,22 @@ rl.on("line", (line) => {
 test("DEFAULT_MCP_SERVERS contains exact kimi-cu stdio definition", () => {
   assert.deepEqual(DEFAULT_MCP_SERVERS["kimi-cu"], {
     type: "stdio",
+    command: process.platform === "darwin" ? "/Applications/KimiCU.app/Contents/MacOS/kimi-cu" : "",
+    args: ["mcp", "-s", "user"],
+  });
+  assert.deepEqual(getDefaultMcpServers("darwin")["kimi-cu"], {
+    type: "stdio",
     command: "/Applications/KimiCU.app/Contents/MacOS/kimi-cu",
+    args: ["mcp", "-s", "user"],
+  });
+  assert.deepEqual(getDefaultMcpServers("win32")["kimi-cu"], {
+    type: "stdio",
+    command: "",
+    args: ["mcp", "-s", "user"],
+  });
+  assert.deepEqual(getDefaultMcpServers("linux")["kimi-cu"], {
+    type: "stdio",
+    command: "",
     args: ["mcp", "-s", "user"],
   });
 });

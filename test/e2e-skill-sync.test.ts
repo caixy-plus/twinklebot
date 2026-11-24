@@ -19,26 +19,43 @@ async function loadReportModule(): Promise<any> {
   return import(pathToFileURL(modPath).href);
 }
 
+function resolveSkillAliasPath(aliasDir: string, relSuffix: string): string {
+  const st = fs.lstatSync(aliasDir);
+  if (st.isFile()) {
+    const linkTarget = fs.readFileSync(aliasDir, "utf8").trim();
+    return fs.realpathSync(path.resolve(path.dirname(aliasDir), linkTarget, relSuffix));
+  }
+  return fs.realpathSync(path.join(aliasDir, relSuffix));
+}
+
 test("twinklebot-e2e skill complies with Agent Skills standard and multi-agent discovery paths", () => {
   const skillMdPath = path.join(SKILL_DIR, "SKILL.md");
   assert.ok(fs.existsSync(skillMdPath), "Canonical .agents/skills/twinklebot-e2e/SKILL.md must exist");
 
-  const skillMd = fs.readFileSync(skillMdPath, "utf8");
+  const skillMd = fs.readFileSync(skillMdPath, "utf8").replace(/\r\n/g, "\n");
   assert.match(skillMd, /^---\n[\s\S]+?\n---/, "SKILL.md must start with YAML frontmatter");
   assert.match(skillMd, /\nname:\s*twinklebot-e2e\s*\n/, "Frontmatter name must match folder 'twinklebot-e2e'");
   assert.match(skillMd, /\ndescription:\s*/i, "Frontmatter must declare description");
 
   // Multi-agent discovery compatibility: Claude Code, OpenCode, Pi, Antigravity/Codex/Cursor
-  const claudeSkill = path.join(PROJECT_ROOT, ".claude", "skills", "twinklebot-e2e", "SKILL.md");
-  const piSkill = path.join(PROJECT_ROOT, ".pi", "skills", "twinklebot-e2e", "SKILL.md");
+  const claudeSkillDir = path.join(PROJECT_ROOT, ".claude", "skills");
+  const piSkillDir = path.join(PROJECT_ROOT, ".pi", "skills");
   const opencodeCmd = path.join(PROJECT_ROOT, ".opencode", "commands", "twinklebot-e2e.md");
   const piPrompt = path.join(PROJECT_ROOT, ".pi", "prompts", "twinklebot-e2e.md");
   const agentsMd = path.join(PROJECT_ROOT, "AGENTS.md");
   const claudeMd = path.join(PROJECT_ROOT, "CLAUDE.md");
   const preCommit = path.join(PROJECT_ROOT, ".githooks", "pre-commit");
 
-  assert.equal(fs.realpathSync(claudeSkill), fs.realpathSync(skillMdPath), ".claude/skills must resolve to canonical .agents/skills");
-  assert.equal(fs.realpathSync(piSkill), fs.realpathSync(skillMdPath), ".pi/skills must resolve to canonical .agents/skills");
+  assert.equal(
+    resolveSkillAliasPath(claudeSkillDir, path.join("twinklebot-e2e", "SKILL.md")),
+    fs.realpathSync(skillMdPath),
+    ".claude/skills must resolve to canonical .agents/skills"
+  );
+  assert.equal(
+    resolveSkillAliasPath(piSkillDir, path.join("twinklebot-e2e", "SKILL.md")),
+    fs.realpathSync(skillMdPath),
+    ".pi/skills must resolve to canonical .agents/skills"
+  );
   assert.ok(fs.existsSync(opencodeCmd), "OpenCode slash command .opencode/commands/twinklebot-e2e.md must exist");
   assert.match(fs.readFileSync(opencodeCmd, "utf8"), /\.agents\/skills\/twinklebot-e2e\/SKILL\.md/);
   assert.ok(fs.existsSync(piPrompt), "Pi slash prompt .pi/prompts/twinklebot-e2e.md must exist");
@@ -213,7 +230,7 @@ test("GitHub Release workflow and rules enforce interactive E2E level gate (defa
 
   const releaseYml = fs.readFileSync(path.join(PROJECT_ROOT, ".github", "workflows", "release.yml"), "utf8");
   assert.match(releaseYml, /e2e_level:/, "release.yml must expose e2e_level input");
-  assert.match(releaseYml, /default:\s*"affected\+p0"/, "release.yml e2e_level must default to affected+p0");
+  assert.match(releaseYml, /default:\s*"skip"/, "release.yml e2e_level must default to skip (CI is build-only; E2E runs locally)");
   for (const level of ["affected+p0", "all", "p0+p1", "p0", "affected", "skip"]) {
     assert.ok(releaseYml.includes(`- ${level}`), `release.yml must support e2e_level option '${level}'`);
   }
