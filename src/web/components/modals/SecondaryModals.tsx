@@ -1,21 +1,21 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { upsertCloudAccount } from "/accounts-store.js";
+import { parseRelayInvite } from "/accounts-store.js";
 import {
   describeCronExpression,
   getNextCronDates,
   parseCronExpression,
   resolvePresetCronExpression,
 } from "/shared/cron.js";
+import { isNativeQrScannerAvailable, scanQrCodeNative } from "../../mobile-bridge.js";
 import { buildPreviewSrcdoc } from "../../preview-utils.js";
 import {
+  importRemoteAccountFromInput,
   openBotScreenOverlay,
   openNewChatBar,
   openSettingsModal,
   refreshSchedules,
-  saveAccountsDirectory,
   selectSession,
   showToast,
-  switchAccount,
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
@@ -364,18 +364,16 @@ export function SecondaryModals() {
 
   const handleSaveCloudAccount = async () => {
     try {
-      const next = upsertCloudAccount(getState().accountsState, {
-        id: cloudAccountModal.id.trim(),
-        baseUrl: cloudAccountModal.baseUrl.trim(),
+      await importRemoteAccountFromInput({
+        accountId: cloudAccountModal.id.trim(),
+        rawUrlOrInvite: cloudAccountModal.baseUrl.trim(),
         name: cloudAccountModal.name.trim(),
         authToken: cloudAccountModal.authToken.trim(),
+        switchAfter: true,
       });
-      const added = next.accounts[next.accounts.length - 1];
-      await saveAccountsDirectory(next);
       setState((prev) => ({
         cloudAccountModal: { ...prev.cloudAccountModal, open: false, feedback: "" },
       }));
-      await switchAccount(cloudAccountModal.id.trim() || added.id);
     } catch (err: any) {
       setState((prev) => ({
         cloudAccountModal: {
@@ -1186,15 +1184,26 @@ export function SecondaryModals() {
             <span>{t("cloudModal.urlLabel")}</span>
             <input
               id="cloud-account-url-input"
-              type="url"
+              type="text"
+              inputMode="url"
+              autoCapitalize="none"
               className="inline-text-input"
-              placeholder="https://bot.example.com"
+              placeholder="https://bot.example.com / twinklebot://relay?..."
               value={cloudAccountModal.baseUrl}
-              onChange={(e) =>
+              onChange={(e) => {
+                const rawVal = e.target.value;
+                const parsed = rawVal.trim().startsWith("twinklebot://")
+                  ? parseRelayInvite(rawVal)
+                  : null;
                 setState((prev) => ({
-                  cloudAccountModal: { ...prev.cloudAccountModal, baseUrl: e.target.value },
-                }))
-              }
+                  cloudAccountModal: {
+                    ...prev.cloudAccountModal,
+                    baseUrl: rawVal,
+                    name: prev.cloudAccountModal.name || parsed?.name || parsed?.hostname || "",
+                    authToken: prev.cloudAccountModal.authToken || parsed?.relayToken || "",
+                  },
+                }));
+              }}
             />
           </label>
           <label className="onboarding-field">
@@ -1238,6 +1247,59 @@ export function SecondaryModals() {
             {cloudAccountModal.feedback}
           </div>
           <div className="inline-form-actions">
+            {isNativeQrScannerAvailable() && (
+              <button
+                id="cloud-modal-scan-qr-btn"
+                type="button"
+                className="settings-pill-btn"
+                onClick={async () => {
+                  const res = await scanQrCodeNative(t("mobile.qrScanPrompt"));
+                  if (res.permissionDenied) {
+                    setState((prev) => ({
+                      cloudAccountModal: {
+                        ...prev.cloudAccountModal,
+                        feedback: t("mobile.qrPermissionDeniedToast"),
+                      },
+                    }));
+                    return;
+                  }
+                  if (!res.ok || !res.content) return;
+                  const parsed = res.content.trim().startsWith("twinklebot://")
+                    ? parseRelayInvite(res.content)
+                    : null;
+                  setState((prev) => ({
+                    cloudAccountModal: {
+                      ...prev.cloudAccountModal,
+                      baseUrl: res.content || prev.cloudAccountModal.baseUrl,
+                      name: parsed?.name || parsed?.hostname || prev.cloudAccountModal.name,
+                      authToken: parsed?.relayToken || prev.cloudAccountModal.authToken,
+                      feedback: "",
+                    },
+                  }));
+                  try {
+                    await importRemoteAccountFromInput({
+                      accountId: cloudAccountModal.id.trim(),
+                      rawUrlOrInvite: res.content,
+                      name: cloudAccountModal.name.trim() || parsed?.name || parsed?.hostname || "",
+                      authToken: cloudAccountModal.authToken.trim() || parsed?.relayToken || "",
+                      switchAfter: true,
+                    });
+                    setState((prev) => ({
+                      cloudAccountModal: { ...prev.cloudAccountModal, open: false, feedback: "" },
+                    }));
+                  } catch (err: any) {
+                    setState((prev) => ({
+                      cloudAccountModal: {
+                        ...prev.cloudAccountModal,
+                        feedback: err?.message || t("cloudModal.invalidUrlFallback"),
+                      },
+                    }));
+                  }
+                }}
+              >
+                {t("cloudModal.scanQrBtn")}
+              </button>
+            )}
             <button
               id="cancel-cloud-account-btn"
               type="button"

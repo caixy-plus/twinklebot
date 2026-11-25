@@ -8,12 +8,14 @@ import {
   resolveBotAvatar,
 } from "../../avatars.js";
 import { useAnimatedSheet } from "../../hooks/useAnimatedSheet.js";
+import { isNativeQrScannerAvailable, scanQrCodeNative } from "../../mobile-bridge.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
   applyLanguagePreference,
   bindScrollEndTracking,
   confirmAndRemoveCloudAccount,
   handleBotComputerCardActivate,
+  importRemoteAccountFromInput,
   initiateLanPairing,
   openSettingsModal,
   refreshLibrary,
@@ -113,6 +115,7 @@ export function MobileSheets() {
   const [manualIp, setManualIp] = useState("");
   const [lanRetrying, setLanRetrying] = useState(false);
   const [pairCode, setPairCode] = useState("");
+  const [qrScanning, setQrScanning] = useState(false);
 
   useEffect(() => {
     if (!mobilePairModalOpen) setPairCode("");
@@ -143,6 +146,49 @@ export function MobileSheets() {
       : activeAcc?.type === "cloud"
         ? t("mobile.cloudNodeSub", { url: activeAcc.baseUrl })
         : t("mobile.tapScanOrAddNode");
+
+  const handleMobileScanCloudQr = async () => {
+    if (qrScanning) return;
+    setQrScanning(true);
+    try {
+      const scanRes = await scanQrCodeNative(t("mobile.qrScanPrompt"));
+      if (scanRes.unsupported) {
+        showToast(t("mobile.qrUnsupportedToast"));
+        setState({
+          cloudAccountModal: {
+            open: true,
+            id: "",
+            baseUrl: "",
+            name: "",
+            authToken: "",
+            feedback: "",
+          },
+        });
+        return;
+      }
+      if (scanRes.permissionDenied) {
+        showToast(t("mobile.qrPermissionDeniedToast"));
+        return;
+      }
+      if (scanRes.cancelled || !scanRes.ok || !scanRes.content) {
+        return;
+      }
+      const imported = await importRemoteAccountFromInput({
+        rawUrlOrInvite: scanRes.content,
+        switchAfter: true,
+      });
+      closeNode();
+      showToast(
+        t("mobile.cloudQrAddedToast", {
+          name: imported.account?.name || imported.account?.baseUrl || "",
+        })
+      );
+    } catch (err: any) {
+      showToast(t("mobile.qrInvalidToast", { error: err?.message || t("actions.requestError") }));
+    } finally {
+      setQrScanning(false);
+    }
+  };
 
   const totalTok = Number(lastGlobalUsagePayload?.totalTokens) || 0;
   const estCny = Number(lastGlobalUsagePayload?.estimatedCostCny) || 0;
@@ -1097,30 +1143,43 @@ export function MobileSheets() {
 
           <div className="mobile-sheet-header">
             <span className="mobile-section-caption">{t("mobile.cloudSectionTitle")}</span>
-            <button
-              id="mobile-add-cloud-btn"
-              type="button"
-              className="settings-blue-pill"
-              onClick={() => {
-                setState({
-                  cloudAccountModal: {
-                    open: true,
-                    id: "",
-                    baseUrl: "",
-                    name: "",
-                    authToken: "",
-                    feedback: "",
-                  },
-                });
-                requestAnimationFrame(() => {
-                  (
-                    document.getElementById("cloud-account-url-input") as HTMLInputElement | null
-                  )?.focus();
-                });
-              }}
-            >
-              {t("mobile.addCloudShort")}
-            </button>
+            <div className="mobile-sheet-header-actions">
+              {(isNativeQrScannerAvailable() || typeof window !== "undefined") && (
+                <button
+                  id="mobile-scan-cloud-qr-btn"
+                  type="button"
+                  className="settings-pill-btn"
+                  disabled={qrScanning}
+                  onClick={() => void handleMobileScanCloudQr()}
+                >
+                  {t("mobile.scanCloudQrBtn")}
+                </button>
+              )}
+              <button
+                id="mobile-add-cloud-btn"
+                type="button"
+                className="settings-blue-pill"
+                onClick={() => {
+                  setState({
+                    cloudAccountModal: {
+                      open: true,
+                      id: "",
+                      baseUrl: "",
+                      name: "",
+                      authToken: "",
+                      feedback: "",
+                    },
+                  });
+                  requestAnimationFrame(() => {
+                    (
+                      document.getElementById("cloud-account-url-input") as HTMLInputElement | null
+                    )?.focus();
+                  });
+                }}
+              >
+                {t("mobile.addCloudShort")}
+              </button>
+            </div>
           </div>
 
           <div id="mobile-cloud-list" className="mobile-grouped-card">

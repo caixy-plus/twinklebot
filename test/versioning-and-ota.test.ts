@@ -225,15 +225,25 @@ test("evaluateUpdateCompatibility decouples Desktop/Android/iOS shells, selects 
   assert.equal(deskOn130.status, "ota-available");
   assert.equal(deskOn130.otaBundle?.target, "desktop");
 
-  // 3. Android 1.2.0 (build 3) STILL gets pure-frontend OTA because minVersionForOta is 1.2.0, plus optionalShellUpdate!
+  // 3. Strict shell binding: Android 1.2.0 (build 3) vs latestVersion 1.2.1 (build 4) MUST block OTA & require shell update;
+  // matching shell 1.2.1 (build 4) receives the compatible Web OTA!
   const and120 = evaluateUpdateCompatibility(manifest, {
     platform: "android",
     nativeVersion: "1.2.0",
     nativeBuildCode: 3,
     activeWebBuild: "20261117.1000-1122334455",
   });
-  assert.equal(and120.status, "ota-available");
-  assert.equal(and120.optionalShellUpdate?.latestVersion, "1.2.1");
+  assert.equal(and120.status, "shell-update-required");
+  assert.equal(and120.shellUpdate?.latestVersion, "1.2.1");
+
+  const and121 = evaluateUpdateCompatibility(manifest, {
+    platform: "android",
+    nativeVersion: "1.2.1",
+    nativeBuildCode: 4,
+    activeWebBuild: "20261117.1000-1122334455",
+  });
+  assert.equal(and121.status, "ota-available");
+  assert.equal(and121.otaBundle?.target, "mobile");
 
   // 4. Never downgrades if client already has a newer webBuild (prevents ping-pong!)
   const noDowngrade = evaluateUpdateCompatibility(manifest, {
@@ -275,6 +285,7 @@ test("evaluateUpdateCompatibility decouples Desktop/Android/iOS shells, selects 
     "channel-integrations-v1",
     "channel-multi-bot-pairing-v1",
     "schedule-cron-v1",
+    "remote-relay-v1",
     "swarm-v2",
   ]);
   // v1.2.0 baseline features stay 100% enabled on LAN 1.2.0 while 1.3.0-only feature gracefully gates!
@@ -736,8 +747,8 @@ test("evaluateUpdateCompatibility prefers no-reinstall Core OTA when native shel
     },
   };
 
-  // Thin desktop shell >= minVersionForCoreOta chooses Core OTA even on v1.1.0 release, with optional shell download
-  const coreChoice = evaluateUpdateCompatibility(coreManifest, {
+  // Strict shell binding: if desktop has a newer native shell (1.1.0 > 1.0.3), block Core OTA until shell updates!
+  const coreNeedsShell = evaluateUpdateCompatibility(coreManifest, {
     platform: "desktop",
     desktopArch: "darwin-arm64",
     nativeVersion: "1.0.3",
@@ -745,16 +756,27 @@ test("evaluateUpdateCompatibility prefers no-reinstall Core OTA when native shel
     supportsCoreOta: true,
     activeCoreBuild: "20261120.010000-old0000000",
   });
+  assert.equal(coreNeedsShell.status, "shell-update-required");
+  assert.equal(coreNeedsShell.shellUpdate?.latestVersion, "1.1.0");
+
+  // Desktop already on matching native shell (1.1.0) gets Core OTA without reinstall!
+  const coreChoice = evaluateUpdateCompatibility(coreManifest, {
+    platform: "desktop",
+    desktopArch: "darwin-arm64",
+    nativeVersion: "1.1.0",
+    activeWebBuild: "20261120.010000-old0000000",
+    supportsCoreOta: true,
+    activeCoreBuild: "20261120.010000-old0000000",
+  });
   assert.equal(coreChoice.status, "ota-available");
   assert.equal(coreChoice.otaKind, "core");
   assert.equal(coreChoice.coreBundle?.coreBuild, "20261121.030000-core123456");
-  assert.equal(coreChoice.optionalShellUpdate?.latestVersion, "1.1.0");
 
-  // Once activeCoreBuild matches coreBuild, up-to-date!
+  // Once activeCoreBuild matches coreBuild on matching shell, up-to-date!
   const coreCurrent = evaluateUpdateCompatibility(coreManifest, {
     platform: "desktop",
     desktopArch: "darwin-arm64",
-    nativeVersion: "1.0.3",
+    nativeVersion: "1.1.0",
     activeWebBuild: "20261121.030000-core123456",
     supportsCoreOta: true,
     activeCoreBuild: "20261121.030000-core123456",

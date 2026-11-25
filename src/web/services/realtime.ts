@@ -17,6 +17,7 @@ import {
   applySessionRewoundUI,
   refreshComputerDisplays,
   refreshLibrary,
+  refreshRelayStatus,
   refreshSchedules,
   refreshSettingsFromServer,
   refreshUsageAndHealth,
@@ -25,6 +26,7 @@ import {
   runWhenSettingsScrollIdle,
   selectSession,
   showToast,
+  syncBackendAccountsDirectory,
   upsertLocalSession,
 } from "./actions.js";
 
@@ -102,6 +104,30 @@ export function handleRealtimePayload(payload: any) {
   if (payload.type === "skills_updated" || payload.type === "settings_updated") {
     refreshSettingsFromServer();
     refreshUsageAndHealth();
+    return;
+  }
+
+  if (payload.type === "accounts_updated") {
+    const toastName =
+      payload.action === "upsert"
+        ? String(
+            payload.account?.name ||
+              payload.account?.hostname ||
+              payload.account?.baseUrl ||
+              ""
+          )
+        : "";
+    void syncBackendAccountsDirectory({
+      toastForAccountName: toastName,
+      removedId: payload.action === "remove" ? String(payload.accountId || "") : "",
+    });
+    return;
+  }
+
+  if (payload.type === "relay_updated") {
+    if (getState().settingsModal?.open) {
+      void refreshRelayStatus().catch(() => {});
+    }
     return;
   }
 
@@ -526,7 +552,8 @@ export function connectRealtimeTransport() {
       const httpBase = s.activeBaseUrl || window.location.origin;
       const u = new URL(httpBase);
       u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
-      u.pathname = "/ws";
+      const basePath = u.pathname.replace(/\/+$/, "");
+      u.pathname = `${basePath}/ws`;
       u.search = "";
       wsTarget = u.toString();
     } catch {
@@ -571,7 +598,12 @@ export function connectRealtimeTransport() {
       const activeAcc = (cur.accountsState?.accounts || []).find(
         (a) => a.id === cur.accountsState?.activeAccountId
       );
-      if (activeAcc?.type === "cloud" && !isMobileAppTarget() && cur.localBackendUrl) {
+      if (
+        activeAcc?.type === "cloud" &&
+        activeAcc?.nodeDeployEnv !== "local" &&
+        !isMobileAppTarget() &&
+        cur.localBackendUrl
+      ) {
         try {
           ws.send(
             JSON.stringify({

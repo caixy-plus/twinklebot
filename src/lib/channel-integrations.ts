@@ -1071,6 +1071,54 @@ async function openProxyTunnel(
   return socket;
 }
 
+/**
+ * Bridges polyfilled AbortSignal objects (e.g. grammy's `abort-controller` polyfill)
+ * to a native `globalThis.AbortSignal` so Electron's WebIDL checks on `fetch`/`Request` succeed.
+ */
+function normalizeRequestInitSignal(init?: RequestInit): {
+  init: RequestInit | undefined;
+  cleanup: () => void;
+} {
+  const rawSignal = init?.signal as any;
+  if (
+    !rawSignal ||
+    (typeof globalThis.AbortSignal !== "undefined" &&
+      rawSignal instanceof globalThis.AbortSignal)
+  ) {
+    return { init, cleanup: () => {} };
+  }
+  const ctrl = new globalThis.AbortController();
+  const onAbort = () => {
+    if (!ctrl.signal.aborted) {
+      ctrl.abort(rawSignal.reason);
+    }
+  };
+  if (rawSignal.aborted) {
+    onAbort();
+  } else if (typeof rawSignal.addEventListener === "function") {
+    rawSignal.addEventListener("abort", onAbort, { once: true });
+  }
+  return {
+    init: { ...(init || {}), signal: ctrl.signal },
+    cleanup: () => {
+      if (typeof rawSignal.removeEventListener === "function") {
+        rawSignal.removeEventListener("abort", onAbort);
+      }
+    },
+  };
+}
+
+function wrapFetchWithNativeAbortSignal(targetFetch: typeof fetch): typeof fetch {
+  return (async (input: any, init?: RequestInit): Promise<Response> => {
+    const { init: safeInit, cleanup } = normalizeRequestInitSignal(init);
+    try {
+      return await targetFetch(input, safeInit);
+    } finally {
+      cleanup();
+    }
+  }) as typeof fetch;
+}
+
 export function createProxiedFetch(
   proxyUrl: string,
   baseFetch: typeof fetch = fetch
@@ -1079,7 +1127,7 @@ export function createProxiedFetch(
   if (!cleanProxy) return baseFetch;
   const parsedProxy = new URL(cleanProxy);
 
-  return (async (input: any, init?: RequestInit): Promise<Response> => {
+  const proxied = (async (input: any, init?: RequestInit): Promise<Response> => {
     const req = new Request(input, init);
     const targetUrl = new URL(req.url);
     if (targetUrl.protocol !== "https:" && targetUrl.protocol !== "http:") {
@@ -1213,14 +1261,18 @@ export function createProxiedFetch(
       clientReq.end();
     });
   }) as typeof fetch;
+
+  return wrapFetchWithNativeAbortSignal(proxied);
 }
 
 export function createTelegramFetch(
   cfg: Partial<Pick<TelegramChannelConfig, "proxy">>,
   fetchImpl: typeof fetch = fetch
 ): typeof fetch {
-  if (fetchImpl !== fetch) return fetchImpl;
-  return cfg.proxy ? createProxiedFetch(cfg.proxy, fetchImpl) : fetchImpl;
+  if (fetchImpl === fetch && cfg.proxy) {
+    return createProxiedFetch(cfg.proxy, fetchImpl);
+  }
+  return wrapFetchWithNativeAbortSignal(fetchImpl);
 }
 
 export function createTelegramApi(
@@ -1753,9 +1805,14 @@ export async function testTelegramChannel(
       botName: me.first_name || me.username || "Telegram Bot",
     };
   } catch (err: any) {
+    const innerMsg = (err?.error as any)?.description || (err?.error as any)?.message;
+    const rawMsg =
+      err?.description ||
+      (innerMsg && err?.message ? `${err.message} (${innerMsg})` : err?.message) ||
+      String(err);
     return {
       ok: false,
-      error: err?.description || err?.message || String(err),
+      error: String(rawMsg).replace(/bot\d+:[A-Za-z0-9_-]+/g, "bot[REDACTED]"),
     };
   }
 }

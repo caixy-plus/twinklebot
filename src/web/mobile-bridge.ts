@@ -63,6 +63,43 @@ function getLanDiscoveryPlugin() {
   return typeof window !== "undefined" ? window.Capacitor?.Plugins?.LanDiscovery || null : null;
 }
 
+function getQrScannerPlugin() {
+  return typeof window !== "undefined" ? window.Capacitor?.Plugins?.QrScanner || null : null;
+}
+
+export function isNativeQrScannerAvailable(): boolean {
+  const plugin = getQrScannerPlugin();
+  return Boolean(plugin && typeof plugin.scan === "function");
+}
+
+export async function scanQrCodeNative(promptText = ""): Promise<{
+  ok: boolean;
+  content?: string;
+  cancelled?: boolean;
+  permissionDenied?: boolean;
+  unsupported?: boolean;
+  error?: string;
+}> {
+  const plugin = getQrScannerPlugin();
+  if (!plugin || typeof plugin.scan !== "function") {
+    return { ok: false, unsupported: true };
+  }
+  try {
+    const res = await plugin.scan(promptText ? { prompt: promptText } : {});
+    if (res?.ok && res.content) {
+      return { ok: true, content: String(res.content).trim() };
+    }
+    return {
+      ok: false,
+      cancelled: Boolean(res?.cancelled),
+      permissionDenied: Boolean(res?.permissionDenied),
+      error: res?.error ? String(res.error) : undefined,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "QR scan failed" };
+  }
+}
+
 function getWebUpdaterPlugin() {
   return typeof window !== "undefined" ? window.Capacitor?.Plugins?.WebUpdater || null : null;
 }

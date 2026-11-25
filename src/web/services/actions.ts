@@ -17,9 +17,14 @@ import {
 } from "../avatars.js";
 import {
   LOCAL_ACCOUNT_ID,
+  buildWsUrlFromBase,
   normalizeAccountsState,
+  normalizeBaseUrl,
+  parseRelayInvite,
+  probeRemoteNodeIdentity,
   removeCloudAccount,
   setActiveAccount,
+  upsertCloudAccount,
   upsertLanAccount,
 } from "/accounts-store.js";
 import {
@@ -1909,6 +1914,99 @@ export async function refreshMcpSkillStatus(serverId = "kimi-cu", connect = fals
 }
 
 /* ==================== ACCOUNTS, LAN PAIRING & CLOUD HOSTS ==================== */
+let bootstrapRelayToken = "";
+
+function resolveBrowserSubpathBase(): string {
+  if (typeof window === "undefined") return "";
+  if (isMobileAppTarget() || window.twinklebotDesktop?.isElectron) return "";
+  const pathname = String(window.location.pathname || "/");
+  const prefix = pathname.replace(/\/index\.html$/i, "").replace(/\/+$/, "");
+  if (!prefix || prefix === "/") return "";
+  return `${window.location.origin}${prefix}`;
+}
+
+function getLocalControlHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  const s = getState();
+  if (s.localControlToken) {
+    headers["X-Local-Token"] = s.localControlToken;
+  } else if (s.activeAuthToken && (!s.activeBaseUrl || s.activeBaseUrl === s.localBackendUrl)) {
+    headers["Authorization"] = `Bearer ${s.activeAuthToken}`;
+  }
+  return headers;
+}
+
+async function isDesktopSelfTarget(
+  targetUrl: string,
+  candidateInstanceId = ""
+): Promise<boolean> {
+  if (isMobileAppTarget()) return false;
+  const s = getState();
+  const localBase = String(
+    s.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "")
+  ).replace(/\/+$/, "");
+
+  const ownRelayUrl = String(s.relayStatus?.config?.publicUrl || "").trim();
+  if (ownRelayUrl && targetUrl) {
+    try {
+      if (normalizeBaseUrl(ownRelayUrl) === normalizeBaseUrl(targetUrl)) return true;
+    } catch {}
+  }
+
+  try {
+    const tu = new URL(targetUrl);
+    const host = tu.hostname.toLowerCase();
+    const isLoop =
+      host === "127.0.0.1" ||
+      host === "localhost" ||
+      host === "::1" ||
+      host === "[::1]" ||
+      host === "0.0.0.0";
+    if (isLoop) {
+      const targetPort = tu.port ? Number(tu.port) : tu.protocol === "https:" ? 443 : 80;
+      const ownPorts: number[] = [];
+      if (localBase && /^https?:\/\//i.test(localBase)) {
+        try {
+          const lu = new URL(localBase);
+          ownPorts.push(lu.port ? Number(lu.port) : lu.protocol === "https:" ? 443 : 80);
+        } catch {}
+      }
+      const relayPort = Number(
+        s.relayStatus?.runtime?.relayListeningPort || s.relayStatus?.config?.relayLocalPort || 0
+      );
+      if (relayPort > 0) ownPorts.push(relayPort);
+      if (ownPorts.includes(targetPort)) return true;
+    }
+  } catch {}
+
+  if (localBase && /^https?:\/\//i.test(localBase)) {
+    try {
+      const res = await fetch(`${localBase}/api/system/health`, { cache: "no-store" });
+      if (res.ok) {
+        const health = await res.json().catch(() => null);
+        const ownId = String(health?.instanceId || "").trim();
+        if (ownId && candidateInstanceId && ownId === candidateInstanceId) {
+          return true;
+        }
+      }
+    } catch {}
+    if (!ownRelayUrl) {
+      try {
+        const rRes = await fetch(`${localBase}/api/relay/status`, {
+          headers: getLocalControlHeaders(),
+          cache: "no-store",
+        });
+        if (rRes.ok) {
+          const rJson = await rRes.json().catch(() => null);
+          const pub = String(rJson?.config?.publicUrl || "").trim();
+          if (pub && normalizeBaseUrl(pub) === normalizeBaseUrl(targetUrl)) return true;
+        }
+      } catch {}
+    }
+  }
+  return false;
+}
+
 export async function loadAccountsDirectory() {
   const s = getState();
   const fallbackLocal = isMobileAppTarget()
@@ -1955,13 +2053,92 @@ export async function saveAccountsDirectory(nextState: any) {
   return normalized;
 }
 
+/**
+ * Sync remote/cloud accounts configured on the backend (e.g. by Admin Bot `account_manage`)
+ * while strictly keeping `activeAccountId` untouched (account switching is user-manual-only).
+ */
+export async function syncBackendAccountsDirectory(
+  opts: { toastForAccountName?: string; removedId?: string } = {}
+) {
+  if (isMobileAppTarget()) return null;
+  const s = getState();
+  const localBase = String(
+    s.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "")
+  ).replace(/\/+$/, "");
+  if (!localBase || !/^https?:\/\//i.test(localBase)) return null;
+
+  try {
+    const res = await fetch(`${localBase}/api/accounts?sync=1`, {
+      method: "GET",
+      headers: getLocalControlHeaders(),
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || !Array.isArray(data.accounts)) return null;
+
+    const currentState = normalizeAccountsState(getState().accountsState);
+    let nextAccounts = currentState.accounts.slice();
+
+    if (opts.removedId && opts.removedId !== LOCAL_ACCOUNT_ID) {
+      nextAccounts = nextAccounts.filter((a) => a.id !== opts.removedId);
+    }
+
+    for (const remote of data.accounts) {
+      if (!remote || typeof remote !== "object" || remote.id === LOCAL_ACCOUNT_ID || remote.type === "local") {
+        continue;
+      }
+      const matchIdx = nextAccounts.findIndex(
+        (existing) =>
+          existing.id === remote.id ||
+          (remote.type === "lan" &&
+            remote.instanceId &&
+            existing.type === "lan" &&
+            existing.instanceId === remote.instanceId) ||
+          (remote.type === "cloud" &&
+            remote.baseUrl &&
+            existing.type === "cloud" &&
+            existing.baseUrl === remote.baseUrl)
+      );
+      if (matchIdx >= 0) {
+        const cur = nextAccounts[matchIdx];
+        nextAccounts[matchIdx] = {
+          ...cur,
+          ...remote,
+          authToken: remote.authToken || cur.authToken || "",
+          relayToken: remote.relayToken || cur.relayToken || "",
+        };
+      } else {
+        nextAccounts.push(remote);
+      }
+    }
+
+    // Preserve activeAccountId strictly unless a user removes it explicitly.
+    const nextState = normalizeAccountsState({
+      activeAccountId: currentState.activeAccountId,
+      accounts: nextAccounts,
+    });
+    const saved = await saveAccountsDirectory(nextState);
+    if (opts.toastForAccountName) {
+      showToast(tr("actions.accountConfiguredSyncToast", { name: opts.toastForAccountName }));
+    }
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
 export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = false } = {}) {
-  const label = acc.name || acc.baseUrl || acc.id;
+  const label = acc.name || acc.baseUrl || acc.relayUrl || acc.id;
+  const isLan = acc.type === "lan";
+  const displayUrl = acc.baseUrl || acc.relayUrl || "";
   const ok = await showConfirmDialog({
-    title: tr("actions.removeCloudTitle"),
-    message: tr("actions.removeCloudMsg", { label }),
-    detail: acc.baseUrl
-      ? tr("actions.removeCloudDetailWithUrl", { url: acc.baseUrl })
+    title: isLan ? tr("actions.removeAccountTitle") : tr("actions.removeCloudTitle"),
+    message: isLan
+      ? tr("actions.removeAccountMsg", { label })
+      : tr("actions.removeCloudMsg", { label }),
+    detail: displayUrl
+      ? tr("actions.removeCloudDetailWithUrl", { url: displayUrl })
       : tr("actions.removeCloudDetail"),
     confirmText: tr("actions.removeCloudConfirm"),
     cancelText: tr("common.cancel"),
@@ -1972,6 +2149,17 @@ export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = 
   const wasActive = acc.id === curState.accountsState.activeAccountId;
   const next = removeCloudAccount(curState.accountsState, acc.id);
   await saveAccountsDirectory(next);
+  if (!isMobileAppTarget()) {
+    const localBase = String(
+      curState.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "")
+    ).replace(/\/+$/, "");
+    if (localBase && /^https?:\/\//i.test(localBase)) {
+      fetch(`${localBase}/api/accounts/${encodeURIComponent(acc.id)}`, {
+        method: "DELETE",
+        headers: getLocalControlHeaders(),
+      }).catch(() => {});
+    }
+  }
   if (wasActive) {
     if (mobileFallback) {
       if (next.accounts.length > 1) {
@@ -1983,6 +2171,130 @@ export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = 
   }
   showToast(tr("actions.removedCloudToast", { label }));
   return true;
+}
+
+export async function importRemoteAccountFromInput(input: {
+  rawUrlOrInvite: string;
+  authToken?: string;
+  name?: string;
+  accountId?: string;
+  switchAfter?: boolean;
+}) {
+  const parsed = parseRelayInvite(input.rawUrlOrInvite);
+  const targetUrl = normalizeBaseUrl(parsed?.relayUrl || input.rawUrlOrInvite);
+  if (!targetUrl) {
+    throw new Error(tr("gate.invalidCloudUrlError"));
+  }
+  const targetToken = String(input.authToken || parsed?.relayToken || "").trim();
+  const targetName = String(input.name || parsed?.name || parsed?.hostname || "").trim();
+
+  if (await isDesktopSelfTarget(targetUrl, parsed?.instanceId || "")) {
+    throw new Error(tr("actions.selfConnectForbidden"));
+  }
+
+  const probe = await probeRemoteNodeIdentity(targetUrl, targetToken, { timeoutMs: 4500 });
+  if (await isDesktopSelfTarget(targetUrl, probe.instanceId || parsed?.instanceId || "")) {
+    throw new Error(tr("actions.selfConnectForbidden"));
+  }
+
+  const isRemoteLocal = probe.ok
+    ? probe.deployEnv === "local"
+    : parsed?.deployEnv === "local";
+
+  const curAccounts = getState().accountsState;
+  // All remote / scanned accounts are added cleanly as Cloud Accounts (server deployEnv is tracked internally via nodeDeployEnv).
+  const nextState = upsertCloudAccount(curAccounts, {
+    id: input.accountId || "",
+    baseUrl: targetUrl,
+    authToken: targetToken,
+    name: targetName || probe.hostname || parsed?.hostname || "",
+    instanceId: probe.instanceId || parsed?.instanceId || "",
+    hostname: probe.hostname || parsed?.hostname || "",
+    platform: probe.platform || parsed?.platform || "",
+    nodeDeployEnv: isRemoteLocal ? "local" : "cloud",
+  });
+
+  const saved = await saveAccountsDirectory(nextState);
+  const resolvedId =
+    (input.accountId && saved.accounts.find((a: any) => a.id === input.accountId)?.id) ||
+    saved.accounts.find(
+      (a: any) =>
+        a.type === "cloud" &&
+        (((probe.instanceId || parsed?.instanceId) &&
+          a.instanceId === (probe.instanceId || parsed?.instanceId)) ||
+          a.baseUrl === targetUrl)
+    )?.id ||
+    saved.accounts[saved.accounts.length - 1]?.id;
+
+  const account = saved.accounts.find((a: any) => a.id === resolvedId) || null;
+  if (input.switchAfter && resolvedId) {
+    await switchAccount(resolvedId);
+  }
+  return { ok: true, account, probe };
+}
+
+export async function refreshRelayStatus(opts: { reveal?: boolean } = {}) {
+  const query = opts.reveal ? "?reveal=1" : "";
+  const data = await apiJson(`/api/relay/status${query}`);
+  setState({ relayStatus: data });
+  return data;
+}
+
+export async function fetchRelayInvite() {
+  const data = await apiJson("/api/relay/invite", { method: "POST", body: JSON.stringify({}) });
+  if (data && data.inviteUri) {
+    setState({
+      relayInvite: {
+        inviteUri: data.inviteUri,
+        qrSvg: data.qrSvg || "",
+        publicUrl: data.publicUrl || "",
+        lanUrl: data.lanUrl || "",
+      },
+    });
+  }
+  return data;
+}
+
+export async function saveRelayConfig(patch: Record<string, any>) {
+  const data = await apiJson("/api/relay/config", {
+    method: "POST",
+    body: JSON.stringify(patch),
+  });
+  await refreshRelayStatus({ reveal: Boolean(patch?.reveal) }).catch(() => {});
+  if (data?.config?.publicUrl) {
+    await fetchRelayInvite().catch(() => {
+      setState({ relayInvite: null });
+    });
+  } else {
+    setState({ relayInvite: null });
+  }
+  return data;
+}
+
+export async function runRelayControl(
+  action: "start" | "stop" | "restart" | "test" | "rotate_token" | "import_legacy",
+  extra: Record<string, any> = {}
+) {
+  const data = await apiJson("/api/relay/control", {
+    method: "POST",
+    body: JSON.stringify({ action, ...extra }),
+  });
+  if (action !== "test") {
+    await refreshRelayStatus({ reveal: Boolean(extra.reveal) }).catch(() => {});
+    if (action === "rotate_token" || action === "import_legacy" || action === "start" || action === "restart") {
+      await fetchRelayInvite().catch(() => {
+        setState({ relayInvite: null });
+      });
+    }
+  }
+  return data;
+}
+
+export async function generateRelayTemplates(params: Record<string, any>) {
+  return apiJson("/api/relay/templates", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
 }
 
 export async function reloadWorkspaceForActiveAccount(epoch = getState().accountEpoch) {
@@ -2129,15 +2441,31 @@ export async function switchAccount(accountId: string, opts: any = {}) {
   const isLan = target.type === "lan";
   const isRemote = isCloud || isLan;
 
+  let resolvedBase = "";
+  let resolvedWs = "";
+  let resolvedToken = "";
+
+  if (isRemote) {
+    resolvedBase = target.baseUrl || "";
+    resolvedWs = target.wsUrl || "";
+    resolvedToken = target.authToken || "";
+  } else {
+    const subBase = !target.baseUrl ? resolveBrowserSubpathBase() : "";
+    resolvedBase = target.baseUrl || subBase || "";
+    resolvedWs = target.wsUrl || (subBase ? buildWsUrlFromBase(subBase) : "");
+    resolvedToken = target.authToken || bootstrapRelayToken || "";
+  }
+
   setState({
-    activeBaseUrl: isRemote ? target.baseUrl : "",
-    activeWsUrl: isRemote ? target.wsUrl || "" : "",
-    activeAuthToken: isRemote ? target.authToken || "" : "",
+    activeBaseUrl: resolvedBase,
+    activeWsUrl: resolvedWs,
+    activeAuthToken: resolvedToken,
   });
 
   const localBase = String(
     getState().localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "")
   ).replace(/\/+$/, "");
+  const shouldActAsHostExecutor = isCloud && target.nodeDeployEnv !== "local";
   if (!opts.skipRoleSwitch && !isMobileAppTarget() && localBase && /^https?:\/\//i.test(localBase)) {
     const roleHeaders: Record<string, string> = { "Content-Type": "application/json" };
     if (getState().localControlToken) {
@@ -2148,8 +2476,8 @@ export async function switchAccount(accountId: string, opts: any = {}) {
         method: "POST",
         headers: roleHeaders,
         body: JSON.stringify({
-          role: isCloud ? "host_executor" : "master",
-          ...(isCloud ? { cloudOrigin: target.baseUrl } : {}),
+          role: shouldActAsHostExecutor ? "host_executor" : "master",
+          ...(shouldActAsHostExecutor ? { cloudOrigin: resolvedBase || target.baseUrl } : {}),
         }),
       });
     } catch {
@@ -2518,6 +2846,30 @@ export async function bootstrapApp() {
   if (appBootstrapped || typeof window === "undefined") return;
   appBootstrapped = true;
 
+  try {
+    const currentUrl = new URL(window.location.href);
+    const queryToken = String(currentUrl.searchParams.get("token") || "").trim();
+    if (queryToken) {
+      bootstrapRelayToken = queryToken;
+      try {
+        sessionStorage.setItem("twinklebot_relay_session_token", queryToken);
+      } catch {}
+      currentUrl.searchParams.delete("token");
+      window.history.replaceState(
+        null,
+        "",
+        `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`
+      );
+    } else {
+      try {
+        bootstrapRelayToken = sessionStorage.getItem("twinklebot_relay_session_token") || "";
+      } catch {}
+    }
+  } catch {}
+  if (bootstrapRelayToken) {
+    setState({ activeAuthToken: bootstrapRelayToken });
+  }
+
   if (isMobileAppTarget()) {
     document.documentElement.dataset.appTarget = "mobile";
     setScreenOrientation("portrait");
@@ -2542,12 +2894,18 @@ export async function bootstrapApp() {
   if (
     !getState().localBackendUrl &&
     !isMobileAppTarget() &&
-    /^(127\.0\.0\.1|localhost)$/i.test(window.location.hostname)
+    !window.twinklebotDesktop?.isElectron
   ) {
-    setState({ localBackendUrl: window.location.origin });
+    const subBase = resolveBrowserSubpathBase();
+    if (subBase) {
+      setState({ localBackendUrl: subBase });
+    } else if (/^(127\.0\.0\.1|localhost)$/i.test(window.location.hostname)) {
+      setState({ localBackendUrl: window.location.origin });
+    }
   }
 
   await loadAccountsDirectory();
+  await syncBackendAccountsDirectory();
 
   onAppForeground(async () => {
     const now = Date.now();

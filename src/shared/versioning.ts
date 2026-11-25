@@ -16,6 +16,7 @@ export const CURRENT_API_CAPABILITIES = [
   "channel-integrations-v1",
   "channel-multi-bot-pairing-v1",
   "schedule-cron-v1",
+  "remote-relay-v1",
 ] as const;
 
 export const DEFAULT_GITHUB_OWNER = "caixy-plus";
@@ -478,9 +479,26 @@ export function evaluateUpdateCompatibility(
     localEnv.desktopArch
   );
 
+  // Strict shell-vs-OTA binding: whenever a newer native shell exists for the current
+  // platform (latestVersion > nativeVersion, or same version with newer latestBuildCode),
+  // refuse OTA and require upgrading the app shell first.
+  if (newerShell && resolvedShell.shellUpdate) {
+    return {
+      ...baseMeta,
+      status: "shell-update-required",
+      ...resolvedShell,
+      reason: isEn
+        ? platform === "desktop"
+          ? `New desktop shell v${shellSpec?.latestVersion} available. Hot updates are bound to the shell version—please update the installer first.`
+          : `New ${platform === "ios" ? "iOS" : "Android"} shell v${resolvedShell.shellUpdate.latestVersion} available. Hot updates require updating the app shell first.`
+        : platform === "desktop"
+          ? `发现新版桌面端壳（v${shellSpec?.latestVersion}），热更新与原生壳版本严格绑定，请先安装新版桌面端`
+          : `发现 ${platform === "ios" ? "iOS" : "Android"} 新版原生壳（v${resolvedShell.shellUpdate.latestVersion}），热更新与原生壳版本严格绑定，请先更新安装包`,
+    };
+  }
+
   // Desktop Shell >= v1.0.4 with Core Runtime OTA support:
-  // Always prefer atomic no-reinstall Core OTA (Node backend + prompts + executor.py + Web UI)
-  // whenever the native shell meets minVersionForCoreOta, even across v* releases!
+  // When running on the matching shell version, apply atomic no-reinstall Core OTA.
   if (platform === "desktop" && localEnv.supportsCoreOta) {
     const minCoreShell =
       manifest.bundles?.desktopCore?.minShellVersion ||

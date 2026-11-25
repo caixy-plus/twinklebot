@@ -181,9 +181,9 @@ test("multi-platform application icons, status-bar template icons, iOS RGB icon,
   assert.ok(traySrc.includes("trayIconTemplate.png"));
   assert.ok(traySrc.includes("setTemplateImage(true)"));
 
-  // Verify Web index.html links /icon.png
+  // Verify Web index.html links icon.png cleanly
   const indexHtml = fs.readFileSync(path.join(root, "public", "index.html"), "utf-8");
-  assert.ok(indexHtml.includes('href="/icon.png"'));
+  assert.ok(indexHtml.includes('href="./icon.png"') || indexHtml.includes('href="/icon.png"'));
 
   // iOS AppIcon must be 1024x1024 opaque RGB (colorType === 2, no alpha channel)
   assert.deepEqual(

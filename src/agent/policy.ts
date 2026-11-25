@@ -440,6 +440,9 @@ function isPathDenied(filePath: unknown): boolean {
     base === "vault.json" ||
     base === ".vault.key" ||
     base === ".vault.dpapi" ||
+    base === "frpc.toml" ||
+    base === "frps.toml" ||
+    base === "relay-token" ||
     /.*auth.*\.json$/i.test(base)
   ) {
     return true;

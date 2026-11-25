@@ -199,6 +199,11 @@ export interface AppState {
       baseUrl: string;
       wsUrl?: string;
       authToken?: string;
+      nodeDeployEnv?: "local" | "cloud";
+      relayUrl?: string;
+      relayWsUrl?: string;
+      relayToken?: string;
+      preferredRoute?: "auto" | "lan" | "relay";
       instanceId?: string;
       hostname?: string;
       platform?: string;
@@ -211,6 +216,13 @@ export interface AppState {
   activeWsUrl: string;
   activeAuthToken: string;
   accountEpoch: number;
+  relayStatus: any | null;
+  relayInvite: {
+    inviteUri: string;
+    qrSvg: string;
+    publicUrl: string;
+    lanUrl?: string;
+  } | null;
   onlineCloudHosts: any[];
   selectedCloudHostId: string | null;
   lanDiscoveredDevices: any[];
@@ -535,6 +547,8 @@ export function createInitialState(): AppState {
     activeWsUrl: "",
     activeAuthToken: "",
     accountEpoch: 0,
+    relayStatus: null,
+    relayInvite: null,
     onlineCloudHosts: [],
     selectedCloudHostId: null,
     lanDiscoveredDevices: [],

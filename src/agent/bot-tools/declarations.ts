@@ -1060,6 +1060,48 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
       required: ["action"],
     },
   },
+  {
+    type: "function",
+    name: "account_manage",
+    description:
+      "ADMIN-BOT EXCLUSIVE: List, configure (add/update), test, or remove saved 云端账号 / 本地账号 (Cloud Accounts & remote Relay nodes in accounts-auth.json). Automatically probes the target server's authoritative deployEnv ('cloud' vs 'local') and syncs to the UI account menu. Strictly NEVER supports automatic account switching — the user must always switch accounts manually.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "upsert", "test", "remove"],
+          description: "Action to perform on remote/cloud accounts.",
+        },
+        account_id: {
+          type: "string",
+          description: "Existing account ID, name, or URL when testing/removing/updating.",
+        },
+        name: {
+          type: "string",
+          description: "Display name for the account (e.g. '阿里云节点' or 'MacBook Pro').",
+        },
+        base_url: {
+          type: "string",
+          description: "Server or Relay base URL (https://... or http://...).",
+        },
+        auth_token: {
+          type: "string",
+          description: "Bearer access token or relay token (masked in display).",
+        },
+        invite_uri: {
+          type: "string",
+          description: "Optional twinklebot://relay?data=... invite URI to import.",
+        },
+        preferred_route: {
+          type: "string",
+          enum: ["auto", "lan", "relay"],
+          description: "Route preference when binding a Local Account's remote relay.",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 export const SKILL_NOT_ADDED_ERROR = "该技能当前未添加，请先在左下角「技能商店」添加后再配置。";
@@ -1104,6 +1146,15 @@ export function redactToolArgsForDisplay(name: string, args: any) {
     }
     if (typeof out.proxy === "string" && out.proxy.trim()) {
       out.proxy = redactProxyUrlForDisplay(out.proxy);
+    }
+    return out;
+  }
+  if (name === "account_manage") {
+    const out: Record<string, any> = { ...args };
+    for (const secretKey of ["auth_token", "invite_uri", "relay_token"]) {
+      if (secretKey in out && out[secretKey]) {
+        out[secretKey] = "••••••••";
+      }
     }
     return out;
   }

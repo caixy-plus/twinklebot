@@ -1,6 +1,6 @@
 # TwinkleBot 全量分级 E2E 测试计划（SSOT）
 
-> 本文件由技能 `/twinklebot-e2e` 与机器映射源 [catalog.json](./catalog.json) 共同维护。当前共登记 **14 个分级套件 / 108 项原子用例**（P0: 21 · P1: 46 · P2: 29 · P3: 12），覆盖全仓库 6 大静态审计维度 100%（源码文件 / HTTP API 路由 / Bot·宿主机·沙盒工具 / Executor 端点 / Web UI 组件 / API 能力声明）。
+> 本文件由技能 `/twinklebot-e2e` 与机器映射源 [catalog.json](./catalog.json) 共同维护。当前共登记 **14 个分级套件 / 110 项原子用例**（P0: 21 · P1: 47 · P2: 30 · P3: 12），覆盖全仓库 6 大静态审计维度 100%（源码文件 / HTTP API 路由 / Bot·宿主机·沙盒工具 / Executor 端点 / Web UI 组件 / API 能力声明）。
 
 ## 一、二维优先级矩阵（功能层级 × 测试难易度）
 
@@ -30,7 +30,7 @@
    - 按单套件 / 单用例精准执行：`node scripts/run-e2e.mjs --suite=<id>` 或 `node scripts/run-e2e.mjs --case=<ID>`
    - 校验目录双向一致性：`node --test dist-server/test/e2e-skill-sync.test.js`
 
-## 四、全量原子用例总表（108 项）
+## 四、全量原子用例总表（110 项）
 
 | 优先级 | 用例 ID | 维度 | 所属套件 | 模块 | 用例标题 |
 | :---: | :--- | :---: | :--- | :--- | :--- |
@@ -67,7 +67,7 @@
 | **P1** | `P1-BRIDGE-02` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Cloud↔Host WebSocket Bridge | 云端↔本地 /ws host_rpc_request 跨网宿主机操控(含全 5 工具与环境变量脱敏)及多宿主机切换 |
 | **P1** | `P1-GRP-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Group Coordinator | 群聊协调器 4 项规则：最长前缀优先(@谷歌账号管家 vs @谷歌)、回复优先路由、职责打分选人与 MAX_GROUP_TURNS=3 |
 | **P1** | `P1-COLLAB-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Multi-Bot Collaboration | Agent 跨 Bot 工具链全实测(list_bots/create_bot/send_bot_message/4跳防环/create_bot_group/bot_manage) + 交流胶囊与抽屉 |
-| **P1** | `P1-TOOL-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Built-in System Bot Tools | 内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / skill_list |
+| **P1** | `P1-TOOL-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Built-in System Bot Tools | 内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list |
 | **P1** | `P1-PROMPT-01` | `F2×D1` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Modular Prompts & Prompt Loader | 模块化 Markdown 系统提示词(PI-001/002/011/014)：5 份模板装配、UI 自认知、跨域 iframe 兜底与动态注入校验 |
 | **P1** | `P1-CARD-01` | `F2×D1` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Interactive ChoiceCard | ChoiceCard 提问卡全模式：单选、多选、多题步进 1/N、自定义输入与插话自动跳过(.is-superseded) |
 | **P1** | `P1-CARD-02` | `F2×D1` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Approval Rule Editor / DraftCard | ApprovalCard 自定义规则编辑器(.btn-edit-rule) + DraftCard 内联编辑确认/取消 |
@@ -98,6 +98,7 @@
 | **P1** | `P1-NET-04` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Account Disconnected Gate (Desktop) | 桌面端断连独占门禁页(AccountDisconnectedGate)：云端断连全屏锁定、禁止 Esc/快捷键穿透、仅允许刷新与切回本机，本机账号永不触发 |
 | **P1** | `P1-NET-05` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Account Disconnected Gate (Mobile) | 移动端(390×844 dist-web)断连独占门禁页(AccountDisconnectedGate)：局域网失联全屏锁定、内联配对/添加云端入口与一键切回在线云端恢复 |
 | **P1** | `P1-NET-06` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Foreground Resume Probe | 前台切回探活(visibilitychange)与浏览器 online/offline 恢复联动 |
+| **P1** | `P1-NET-07` | `F2×D2` | `test/e2e/p1-network-resilience-and-offline.e2e.ts` | Mobile Cloud QR Scan & Self-Connect Guard | 移动端(390×844 dist-web)纯本地/云端模型、QrScanner扫码添加跨电脑Cloud账号与桌面端禁止自连校验 |
 | **P1** | `P1-MOB-04` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile Layout, Tap Actions & Composer | 移动端零横向溢出护栏(375/390px 长命令卡片/表格/代码)、点击消息气泡弹出操作栏、Composer Enter 换行与更多菜单 |
 | **P1** | `P1-MOB-05` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile Deep Sheets & Drag Gestures | 移动端全抽屉深入交互：检查器活动/资料库 Tab、编辑 Bot 13×11、设置 6 项独立子页返回闭环与拖拽手势 |
 | **P1** | `P1-MOB-06` | `F2×D2` | `test/e2e/p1-mobile-ux-and-gestures.e2e.ts` | Mobile OTA Updater UI | 移动端 OTA 热更新全 UI 链路(WebUpdater 检查/更新徽章 #mobile-update-btn/下载应用进度) |
@@ -110,6 +111,7 @@
 | **P2** | `P2-SET-07` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Diagnostics & Capability Gate | 设置·关于与诊断(/api/system/diagnostics & /api/system/updates/check) + 连接 v1.0.0 旧节点动态隐藏 multi-display-v1 屏幕池控件 |
 | **P2** | `P2-SET-08` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | LAN Toggle & Admin Provision Gate | LAN 开关读写(GET/POST /api/lan/settings)停用局域网发现 + 非管理员 Bot 调用 POST /api/computer/provision 返回 403 |
 | **P2** | `P2-SET-09` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings Shell, ConfirmDialog & Toast | 设置弹窗交互外壳(遮罩点击关闭/切 Tab 滚动复位/滚轮边界) + ConfirmDialog 取消/Escape 与 Toast 提示组件 |
+| **P2** | `P2-SET-10` | `F3×D2` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | Settings Computer / Remote Relay | 设置·电脑：外网中继(remote-relay-v1)卡片配置保存(/api/relay/config)、二维码配对(/api/relay/invite)、VPS模板(/api/relay/templates)、探活(/api/relay/control|ping)与共享账号目录(/api/accounts) |
 | **P2** | `P2-SSR-01` | `F3×D1` | `test/e2e/p2-settings-vault-and-permissions.e2e.ts` | SSR Static Markup & Render Parity | SSR 静态渲染入口(ssr-entry.js)全量校验：整页 App + 全部 StreamItem(含 max_steps/budget_warning/error/unread_divider) 与弱网横幅 |
 | **P2** | `P2-UI-01` | `F3×D1` | `test/e2e/p2-micro-ui-markdown-and-shortcuts.e2e.ts` | Avatar Editor / Preset | 右侧头像编辑器：13形状×11颜色切换、恢复默认与名称输入框回车保存 |
 | **P2** | `P2-UI-02` | `F3×D2` | `test/e2e/p2-micro-ui-markdown-and-shortcuts.e2e.ts` | Avatar Editor / AI & Upload | 右侧头像编辑器：AI 生成头像(含 SVG 降级)与本地上传大图 Canvas 裁剪 128×128 PNG |

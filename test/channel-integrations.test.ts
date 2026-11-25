@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import {
   chunkChannelText,
   createProxiedFetch,
+  createTelegramFetch,
   decodeFeishuPbFrame,
   decryptFeishuEvent,
   encodeFeishuPbFrame,
@@ -2108,4 +2109,85 @@ test("channelMeta persists in user events and injects [消息来源] header into
   assert.equal(userEv?.channelMeta?.channel, "feishu-bot");
   assert.equal(userEv?.channelMeta?.accountLabel, "客服助手");
   assert.equal(userEv?.channelMeta?.senderId, "ou_zhangsan");
+});
+
+test("createTelegramFetch and createProxiedFetch normalize polyfilled AbortSignal to native AbortSignal", async (t) => {
+  let observedNativeSignal = false;
+  let abortedObserved = false;
+  let removedListenerCount = 0;
+
+  const mockFetch = (async (_input: any, init?: RequestInit) => {
+    const sig = init?.signal;
+    observedNativeSignal =
+      sig instanceof globalThis.AbortSignal;
+    assert.ok(observedNativeSignal, "fetch must receive native globalThis.AbortSignal");
+    return await new Promise<Response>((resolve, reject) => {
+      if (sig?.aborted) {
+        abortedObserved = true;
+        reject(new Error("aborted"));
+        return;
+      }
+      sig?.addEventListener(
+        "abort",
+        () => {
+          abortedObserved = true;
+          reject(new Error("aborted"));
+        },
+        { once: true }
+      );
+      setTimeout(() => resolve(new Response("ok", { status: 200 })), 20);
+    });
+  }) as unknown as typeof fetch;
+
+  const listeners = new Set<() => void>();
+  const polyfillSignal: any = {
+    aborted: false,
+    reason: "stop-now",
+    addEventListener(ev: string, fn: () => void) {
+      if (ev === "abort") listeners.add(fn);
+    },
+    removeEventListener(ev: string, fn: () => void) {
+      if (ev === "abort" && listeners.delete(fn)) removedListenerCount += 1;
+    },
+  };
+
+  const wrapped = createTelegramFetch({}, mockFetch);
+  const okResp = await wrapped("https://api.telegram.org/bot123/getMe", {
+    method: "POST",
+    signal: polyfillSignal,
+  });
+  assert.equal(okResp.status, 200);
+  assert.equal(observedNativeSignal, true);
+  assert.equal(removedListenerCount, 1);
+
+  // Also test abort propagation from polyfill AbortSignal -> native AbortController
+  polyfillSignal.aborted = false;
+  const abortedPromise = wrapped("https://api.telegram.org/bot123/getUpdates", {
+    method: "POST",
+    signal: polyfillSignal,
+  });
+  polyfillSignal.aborted = true;
+  for (const fn of listeners) fn();
+  await assert.rejects(abortedPromise, /aborted/);
+  assert.equal(abortedObserved, true);
+
+  // Also verify createProxiedFetch handles non-native AbortSignal before constructing Request(input, init)
+  const proxySrv = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise<void>((resolve) => proxySrv.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => proxySrv.close(() => resolve())));
+  const proxyPort = (proxySrv.address() as AddressInfo).port;
+  const proxiedFetch = createProxiedFetch(`http://127.0.0.1:${proxyPort}`);
+  const proxyPolySignal: any = {
+    aborted: false,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const proxyResp = await proxiedFetch("http://example.invalid:9000/bot123/getMe", {
+    method: "POST",
+    signal: proxyPolySignal,
+  });
+  assert.equal(proxyResp.status, 200);
 });

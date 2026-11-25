@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { upsertCloudAccount } from "/accounts-store.js";
+import { parseRelayInvite } from "/accounts-store.js";
 import { isMobileAppTarget } from "../../mobile-bridge.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
+  importRemoteAccountFromInput,
   initiateLanPairing,
   refreshActiveAccountConnection,
-  saveAccountsDirectory,
   scanAndRenderLanNodes,
   submitLanPairingCode,
   switchAccount,
@@ -14,7 +14,7 @@ import {
   getActiveAccountMeta,
   shouldShowAccountDisconnectedGate,
 } from "../../services/network-monitor.js";
-import { getState, setState, useStore } from "../../state/store.js";
+import { setState, useStore } from "../../state/store.js";
 import { useI18n, resolveLocalizedAccountName } from "../../services/i18n.js";
 import { UiIcon } from "./Icon.js";
 
@@ -179,19 +179,16 @@ export function AccountDisconnectedGate() {
     setCloudSaving(true);
     setFeedback({ text: "", kind: "info" });
     try {
-      const next = upsertCloudAccount(getState().accountsState, {
-        id: "",
-        baseUrl: cloudUrl.trim(),
+      await importRemoteAccountFromInput({
+        rawUrlOrInvite: cloudUrl.trim(),
         name: cloudName.trim(),
         authToken: cloudToken.trim(),
+        switchAfter: true,
       });
-      const added = next.accounts[next.accounts.length - 1];
-      await saveAccountsDirectory(next);
       setCloudUrl("");
       setCloudName("");
       setCloudToken("");
       setSubPanel("none");
-      await switchAccount(added.id);
     } catch (err: any) {
       setFeedback({
         text: err?.message || t("gate.invalidCloudUrlError"),
@@ -278,6 +275,7 @@ export function AccountDisconnectedGate() {
             </div>
             <div className="account-gate-current-sub">
               {activeAccount?.baseUrl ||
+                activeAccount?.relayUrl ||
                 (accMeta.type === "lan"
                   ? t("sidebar.lanComputer")
                   : t("gate.cloudWorkspaceLabel"))}
@@ -355,6 +353,7 @@ export function AccountDisconnectedGate() {
                 const subLabel = isLocal
                   ? t("gate.localAlwaysAvailable")
                   : acc.baseUrl ||
+                    acc.relayUrl ||
                     (acc.type === "lan"
                       ? t("sidebar.lanComputer")
                       : t("sidebar.cloudServiceFallback"));
@@ -444,14 +443,29 @@ export function AccountDisconnectedGate() {
                 <span>{t("gate.cloudUrlLabel")}</span>
                 <input
                   id="account-gate-cloud-url"
-                  type="url"
+                  type="text"
+                  inputMode="url"
                   className="inline-text-input"
-                  placeholder="https://bot.example.com"
+                  placeholder="https://bot.example.com / twinklebot://relay?..."
                   autoComplete="url"
                   autoCapitalize="none"
                   required
                   value={cloudUrl}
-                  onChange={(e) => setCloudUrl(e.target.value)}
+                  onChange={(e) => {
+                    const rawVal = e.target.value;
+                    setCloudUrl(rawVal);
+                    if (rawVal.trim().startsWith("twinklebot://")) {
+                      const parsed = parseRelayInvite(rawVal);
+                      if (parsed) {
+                        if (!cloudName && (parsed.name || parsed.hostname)) {
+                          setCloudName(parsed.name || parsed.hostname || "");
+                        }
+                        if (!cloudToken && parsed.relayToken) {
+                          setCloudToken(parsed.relayToken);
+                        }
+                      }
+                    }
+                  }}
                 />
               </label>
               <label className="account-gate-field">

@@ -266,6 +266,7 @@ export function attachWebSocketServer(
   return {
     broadcast,
     sendToClient,
+    handleUpgrade: upgradeHandler,
     getClients() {
       return [...clients.values()];
     },

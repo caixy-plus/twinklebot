@@ -15,7 +15,7 @@ test("public/index.html, React App & mobile.css provide 2-level stack navigation
   const mobileCss = fs.readFileSync(path.join(PROJECT_ROOT, "public/mobile.css"), "utf8");
 
   assert.ok(html.includes("viewport-fit=cover"));
-  assert.ok(html.includes('href="/mobile.css'));
+  assert.ok(html.includes('href="./mobile.css') || html.includes('href="/mobile.css'));
   for (const id of [
     "mobile-back-btn",
     "mobile-inspector-btn",

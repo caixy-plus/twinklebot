@@ -5,6 +5,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { launchHeadlessChrome, type HeadlessChromeSession } from "../helpers/cdp-browser-harness.js";
+import { encodeRelayInviteUri } from "../../src/shared/accounts-store.js";
 import { createSuiteCollector } from "../helpers/e2e-report-collector.js";
 import { createE2EWorkspace } from "../helpers/e2e-workspace-harness.js";
 
@@ -571,6 +572,156 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
         document.dispatchEvent(new Event('visibilitychange'));
       })()`);
       await tab.waitFor(`document.documentElement.dataset.realtimeConnected === '1'`, 6000);
+    },
+    { getChrome: () => chrome }
+  );
+
+  // ---------- P1-NET-07 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P1-NET-07",
+      priority: "P1",
+      featureTier: "F2",
+      difficulty: "D2",
+      title: "移动端(390×844 dist-web)纯本地/云端模型、QrScanner扫码添加跨电脑Cloud账号与桌面端禁止自连校验",
+      module: "Mobile Cloud QR Scan & Self-Connect Guard",
+    },
+    async () => {
+      const distWebDir = path.resolve(process.cwd(), "dist-web");
+      assert.ok(fs.existsSync(path.join(distWebDir, "index.html")), "dist-web/ must be built");
+      const mobileStatic = await serveStaticDir(distWebDir);
+      t.after(() => mobileStatic.close());
+
+      const mobTab = await chrome!.openNewTab("about:blank");
+      t.after(() => mobTab.close());
+      await mobTab.setViewport({
+        width: 390,
+        height: 844,
+        deviceScaleFactor: 2,
+        mobile: true,
+        touch: true,
+        userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+      });
+
+      const initialAccounts = {
+        activeAccountId: "cloud-init",
+        accounts: [
+          {
+            id: "cloud-init",
+            type: "cloud",
+            name: "初始云节点",
+            baseUrl: cloudWs.baseUrl,
+            authToken: cloudToken,
+          },
+        ],
+      };
+      const inviteUri = encodeRelayInviteUri({
+        v: 1,
+        instanceId: "remote-mac-02",
+        hostname: "MacMini-Remote",
+        platform: "darwin",
+        deployEnv: "local",
+        relayUrl: localWs.baseUrl,
+        relayToken: "",
+      });
+
+      await mobTab.addInitScript(`
+        try { if (window === window.top) localStorage.setItem("twinklebot.accounts.v2", ${JSON.stringify(JSON.stringify(initialAccounts))}); } catch {}
+        window.Capacitor = {
+          isNativePlatform: () => true,
+          getPlatform: () => "android",
+          Plugins: {
+            App: { addListener: async () => ({ remove: async () => {} }), minimizeApp: async () => {} },
+            Preferences: {
+              _store: { "twinklebot.accounts.v2": ${JSON.stringify(JSON.stringify(initialAccounts))} },
+              get: async function({ key }) { return { value: this._store[key] ?? null }; },
+              set: async function({ key, value }) { this._store[key] = value; },
+              remove: async function({ key }) { delete this._store[key]; },
+            },
+            LanDiscovery: { discover: async () => ({ devices: [] }), setScreenOrientation: async () => ({ ok: true }) },
+            QrScanner: {
+              scan: async () => ({ ok: true, content: ${JSON.stringify(inviteUri)} }),
+            },
+          },
+        };
+      `);
+
+      await mobTab.navigate(mobileStatic.baseUrl);
+      await mobTab.waitFor(`document.documentElement.dataset.realtimeConnected === '1'`, 10_000);
+
+      // Open mobile settings -> account sheet -> confirm no relay import or route selector exists
+      await mobTab.click("#mobile-settings-btn");
+      await mobTab.waitFor(`!document.querySelector('#mobile-settings-sheet')?.hidden`, 4000);
+      await mobTab.click("#mobile-node-switcher-card");
+      await mobTab.waitFor(`!document.querySelector('#mobile-node-sheet')?.hidden`, 4000);
+      const removedRelayUi = await mobTab.evalJs<{ routeSelects: number; importToggle: number }>(
+        `({
+          routeSelects: document.querySelectorAll('[data-lan-route-select]').length,
+          importToggle: document.querySelectorAll('#mobile-import-relay-toggle-btn').length,
+        })`
+      );
+      assert.equal(removedRelayUi.routeSelects, 0, "Local Account must not show route selector");
+      assert.equal(removedRelayUi.importToggle, 0, "Local Account must not show relay import toggle");
+
+      // Tap #mobile-scan-cloud-qr-btn -> triggers native QrScanner -> adds remote node as Cloud Account (preserving internal nodeDeployEnv=local)
+      await mobTab.click("#mobile-scan-cloud-qr-btn");
+      await mobTab.waitFor(`document.querySelector('#mobile-node-sheet')?.hidden`, 8000);
+      await mobTab.waitFor(`document.documentElement.dataset.realtimeConnected === '1'`, 8000);
+
+      const importedCheck = await mobTab.evalJs<{ cloudMatchType: string; cloudMatchDeployEnv: string; lanMatchCount: number }>(`(async () => {
+        try {
+          const pref = await window.Capacitor.Plugins.Preferences.get({ key: 'twinklebot.accounts.v2' });
+          const raw = pref?.value || localStorage.getItem('twinklebot.accounts.v2') || '{}';
+          const parsed = JSON.parse(raw);
+          const list = parsed.accounts || [];
+          const cloudMatch = list.find(a => a.type === 'cloud' && a.baseUrl === ${JSON.stringify(localWs.baseUrl)});
+          const lanMatchCount = list.filter(a => a.type === 'lan' && a.baseUrl === ${JSON.stringify(localWs.baseUrl)}).length;
+          return {
+            cloudMatchType: cloudMatch ? cloudMatch.type : '',
+            cloudMatchDeployEnv: cloudMatch ? (cloudMatch.nodeDeployEnv || '') : '',
+            lanMatchCount,
+          };
+        } catch { return { cloudMatchType: '', cloudMatchDeployEnv: '', lanMatchCount: -1 }; }
+      })()`);
+      assert.equal(importedCheck.cloudMatchType, "cloud", "QR scanned account must register under Cloud Accounts ('cloud')");
+      assert.equal(importedCheck.cloudMatchDeployEnv, "local", "Scanned Mac node must preserve internal nodeDeployEnv='local'");
+      assert.equal(importedCheck.lanMatchCount, 0, "QR scanned account must NOT register as Local Account ('lan')");
+
+      // Re-open node sheet and confirm Cloud list contains MacMini-Remote
+      await mobTab.click("#mobile-settings-btn");
+      await mobTab.waitFor(`!document.querySelector('#mobile-settings-sheet')?.hidden`, 4000);
+      await mobTab.click("#mobile-node-switcher-card");
+      await mobTab.waitFor(`!document.querySelector('#mobile-node-sheet')?.hidden`, 4000);
+      assert.equal(
+        await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#mobile-cloud-list')?.textContent?.includes('MacMini-Remote'))`),
+        true,
+        "Cloud Accounts list must display scanned MacMini-Remote node"
+      );
+
+      // Desktop self-connect UI guard: adding localWs.baseUrl inside #cloud-account-modal must be rejected
+      const desktopTab = await chrome!.openNewTab("about:blank");
+      t.after(() => desktopTab.close());
+      await desktopTab.navigate(localWs.baseUrl);
+      await desktopTab.waitFor(`document.documentElement.dataset.realtimeConnected === '1'`, 10_000);
+      await desktopTab.click("#account-menu-btn");
+      await desktopTab.waitFor(`!document.querySelector('#account-popover')?.hidden`, 4000);
+      await desktopTab.click("#add-cloud-account-btn");
+      await desktopTab.waitFor(`!document.querySelector('#cloud-account-modal')?.hidden`, 4000);
+      await desktopTab.fill("#cloud-account-url-input", localWs.baseUrl);
+      await desktopTab.click("#save-cloud-account-btn");
+      await desktopTab.waitFor(
+        `(() => {
+          const el = document.querySelector('#cloud-account-feedback');
+          return Boolean(el && !el.hidden && el.textContent && el.textContent.trim().length > 0);
+        })()`,
+        5000
+      );
+      assert.equal(
+        await desktopTab.evalJs<boolean>(`!document.querySelector('#cloud-account-modal')?.hidden`),
+        true,
+        "Self-connect rejection must keep #cloud-account-modal open with error feedback"
+      );
     },
     { getChrome: () => chrome }
   );

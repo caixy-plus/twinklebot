@@ -618,6 +618,8 @@ export function createRunner({
                   getChannelStatus: runnerApi.getChannelStatus || null,
                   channelPairingActions: runnerApi.channelPairingActions || null,
                   channelConfigActions: runnerApi.channelConfigActions || null,
+                  getRelayStatus: runnerApi.getRelayStatus || null,
+                  accountActions: runnerApi.accountActions || null,
                   autoRoute: true,
                   smartRouter: true,
                   enableBotTools: true,
@@ -831,6 +833,8 @@ export function createRunner({
     getChannelStatus: null as (() => Record<string, any>) | null,
     channelPairingActions: null as Record<string, any> | null,
     channelConfigActions: null as Record<string, any> | null,
+    getRelayStatus: null as (() => Record<string, any>) | null,
+    accountActions: null as Record<string, any> | null,
   };
   return runnerApi;
 }

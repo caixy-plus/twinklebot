@@ -31,6 +31,12 @@ export interface ServerContext {
   scheduler: any;
   activeMcpManager: any;
   channelManager?: any;
+  relayManager?: any;
+  accountDirectoryActions?: any;
+  syncRelayListener?: () => Promise<void>;
+  waitRelayListener?: () => Promise<void>;
+  getRelayListeningPort?: () => number | null;
+  getInstanceId?: () => string;
   hostBridge: any;
   updateBotComputerFn: typeof updateBotComputer;
   probeBotComputerFn: typeof probeBotComputerState;

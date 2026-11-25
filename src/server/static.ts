@@ -129,7 +129,13 @@ export function handleStaticAndNoVnc(
     ctx.effectiveNovncProxyTarget
   ) {
     if (pathname === "/novnc") {
-      res.writeHead(302, { Location: `/novnc/vnc.html${url.search || ""}` });
+      const fwdPrefix = String(_req.headers["x-forwarded-prefix"] || "")
+        .trim()
+        .replace(/\/+$/, "");
+      const location = fwdPrefix
+        ? `${fwdPrefix}/novnc/vnc.html${url.search || ""}`
+        : `novnc/vnc.html${url.search || ""}`;
+      res.writeHead(302, { Location: location });
       return res.end();
     }
     try {
@@ -270,7 +276,14 @@ export function createNovncUpgradeHandler(ctx: ServerContext) {
         parsedUrl.pathname === "/novnc/websockify/") &&
       ctx.effectiveNovncProxyTarget
     ) {
-      if (ctx.runtimeState.deployEnv === "local" && !ctx.deviceAuth.isAuthorized(req, parsedUrl)) {
+      const relayIngress = Boolean((req as any).__twinkleRelayIngress);
+      if (
+        (relayIngress || ctx.runtimeState.deployEnv === "local") &&
+        !ctx.deviceAuth.isAuthorized(req, parsedUrl, {
+          allowLoopbackBypass: !relayIngress,
+          relayAccessToken: ctx.relayManager?.getAccessToken?.() || "",
+        })
+      ) {
         socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
         socket.destroy();
         return;

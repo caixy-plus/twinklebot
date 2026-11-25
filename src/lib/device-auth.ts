@@ -56,16 +56,50 @@ function writeJsonAtomic(filePath: string, data: unknown): void {
   fs.renameSync(tmpFile, filePath);
 }
 
+function parseCookieValue(cookieHeader = "", name = ""): string {
+  if (!cookieHeader || !name) return "";
+  const parts = String(cookieHeader).split(";");
+  for (const part of parts) {
+    const idx = part.indexOf("=");
+    if (idx <= 0) continue;
+    const k = part.slice(0, idx).trim();
+    if (k === name) {
+      const rawVal = part.slice(idx + 1).trim();
+      try {
+        return decodeURIComponent(rawVal);
+      } catch {
+        return rawVal;
+      }
+    }
+  }
+  return "";
+}
+
 function extractRequestToken(req: IncomingMessage | any, url?: URL): string {
   const authHeader = String(req?.headers?.authorization || "").trim();
   if (authHeader.toLowerCase().startsWith("bearer ")) {
     return authHeader.slice(7).trim();
   }
+  const localHdr = String(req?.headers?.["x-local-token"] || "").trim();
+  if (localHdr) {
+    return localHdr;
+  }
   if (url && typeof url.searchParams?.get === "function") {
     const q = String(url.searchParams.get("token") || "").trim();
     if (q) return q;
   }
+  const cookieTok = parseCookieValue(String(req?.headers?.cookie || ""), "tb_relay_auth");
+  if (cookieTok) {
+    return cookieTok;
+  }
   return "";
+}
+
+function safeTokenMatch(candidateToken: string, expectedToken: string): boolean {
+  if (!candidateToken || !expectedToken) return false;
+  const a = Buffer.from(sha256Hex(candidateToken), "utf8");
+  const b = Buffer.from(sha256Hex(expectedToken), "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 export function createDeviceAuthManager(
@@ -246,14 +280,25 @@ export function createDeviceAuthManager(
     };
   }
 
-  function isAuthorized(req: IncomingMessage | any, url?: URL): boolean {
-    // Only trust socket.remoteAddress (never X-Forwarded-For) to enforce loopback vs LAN boundary
+  function isAuthorized(
+    req: IncomingMessage | any,
+    url?: URL,
+    opts?: { allowLoopbackBypass?: boolean; relayAccessToken?: string }
+  ): boolean {
+    // Only trust socket.remoteAddress (never X-Forwarded-For) to enforce loopback vs LAN/relay boundary
+    const allowLoopbackBypass = opts?.allowLoopbackBypass !== false;
     const remoteAddr = req?.socket?.remoteAddress || req?.connection?.remoteAddress || "";
-    if (isLoopbackAddress(remoteAddr)) {
+    if (allowLoopbackBypass && isLoopbackAddress(remoteAddr)) {
       return true;
     }
     const token = extractRequestToken(req, url);
     if (!token) return false;
+
+    const relayAccessToken = String(opts?.relayAccessToken || "").trim();
+    if (relayAccessToken && safeTokenMatch(token, relayAccessToken)) {
+      return true;
+    }
+
     const suppliedHash = Buffer.from(sha256Hex(token), "utf8");
     const devices = readDevicesRaw();
     for (const dev of devices) {

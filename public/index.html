@@ -24,9 +24,9 @@
       } catch {}
     </script>
     <title>TwinkleBot</title>
-    <link rel="icon" type="image/png" href="/icon.png" />
-    <link rel="stylesheet" href="/style.css?v=20261116a" />
-    <link id="mobile-stylesheet" rel="stylesheet" href="/mobile.css?v=20261114d" />
+    <link rel="icon" type="image/png" href="./icon.png" />
+    <link rel="stylesheet" href="./style.css?v=20261116a" />
+    <link id="mobile-stylesheet" rel="stylesheet" href="./mobile.css?v=20261114d" />
     <script>
       if (window.twinklebotDesktop && window.twinklebotDesktop.isElectron) {
         document.documentElement.dataset.electron = "true";
@@ -38,6 +38,15 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/dist/app.js"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "/accounts-store.js": "./accounts-store.js",
+          "/skills-catalog.js": "./skills-catalog.js",
+          "/shared/": "./shared/"
+        }
+      }
+    </script>
+    <script type="module" src="./dist/app.js"></script>
   </body>
 </html>

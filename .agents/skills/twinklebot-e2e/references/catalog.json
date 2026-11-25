@@ -431,7 +431,7 @@
           "priority": "P1",
           "featureTier": "F2",
           "difficulty": "D2",
-          "title": "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / skill_list",
+          "title": "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list",
           "module": "Built-in System Bot Tools"
         },
         {
@@ -755,6 +755,14 @@
           "difficulty": "D2",
           "title": "前台切回探活(visibilitychange)与浏览器 online/offline 恢复联动",
           "module": "Foreground Resume Probe"
+        },
+        {
+          "id": "P1-NET-07",
+          "priority": "P1",
+          "featureTier": "F2",
+          "difficulty": "D2",
+          "title": "移动端(390×844 dist-web)纯本地/云端模型、QrScanner扫码添加跨电脑Cloud账号与桌面端禁止自连校验",
+          "module": "Mobile Cloud QR Scan & Self-Connect Guard"
         }
       ]
     },
@@ -822,6 +830,9 @@
         "src/server/routes/schedules-vault.ts",
         "src/server/routes/system.ts",
         "src/server/routes/lan-host.ts",
+        "src/server/routes/relay.ts",
+        "src/lib/relay-manager.ts",
+        "src/shared/qr-svg.ts",
         "src/web/services/ota-updater.ts"
       ],
       "cases": [
@@ -896,6 +907,14 @@
           "difficulty": "D1",
           "title": "设置弹窗交互外壳(遮罩点击关闭/切 Tab 滚动复位/滚轮边界) + ConfirmDialog 取消/Escape 与 Toast 提示组件",
           "module": "Settings Shell, ConfirmDialog & Toast"
+        },
+        {
+          "id": "P2-SET-10",
+          "priority": "P2",
+          "featureTier": "F3",
+          "difficulty": "D2",
+          "title": "设置·电脑：外网中继(remote-relay-v1)卡片配置保存(/api/relay/config)、二维码配对(/api/relay/invite)、VPS模板(/api/relay/templates)、探活(/api/relay/control|ping)与共享账号目录(/api/accounts)",
+          "module": "Settings Computer / Remote Relay"
         },
         {
           "id": "P2-SSR-01",

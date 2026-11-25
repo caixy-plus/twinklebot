@@ -26,6 +26,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>TwinkleBot 需要访问局域网，以发现并连接同一 Wi-Fi 下运行的 TwinkleBot 桌面端。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>TwinkleBot 需要使用摄像头扫描桌面端生成的二维码以配置云端账号。</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_twinklebot._tcp</string>

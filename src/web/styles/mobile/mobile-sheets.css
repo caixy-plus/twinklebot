@@ -678,3 +678,10 @@
   min-width: 0;
   flex: 1;
 }
+
+.mobile-sheet-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}

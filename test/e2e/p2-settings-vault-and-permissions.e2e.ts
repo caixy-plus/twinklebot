@@ -520,6 +520,109 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
     { getChrome: () => chrome }
   );
 
+  // ---------- P2-SET-10 ----------
+  await collector.runCase(
+    t,
+    {
+      id: "P2-SET-10",
+      priority: "P2",
+      featureTier: "F3",
+      difficulty: "D2",
+      title: "设置·电脑：外网中继(remote-relay-v1)卡片配置保存(/api/relay/config)、二维码配对(/api/relay/invite)、VPS模板(/api/relay/templates)、探活(/api/relay/control|ping)与共享账号目录(/api/accounts)",
+      module: "Settings Computer / Remote Relay",
+    },
+    async () => {
+      await chrome!.navigate(ws.baseUrl);
+      await chrome!.waitFor(`document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`, 8000);
+      await openSettingsTab("computer");
+      await chrome!.waitFor(`Boolean(document.querySelector('#relay-settings-card'))`, 5000);
+
+      await chrome!.selectOption("#relay-mode-select", "external");
+      await chrome!.fill("#relay-public-url-input", ws.baseUrl);
+      await chrome!.evalJs(`document.querySelector('#relay-enable-toggle')?.closest('label')?.click()`);
+      await chrome!.waitFor(`Boolean(document.querySelector('#relay-invite-panel svg'))`, 6000);
+
+      // Reveal access token via /api/relay/status?reveal=1 and ping /api/relay/ping
+      await chrome!.click("#relay-token-reveal-btn");
+      await chrome!.waitFor(
+        `(() => {
+          const v = document.querySelector('#relay-access-token-value')?.textContent?.trim() || '';
+          return v.length >= 16 && !v.includes('•');
+        })()`,
+        5000
+      );
+      const revealedToken = await chrome!.evalJs<string>(
+        `document.querySelector('#relay-access-token-value')?.textContent?.trim() || ''`
+      );
+      const pingJson: any = await (
+        await fetch(`${ws.baseUrl}/api/relay/ping`, {
+          headers: { Authorization: `Bearer ${revealedToken}` },
+        })
+      ).json();
+      assert.equal(pingJson.ok, true);
+      assert.equal(pingJson.deployEnv, "local");
+
+      // Expand templates & generate frps.toml + Caddyfile
+      await chrome!.evalJs(`(() => { const d = document.querySelector('#relay-templates-details'); if (d) d.open = true; })()`);
+      await chrome!.fill("#relay-tpl-domain", "bot.caixy.xin");
+      await chrome!.click("#relay-generate-templates-btn");
+      await chrome!.waitFor(
+        `document.querySelector('#relay-templates-details')?.textContent?.includes('bindAddr = "127.0.0.1"')`,
+        5000
+      );
+
+      // Run connectivity test control button (#relay-test-btn -> /api/relay/control)
+      await chrome!.click("#relay-test-btn");
+      await chrome!.waitFor(`Boolean(document.querySelector('#relay-test-result'))`, 6000);
+
+      // Verify /api/accounts rejects self-connect (ws.baseUrl) with HTTP 400
+      const selfRejectResp = await fetch(`${ws.baseUrl}/api/accounts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Self Connect Attempt",
+          baseUrl: ws.baseUrl,
+          authToken: revealedToken,
+          probe: false,
+        }),
+      });
+      assert.equal(selfRejectResp.status, 400);
+      const selfRejectJson: any = await selfRejectResp.json();
+      assert.equal(selfRejectJson.ok, false);
+
+      // Verify /api/accounts CRUD (list / upsert / DELETE /api/accounts/:id) with a distinct remote node
+      const acctAdd: any = await (
+        await fetch(`${ws.baseUrl}/api/accounts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "E2E Cloud Node",
+            baseUrl: "https://remote-cloud-e2e.example.com",
+            authToken: revealedToken,
+            probe: false,
+          }),
+        })
+      ).json();
+      assert.equal(acctAdd.ok, true);
+      assert.equal(acctAdd.account.type, "cloud");
+      const acctList: any = await (await fetch(`${ws.baseUrl}/api/accounts`)).json();
+      assert.ok((acctList.accounts || []).some((a: any) => a.id === acctAdd.account.id));
+      const acctDel: any = await (
+        await fetch(`${ws.baseUrl}/api/accounts/${encodeURIComponent(acctAdd.account.id)}`, {
+          method: "DELETE",
+        })
+      ).json();
+      assert.equal(acctDel.ok, true);
+
+      // Restore relay toggle off cleanly before closing settings
+      await chrome!.selectOption("#relay-mode-select", "off");
+      await chrome!.evalJs(`document.querySelector('#relay-enable-toggle')?.closest('label')?.click()`);
+      await new Promise((r) => setTimeout(r, 150));
+      await chrome!.click("#close-settings-modal-btn");
+    },
+    { getChrome: () => chrome }
+  );
+
   // ---------- P2-SSR-01 ----------
   await collector.runCase(
     t,

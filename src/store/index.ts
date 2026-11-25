@@ -112,6 +112,8 @@ export function createStore(dataDir: string) {
   const vaultFile = path.join(rootDir, "vault.json");
   const mailAuthFile = path.join(rootDir, "mail-auth.json");
   const channelsAuthFile = path.join(rootDir, "channels-auth.json");
+  const relayAuthFile = path.join(rootDir, "relay-auth.json");
+  const accountsAuthFile = path.join(rootDir, "accounts-auth.json");
   const routeStatsFile = path.join(rootDir, "route-stats.ndjson");
 
   const customSkillsRepo = createCustomSkillsRepo(customSkillsDir, {
@@ -861,38 +863,53 @@ export function createStore(dataDir: string) {
     }
   }
 
-  function readMailAuth(): Record<string, any> {
-    if (!fs.existsSync(mailAuthFile)) return {};
-    const parsed = localCrypto.readEncryptedJsonFile<unknown>(mailAuthFile, {});
+  function readEncryptedObjectFile(filePath: string): Record<string, any> {
+    if (!fs.existsSync(filePath)) return {};
+    const parsed = localCrypto.readEncryptedJsonFile<unknown>(filePath, {});
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, any>)
       : {};
+  }
+
+  function writeEncryptedObjectFile(filePath: string, nextData: unknown): Record<string, any> {
+    const clean =
+      nextData && typeof nextData === "object" && !Array.isArray(nextData)
+        ? (nextData as Record<string, any>)
+        : {};
+    localCrypto.writeEncryptedJsonFile(filePath, clean);
+    return clean;
+  }
+
+  function readMailAuth(): Record<string, any> {
+    return readEncryptedObjectFile(mailAuthFile);
   }
 
   function writeMailAuth(nextData: unknown): Record<string, any> {
-    const clean =
-      nextData && typeof nextData === "object" && !Array.isArray(nextData)
-        ? (nextData as Record<string, any>)
-        : {};
-    localCrypto.writeEncryptedJsonFile(mailAuthFile, clean);
-    return clean;
+    return writeEncryptedObjectFile(mailAuthFile, nextData);
   }
 
   function readChannelsAuth(): Record<string, any> {
-    if (!fs.existsSync(channelsAuthFile)) return {};
-    const parsed = localCrypto.readEncryptedJsonFile<unknown>(channelsAuthFile, {});
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, any>)
-      : {};
+    return readEncryptedObjectFile(channelsAuthFile);
   }
 
   function writeChannelsAuth(nextData: unknown): Record<string, any> {
-    const clean =
-      nextData && typeof nextData === "object" && !Array.isArray(nextData)
-        ? (nextData as Record<string, any>)
-        : {};
-    localCrypto.writeEncryptedJsonFile(channelsAuthFile, clean);
-    return clean;
+    return writeEncryptedObjectFile(channelsAuthFile, nextData);
+  }
+
+  function readRelayAuth(): Record<string, any> {
+    return readEncryptedObjectFile(relayAuthFile);
+  }
+
+  function writeRelayAuth(nextData: unknown): Record<string, any> {
+    return writeEncryptedObjectFile(relayAuthFile, nextData);
+  }
+
+  function readAccountsAuth(): Record<string, any> {
+    return readEncryptedObjectFile(accountsAuthFile);
+  }
+
+  function writeAccountsAuth(nextData: unknown): Record<string, any> {
+    return writeEncryptedObjectFile(accountsAuthFile, nextData);
   }
 
   function markInterrupted(): number {
@@ -943,6 +960,10 @@ export function createStore(dataDir: string) {
     writeMailAuth,
     readChannelsAuth,
     writeChannelsAuth,
+    readRelayAuth,
+    writeRelayAuth,
+    readAccountsAuth,
+    writeAccountsAuth,
     listCustomSkills: customSkillsRepo.listCustomSkills,
     getCustomSkill: customSkillsRepo.getCustomSkill,
     saveCustomSkill: customSkillsRepo.saveCustomSkill,

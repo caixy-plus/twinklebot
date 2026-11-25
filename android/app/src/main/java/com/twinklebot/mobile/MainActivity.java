@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         WebUpdaterPlugin.prepareBeforeBridgeCreate(this);
         registerPlugin(LanDiscoveryPlugin.class);
+        registerPlugin(QrScannerPlugin.class);
         registerPlugin(WebUpdaterPlugin.class);
         super.onCreate(savedInstanceState);
         WebUpdaterPlugin.bindBridge(getBridge());

@@ -4,6 +4,7 @@ import WebKit
 import ObjectiveC.runtime
 import Capacitor
 import Network
+import AVFoundation
 
 @objc(LanDiscoveryPlugin)
 public class LanDiscoveryPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -238,7 +239,180 @@ class TwinkleBotBridgeViewController: CAPBridgeViewController, UIScrollViewDeleg
     override open func capacitorDidLoad() {
         TwinkleWebOtaStore.shared.attachBridge(bridge)
         bridge?.registerPluginInstance(LanDiscoveryPlugin())
+        bridge?.registerPluginInstance(QrScannerPlugin())
         bridge?.registerPluginInstance(WebUpdaterPlugin())
+    }
+}
+
+final class QrScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+    var promptText: String = ""
+    var onResult: ((_ content: String?, _ cancelled: Bool) -> Void)?
+
+    private let captureSession = AVCaptureSession()
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var finished = false
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+
+        guard let videoDevice = AVCaptureDevice.default(for: .video),
+              let videoInput = try? AVCaptureDeviceInput(device: videoDevice),
+              captureSession.canAddInput(videoInput) else {
+            finish(content: nil, cancelled: true)
+            return
+        }
+        captureSession.addInput(videoInput)
+
+        let metadataOutput = AVCaptureMetadataOutput()
+        guard captureSession.canAddOutput(metadataOutput) else {
+            finish(content: nil, cancelled: true)
+            return
+        }
+        captureSession.addOutput(metadataOutput)
+        metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
+        metadataOutput.metadataObjectTypes = [.qr]
+
+        let preview = AVCaptureVideoPreviewLayer(session: captureSession)
+        preview.videoGravity = .resizeAspectFill
+        preview.frame = view.layer.bounds
+        view.layer.addSublayer(preview)
+        previewLayer = preview
+
+        setupOverlayUI()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.captureSession.startRunning()
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        previewLayer?.frame = view.layer.bounds
+    }
+
+    private func setupOverlayUI() {
+        let reticleSize: CGFloat = 240
+        let reticle = UIView()
+        reticle.translatesAutoresizingMaskIntoConstraints = false
+        reticle.layer.borderColor = UIColor.white.withAlphaComponent(0.85).cgColor
+        reticle.layer.borderWidth = 2
+        reticle.layer.cornerRadius = 16
+        reticle.backgroundColor = .clear
+        view.addSubview(reticle)
+
+        let promptLabel = UILabel()
+        promptLabel.translatesAutoresizingMaskIntoConstraints = false
+        promptLabel.text = promptText.isEmpty ? "请将桌面端外网中继二维码放入框内" : promptText
+        promptLabel.textColor = .white
+        promptLabel.font = UIFont.systemFont(ofSize: 14, weight: .medium)
+        promptLabel.textAlignment = .center
+        promptLabel.numberOfLines = 2
+        view.addSubview(promptLabel)
+
+        let cancelBtn = UIButton(type: .system)
+        cancelBtn.translatesAutoresizingMaskIntoConstraints = false
+        cancelBtn.setTitle("取消", for: .normal)
+        cancelBtn.setTitleColor(.white, for: .normal)
+        cancelBtn.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+        cancelBtn.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        cancelBtn.layer.cornerRadius = 22
+        cancelBtn.contentEdgeInsets = UIEdgeInsets(top: 10, left: 26, bottom: 10, right: 26)
+        cancelBtn.addTarget(self, action: #selector(handleCancel), for: .touchUpInside)
+        view.addSubview(cancelBtn)
+
+        NSLayoutConstraint.activate([
+            reticle.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            reticle.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -24),
+            reticle.widthAnchor.constraint(equalToConstant: reticleSize),
+            reticle.heightAnchor.constraint(equalToConstant: reticleSize),
+
+            promptLabel.topAnchor.constraint(equalTo: reticle.bottomAnchor, constant: 20),
+            promptLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            promptLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+
+            cancelBtn.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -28),
+            cancelBtn.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+        ])
+    }
+
+    @objc private func handleCancel() {
+        finish(content: nil, cancelled: true)
+    }
+
+    func metadataOutput(
+        _ output: AVCaptureMetadataOutput,
+        didOutput metadataObjects: [AVMetadataObject],
+        from connection: AVCaptureConnection
+    ) {
+        guard !finished,
+              let readable = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+              let raw = readable.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return
+        }
+        finish(content: raw, cancelled: false)
+    }
+
+    private func finish(content: String?, cancelled: Bool) {
+        guard !finished else { return }
+        finished = true
+        if captureSession.isRunning {
+            DispatchQueue.global(qos: .userInitiated).async { [session = captureSession] in
+                session.stopRunning()
+            }
+        }
+        dismiss(animated: true) { [onResult] in
+            onResult?(content, cancelled)
+        }
+    }
+}
+
+@objc(QrScannerPlugin)
+public class QrScannerPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "QrScannerPlugin"
+    public let jsName = "QrScanner"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "scan", returnType: CAPPluginReturnPromise)
+    ]
+
+    @objc func scan(_ call: CAPPluginCall) {
+        let prompt = call.getString("prompt") ?? ""
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        switch status {
+        case .authorized:
+            presentScanner(call, prompt: prompt)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                if granted {
+                    self?.presentScanner(call, prompt: prompt)
+                } else {
+                    call.resolve(["ok": false, "permissionDenied": true])
+                }
+            }
+        default:
+            call.resolve(["ok": false, "permissionDenied": true])
+        }
+    }
+
+    private func presentScanner(_ call: CAPPluginCall, prompt: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let vc = self?.bridge?.viewController else {
+                call.resolve(["ok": false, "error": "ViewController unavailable"])
+                return
+            }
+            let scanner = QrScannerViewController()
+            scanner.modalPresentationStyle = .fullScreen
+            scanner.promptText = prompt
+            scanner.onResult = { content, cancelled in
+                if let content, !content.isEmpty {
+                    call.resolve(["ok": true, "content": content])
+                } else {
+                    call.resolve(["ok": false, "cancelled": cancelled])
+                }
+            }
+            vc.present(scanner, animated: true)
+        }
     }
 }
 

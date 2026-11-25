@@ -22,6 +22,7 @@ import {
   normalizeBrowserDebugPort,
 } from "/shared/browser-automation.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
+import { isMobileAppTarget } from "../../mobile-bridge.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
   applyLanguagePreference,
@@ -30,15 +31,20 @@ import {
   buildOptimisticUsagePayload,
   closeSettingsModal,
   commitSettingsPatch,
+  fetchRelayInvite,
+  generateRelayTemplates,
   openSettingsModal,
   refreshAllLiveProviderBalances,
   refreshComputerDisplays,
   refreshComputerStatus,
+  refreshRelayStatus,
   refreshSettingsFromServer,
   refreshSystemDiagnostics,
   refreshUsageAndHealth,
   refreshVault,
   resetBotComputerConnection,
+  runRelayControl,
+  saveRelayConfig,
   setNovncMode,
   setSpellcheckPreference,
   showConfirmDialog,
@@ -1010,6 +1016,185 @@ export function SettingsModal() {
     networkHealth,
     lanNodeOffline,
   } as any);
+  const relaySupported = hasConnectedNodeCapability("remote-relay-v1", { diagnostics });
+  const activeAccount = (accountsState?.accounts || []).find(
+    (a: any) => a.id === accountsState?.activeAccountId
+  );
+  const isLocalDesktopHost =
+    !isMobileAppTarget() &&
+    (!activeAccount || activeAccount.type === "local") &&
+    diagnostics?.deployEnv !== "cloud";
+  const showRelaySettingsCard = relaySupported && isLocalDesktopHost;
+
+  const relayStatus = useStore((s) => s.relayStatus);
+  const relayInvite = useStore((s) => s.relayInvite);
+  const [relayRevealToken, setRelayRevealToken] = useState(false);
+  const [relayModeDraft, setRelayModeDraft] = useState<"off" | "frpc" | "external">("off");
+  const [relayEnabledDraft, setRelayEnabledDraft] = useState(false);
+  const [relayPublicUrlDraft, setRelayPublicUrlDraft] = useState("");
+  const [relayLocalPortDraft, setRelayLocalPortDraft] = useState("3231");
+  const [relayPreventSleepDraft, setRelayPreventSleepDraft] = useState(true);
+  const [relayServerAddrDraft, setRelayServerAddrDraft] = useState("");
+  const [relayServerPortDraft, setRelayServerPortDraft] = useState("443");
+  const [relayProtocolDraft, setRelayProtocolDraft] = useState<"wss" | "tcp" | "quic">("wss");
+  const [relayWsPathDraft, setRelayWsPathDraft] = useState("/~!frp");
+  const [relayAuthTokenDraft, setRelayAuthTokenDraft] = useState("");
+  const [relayProxyNameDraft, setRelayProxyNameDraft] = useState("twinklebot-relay");
+  const [relayRemotePortDraft, setRelayRemotePortDraft] = useState("13230");
+  const [relayBinPathDraft, setRelayBinPathDraft] = useState("");
+  const [relaySaving, setRelaySaving] = useState(false);
+  const [relayImporting, setRelayImporting] = useState(false);
+  const [relayTesting, setRelayTesting] = useState(false);
+  const [relayTestResult, setRelayTestResult] = useState<any | null>(null);
+  const [relayTplDomain, setRelayTplDomain] = useState("bot.example.com");
+  const [relayTplMode, setRelayTplMode] = useState<"subdomain" | "subpath">("subdomain");
+  const [relayTplSubpath, setRelayTplSubpath] = useState("/twinklebot");
+  const [relayTplOutput, setRelayTplOutput] = useState<any | null>(null);
+
+  useEffect(() => {
+    const cfg = relayStatus?.config;
+    if (!cfg) return;
+    setRelayModeDraft(cfg.mode || "off");
+    setRelayEnabledDraft(Boolean(cfg.enabled));
+    setRelayPublicUrlDraft(String(cfg.publicUrl || ""));
+    setRelayLocalPortDraft(String(cfg.relayLocalPort || 3231));
+    setRelayPreventSleepDraft(cfg.preventIdleSleep !== false);
+    if (cfg.frpc) {
+      setRelayServerAddrDraft(String(cfg.frpc.serverAddr || ""));
+      setRelayServerPortDraft(String(cfg.frpc.serverPort || 443));
+      setRelayProtocolDraft(cfg.frpc.transportProtocol || "wss");
+      setRelayWsPathDraft(String(cfg.frpc.wsPath || "/~!frp"));
+      setRelayProxyNameDraft(String(cfg.frpc.proxyName || "twinklebot-relay"));
+      setRelayRemotePortDraft(String(cfg.frpc.remotePort || 13230));
+      setRelayBinPathDraft(String(cfg.frpc.binaryPath || ""));
+    }
+    if (cfg.publicUrl) {
+      try {
+        const u = new URL(cfg.publicUrl);
+        if (u.hostname) setRelayTplDomain(u.hostname);
+        if (u.pathname && u.pathname !== "/") {
+          setRelayTplSubpath(u.pathname.replace(/\/+$/, ""));
+        }
+      } catch {}
+    } else if (cfg.frpc?.serverAddr) {
+      setRelayTplDomain(cfg.frpc.serverAddr);
+    }
+  }, [relayStatus?.config]);
+
+  useEffect(() => {
+    if (!settingsModal.open || activeTab !== "computer" || !showRelaySettingsCard) return;
+    void refreshRelayStatus({ reveal: relayRevealToken }).catch(() => {});
+    void fetchRelayInvite().catch(() => {});
+  }, [settingsModal.open, activeTab, showRelaySettingsCard, relayRevealToken]);
+
+  const copyRelayText = async (text: string) => {
+    const clean = String(text || "").trim();
+    if (!clean) return;
+    try {
+      await navigator.clipboard?.writeText(clean);
+      showToast(t("relay.copiedToast"));
+    } catch {
+      showToast(t("actions.requestError"));
+    }
+  };
+
+  const buildRelayConfigPatch = (override: Record<string, any> = {}) => ({
+    mode: relayModeDraft,
+    enabled: relayEnabledDraft,
+    publicUrl: relayPublicUrlDraft.trim(),
+    relayLocalPort: Number(relayLocalPortDraft) || 3231,
+    preventIdleSleep: relayPreventSleepDraft,
+    frpc: {
+      binaryPath: relayBinPathDraft.trim(),
+      serverAddr: relayServerAddrDraft.trim(),
+      serverPort: Number(relayServerPortDraft) || 443,
+      transportProtocol: relayProtocolDraft,
+      wsPath: relayWsPathDraft.trim() || "/~!frp",
+      proxyName: relayProxyNameDraft.trim() || "twinklebot-relay",
+      remotePort: Number(relayRemotePortDraft) || 13230,
+      ...(relayAuthTokenDraft.trim() ? { authToken: relayAuthTokenDraft.trim() } : {}),
+    },
+    ...override,
+  });
+
+  const handleSaveRelayConfig = async (override: Record<string, any> = {}) => {
+    if (relaySaving) return;
+    setRelaySaving(true);
+    try {
+      await saveRelayConfig({ ...buildRelayConfigPatch(override), reveal: relayRevealToken });
+      setRelayAuthTokenDraft("");
+      showToast(t("relay.savedToast"));
+    } catch (err: any) {
+      showToast(t("relay.saveFailedToast", { error: err?.message || t("actions.requestError") }));
+    } finally {
+      setRelaySaving(false);
+    }
+  };
+
+  const handleImportLegacyRelay = async () => {
+    if (relayImporting) return;
+    setRelayImporting(true);
+    try {
+      await runRelayControl("import_legacy", { unloadLaunchAgent: true, reveal: relayRevealToken });
+      showToast(t("relay.legacyImportSuccessToast"));
+    } catch (err: any) {
+      showToast(
+        t("relay.legacyImportFailedToast", { error: err?.message || t("actions.requestError") })
+      );
+    } finally {
+      setRelayImporting(false);
+    }
+  };
+
+  const handleTestRelayEndpoint = async () => {
+    if (relayTesting) return;
+    setRelayTesting(true);
+    try {
+      const res = await runRelayControl("test", { publicUrl: relayPublicUrlDraft.trim() });
+      setRelayTestResult(res);
+    } catch (err: any) {
+      setRelayTestResult({
+        ok: false,
+        error: err?.message || t("actions.requestError"),
+      });
+    } finally {
+      setRelayTesting(false);
+    }
+  };
+
+  const handleRotateRelayToken = async () => {
+    const ok = await showConfirmDialog({
+      title: t("relay.rotateTokenBtn"),
+      message: t("relay.rotateTokenConfirm"),
+      confirmText: t("relay.rotateTokenBtn"),
+      cancelText: t("common.cancel"),
+      tone: "danger",
+    });
+    if (!ok) return;
+    try {
+      await runRelayControl("rotate_token", { reveal: true });
+      setRelayRevealToken(true);
+      showToast(t("relay.tokenRotatedToast"));
+    } catch (err: any) {
+      showToast(err?.message || t("actions.requestError"));
+    }
+  };
+
+  const handleGenerateRelayTemplates = async () => {
+    try {
+      const res = await generateRelayTemplates({
+        domain: relayTplDomain.trim() || "bot.example.com",
+        mainDomain: relayServerAddrDraft.trim() || relayTplDomain.trim() || "example.com",
+        pathMode: relayTplMode,
+        subpath: relayTplSubpath.trim() || "/twinklebot",
+        remotePort: Number(relayRemotePortDraft) || 13230,
+        wsPath: relayWsPathDraft.trim() || "/~!frp",
+      });
+      setRelayTplOutput(res);
+    } catch (err: any) {
+      showToast(err?.message || t("actions.requestError"));
+    }
+  };
 
   // Global Memory form
   const [memFormOpen, setMemFormOpen] = useState(false);
@@ -3779,6 +3964,544 @@ export function SettingsModal() {
                 </>
               )}
             </div>
+
+            {showRelaySettingsCard && (() => {
+              const rtState = String(relayStatus?.runtime?.status || "stopped");
+              const rtLabel =
+                rtState === "connected"
+                  ? t("relay.statusConnected")
+                  : rtState === "starting"
+                    ? t("relay.statusStarting")
+                    : rtState === "reconnecting"
+                      ? t("relay.statusReconnecting")
+                      : rtState === "error"
+                        ? t("relay.statusError")
+                        : t("relay.statusStopped");
+              const legacyInfo = relayStatus?.legacyRelay;
+              const frpcBin = relayStatus?.frpcBinary;
+              const logs: string[] = Array.isArray(relayStatus?.logs) ? relayStatus.logs : [];
+              const accessTokenText = relayRevealToken
+                ? relayStatus?.config?.accessToken || "••••••••••••••••"
+                : relayStatus?.config?.hasAccessToken
+                  ? "••••••••••••••••"
+                  : "—";
+              const shouldShowLegacyBanner =
+                Boolean(legacyInfo?.detected) &&
+                (!relayStatus?.config?.enabled || !relayStatus?.config?.frpc?.serverAddr);
+
+              return (
+                <>
+                  <div className="settings-group-label" id="relay-settings-heading">
+                    {t("relay.sectionTitle")}
+                  </div>
+                  <div className="settings-card" id="relay-settings-card">
+                    <div className="settings-item-row">
+                      <div>
+                        <div className="relay-title-row">
+                          <span className="settings-row-title">{t("relay.cardTitle")}</span>
+                          <span id="relay-status-badge" className={`relay-status-pill is-${rtState}`}>
+                            {rtLabel}
+                          </span>
+                        </div>
+                        <div className="settings-row-sub">{t("relay.cardDesc")}</div>
+                        {relayStatus?.runtime?.lastError && (
+                          <div className="relay-error-note">{relayStatus.runtime.lastError}</div>
+                        )}
+                      </div>
+                      <label className="ios-switch" aria-label={t("relay.enableToggleAria")}>
+                        <input
+                          id="relay-enable-toggle"
+                          type="checkbox"
+                          checked={relayEnabledDraft}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            const nextMode =
+                              checked && relayModeDraft === "off" ? "frpc" : relayModeDraft;
+                            setRelayEnabledDraft(checked);
+                            setRelayModeDraft(nextMode);
+                            void handleSaveRelayConfig({ enabled: checked, mode: nextMode });
+                          }}
+                        />
+                        <span className="ios-switch-track" />
+                      </label>
+                    </div>
+
+                    {shouldShowLegacyBanner && (
+                      <div id="relay-legacy-banner" className="relay-legacy-banner">
+                        <div className="relay-legacy-copy">
+                          <div className="relay-legacy-title">
+                            {t("relay.legacyBannerTitle", {
+                              source: legacyInfo.source || "geminibot-frpc",
+                            })}
+                          </div>
+                          <div className="settings-row-sub">
+                            {t("relay.legacyBannerDesc", {
+                              server: legacyInfo.serverAddr || "—",
+                              port: String(legacyInfo.remotePort || 13230),
+                              agentHint: legacyInfo.plistLoaded ? t("relay.legacyAgentRunning") : "",
+                            })}
+                          </div>
+                        </div>
+                        <button
+                          id="relay-import-legacy-btn"
+                          type="button"
+                          className="settings-blue-pill"
+                          disabled={relayImporting}
+                          onClick={handleImportLegacyRelay}
+                        >
+                          {relayImporting ? t("relay.legacyImportingBtn") : t("relay.legacyImportBtn")}
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="settings-divider" />
+
+                    <div className="relay-field-row">
+                      <label className="relay-field">
+                        <span className="settings-row-sub">{t("relay.modeLabel")}</span>
+                        <select
+                          id="relay-mode-select"
+                          className="settings-select"
+                          value={relayModeDraft}
+                          onChange={(e) =>
+                            setRelayModeDraft(e.target.value as "off" | "frpc" | "external")
+                          }
+                        >
+                          <option value="off">{t("relay.modeOff")}</option>
+                          <option value="frpc">{t("relay.modeFrpc")}</option>
+                          <option value="external">{t("relay.modeExternal")}</option>
+                        </select>
+                      </label>
+
+                      <label className="relay-field relay-field-wide">
+                        <span className="settings-row-sub">{t("relay.publicUrlLabel")}</span>
+                        <input
+                          id="relay-public-url-input"
+                          type="text"
+                          inputMode="url"
+                          autoCapitalize="none"
+                          className="inline-text-input"
+                          placeholder={t("relay.publicUrlPlaceholder")}
+                          value={relayPublicUrlDraft}
+                          onChange={(e) => setRelayPublicUrlDraft(e.target.value)}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="relay-token-row">
+                      <div className="relay-token-meta">
+                        <div className="settings-row-sub">{t("relay.accessTokenLabel")}</div>
+                        <code id="relay-access-token-value" className="relay-token-code">
+                          {accessTokenText}
+                        </code>
+                      </div>
+                      <div className="relay-token-actions">
+                        <button
+                          id="relay-token-reveal-btn"
+                          type="button"
+                          className="settings-pill-btn"
+                          onClick={() => setRelayRevealToken((v) => !v)}
+                        >
+                          {relayRevealToken ? t("relay.hideTokenBtn") : t("relay.revealTokenBtn")}
+                        </button>
+                        <button
+                          id="relay-token-copy-btn"
+                          type="button"
+                          className="settings-pill-btn"
+                          onClick={async () => {
+                            if (relayStatus?.config?.accessToken) {
+                              await copyRelayText(relayStatus.config.accessToken);
+                            } else {
+                              const fresh = await refreshRelayStatus({ reveal: true }).catch(() => null);
+                              if (fresh?.config?.accessToken) {
+                                await copyRelayText(fresh.config.accessToken);
+                              }
+                            }
+                          }}
+                        >
+                          {t("relay.copyBtn")}
+                        </button>
+                        <button
+                          id="relay-token-rotate-btn"
+                          type="button"
+                          className="settings-pill-btn"
+                          onClick={handleRotateRelayToken}
+                        >
+                          {t("relay.rotateTokenBtn")}
+                        </button>
+                      </div>
+                    </div>
+
+                    {relayModeDraft === "frpc" && (
+                      <>
+                        <div className="settings-divider" />
+                        <div id="relay-frpc-binary-status" className="settings-row-sub relay-binary-line">
+                          {t("relay.frpcBinaryStatus", {
+                            status: frpcBin?.available
+                              ? t("relay.frpcBinaryFound", {
+                                  version: frpcBin.version || "frpc",
+                                  path: frpcBin.path || "frpc",
+                                })
+                              : t("relay.frpcBinaryMissing"),
+                          })}
+                        </div>
+                        <div className="relay-grid">
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.frpcServerAddrLabel")}</span>
+                            <input
+                              id="relay-frpc-server"
+                              type="text"
+                              autoCapitalize="none"
+                              className="inline-text-input"
+                              placeholder="caixy.xin"
+                              value={relayServerAddrDraft}
+                              onChange={(e) => setRelayServerAddrDraft(e.target.value)}
+                            />
+                          </label>
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.frpcServerPortLabel")}</span>
+                            <input
+                              id="relay-frpc-port"
+                              type="number"
+                              min={1}
+                              max={65535}
+                              className="inline-text-input"
+                              value={relayServerPortDraft}
+                              onChange={(e) => setRelayServerPortDraft(e.target.value)}
+                            />
+                          </label>
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.frpcProtocolLabel")}</span>
+                            <select
+                              id="relay-frpc-protocol"
+                              className="settings-select"
+                              value={relayProtocolDraft}
+                              onChange={(e) =>
+                                setRelayProtocolDraft(e.target.value as "wss" | "tcp" | "quic")
+                              }
+                            >
+                              <option value="wss">WSS (TLS)</option>
+                              <option value="tcp">TCP</option>
+                              <option value="quic">QUIC</option>
+                            </select>
+                          </label>
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.frpcWsPathLabel")}</span>
+                            <input
+                              id="relay-frpc-ws-path"
+                              type="text"
+                              autoCapitalize="none"
+                              className="inline-text-input"
+                              placeholder="/~!frp"
+                              value={relayWsPathDraft}
+                              onChange={(e) => setRelayWsPathDraft(e.target.value)}
+                            />
+                          </label>
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.frpcProxyNameLabel")}</span>
+                            <input
+                              id="relay-frpc-proxy-name"
+                              type="text"
+                              autoCapitalize="none"
+                              className="inline-text-input"
+                              value={relayProxyNameDraft}
+                              onChange={(e) => setRelayProxyNameDraft(e.target.value)}
+                            />
+                          </label>
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.frpcRemotePortLabel")}</span>
+                            <input
+                              id="relay-frpc-remote-port"
+                              type="number"
+                              min={1}
+                              max={65535}
+                              className="inline-text-input"
+                              value={relayRemotePortDraft}
+                              onChange={(e) => setRelayRemotePortDraft(e.target.value)}
+                            />
+                          </label>
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.frpcAuthTokenLabel")}</span>
+                            <input
+                              id="relay-frpc-auth-token"
+                              type="password"
+                              autoComplete="off"
+                              className="inline-text-input"
+                              placeholder={
+                                relayStatus?.config?.frpc?.hasAuthToken ? "••••••••••••" : ""
+                              }
+                              value={relayAuthTokenDraft}
+                              onChange={(e) => setRelayAuthTokenDraft(e.target.value)}
+                            />
+                          </label>
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.localPortLabel")}</span>
+                            <input
+                              id="relay-local-port-input"
+                              type="number"
+                              min={1024}
+                              max={65535}
+                              className="inline-text-input"
+                              value={relayLocalPortDraft}
+                              onChange={(e) => setRelayLocalPortDraft(e.target.value)}
+                            />
+                          </label>
+                          <label className="relay-field relay-field-full">
+                            <span className="settings-row-sub">{t("relay.frpcBinaryPathLabel")}</span>
+                            <input
+                              id="relay-frpc-bin-path"
+                              type="text"
+                              autoCapitalize="none"
+                              className="inline-text-input"
+                              placeholder="/opt/homebrew/bin/frpc"
+                              value={relayBinPathDraft}
+                              onChange={(e) => setRelayBinPathDraft(e.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="settings-item-row relay-sleep-row">
+                          <span className="settings-row-sub">{t("relay.preventSleepLabel")}</span>
+                          <label className="ios-switch">
+                            <input
+                              id="relay-prevent-sleep-toggle"
+                              type="checkbox"
+                              checked={relayPreventSleepDraft}
+                              onChange={(e) => setRelayPreventSleepDraft(e.target.checked)}
+                            />
+                            <span className="ios-switch-track" />
+                          </label>
+                        </div>
+                      </>
+                    )}
+
+                    {relayModeDraft === "external" && (
+                      <div className="relay-field-row" style={{ marginTop: "8px" }}>
+                        <label className="relay-field">
+                          <span className="settings-row-sub">{t("relay.localPortLabel")}</span>
+                          <input
+                            id="relay-local-port-input"
+                            type="number"
+                            min={1024}
+                            max={65535}
+                            className="inline-text-input"
+                            value={relayLocalPortDraft}
+                            onChange={(e) => setRelayLocalPortDraft(e.target.value)}
+                          />
+                        </label>
+                      </div>
+                    )}
+
+                    <div className="relay-actions-bar">
+                      <button
+                        id="relay-save-btn"
+                        type="button"
+                        className="settings-blue-pill"
+                        disabled={relaySaving}
+                        onClick={() => void handleSaveRelayConfig()}
+                      >
+                        {t("relay.saveApplyBtn")}
+                      </button>
+                      {relayEnabledDraft && relayModeDraft === "frpc" && (
+                        <button
+                          id="relay-restart-btn"
+                          type="button"
+                          className="settings-pill-btn"
+                          onClick={async () => {
+                            try {
+                              await runRelayControl("restart", { reveal: relayRevealToken });
+                              showToast(t("relay.restartedToast"));
+                            } catch (err: any) {
+                              showToast(err?.message || t("actions.requestError"));
+                            }
+                          }}
+                        >
+                          {t("relay.restartBtn")}
+                        </button>
+                      )}
+                      <button
+                        id="relay-test-btn"
+                        type="button"
+                        className="settings-pill-btn"
+                        disabled={relayTesting}
+                        onClick={handleTestRelayEndpoint}
+                      >
+                        {relayTesting ? t("relay.testingBtn") : t("relay.testConnectivityBtn")}
+                      </button>
+                    </div>
+
+                    {relayTestResult && (
+                      <div
+                        id="relay-test-result"
+                        className={`relay-test-result ${
+                          relayTestResult.ok && relayTestResult.authEnforced
+                            ? "is-ok"
+                            : "is-warn"
+                        }`}
+                      >
+                        {relayTestResult.ok
+                          ? relayTestResult.authEnforced
+                            ? t("relay.testOkMsg", {
+                                latency: String(relayTestResult.withTokenLatencyMs || 0),
+                                unauthCode: String(relayTestResult.withoutTokenStatus || 401),
+                              })
+                            : t("relay.testPartialMsg", {
+                                latency: String(relayTestResult.withTokenLatencyMs || 0),
+                                unauthCode: String(relayTestResult.withoutTokenStatus || 200),
+                              })
+                          : t("relay.testFailMsg", {
+                              error:
+                                relayTestResult.error ||
+                                `HTTP ${relayTestResult.withTokenStatus || 0}`,
+                            })}
+                      </div>
+                    )}
+
+                    {relayInvite?.qrSvg && (
+                      <>
+                        <div className="settings-divider" />
+                        <div id="relay-invite-panel" className="relay-invite-panel">
+                          <div
+                            className="relay-qr-box"
+                            aria-label={t("relay.inviteTitle")}
+                            dangerouslySetInnerHTML={{ __html: relayInvite.qrSvg }}
+                          />
+                          <div className="relay-invite-copy">
+                            <div className="settings-row-title">{t("relay.inviteTitle")}</div>
+                            <div className="settings-row-sub">{t("relay.inviteDesc")}</div>
+                            <div className="relay-invite-actions">
+                              <button
+                                id="relay-copy-url-btn"
+                                type="button"
+                                className="settings-pill-btn"
+                                onClick={() => void copyRelayText(relayInvite.publicUrl)}
+                              >
+                                {t("relay.copyUrlBtn")}
+                              </button>
+                              <button
+                                id="relay-copy-invite-btn"
+                                type="button"
+                                className="settings-pill-btn"
+                                onClick={() => void copyRelayText(relayInvite.inviteUri)}
+                              >
+                                {t("relay.copyInviteBtn")}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    <div className="settings-divider" />
+                    <details className="relay-collapse-box" id="relay-templates-details">
+                      <summary>{t("relay.templatesSummary")}</summary>
+                      <div className="relay-collapse-body">
+                        <div className="relay-grid">
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.templatesDomainLabel")}</span>
+                            <input
+                              id="relay-tpl-domain"
+                              type="text"
+                              autoCapitalize="none"
+                              className="inline-text-input"
+                              value={relayTplDomain}
+                              onChange={(e) => setRelayTplDomain(e.target.value)}
+                            />
+                          </label>
+                          <label className="relay-field">
+                            <span className="settings-row-sub">{t("relay.modeLabel")}</span>
+                            <select
+                              id="relay-tpl-mode"
+                              className="settings-select"
+                              value={relayTplMode}
+                              onChange={(e) =>
+                                setRelayTplMode(e.target.value as "subdomain" | "subpath")
+                              }
+                            >
+                              <option value="subdomain">{t("relay.templatesPathModeSubdomain")}</option>
+                              <option value="subpath">{t("relay.templatesPathModeSubpath")}</option>
+                            </select>
+                          </label>
+                          {relayTplMode === "subpath" && (
+                            <label className="relay-field">
+                              <span className="settings-row-sub">{t("relay.templatesSubpathLabel")}</span>
+                              <input
+                                id="relay-tpl-subpath"
+                                type="text"
+                                autoCapitalize="none"
+                                className="inline-text-input"
+                                value={relayTplSubpath}
+                                onChange={(e) => setRelayTplSubpath(e.target.value)}
+                              />
+                            </label>
+                          )}
+                        </div>
+                        <div style={{ marginTop: "8px" }}>
+                          <button
+                            id="relay-generate-templates-btn"
+                            type="button"
+                            className="settings-pill-btn"
+                            onClick={handleGenerateRelayTemplates}
+                          >
+                            {t("relay.templatesGenerateBtn")}
+                          </button>
+                        </div>
+                        {relayTplOutput && (
+                          <div className="relay-tpl-outputs">
+                            <div className="relay-tpl-block">
+                              <div className="relay-tpl-head">
+                                <span className="settings-row-sub">{t("relay.templatesFrpsLabel")}</span>
+                                <button
+                                  type="button"
+                                  className="settings-pill-btn"
+                                  onClick={() => void copyRelayText(relayTplOutput.frpsToml)}
+                                >
+                                  {t("relay.copyBtn")}
+                                </button>
+                              </div>
+                              <pre className="relay-code-pre">{relayTplOutput.frpsToml}</pre>
+                            </div>
+                            <div className="relay-tpl-block">
+                              <div className="relay-tpl-head">
+                                <span className="settings-row-sub">{t("relay.templatesCaddyLabel")}</span>
+                                <button
+                                  type="button"
+                                  className="settings-pill-btn"
+                                  onClick={() =>
+                                    void copyRelayText(
+                                      relayTplMode === "subpath"
+                                        ? relayTplOutput.caddySubpath
+                                        : relayTplOutput.caddySubdomain
+                                    )
+                                  }
+                                >
+                                  {t("relay.copyBtn")}
+                                </button>
+                              </div>
+                              <pre className="relay-code-pre">
+                                {relayTplMode === "subpath"
+                                  ? relayTplOutput.caddySubpath
+                                  : relayTplOutput.caddySubdomain}
+                              </pre>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </details>
+
+                    <details className="relay-collapse-box" id="relay-logs-details">
+                      <summary>{t("relay.logsSummary", { count: String(logs.length) })}</summary>
+                      <div className="relay-collapse-body">
+                        {logs.length === 0 ? (
+                          <div className="settings-row-sub">{t("relay.logsEmpty")}</div>
+                        ) : (
+                          <pre className="relay-code-pre relay-logs-pre">{logs.join("\n")}</pre>
+                        )}
+                      </div>
+                    </details>
+                  </div>
+                </>
+              );
+            })()}
             </fieldset>
           </div>
 

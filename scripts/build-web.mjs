@@ -20,6 +20,7 @@ const SHARED_BROWSER_MODULES = [
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "policy-utils.js"), dest: "shared/policy-utils.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "versioning.js"), dest: "shared/versioning.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "cron.js"), dest: "shared/cron.js" },
+  { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "qr-svg.js"), dest: "shared/qr-svg.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "i18n-zh.js"), dest: "shared/i18n-zh.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "i18n-en.js"), dest: "shared/i18n-en.js" },
   { src: path.join(PROJECT_ROOT, "dist-server", "src", "shared", "i18n.js"), dest: "shared/i18n.js" },

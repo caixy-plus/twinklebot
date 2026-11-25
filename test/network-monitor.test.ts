@@ -239,7 +239,7 @@ test("AccountDisconnectedGate blocks remote offline accounts (cloud/LAN) with na
   assert.ok(cloudOfflineHtml.includes('id="account-gate-refresh-btn"'));
   assert.ok(cloudOfflineHtml.includes("刷新当前账号"));
   assert.ok(cloudOfflineHtml.includes('data-account-gate-switch-id="local"'));
-  assert.ok(cloudOfflineHtml.includes("本地工作台 · 始终可用"));
+  assert.ok(cloudOfflineHtml.includes("本地账号 · 始终可用"));
   assert.ok(!cloudOfflineHtml.includes('id="account-disconnected-gate" open'), "native modal <dialog> must not use open attribute");
 
   // 2. Core OTA hot-swap in progress -> gate suppressed

@@ -636,11 +636,15 @@ export function LeftSidebar({
                     )}
                   </span>
                 </button>
-                {acc.type === "cloud" && (
+                {acc.type !== "local" && (
                   <button
                     type="button"
                     className="account-remove-btn"
-                    title={t("sidebar.removeCloudAccountTitle")}
+                    title={
+                      acc.type === "lan"
+                        ? t("actions.removeAccountTitle")
+                        : t("sidebar.removeCloudAccountTitle")
+                    }
                     aria-label={t("sidebar.removeAccountAria", { name: accDisplayName })}
                     onClick={(e) => {
                       e.stopPropagation();

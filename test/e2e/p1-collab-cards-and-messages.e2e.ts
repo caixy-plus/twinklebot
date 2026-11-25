@@ -219,7 +219,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       priority: "P1",
       featureTier: "F2",
       difficulty: "D2",
-      title: "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / skill_list",
+      title: "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list",
       module: "Built-in System Bot Tools",
     },
     async () => {
@@ -263,12 +263,14 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
               { id: "st-11", name: "workspace_search", args: { action: "search", query: "记住工具测试" } },
               { id: "st-12", name: "system_diagnostics", args: { action: "status" } },
               { id: "st-13", name: "computer_provision", args: { action: "probe" } },
-              // Non-admin bot trying computer_provision(install) must be denied cleanly!
+              // Non-admin bot trying computer_provision(install) or account_manage(upsert) must be denied cleanly!
               { id: "st-14", name: "computer_provision", args: { action: "install" } },
+              { id: "st-15", name: "account_manage", args: { action: "list" } },
+              { id: "st-16", name: "account_manage", args: { action: "upsert", name: "BlockedBotAdd", base_url: "https://blocked.example.com" } },
             ],
           };
         }
-        return { text: "全部 8 项系统级 Bot 工具实测完成" };
+        return { text: "全部 9 项系统级 Bot 工具实测完成" };
       });
 
       await fetch(`${ws.baseUrl}/api/sessions/${workerBot.id}/messages`, {

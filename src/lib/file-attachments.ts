@@ -79,6 +79,9 @@ export function isSensitiveFilePath(targetPath: unknown): boolean {
     /.*auth.*\.json$/i.test(base) ||
     base === "credentials.json" ||
     base === "vault.json" ||
+    base === "frpc.toml" ||
+    base === "frps.toml" ||
+    base === "relay-token" ||
     base === "id_rsa" ||
     base === "id_ed25519" ||
     base === "shadow" ||

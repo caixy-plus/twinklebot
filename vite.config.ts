@@ -8,7 +8,7 @@ const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   plugins: [react()],
   publicDir: false,
-  base: "/dist/",
+  base: "./",
   build: {
     outDir: path.resolve(ROOT_DIR, "public/dist"),
     emptyOutDir: true,

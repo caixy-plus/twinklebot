@@ -47,6 +47,7 @@ import {
 import { MAX_BOT_HOPS, getInstalledSkillIds } from "./declarations.js";
 import { resolveBotByRef } from "./collab-tools.js";
 import { summarizeChannelStatusForBot } from "../../lib/channel-integrations.js";
+import { createAccountDirectoryActions } from "../../server/routes/relay.js";
 
 export const UNHANDLED_BOT_TOOL = Symbol.for("twinklebot.unhandled_bot_tool");
 
@@ -77,6 +78,7 @@ export async function handleSystemBotTool(
     executor,
     fetchImpl,
     getChannelStatus,
+    userMeta,
     config = {},
     senderSessionId,
     senderBot,
@@ -1020,6 +1022,8 @@ export async function handleSystemBotTool(
         const channels = summarizeChannelStatusForBot(
           typeof getChannelStatus === "function" ? getChannelStatus() : null
         );
+        const relay =
+          typeof ctx.getRelayStatus === "function" ? ctx.getRelayStatus() : null;
 
         return {
           ok: true,
@@ -1041,6 +1045,7 @@ export async function handleSystemBotTool(
             ...(mcpStatus ? { mcpStatus } : {}),
           },
           channels,
+          ...(relay ? { relay } : {}),
           sessionUsage: usageSummary,
         };
       }
@@ -1096,6 +1101,80 @@ export async function handleSystemBotTool(
       }
 
       return { ok: false, error: `unknown computer_provision action: ${action}` };
+    }
+
+    case "account_manage": {
+      const action = String(args.action || "list").trim();
+      const callerIsAdmin = Boolean(
+        senderBot?.isAdmin || (senderSessionId && store?.getSession?.(senderSessionId)?.isAdmin)
+      );
+      const accountActions =
+        ctx.accountActions ||
+        createAccountDirectoryActions({
+          store,
+          fetchImpl: fetchImpl || globalThis.fetch,
+          broadcastEvent: broadcastGlobal,
+        });
+
+      if (action === "list") {
+        const accounts = accountActions.list({ includeSecrets: false });
+        return {
+          ok: true,
+          action: "list",
+          accounts,
+          note: "仅返回脱敏账号列表；切换当前账号需由用户在界面手动操作。",
+        };
+      }
+
+      if (!callerIsAdmin) {
+        return {
+          ok: false,
+          action,
+          error: "权限不足：仅管理员 Bot 有权配置、测试或移除云端/本地远程账号。",
+        };
+      }
+
+      if (action === "test") {
+        const res = await accountActions.testAccount(
+          String(args.account_id || args.name || args.base_url || "").trim()
+        );
+        return { action: "test", ...res };
+      }
+
+      if (action === "remove") {
+        if (userMeta?.channelMeta) {
+          return {
+            ok: false,
+            action: "remove",
+            error: "出于安全限制，删除远程账号仅允许在 TwinkleBot App 内由主人直接操作。",
+          };
+        }
+        const res = accountActions.remove(
+          String(args.account_id || args.name || args.base_url || "").trim()
+        );
+        return { action: "remove", ...res };
+      }
+
+      if (action === "upsert") {
+        const res = await accountActions.upsert({
+          id: args.account_id,
+          name: args.name,
+          baseUrl: args.base_url,
+          authToken: args.auth_token,
+          inviteUri: args.invite_uri,
+          preferredRoute: args.preferred_route,
+          probe: args.probe !== false,
+        });
+        if (!res.ok) return { action: "upsert", ...res };
+        return {
+          action: "upsert",
+          ...res,
+          manualSwitchOnly: true,
+          note: `已配置账号「${res.account?.name || ""}」。不会自动切换工作区，请用户手动在左下角账号菜单或手机账号面板点击切换。`,
+        };
+      }
+
+      return { ok: false, error: `unknown account_manage action: ${action}` };
     }
 
     default:

@@ -63,8 +63,12 @@ function computeTraySnapshot(store: any, runner: any): BackendTraySnapshot {
     activeRunCount = 0;
   }
 
-  const relayConfigured = fs.existsSync(
-    path.join(os.homedir(), ".config", "twinklebot-frpc", "frpc.toml")
+  const relaySummary =
+    typeof runner?.getRelayStatus === "function" ? runner.getRelayStatus() : null;
+  const relayConfigured = Boolean(
+    relaySummary?.enabled ||
+      fs.existsSync(path.join(os.homedir(), ".config", "twinklebot-frpc", "frpc.toml")) ||
+      fs.existsSync(path.join(os.homedir(), ".config", "geminibot-frpc", "frpc.toml"))
   );
   return {
     botCount,

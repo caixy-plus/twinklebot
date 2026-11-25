@@ -71,6 +71,11 @@ import { handleSystemRoutes, runDueLiveBalanceRefreshes } from "./routes/system.
 import { handleSchedulesVaultRoutes } from "./routes/schedules-vault.js";
 import { handleMediaFilesRoutes } from "./routes/media-files.js";
 import { handleSessionRoutes } from "./routes/sessions.js";
+import { createRelayManager } from "../lib/relay-manager.js";
+import {
+  createAccountDirectoryActions,
+  handleRelayAndAccountsRoutes,
+} from "./routes/relay.js";
 import { createChannelManager } from "../lib/channel-manager.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -98,6 +103,7 @@ const API_ROUTE_HANDLERS: RouteHandler[] = [
   handleSchedulesVaultRoutes,
   handleMediaFilesRoutes,
   handleSessionRoutes,
+  handleRelayAndAccountsRoutes,
 ];
 
 export function createServer({
@@ -565,9 +571,52 @@ export function createServer({
     };
   }
 
+  let wsServerRef: ReturnType<typeof attachWebSocketServer> | null = null;
+
+  const relayManager = createRelayManager({
+    store,
+    dataDir: finalConfig.dataDir,
+    mainPort: Number(finalConfig.port || 3230),
+    getInstanceId,
+    fetchImpl: billingFetchImpl || fetch,
+    onStateChange: () => {
+      try {
+        runner?.broadcastGlobal?.({ type: "relay_updated" });
+      } catch {
+        wsServerRef?.broadcast?.({ type: "relay_updated" });
+      }
+    },
+  });
+
+  const accountDirectoryActions = createAccountDirectoryActions({
+    store,
+    fetchImpl: billingFetchImpl || fetch,
+    getOwnInstanceId: getInstanceId,
+    getOwnPublicUrl: () => relayManager.readConfig().publicUrl,
+    getOwnDeployEnv: () => runtimeState.deployEnv,
+    getOwnPorts: () => {
+      const addr = server.address();
+      const boundMainPort =
+        typeof addr === "object" && addr ? Number(addr.port) : Number(finalConfig.port || 3230);
+      return [boundMainPort, Number(relayServerPort || 0)].filter((p) => p > 0);
+    },
+    broadcastEvent: (ev) => {
+      if (typeof runner?.broadcastGlobal === "function") {
+        runner.broadcastGlobal(ev);
+      } else {
+        wsServerRef?.broadcast?.(ev);
+      }
+    },
+  });
+
+  if (runner && typeof runner === "object") {
+    runner.getRelayStatus = () => relayManager.getBotSummary();
+    runner.accountActions = accountDirectoryActions;
+  }
+
   let ctx!: ServerContext;
 
-  const server: http.Server & { hostBridge?: any } = http.createServer(async (req, res) => {
+  const handleHttpRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
       const rawPathname = url.pathname;
@@ -581,6 +630,7 @@ export function createServer({
         return sendJson(res, 404, { error: "not found" });
       }
       const method = (req.method || "GET").toUpperCase();
+      const relayIngress = Boolean((req as any).__twinkleRelayIngress);
 
       const origin = req.headers.origin;
       if (origin) {
@@ -606,7 +656,39 @@ export function createServer({
           deployEnv: runtimeState.deployEnv,
           role: runtimeState.role,
           appVersion: APP_VERSION,
+          instanceId: getInstanceId(),
+          ...(relayIngress ? { relay: true } : {}),
         });
+      }
+
+      const isExternalChannelWebhook =
+        method === "POST" &&
+        (pathname === "/api/channels/telegram/webhook" ||
+          pathname === "/api/channels/feishu/webhook");
+
+      if (relayIngress && !isExternalChannelWebhook) {
+        const relayAuthorized = deviceAuth.isAuthorized(req, url, {
+          allowLoopbackBypass: false,
+          relayAccessToken: relayManager.getAccessToken(),
+        });
+        if (!relayAuthorized) {
+          return sendJson(res, 401, { error: "unauthorized: relay token required" });
+        }
+        const queryTok = String(url.searchParams.get("token") || "").trim();
+        if (
+          queryTok &&
+          method === "GET" &&
+          (pathname === "/" || pathname === "/index.html" || pathname === "/novnc/vnc.html")
+        ) {
+          const isHttps =
+            String(req.headers["x-forwarded-proto"] || "").toLowerCase() === "https";
+          res.setHeader(
+            "Set-Cookie",
+            `tb_relay_auth=${encodeURIComponent(queryTok)}; HttpOnly; SameSite=Strict; Path=/${
+              isHttps ? "; Secure" : ""
+            }`
+          );
+        }
       }
 
       if (method === "GET" && pathname === "/api/discovery/info") {
@@ -675,13 +757,9 @@ export function createServer({
         }
       }
 
-      const isExternalChannelWebhook =
-        method === "POST" &&
-        (pathname === "/api/channels/telegram/webhook" ||
-          pathname === "/api/channels/feishu/webhook");
-
       if (
         !isExternalChannelWebhook &&
+        !relayIngress &&
         runtimeState.deployEnv === "local" &&
         (pathname.startsWith("/api/") || pathname === "/ws") &&
         !deviceAuth.isAuthorized(req, url)
@@ -729,12 +807,46 @@ export function createServer({
         return sendJson(res, 500, { error: "internal server error" });
       }
     }
+  };
+
+  const server: http.Server & { hostBridge?: any } = http.createServer((req, res) => {
+    void handleHttpRequest(req, res);
   });
+
+  let relayServer: http.Server | null = null;
+  let relayServerPort: number | null = null;
+  let relayListenPortBound: number | null = null;
+
+  async function stopRelayListener() {
+    const prev = relayServer;
+    relayServer = null;
+    relayServerPort = null;
+    relayListenPortBound = null;
+    if (!prev) return;
+    try {
+      (prev as any).closeAllConnections?.();
+    } catch {}
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 1000);
+      t.unref?.();
+      prev.close(() => {
+        clearTimeout(t);
+        resolve();
+      });
+    });
+  }
 
   let hostBridge: any = null;
   const wsServer = attachWebSocketServer(server, {
     path: "/ws",
     authenticate(_req, parsedUrl) {
+      const relayIngress = Boolean((_req as any).__twinkleRelayIngress);
+      if (relayIngress) {
+        return deviceAuth.isAuthorized(_req, parsedUrl, {
+          allowLoopbackBypass: false,
+          relayAccessToken: relayManager.getAccessToken(),
+        });
+      }
       if (runtimeState.deployEnv === "local") {
         return deviceAuth.isAuthorized(_req, parsedUrl);
       }
@@ -783,6 +895,60 @@ export function createServer({
       return createNovncUpgradeHandler(ctx)(req, socket, head, parsedUrl);
     },
   });
+  wsServerRef = wsServer;
+
+  let relaySyncPromise: Promise<void> | null = null;
+  async function syncRelayListener() {
+    const run = (async () => {
+      const cfg = relayManager.readConfig();
+      const shouldListen =
+        runtimeState.deployEnv === "local" &&
+        ((cfg.enabled && cfg.enforceAuthOnRelayPort) || Boolean(finalConfig.forceRelayListener));
+      const targetPort =
+        typeof finalConfig.relayListenPort === "number"
+          ? finalConfig.relayListenPort
+          : cfg.relayLocalPort;
+      if (!shouldListen) {
+        await stopRelayListener();
+        return;
+      }
+      if (relayServer && relayListenPortBound === targetPort) {
+        return;
+      }
+      await stopRelayListener();
+      const srv = http.createServer((req, res) => {
+        (req as any).__twinkleRelayIngress = true;
+        void handleHttpRequest(req, res);
+      });
+      srv.on("upgrade", (req, socket, head) => {
+        (req as any).__twinkleRelayIngress = true;
+        wsServer.handleUpgrade(req, socket, head);
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          srv.once("error", reject);
+          srv.listen(targetPort, "127.0.0.1", () => {
+            srv.off("error", reject);
+            resolve();
+          });
+        });
+        const addr = srv.address();
+        relayServer = srv;
+        relayListenPortBound = targetPort;
+        relayServerPort = typeof addr === "object" && addr ? addr.port : targetPort;
+      } catch {
+        try {
+          srv.close();
+        } catch {}
+      }
+    })();
+    relaySyncPromise = run;
+    try {
+      await run;
+    } finally {
+      if (relaySyncPromise === run) relaySyncPromise = null;
+    }
+  }
 
   hostBridge = createHostBridge({ wsServer });
   server.hostBridge = hostBridge;
@@ -810,6 +976,14 @@ export function createServer({
     scheduler,
     activeMcpManager,
     channelManager,
+    relayManager,
+    accountDirectoryActions,
+    syncRelayListener,
+    waitRelayListener: async () => {
+      if (relaySyncPromise) await relaySyncPromise;
+    },
+    getRelayListeningPort: () => relayServerPort,
+    getInstanceId,
     hostBridge,
     updateBotComputerFn,
     probeBotComputerFn,
@@ -860,6 +1034,12 @@ export function createServer({
     try {
       channelManager.syncFromStore();
     } catch {}
+    void syncRelayListener();
+    if (finalConfig.autoStartRelay !== false) {
+      try {
+        relayManager.bootAutoStart();
+      } catch {}
+    }
     if (
       runtimeState.deployEnv === "local" &&
       finalConfig.lanAccess &&
@@ -888,6 +1068,8 @@ export function createServer({
       lanResponder?.close?.();
       lanResponder = null;
     } catch {}
+    void stopRelayListener();
+    void relayManager.stop();
     wsServer.close();
     return origClose(cb);
   };
@@ -903,6 +1085,8 @@ export function createServer({
       lanResponder?.close?.();
       lanResponder = null;
     } catch {}
+    void stopRelayListener();
+    void relayManager.stop();
     wsServer.close();
     activeMcpManager?.closeAll?.();
     channelManager.stopAll();

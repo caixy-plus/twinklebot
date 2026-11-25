@@ -5,25 +5,25 @@
   "otaChannelTag": "ota-channel",
   "shells": {
     "desktop": {
-      "version": "1.0.4",
-      "minVersionForOta": "1.0.0",
-      "minVersionForCoreOta": "1.0.4"
+      "version": "1.0.5",
+      "minVersionForOta": "1.0.5",
+      "minVersionForCoreOta": "1.0.5"
     },
     "android": {
-      "version": "1.0.4",
-      "buildCode": 5,
-      "minVersionForOta": "1.0.0",
-      "minBuildCodeForOta": 1
+      "version": "1.0.5",
+      "buildCode": 6,
+      "minVersionForOta": "1.0.5",
+      "minBuildCodeForOta": 6
     },
     "ios": {
-      "version": "1.0.4",
-      "buildCode": 5,
-      "minVersionForOta": "1.0.0",
-      "minBuildCodeForOta": 1
+      "version": "1.0.5",
+      "buildCode": 6,
+      "minVersionForOta": "1.0.5",
+      "minBuildCodeForOta": 6
     }
   },
   "backend": {
-    "version": "1.0.4",
+    "version": "1.0.5",
     "minCompatibleVersion": "1.0.0",
     "apiCapabilities": [
       "core-v1",
@@ -38,7 +38,8 @@
       "i18n-v1",
       "channel-integrations-v1",
       "channel-multi-bot-pairing-v1",
-      "schedule-cron-v1"
+      "schedule-cron-v1",
+      "remote-relay-v1"
     ]
   }
 }
