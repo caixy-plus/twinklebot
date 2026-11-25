@@ -137,7 +137,8 @@ const TASK_BOX_RE = /^\[([ xX])\]\s+(.+)$/;
  * - `attachment_file`: `{ type: "attachment_file", name, path }`
  * - `paragraph`: `{ type: "paragraph", text }`
  */
-export function parseMarkdownBlocks(rawText = "") {
+export function parseMarkdownBlocks(rawText = "", locale: "zh-CN" | "en" = "zh-CN") {
+  const isEn = locale === "en";
   const lines = Array.isArray(rawText)
     ? rawText.map((l) => String(l ?? ""))
     : String(rawText || "").split("\n");
@@ -211,7 +212,7 @@ export function parseMarkdownBlocks(rawText = "") {
     if (imgMatch) {
       blocks.push({
         type: "attachment_image",
-        name: (imgMatch[1] || "AI 生成图片").trim(),
+        name: (imgMatch[1] || (isEn ? "AI Generated Image" : "AI 生成图片")).trim(),
         url: imgMatch[2].trim(),
       });
       i += 1;
@@ -235,7 +236,7 @@ export function parseMarkdownBlocks(rawText = "") {
       if (localPath) {
         blocks.push({
           type: "attachment_file",
-          name: fileUrlMatch[1].trim() || localPath.split("/").pop() || "文件",
+          name: fileUrlMatch[1].trim() || localPath.split("/").pop() || (isEn ? "File" : "文件"),
           path: localPath,
         });
         i += 1;

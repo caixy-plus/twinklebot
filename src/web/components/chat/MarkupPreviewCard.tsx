@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { buildPreviewSrcdoc } from "../../preview-utils.js";
 import { openHtmlPreviewModal, showToast } from "../../services/actions.js";
-import { BG_MODES } from "../../state/constants.js";
+import { useI18n } from "../../services/i18n.js";
+import { getBgModes } from "../../state/constants.js";
 import {
   nextPreviewInstanceId,
   previewFrameRegistry,
@@ -12,7 +13,7 @@ import { UiIcon } from "../common/Icon.js";
 export function MarkupPreviewCard({
   code,
   kind = "html",
-  badgeLabel = "HTML 预览",
+  badgeLabel,
   lang = "html",
   sourceLabel = "",
   downloadUrl = "",
@@ -24,6 +25,9 @@ export function MarkupPreviewCard({
   sourceLabel?: string;
   downloadUrl?: string;
 }) {
+  const { locale, t } = useI18n();
+  const bgModes = getBgModes(locale);
+  const resolvedBadge = badgeLabel || t("card.previewHtmlBadge");
   const cleanCode = String(code || "").trim();
   const [instanceId] = useState(() => nextPreviewInstanceId());
   const [bgIdx, setBgIdx] = useState(() => (kind === "svg" ? 1 : 0));
@@ -31,7 +35,7 @@ export function MarkupPreviewCard({
   const [reloadNonce, setReloadNonce] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-  const canvasBg = BG_MODES[bgIdx]?.key || "light";
+  const canvasBg = bgModes[bgIdx]?.key || "light";
   const srcdoc = cleanCode
     ? buildPreviewSrcdoc(cleanCode, {
         kind,
@@ -84,39 +88,39 @@ export function MarkupPreviewCard({
       <div className="msg-preview-header">
         <div className="msg-preview-title-wrap">
           <span className="msg-preview-badge" data-kind={kind}>
-            {badgeLabel}
+            {resolvedBadge}
           </span>
           {sourceLabel && <span className="msg-preview-sub">{sourceLabel}</span>}
         </div>
         <div className="msg-preview-actions">
-          <div className="msg-preview-tabs" role="group" aria-label="切换预览与源码">
+          <div className="msg-preview-tabs" role="group" aria-label={t("card.previewTabsAria")}>
             <button
               type="button"
               className={`msg-preview-tab${isPrev ? " is-active" : ""}`}
               onClick={() => setMode("preview")}
             >
-              预览
+              {t("card.previewRender")}
             </button>
             <button
               type="button"
               className={`msg-preview-tab${!isPrev ? " is-active" : ""}`}
               onClick={() => setMode("code")}
             >
-              源码
+              {t("card.previewCode")}
             </button>
           </div>
           <button
             type="button"
             className="msg-preview-btn"
             hidden={!isPrev}
-            onClick={() => setBgIdx((prev) => (prev + 1) % BG_MODES.length)}
+            onClick={() => setBgIdx((prev) => (prev + 1) % bgModes.length)}
           >
-            {BG_MODES[bgIdx].label}
+            {bgModes[bgIdx].label}
           </button>
           <button
             type="button"
             className="msg-preview-btn"
-            aria-label="刷新预览"
+            aria-label={t("card.previewRefresh")}
             hidden={!isPrev}
             onClick={() => {
               teardownPreviewIframe(iframeRef.current);
@@ -132,10 +136,10 @@ export function MarkupPreviewCard({
               try {
                 await navigator.clipboard.writeText(cleanCode);
               } catch {}
-              showToast("源码已复制");
+              showToast(t("card.previewSourceCopied"));
             }}
           >
-            复制
+            {t("common.copy")}
           </button>
           {downloadUrl ? (
             <a
@@ -146,11 +150,11 @@ export function MarkupPreviewCard({
               }
               style={{ textDecoration: "none" }}
             >
-              下载
+              {t("card.previewDownload")}
             </a>
           ) : kind === "svg" ? (
             <button type="button" className="msg-preview-btn" onClick={handleSvgBlobDownload}>
-              下载
+              {t("card.previewDownload")}
             </button>
           ) : null}
           <button
@@ -160,14 +164,14 @@ export function MarkupPreviewCard({
               openHtmlPreviewModal({
                 code: cleanCode,
                 kind,
-                badgeLabel,
+                badgeLabel: resolvedBadge,
                 lang,
                 canvasBg,
               })
             }
           >
             <UiIcon name="arrow-up-right" className="inline-ui-icon" size={13} />
-            放大
+            {t("card.previewEnlarge")}
           </button>
         </div>
       </div>
@@ -182,7 +186,7 @@ export function MarkupPreviewCard({
           className="msg-preview-iframe"
           sandbox="allow-scripts allow-forms"
           loading="lazy"
-          title={`${badgeLabel}${sourceLabel ? ` (${sourceLabel})` : ""}`}
+          title={`${resolvedBadge}${sourceLabel ? ` (${sourceLabel})` : ""}`}
           srcDoc={srcdoc}
         />
       </div>
@@ -190,7 +194,7 @@ export function MarkupPreviewCard({
       <pre
         className="msg-preview-code-pre"
         role="region"
-        aria-label={`${badgeLabel} 源码`}
+        aria-label={t("card.previewSourceAria", { badge: resolvedBadge })}
         tabIndex={0}
         hidden={isPrev}
       >

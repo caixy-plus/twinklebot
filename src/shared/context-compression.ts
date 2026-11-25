@@ -9,8 +9,11 @@ export const DEFAULT_CONTEXT_COMPRESSION: ContextCompressionSettings = {
 export interface ContextCompressionPreset {
   id: "compact" | "balanced" | "long";
   label: string;
+  labelEn: string;
   badge?: string;
+  badgeEn?: string;
   desc: string;
+  descEn: string;
   values: Pick<ContextCompressionSettings, "triggerPercent">;
 }
 
@@ -18,7 +21,9 @@ export const CONTEXT_COMPRESSION_PRESETS: ContextCompressionPreset[] = [
   {
     id: "compact",
     label: "省 Token",
+    labelEn: "Token Saver",
     desc: "窗口 50% 触发 · 更省开销",
+    descEn: "Triggers at 50% window · Lowest token cost",
     values: {
       triggerPercent: 50,
     },
@@ -26,8 +31,11 @@ export const CONTEXT_COMPRESSION_PRESETS: ContextCompressionPreset[] = [
   {
     id: "balanced",
     label: "均衡",
+    labelEn: "Balanced",
     badge: "推荐",
+    badgeEn: "Recommended",
     desc: "窗口 75% 触发 · 兼顾记忆与成本",
+    descEn: "Triggers at 75% window · Balanced memory & cost",
     values: {
       triggerPercent: 75,
     },
@@ -35,12 +43,26 @@ export const CONTEXT_COMPRESSION_PRESETS: ContextCompressionPreset[] = [
   {
     id: "long",
     label: "长记忆",
+    labelEn: "Long Memory",
     desc: "窗口 85% 触发 · 保留更长对话",
+    descEn: "Triggers at 85% window · Keeps longer history",
     values: {
       triggerPercent: 85,
     },
   },
 ];
+
+export function getLocalizedContextCompressionPresets(
+  locale: "zh-CN" | "en" = "zh-CN"
+) {
+  const isEn = locale === "en";
+  return CONTEXT_COMPRESSION_PRESETS.map((p) => ({
+    ...p,
+    label: isEn ? p.labelEn : p.label,
+    badge: isEn ? p.badgeEn : p.badge,
+    desc: isEn ? p.descEn : p.desc,
+  }));
+}
 
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 

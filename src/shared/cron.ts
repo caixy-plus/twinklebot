@@ -1,16 +1,132 @@
 export interface CronPreset {
   label: string;
+  labelEn?: string;
   expr: string;
   hint?: string;
+  hintEn?: string;
 }
 
 export const CRON_PRESETS: readonly CronPreset[] = [
-  { label: "每30分钟", expr: "*/30 * * * *" },
-  { label: "每3天 10:00", expr: "0 10 */3 * *" },
-  { label: "工作日 09:00", expr: "0 9 * * 1-5" },
-  { label: "每周一 09:00", expr: "0 9 * * 1" },
-  { label: "每月1日 09:00", expr: "0 9 1 * *" },
+  { label: "每30分钟", labelEn: "Every 30 min", expr: "*/30 * * * *" },
+  { label: "每3天 10:00", labelEn: "Every 3 days 10:00", expr: "0 10 */3 * *" },
+  { label: "工作日 09:00", labelEn: "Weekdays 09:00", expr: "0 9 * * 1-5" },
+  { label: "每周一 09:00", labelEn: "Every Mon 09:00", expr: "0 9 * * 1" },
+  { label: "每月1日 09:00", labelEn: "Monthly 1st 09:00", expr: "0 9 1 * *" },
 ];
+
+export function getCronPresets(
+  locale: "zh-CN" | "en" = "zh-CN"
+): Array<{ label: string; expr: string; hint?: string }> {
+  return CRON_PRESETS.map((p) => ({
+    label: locale === "en" ? p.labelEn || p.label : p.label,
+    expr: p.expr,
+    hint: locale === "en" ? p.hintEn || p.hint : p.hint,
+  }));
+}
+
+const WEEKDAY_LABEL_PATTERNS: ReadonlyArray<readonly [RegExp, number]> = [
+  [/周日|星期日|星期天|\bsunday\b|\bsun\b/i, 0],
+  [/周一|星期一|\bmonday\b|\bmon\b/i, 1],
+  [/周二|星期二|\btuesday\b|\btue\b/i, 2],
+  [/周三|星期三|\bwednesday\b|\bwed\b/i, 3],
+  [/周四|星期四|\bthursday\b|\bthu\b/i, 4],
+  [/周五|星期五|\bfriday\b|\bfri\b/i, 5],
+  [/周六|星期六|\bsaturday\b|\bsat\b/i, 6],
+];
+
+/**
+ * Resolves recurring preset repeat modes (`daily`, `hourly`, `weekly`) into their
+ * underlying 5-field Cron expression so presets are executed via Cron uniformly.
+ */
+export function resolvePresetCronExpression(
+  repeat: string,
+  opts?: { scheduleLabel?: string; time?: string }
+): string | null {
+  const mode = String(repeat || "").trim().toLowerCase();
+  if (mode !== "daily" && mode !== "hourly" && mode !== "weekly") {
+    return null;
+  }
+
+  const label = String(opts?.scheduleLabel || "").trim();
+  const timeText = String(opts?.time || "").trim();
+  const hmMatch =
+    timeText.match(/(?:^|\D)([01]?\d|2[0-3]):([0-5]\d)(?:\D|$)/) ||
+    label.match(/(?:^|\D)([01]?\d|2[0-3]):([0-5]\d)(?:\D|$)/);
+  const hour = hmMatch ? Number(hmMatch[1]) : 10;
+  let minute = hmMatch ? Number(hmMatch[2]) : 0;
+
+  if (mode === "hourly") {
+    if (!hmMatch) {
+      const minMatch = label.match(/(?:第\s*(\d{1,2})\s*分|:(\d{2}))/);
+      const rawMin = minMatch ? Number(minMatch[1] ?? minMatch[2]) : NaN;
+      if (Number.isInteger(rawMin) && rawMin >= 0 && rawMin <= 59) {
+        minute = rawMin;
+      } else {
+        minute = 0;
+      }
+    }
+    return `${minute} * * * *`;
+  }
+
+  if (mode === "daily") {
+    return `${minute} ${hour} * * *`;
+  }
+
+  // weekly
+  let dow = 1;
+  for (const [re, dayNum] of WEEKDAY_LABEL_PATTERNS) {
+    if (re.test(label)) {
+      dow = dayNum;
+      break;
+    }
+  }
+  return `${minute} ${hour} * * ${dow}`;
+}
+
+/**
+ * Resolves and validates the persisted Cron expression across `daily`, `hourly`,
+ * `weekly`, `cron`, and `once` modes for HTTP routes and Bot tools.
+ */
+export function resolveScheduleCronConfig(opts: {
+  repeat: string;
+  rawCron?: unknown;
+  fallbackCron?: unknown;
+  scheduleLabel?: unknown;
+  time?: unknown;
+  preserveFallbackPreset?: boolean;
+  locale?: "zh-CN" | "en";
+}): { ok: true; cron: string } | { ok: false; error: string } {
+  const mode = String(opts.repeat || "").trim().toLowerCase();
+  const locale = opts.locale === "en" ? "en" : "zh-CN";
+  const rawStr = typeof opts.rawCron === "string" ? opts.rawCron.trim() : "";
+  const fbStr = typeof opts.fallbackCron === "string" ? opts.fallbackCron.trim() : "";
+
+  if (mode === "cron") {
+    const candidate = rawStr || fbStr;
+    const parsed = parseCronExpression(candidate, locale);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    return { ok: true, cron: parsed.normalized };
+  }
+
+  if (mode === "daily" || mode === "hourly" || mode === "weekly") {
+    if (rawStr) {
+      const parsed = parseCronExpression(rawStr, locale);
+      if (!parsed.ok) return { ok: false, error: parsed.error };
+      return { ok: true, cron: parsed.normalized };
+    }
+    if (opts.preserveFallbackPreset && fbStr) {
+      const parsed = parseCronExpression(fbStr, locale);
+      if (parsed.ok) return { ok: true, cron: parsed.normalized };
+    }
+    const derived = resolvePresetCronExpression(mode, {
+      scheduleLabel: String(opts.scheduleLabel || ""),
+      time: String(opts.time || ""),
+    });
+    return { ok: true, cron: derived || "" };
+  }
+
+  return { ok: true, cron: "" };
+}
 
 export interface ParsedCronExpression {
   raw: string;
@@ -64,6 +180,7 @@ const DOW_NAMES: Record<string, number> = {
 };
 
 const DOW_LABELS_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const DOW_LABELS_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function parseFieldAtom(
   rawToken: string,
@@ -87,11 +204,17 @@ function parseCronField(
   min: number,
   max: number,
   fieldLabel: string,
-  opts: { names?: Record<string, number>; isDow?: boolean } = {}
+  opts: { names?: Record<string, number>; isDow?: boolean; locale?: "zh-CN" | "en" } = {}
 ): { ok: true; mask: boolean[]; wildcard: boolean } | { ok: false; error: string } {
+  const isEn = opts.locale === "en";
   const token = String(fieldRaw || "").trim();
   if (!token) {
-    return { ok: false, error: `Cron「${fieldLabel}」字段不能为空` };
+    return {
+      ok: false,
+      error: isEn
+        ? `Cron "${fieldLabel}" field cannot be empty`
+        : `Cron「${fieldLabel}」字段不能为空`,
+    };
   }
 
   const mask = new Array<boolean>(opts.isDow ? 7 : max + 1).fill(false);
@@ -101,7 +224,12 @@ function parseCronField(
   for (const partRaw of parts) {
     const part = partRaw.trim();
     if (!part) {
-      return { ok: false, error: `Cron「${fieldLabel}」存在空的逗号分隔项` };
+      return {
+        ok: false,
+        error: isEn
+          ? `Cron "${fieldLabel}" contains an empty list item`
+          : `Cron「${fieldLabel}」存在空的逗号分隔项`,
+      };
     }
 
     const slashIdx = part.indexOf("/");
@@ -109,16 +237,31 @@ function parseCronField(
     let step = 1;
     if (slashIdx !== -1) {
       if (part.indexOf("/", slashIdx + 1) !== -1) {
-        return { ok: false, error: `Cron「${fieldLabel}」包含无效步长写法：${part}` };
+        return {
+          ok: false,
+          error: isEn
+            ? `Cron "${fieldLabel}" has invalid step syntax: ${part}`
+            : `Cron「${fieldLabel}」包含无效步长写法：${part}`,
+        };
       }
       base = part.slice(0, slashIdx).trim();
       const stepStr = part.slice(slashIdx + 1).trim();
       if (!/^\d+$/.test(stepStr)) {
-        return { ok: false, error: `Cron「${fieldLabel}」步长必须是正整数：${part}` };
+        return {
+          ok: false,
+          error: isEn
+            ? `Cron "${fieldLabel}" step must be a positive integer: ${part}`
+            : `Cron「${fieldLabel}」步长必须是正整数：${part}`,
+        };
       }
       step = Number(stepStr);
       if (!Number.isInteger(step) || step <= 0) {
-        return { ok: false, error: `Cron「${fieldLabel}」步长必须大于 0：${part}` };
+        return {
+          ok: false,
+          error: isEn
+            ? `Cron "${fieldLabel}" step must be greater than 0: ${part}`
+            : `Cron「${fieldLabel}」步长必须大于 0：${part}`,
+        };
       }
     }
 
@@ -130,22 +273,42 @@ function parseCronField(
     } else if (base.includes("-")) {
       const dashParts = base.split("-");
       if (dashParts.length !== 2) {
-        return { ok: false, error: `Cron「${fieldLabel}」范围格式无效：${part}` };
+        return {
+          ok: false,
+          error: isEn
+            ? `Cron "${fieldLabel}" has invalid range syntax: ${part}`
+            : `Cron「${fieldLabel}」范围格式无效：${part}`,
+        };
       }
       const s = parseFieldAtom(dashParts[0], min, max, opts.names);
       const e = parseFieldAtom(dashParts[1], min, max, opts.names);
       if (s === null || e === null) {
-        return { ok: false, error: `Cron「${fieldLabel}」数值超出范围（允许 ${min}-${max}）：${part}` };
+        return {
+          ok: false,
+          error: isEn
+            ? `Cron "${fieldLabel}" value out of range (${min}-${max}): ${part}`
+            : `Cron「${fieldLabel}」数值超出范围（允许 ${min}-${max}）：${part}`,
+        };
       }
       if (s > e) {
-        return { ok: false, error: `Cron「${fieldLabel}」起始值不能大于结束值：${part}` };
+        return {
+          ok: false,
+          error: isEn
+            ? `Cron "${fieldLabel}" start cannot exceed end: ${part}`
+            : `Cron「${fieldLabel}」起始值不能大于结束值：${part}`,
+        };
       }
       rangeStart = s;
       rangeEnd = e;
     } else {
       const v = parseFieldAtom(base, min, max, opts.names);
       if (v === null) {
-        return { ok: false, error: `Cron「${fieldLabel}」数值无效（允许 ${min}-${max}）：${part}` };
+        return {
+          ok: false,
+          error: isEn
+            ? `Cron "${fieldLabel}" value invalid (allowed ${min}-${max}): ${part}`
+            : `Cron「${fieldLabel}」数值无效（允许 ${min}-${max}）：${part}`,
+        };
       }
       rangeStart = v;
       rangeEnd = slashIdx !== -1 ? (opts.isDow ? 6 : max) : v;
@@ -177,10 +340,19 @@ function hasAnyValidCalendarDate(parsed: ParsedCronExpression): boolean {
   return false;
 }
 
-export function parseCronExpression(expr: string): ParseCronResult {
+export function parseCronExpression(
+  expr: string,
+  locale: "zh-CN" | "en" = "zh-CN"
+): ParseCronResult {
+  const isEn = locale === "en";
   const raw = String(expr || "").trim();
   if (!raw) {
-    return { ok: false, error: "请输入 5 段式 Cron 表达式（分 时 日 月 周）" };
+    return {
+      ok: false,
+      error: isEn
+        ? "Please enter a 5-field Cron expression (min hour day month weekday)"
+        : "请输入 5 段式 Cron 表达式（分 时 日 月 周）",
+    };
   }
   const aliasResolved = CRON_ALIASES[raw.toLowerCase()];
   const expanded = aliasResolved || raw;
@@ -188,19 +360,28 @@ export function parseCronExpression(expr: string): ParseCronResult {
   if (parts.length !== 5) {
     return {
       ok: false,
-      error: `Cron 表达式必须包含 5 个空格分隔字段（分 时 日 月 周），当前有 ${parts.length} 段`,
+      error: isEn
+        ? `Cron expression must have 5 space-separated fields (min hour day month weekday); got ${parts.length}`
+        : `Cron 表达式必须包含 5 个空格分隔字段（分 时 日 月 周），当前有 ${parts.length} 段`,
     };
   }
 
-  const minRes = parseCronField(parts[0], 0, 59, "分");
+  const minRes = parseCronField(parts[0], 0, 59, isEn ? "minute" : "分", { locale });
   if (!minRes.ok) return minRes;
-  const hourRes = parseCronField(parts[1], 0, 23, "时");
+  const hourRes = parseCronField(parts[1], 0, 23, isEn ? "hour" : "时", { locale });
   if (!hourRes.ok) return hourRes;
-  const domRes = parseCronField(parts[2], 1, 31, "日");
+  const domRes = parseCronField(parts[2], 1, 31, isEn ? "day" : "日", { locale });
   if (!domRes.ok) return domRes;
-  const monthRes = parseCronField(parts[3], 1, 12, "月", { names: MONTH_NAMES });
+  const monthRes = parseCronField(parts[3], 1, 12, isEn ? "month" : "月", {
+    names: MONTH_NAMES,
+    locale,
+  });
   if (!monthRes.ok) return monthRes;
-  const dowRes = parseCronField(parts[4], 0, 7, "周", { names: DOW_NAMES, isDow: true });
+  const dowRes = parseCronField(parts[4], 0, 7, isEn ? "weekday" : "周", {
+    names: DOW_NAMES,
+    isDow: true,
+    locale,
+  });
   if (!dowRes.ok) return dowRes;
 
   const value: ParsedCronExpression = {
@@ -216,7 +397,12 @@ export function parseCronExpression(expr: string): ParseCronResult {
   };
 
   if (!hasAnyValidCalendarDate(value)) {
-    return { ok: false, error: "该 Cron 表达式对应的月份与日期在日历上永远不会出现" };
+    return {
+      ok: false,
+      error: isEn
+        ? "This Cron month/day combination never occurs on the calendar"
+        : "该 Cron 表达式对应的月份与日期在日历上永远不会出现",
+    };
   }
 
   return { ok: true, value, normalized: value.normalized };
@@ -310,24 +496,36 @@ export function getNextCronDates(
   return out;
 }
 
-export function describeCronExpression(expr: string): string {
-  const parsed = parseCronExpression(expr);
-  if (!parsed.ok) return String(expr || "").trim() || "自定义 Cron";
+export function describeCronExpression(
+  expr: string,
+  locale: "zh-CN" | "en" = "zh-CN"
+): string {
+  const isEn = locale === "en";
+  const parsed = parseCronExpression(expr, locale);
+  if (!parsed.ok) return String(expr || "").trim() || (isEn ? "Custom Cron" : "自定义 Cron");
   const [m, h, dom, mon, dow] = parsed.normalized.split(" ");
   const pad2 = (n: string) => String(Number(n)).padStart(2, "0");
 
   if (m === "*" && h === "*" && dom === "*" && mon === "*" && dow === "*") {
-    return "每分钟执行";
+    return isEn ? "Every minute" : "每分钟执行";
   }
   const mStep = m.match(/^\*\/(\d+)$/);
   if (mStep && h === "*" && dom === "*" && mon === "*" && dow === "*") {
-    return `每 ${Number(mStep[1])} 分钟`;
+    return isEn ? `Every ${Number(mStep[1])} min` : `每 ${Number(mStep[1])} 分钟`;
   }
   if (/^\d+$/.test(m) && h === "*" && dom === "*" && mon === "*" && dow === "*") {
+    if (isEn) {
+      return Number(m) === 0 ? "Hourly on the hour" : `Hourly at :${pad2(m)}`;
+    }
     return Number(m) === 0 ? "每小时整点" : `每小时第 ${pad2(m)} 分`;
   }
   const hStep = h.match(/^\*\/(\d+)$/);
   if (/^\d+$/.test(m) && hStep && dom === "*" && mon === "*" && dow === "*") {
+    if (isEn) {
+      return Number(m) === 0
+        ? `Every ${Number(hStep[1])} hours on the hour`
+        : `Every ${Number(hStep[1])} hours at :${pad2(m)}`;
+    }
     return Number(m) === 0
       ? `每 ${Number(hStep[1])} 小时整点`
       : `每 ${Number(hStep[1])} 小时第 ${pad2(m)} 分`;
@@ -336,26 +534,29 @@ export function describeCronExpression(expr: string): string {
   if (/^\d+$/.test(m) && /^\d+$/.test(h) && mon === "*") {
     const clock = `${pad2(h)}:${pad2(m)}`;
     if (dom === "*" && dow === "*") {
-      return `每天 ${clock}`;
+      return isEn ? `Daily at ${clock}` : `每天 ${clock}`;
     }
     const domStep = dom.match(/^\*\/(\d+)$/);
     if (domStep && dow === "*") {
-      return `每 ${Number(domStep[1])} 天 ${clock}`;
+      return isEn ? `Every ${Number(domStep[1])} days at ${clock}` : `每 ${Number(domStep[1])} 天 ${clock}`;
     }
     if (dom === "*") {
-      if (dow === "1-5") return `每周一至周五 ${clock}`;
-      if (dow === "0,6" || dow === "6,0" || dow === "6-7") return `每周末 ${clock}`;
+      if (dow === "1-5") return isEn ? `Mon–Fri at ${clock}` : `每周一至周五 ${clock}`;
+      if (dow === "0,6" || dow === "6,0" || dow === "6-7") {
+        return isEn ? `Weekends at ${clock}` : `每周末 ${clock}`;
+      }
       if (/^[0-7]$/.test(dow)) {
         const idx = Number(dow) === 7 ? 0 : Number(dow);
-        return `每${DOW_LABELS_ZH[idx]} ${clock}`;
+        return isEn ? `Every ${DOW_LABELS_EN[idx]} at ${clock}` : `每${DOW_LABELS_ZH[idx]} ${clock}`;
       }
       const dowUpper = dow.toUpperCase();
       if (Object.prototype.hasOwnProperty.call(DOW_NAMES, dowUpper)) {
-        return `每${DOW_LABELS_ZH[DOW_NAMES[dowUpper]]} ${clock}`;
+        const idx = DOW_NAMES[dowUpper];
+        return isEn ? `Every ${DOW_LABELS_EN[idx]} at ${clock}` : `每${DOW_LABELS_ZH[idx]} ${clock}`;
       }
     }
     if (/^\d+$/.test(dom) && dow === "*") {
-      return `每月 ${Number(dom)} 日 ${clock}`;
+      return isEn ? `Monthly on day ${Number(dom)} at ${clock}` : `每月 ${Number(dom)} 日 ${clock}`;
     }
   }
 

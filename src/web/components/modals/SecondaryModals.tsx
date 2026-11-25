@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { upsertCloudAccount } from "/accounts-store.js";
 import {
-  CRON_PRESETS,
   describeCronExpression,
   getNextCronDates,
   parseCronExpression,
+  resolvePresetCronExpression,
 } from "/shared/cron.js";
 import { buildPreviewSrcdoc } from "../../preview-utils.js";
 import {
@@ -19,8 +19,9 @@ import {
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
-import { BG_MODES } from "../../state/constants.js";
+import { getBgModes } from "../../state/constants.js";
 import {
   formatClockTime,
   teardownPreviewIframe,
@@ -61,6 +62,9 @@ export function SecondaryModals() {
   const sessions = useStore((s) => s.sessions);
   const primarySessionId = useStore((s) => s.primarySessionId);
   const activeSessionId = useStore((s) => s.activeSessionId);
+  const { locale, t } = useI18n();
+  const bgModes = getBgModes(locale);
+  const defaultDailyLabel = t("schedule.defaultDailyLabel");
 
   // Search palette state
   const [searchQuery, setSearchQuery] = useState("");
@@ -72,9 +76,9 @@ export function SecondaryModals() {
   // Schedule modal state
   const [schedTitle, setSchedTitle] = useState("");
   const [schedRepeat, setSchedRepeat] = useState("daily");
-  const [schedLabel, setSchedLabel] = useState("每天 10:00");
+  const [schedLabel, setSchedLabel] = useState(defaultDailyLabel);
   const [schedPrompt, setSchedPrompt] = useState("");
-  const [schedCron, setSchedCron] = useState("0 10 */3 * *");
+  const [schedCron, setSchedCron] = useState("0 10 * * *");
   const [schedCronTouched, setSchedCronTouched] = useState(false);
   const [schedLabelManual, setSchedLabelManual] = useState(false);
   const schedCronInputRef = useRef<HTMLInputElement | null>(null);
@@ -91,22 +95,30 @@ export function SecondaryModals() {
     if (editingScheduleId) {
       const target = schedules.find((s: any) => s.id === editingScheduleId);
       if (target) {
+        const initRepeat = String(target.repeat || "daily");
+        const initLabel = String(target.scheduleLabel || defaultDailyLabel);
+        const initCron =
+          String(target.cron || "").trim() ||
+          resolvePresetCronExpression(initRepeat, { scheduleLabel: initLabel }) ||
+          "0 10 * * *";
         setSchedTitle(String(target.title || ""));
-        setSchedRepeat(String(target.repeat || "daily"));
-        setSchedLabel(String(target.scheduleLabel || "每天 10:00"));
+        setSchedRepeat(initRepeat);
+        setSchedLabel(initLabel);
         setSchedPrompt(String(target.prompt || ""));
-        setSchedCron(String(target.cron || "0 10 */3 * *"));
+        setSchedCron(initCron);
         setSchedLabelManual(Boolean(target.scheduleLabel));
         return;
       }
     }
     setSchedTitle("");
     setSchedRepeat("daily");
-    setSchedLabel("每天 10:00");
+    setSchedLabel(defaultDailyLabel);
     setSchedPrompt("");
-    setSchedCron("0 10 */3 * *");
+    setSchedCron(
+      resolvePresetCronExpression("daily", { scheduleLabel: defaultDailyLabel }) || "0 10 * * *"
+    );
     setSchedLabelManual(false);
-  }, [scheduleModalOpen, editingScheduleId]);
+  }, [scheduleModalOpen, editingScheduleId, defaultDailyLabel]);
 
   const htmlPreviewDialogRef = useRef<HTMLDialogElement | null>(null);
   const htmlPreviewFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -184,16 +196,20 @@ export function SecondaryModals() {
   }, [shortcutsDialogOpen]);
 
   const navShortcuts = [
-    { label: "创建新 Bot 或 Bot 群聊", sub: "+", fn: () => openNewChatBar(false) },
-    { label: "打开 Bot 的电脑 (全屏实时桌面)", sub: "电脑", fn: () => openBotScreenOverlay() },
+    { label: t("search.navNewBot"), sub: "+", fn: () => openNewChatBar(false) },
     {
-      label: "设置 · 权限与自动审核规则",
-      sub: "设置",
+      label: t("search.navComputer"),
+      sub: t("search.navComputerSub"),
+      fn: () => openBotScreenOverlay(),
+    },
+    {
+      label: t("search.navPermissions"),
+      sub: t("search.navSettingsSub"),
       fn: () => openSettingsModal("permissions"),
     },
     {
-      label: "设置 · 外观主题 (跟随系统 / 浅色 / 深色)",
-      sub: "设置",
+      label: t("search.navTheme"),
+      sub: t("search.navSettingsSub"),
       fn: () => openSettingsModal("general"),
     },
   ].filter(
@@ -206,7 +222,7 @@ export function SecondaryModals() {
     const prompt = schedPrompt.trim();
     let cronPayload: string | undefined;
     if (schedRepeat === "cron") {
-      const parsedCron = parseCronExpression(schedCron);
+      const parsedCron = parseCronExpression(schedCron, locale);
       if (!parsedCron.ok) {
         setSchedCronTouched(true);
         schedCronInputRef.current?.focus();
@@ -214,14 +230,22 @@ export function SecondaryModals() {
         return;
       }
       cronPayload = parsedCron.normalized;
+    } else if (
+      (schedRepeat === "daily" || schedRepeat === "hourly" || schedRepeat === "weekly") &&
+      supportsCronSchedules
+    ) {
+      cronPayload =
+        resolvePresetCronExpression(schedRepeat, {
+          scheduleLabel: schedLabel.trim() || defaultDailyLabel,
+        }) || undefined;
     }
     const scheduleLabel =
       schedLabel.trim() ||
       (schedRepeat === "cron" && cronPayload
-        ? describeCronExpression(cronPayload)
-        : "每天 10:00");
+        ? describeCronExpression(cronPayload, locale)
+        : defaultDailyLabel);
     if (!title || !prompt || (!editingScheduleId && !activeSessionId)) {
-      showToast("请填写任务名称与执行指令");
+      showToast(t("schedule.fillTitleAndPromptToast"));
       return;
     }
     const hasExplicitClock = /(?:^|\D)([01]?\d|2[0-3]):([0-5]\d)(?:\D|$)/.test(scheduleLabel);
@@ -257,11 +281,11 @@ export function SecondaryModals() {
     }
     setSchedTitle("");
     setSchedPrompt("");
-    setSchedCron("0 10 */3 * *");
+    setSchedCron("0 10 * * *");
     setSchedCronTouched(false);
     setState({ scheduleModalOpen: false, editingScheduleId: null });
     refreshSchedules();
-    showToast(editingScheduleId ? "例行任务已更新" : "例行任务已创建");
+    showToast(editingScheduleId ? t("schedule.updatedToast") : t("schedule.createdToast"));
   };
 
   const handleSaveBotMemoryModal = async () => {
@@ -271,7 +295,7 @@ export function SecondaryModals() {
     if (!targetSession) return;
     const content = botMemoryModal.content.trim();
     if (!content) {
-      showToast("请输入该 Bot 的专属记忆内容");
+      showToast(t("memory.enterContentToast"));
       return;
     }
     const title =
@@ -322,11 +346,19 @@ export function SecondaryModals() {
       }));
       showToast(
         botMemoryModal.memoryId
-          ? `已更新「${targetSession.title || "当前 Bot"}」的专属记忆`
-          : `已保存到「${targetSession.title || "当前 Bot"}」的专属记忆`
+          ? t("memory.updatedForBotToast", {
+              name: targetSession.title || t("memory.currentBotFallback"),
+            })
+          : t("memory.savedForBotToast", {
+              name: targetSession.title || t("memory.currentBotFallback"),
+            })
       );
     } catch (err: any) {
-      showToast(`保存失败: ${err?.message || "未知错误"}`);
+      showToast(
+        t("memory.saveFailedToast", {
+          error: err?.message || t("memory.unknownError"),
+        })
+      );
     }
   };
 
@@ -348,7 +380,7 @@ export function SecondaryModals() {
       setState((prev) => ({
         cloudAccountModal: {
           ...prev.cloudAccountModal,
-          feedback: err?.message || "云端地址格式无效",
+          feedback: err?.message || t("cloudModal.invalidUrlFallback"),
         },
       }));
     }
@@ -357,7 +389,7 @@ export function SecondaryModals() {
   // HTML Preview Modal derived props
   const isModalPreview = htmlPreviewModal.mode !== "code";
   const curBgObj =
-    BG_MODES.find((b) => b.key === htmlPreviewModal.canvasBg) || BG_MODES[0];
+    bgModes.find((b) => b.key === htmlPreviewModal.canvasBg) || bgModes[0];
   const modalSrcdoc =
     htmlPreviewModal.open && htmlPreviewModal.code
       ? buildPreviewSrcdoc(htmlPreviewModal.code, {
@@ -384,7 +416,7 @@ export function SecondaryModals() {
           if (e.target === e.currentTarget) setState({ searchModalOpen: false });
         }}
       >
-        <div className="search-palette-modal" role="dialog" aria-modal="true" aria-label="搜索">
+        <div className="search-palette-modal" role="dialog" aria-modal="true" aria-label={t("common.search")}>
           <div className="search-palette-top">
             <svg className="search-palette-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <circle cx="9" cy="9" r="5.6" stroke="currentColor" strokeWidth="1.6" />
@@ -399,8 +431,8 @@ export function SecondaryModals() {
               id="palette-search-input"
               type="text"
               className="palette-search-input"
-              placeholder="搜索 Bot、聊天消息全文、设置..."
-              aria-label="搜索"
+              placeholder={t("search.placeholder")}
+              aria-label={t("common.search")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -409,11 +441,11 @@ export function SecondaryModals() {
             id="palette-results-list"
             className="palette-results-list"
             role="listbox"
-            aria-label="结果"
+            aria-label={t("search.resultsAria")}
           >
             {searchResults.bots.length > 0 && (
               <>
-                <div className="palette-section-title">Bot 与群聊</div>
+                <div className="palette-section-title">{t("search.sectionBots")}</div>
                 {searchResults.bots.map((b: any) => (
                   <button
                     key={b.id}
@@ -433,7 +465,7 @@ export function SecondaryModals() {
                     </span>
                     <span className="palette-result-title">{b.title}</span>
                     <span className="palette-result-sub">
-                      {b.type === "group" ? "群聊" : "Bot"}
+                      {b.type === "group" ? t("search.typeGroup") : "Bot"}
                     </span>
                   </button>
                 ))}
@@ -442,7 +474,7 @@ export function SecondaryModals() {
 
             {searchResults.messages.length > 0 && (
               <>
-                <div className="palette-section-title">历史聊天消息匹配</div>
+                <div className="palette-section-title">{t("search.sectionMessages")}</div>
                 {searchResults.messages.map((m: any, idx: number) => (
                   <button
                     key={`${m.sessionId}-${idx}`}
@@ -456,13 +488,13 @@ export function SecondaryModals() {
                     <span className="palette-result-title">
                       {m.sessionTitle}: {m.snippet}
                     </span>
-                    <span className="palette-result-sub">{formatClockTime(m.at)}</span>
+                    <span className="palette-result-sub">{formatClockTime(m.at, locale)}</span>
                   </button>
                 ))}
               </>
             )}
 
-            <div className="palette-section-title">快捷导航</div>
+            <div className="palette-section-title">{t("search.sectionNav")}</div>
             {navShortcuts.map((nav) => (
               <button
                 key={nav.label}
@@ -498,17 +530,19 @@ export function SecondaryModals() {
           className="compact-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label={botMemoryModal.memoryId ? "编辑专属记忆" : "新增专属记忆"}
+          aria-label={
+            botMemoryModal.memoryId ? t("memory.modalEditTitle") : t("memory.modalCreateTitle")
+          }
         >
           <h3 className="compact-dialog-title">
-            {botMemoryModal.memoryId ? "编辑专属记忆" : "新增专属记忆"}
+            {botMemoryModal.memoryId ? t("memory.modalEditTitle") : t("memory.modalCreateTitle")}
           </h3>
           <input
             id="bot-memory-modal-name-input"
             type="text"
             className="inline-text-input"
-            placeholder="记忆要点（如：给王总发信默认抄送财务）"
-            aria-label="Bot 专属记忆标题"
+            placeholder={t("memory.namePlaceholder")}
+            aria-label={t("memory.titleAria")}
             value={botMemoryModal.name}
             onChange={(e) =>
               setState((prev) => ({
@@ -520,8 +554,8 @@ export function SecondaryModals() {
             id="bot-memory-modal-content-input"
             className="inline-textarea"
             rows={4}
-            placeholder="输入该 Bot 专属记住的上下文或约定..."
-            aria-label="Bot 专属记忆内容"
+            placeholder={t("memory.contentPlaceholder")}
+            aria-label={t("memory.contentAria")}
             value={botMemoryModal.content}
             onChange={(e) =>
               setState((prev) => ({
@@ -540,7 +574,7 @@ export function SecondaryModals() {
                 }))
               }
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               id="save-bot-memory-modal-btn"
@@ -548,7 +582,7 @@ export function SecondaryModals() {
               className="settings-blue-pill"
               onClick={handleSaveBotMemoryModal}
             >
-              {botMemoryModal.memoryId ? "保存修改" : "保存"}
+              {botMemoryModal.memoryId ? t("mobile.saveChanges") : t("common.save")}
             </button>
           </div>
         </div>
@@ -569,16 +603,18 @@ export function SecondaryModals() {
           className="compact-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label={editingScheduleId ? "编辑例行任务" : "创建例行任务"}
+          aria-label={
+            editingScheduleId ? t("schedule.modalEditTitle") : t("schedule.modalCreateTitle")
+          }
         >
           <h3 className="compact-dialog-title">
-            {editingScheduleId ? "编辑例行任务" : "创建例行任务"}
+            {editingScheduleId ? t("schedule.modalEditTitle") : t("schedule.modalCreateTitle")}
           </h3>
           <input
             id="sched-title-input"
             type="text"
             className="inline-text-input"
-            placeholder="任务名称（如：每日检查邮件回信）"
+            placeholder={t("schedule.titlePlaceholder")}
             value={schedTitle}
             onChange={(e) => setSchedTitle(e.target.value)}
           />
@@ -590,49 +626,61 @@ export function SecondaryModals() {
               onChange={(e) => {
                 const next = e.target.value;
                 setSchedRepeat(next);
+                setSchedCronTouched(false);
                 if (next === "cron") {
-                  const seed = schedCron.trim() || "0 10 */3 * *";
+                  const seed = schedCron.trim() || "0 10 * * *";
                   if (!schedCron.trim()) setSchedCron(seed);
-                  setSchedCronTouched(false);
                   if (!schedLabelManual) {
-                    setSchedLabel(describeCronExpression(seed));
+                    setSchedLabel(describeCronExpression(seed, locale));
                   }
-                } else if (!schedLabelManual) {
-                  setSchedLabel(
+                } else {
+                  const presetLabel =
                     next === "hourly"
-                      ? "每小时"
+                      ? t("schedule.defaultHourlyLabel")
                       : next === "weekly"
-                        ? "每周 10:00"
+                        ? t("schedule.defaultWeeklyLabel")
                         : next === "once"
-                          ? "单次执行"
-                          : "每天 10:00"
-                  );
+                          ? t("schedule.defaultOnceLabel")
+                          : t("schedule.defaultDailyLabel");
+                  const nextLabel = schedLabelManual ? schedLabel : presetLabel;
+                  if (!schedLabelManual) {
+                    setSchedLabel(presetLabel);
+                  }
+                  const derived = resolvePresetCronExpression(next, {
+                    scheduleLabel: nextLabel,
+                  });
+                  if (derived) setSchedCron(derived);
                 }
               }}
             >
-              <option value="daily">每天执行</option>
-              <option value="hourly">每小时执行</option>
-              <option value="weekly">每周执行</option>
+              <option value="daily">{t("schedule.repeatDaily")}</option>
+              <option value="hourly">{t("schedule.repeatHourly")}</option>
+              <option value="weekly">{t("schedule.repeatWeekly")}</option>
+              <option value="once">{t("schedule.repeatOnce")}</option>
               {supportsCronSchedules && (
-                <option value="cron">Cron 表达式（自定义周期）</option>
+                <option value="cron">{t("schedule.repeatCron")}</option>
               )}
-              <option value="once">仅执行一次（1分钟后测试）</option>
             </select>
             <input
               id="sched-label-input"
               type="text"
               className="inline-text-input"
               value={schedLabel}
-              placeholder="时间标签"
+              placeholder={t("schedule.labelPlaceholder")}
               onChange={(e) => {
-                setSchedLabelManual(Boolean(e.target.value.trim()));
-                setSchedLabel(e.target.value);
+                const val = e.target.value;
+                setSchedLabelManual(Boolean(val.trim()));
+                setSchedLabel(val);
+                const derived = resolvePresetCronExpression(schedRepeat, {
+                  scheduleLabel: val,
+                });
+                if (derived) setSchedCron(derived);
               }}
             />
           </div>
           {schedRepeat === "cron" &&
             (() => {
-              const cronRes = parseCronExpression(schedCron);
+              const cronRes = parseCronExpression(schedCron, locale);
               const showCronError = schedCronTouched && !cronRes.ok;
               const nextDates = cronRes.ok ? getNextCronDates(schedCron, 3) : [];
               const fmtPreviewDate = (d: Date) => {
@@ -645,16 +693,16 @@ export function SecondaryModals() {
               return (
                 <div className="sched-cron-panel">
                   <span id="sched-cron-hint" className="sched-cron-hint">
-                    5 段 Cron（分 时 日 月 周），支持 */n、a-b、逗号与 @daily/@weekly
+                    {t("schedule.cronHint")}
                   </span>
                   <input
                     ref={schedCronInputRef}
                     id="sched-cron-input"
                     type="text"
                     className={`inline-text-input sched-cron-input${showCronError ? " is-invalid" : ""}`}
-                    placeholder="例如：0 10 */3 * *（每3天 10:00）"
+                    placeholder={t("schedule.cronPlaceholder")}
                     value={schedCron}
-                    aria-label="Cron 表达式"
+                    aria-label={t("schedule.cronAria")}
                     aria-invalid={showCronError ? "true" : "false"}
                     aria-describedby={
                       showCronError ? "sched-cron-hint sched-cron-error" : "sched-cron-hint"
@@ -664,9 +712,9 @@ export function SecondaryModals() {
                       const val = e.target.value;
                       setSchedCron(val);
                       if (!schedLabelManual) {
-                        const parsed = parseCronExpression(val);
+                        const parsed = parseCronExpression(val, locale);
                         if (parsed.ok) {
-                          setSchedLabel(describeCronExpression(val));
+                          setSchedLabel(describeCronExpression(val, locale));
                         }
                       }
                     }}
@@ -677,30 +725,10 @@ export function SecondaryModals() {
                     className="sched-cron-error"
                     hidden={!showCronError}
                   >
-                    <span role="img" aria-label="错误">
+                    <span role="img" aria-label={t("schedule.cronErrorAria")}>
                       ⚠
                     </span>{" "}
                     {!cronRes.ok ? cronRes.error : ""}
-                  </div>
-                  <div className="sched-cron-presets" aria-label="常用 Cron 预设">
-                    {CRON_PRESETS.map((p) => (
-                      <button
-                        key={p.expr}
-                        type="button"
-                        className={`sched-cron-preset-btn${
-                          cronRes.ok && cronRes.normalized === p.expr ? " is-active" : ""
-                        }`}
-                        onClick={() => {
-                          setSchedCron(p.expr);
-                          setSchedCronTouched(false);
-                          if (!schedLabelManual) {
-                            setSchedLabel(describeCronExpression(p.expr));
-                          }
-                        }}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
                   </div>
                   {cronRes.ok && (
                     <div
@@ -709,10 +737,10 @@ export function SecondaryModals() {
                       role="status"
                       aria-live="polite"
                     >
-                      <span>✓ {describeCronExpression(schedCron)}</span>
+                      <span>✓ {describeCronExpression(schedCron, locale)}</span>
                       {nextDates.length > 0 && (
                         <span>
-                          {" · 下次执行："}
+                          {t("schedule.nextRunPrefix")}
                           {nextDates.map(fmtPreviewDate).join(" · ")}
                         </span>
                       )}
@@ -725,7 +753,7 @@ export function SecondaryModals() {
             id="sched-prompt-input"
             className="inline-textarea"
             rows={3}
-            placeholder="到点发送给当前 Bot 执行的具体指令..."
+            placeholder={t("schedule.promptPlaceholder")}
             value={schedPrompt}
             onChange={(e) => setSchedPrompt(e.target.value)}
           />
@@ -736,7 +764,7 @@ export function SecondaryModals() {
               className="settings-pill-btn"
               onClick={() => setState({ scheduleModalOpen: false, editingScheduleId: null })}
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               id="save-sched-modal-btn"
@@ -744,7 +772,7 @@ export function SecondaryModals() {
               className="settings-blue-pill"
               onClick={handleSaveSchedule}
             >
-              {editingScheduleId ? "保存修改" : "创建任务"}
+              {editingScheduleId ? t("mobile.saveChanges") : t("schedule.createTaskBtn")}
             </button>
           </div>
         </div>
@@ -756,7 +784,7 @@ export function SecondaryModals() {
         className="modal-backdrop image-lightbox-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="图片预览"
+        aria-label={t("actions.imagePreviewAlt")}
         hidden={!imageLightbox.open}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
@@ -771,13 +799,13 @@ export function SecondaryModals() {
             href={imageLightbox.url || "#"}
             download={lightboxDownloadName}
           >
-            下载原图
+            {t("lightbox.downloadOriginal")}
           </a>
           <button
             id="close-lightbox-btn"
             type="button"
             className="screen-exit-btn"
-            aria-label="关闭预览"
+            aria-label={t("lightbox.closePreviewAria")}
             onClick={() => setState({ imageLightbox: { open: false, url: "", alt: "" } })}
           >
             <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -794,7 +822,7 @@ export function SecondaryModals() {
           id="lightbox-img"
           className="lightbox-img"
           src={imageLightbox.url || undefined}
-          alt={imageLightbox.alt || "图片大图预览"}
+          alt={imageLightbox.alt || t("lightbox.altFallback")}
           fetchPriority="low"
         />
       </div>
@@ -821,13 +849,13 @@ export function SecondaryModals() {
           <div className="html-preview-dialog-header">
             <div className="html-preview-dialog-title-group">
               <h2 id="html-preview-dialog-title" className="html-preview-dialog-title">
-                {htmlPreviewModal.badgeLabel || "HTML 预览"}
+                {htmlPreviewModal.badgeLabel || t("actions.htmlPreviewBadge")}
               </h2>
-              <span className="html-preview-sandbox-badge">沙盒隔离运行</span>
+              <span className="html-preview-sandbox-badge">{t("previewModal.sandboxBadge")}</span>
             </div>
 
             <div className="html-preview-dialog-controls">
-              <div className="msg-preview-tabs" role="group" aria-label="视图切换">
+              <div className="msg-preview-tabs" role="group" aria-label={t("previewModal.viewSwitchAria")}>
                 <button
                   type="button"
                   className={`msg-preview-tab${isModalPreview ? " is-active" : ""}`}
@@ -838,7 +866,7 @@ export function SecondaryModals() {
                     }))
                   }
                 >
-                  预览
+                  {t("card.previewRender")}
                 </button>
                 <button
                   type="button"
@@ -850,7 +878,7 @@ export function SecondaryModals() {
                     }))
                   }
                 >
-                  源码
+                  {t("card.previewCode")}
                 </button>
               </div>
 
@@ -858,12 +886,12 @@ export function SecondaryModals() {
                 className="msg-preview-tabs"
                 id="html-preview-viewport-group"
                 role="group"
-                aria-label="视口宽度"
+                aria-label={t("previewModal.viewportAria")}
                 hidden={!isModalPreview || htmlPreviewModal.kind === "svg"}
               >
                 {(
                   [
-                    ["full", "自适应"],
+                    ["full", t("previewModal.viewportFull")],
                     ["desktop", "1024px"],
                     ["mobile", "390px"],
                   ] as const
@@ -890,10 +918,10 @@ export function SecondaryModals() {
                 className="msg-preview-btn"
                 hidden={!isModalPreview}
                 onClick={() => {
-                  const curIdx = BG_MODES.findIndex(
+                  const curIdx = bgModes.findIndex(
                     (b) => b.key === htmlPreviewModal.canvasBg
                   );
-                  const nextKey = BG_MODES[(curIdx + 1) % BG_MODES.length].key;
+                  const nextKey = bgModes[(curIdx + 1) % bgModes.length].key;
                   setState((prev) => ({
                     htmlPreviewModal: { ...prev.htmlPreviewModal, canvasBg: nextKey },
                   }));
@@ -906,7 +934,7 @@ export function SecondaryModals() {
                 id="html-preview-modal-reload-btn"
                 type="button"
                 className="msg-preview-btn"
-                aria-label="刷新预览"
+                aria-label={t("card.previewRefresh")}
                 hidden={!isModalPreview}
                 onClick={() => {
                   teardownPreviewIframe(htmlPreviewFrameRef.current);
@@ -938,7 +966,7 @@ export function SecondaryModals() {
                     strokeLinejoin="round"
                   />
                 </svg>
-                <span>刷新</span>
+                <span>{t("common.refresh")}</span>
               </button>
 
               <button
@@ -949,10 +977,10 @@ export function SecondaryModals() {
                   try {
                     await navigator.clipboard.writeText(htmlPreviewModal.code || "");
                   } catch {}
-                  showToast("源码已复制");
+                  showToast(t("card.previewSourceCopied"));
                 }}
               >
-                复制源码
+                {t("previewModal.copySource")}
               </button>
 
               <button
@@ -980,14 +1008,14 @@ export function SecondaryModals() {
                   setTimeout(() => URL.revokeObjectURL(url), 1000);
                 }}
               >
-                下载
+                {t("card.previewDownload")}
               </button>
 
               <button
                 id="close-html-preview-dialog-btn"
                 type="button"
                 className="modal-close-btn html-preview-close-btn"
-                aria-label="关闭预览"
+                aria-label={t("lightbox.closePreviewAria")}
                 onClick={() => htmlPreviewDialogRef.current?.close()}
               >
                 <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -1015,7 +1043,7 @@ export function SecondaryModals() {
                 id="html-preview-modal-frame"
                 className="html-preview-modal-frame"
                 sandbox="allow-scripts allow-forms"
-                title="HTML 与 SVG 沙盒预览"
+                title={t("previewModal.frameTitle")}
                 srcDoc={modalSrcdoc}
               />
             </div>
@@ -1051,13 +1079,13 @@ export function SecondaryModals() {
         <div className="shortcuts-dialog-shell">
           <div className="shortcuts-dialog-header">
             <h2 id="shortcuts-dialog-title" className="shortcuts-dialog-title">
-              快捷键与使用指南
+              {t("shortcuts.title")}
             </h2>
             <button
               id="close-shortcuts-dialog-btn"
               type="button"
               className="modal-close-btn"
-              aria-label="关闭快捷键指南"
+              aria-label={t("shortcuts.closeAria")}
               onClick={() => shortcutsDialogRef.current?.close()}
             >
               <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -1071,38 +1099,38 @@ export function SecondaryModals() {
             </button>
           </div>
           <div className="shortcuts-dialog-body">
-            <div className="shortcuts-section-label">全局导航快捷键</div>
+            <div className="shortcuts-section-label">{t("shortcuts.sectionNav")}</div>
             <div className="shortcuts-grid">
               <div className="shortcut-row">
-                <span>全局搜索 Bot 与历史消息</span>
+                <span>{t("shortcuts.navSearch")}</span>
                 <kbd>⌘ K</kbd>
               </div>
               <div className="shortcut-row">
-                <span>打开设置与账单面板</span>
+                <span>{t("shortcuts.navSettings")}</span>
                 <kbd>⌘ ,</kbd>
               </div>
               <div className="shortcut-row">
-                <span>收起 / 展开左侧边栏</span>
+                <span>{t("shortcuts.navLeftSidebar")}</span>
                 <kbd>⌘ \</kbd>
               </div>
               <div className="shortcut-row">
-                <span>打开 / 关闭右侧资料库与动态</span>
+                <span>{t("shortcuts.navRightInspector")}</span>
                 <kbd>⌘ I</kbd>
               </div>
             </div>
-            <div className="shortcuts-section-label">对话与多媒体能力</div>
+            <div className="shortcuts-section-label">{t("shortcuts.sectionChat")}</div>
             <div className="shortcuts-grid">
               <div className="shortcut-row">
-                <span>在群聊中指定某个专职 Bot 发言</span>
+                <span>{t("shortcuts.chatMention")}</span>
                 <kbd>@</kbd>
               </div>
               <div className="shortcut-row">
-                <span>输入框内换行（不直接发送）</span>
+                <span>{t("shortcuts.chatNewline")}</span>
                 <kbd>Shift + Enter</kbd>
               </div>
               <div className="shortcut-row">
-                <span>划选任意回复文字片段精准引用追问</span>
-                <kbd>选中文字 → 引用</kbd>
+                <span>{t("shortcuts.chatQuote")}</span>
+                <kbd>{t("shortcuts.chatQuoteKbd")}</kbd>
               </div>
             </div>
           </div>
@@ -1126,17 +1154,17 @@ export function SecondaryModals() {
           className="compact-dialog cloud-account-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label="添加云端账号"
+          aria-label={t("cloudModal.title")}
         >
           <div className="vault-header-row">
             <h3 className="compact-dialog-title" id="cloud-account-modal-title">
-              添加云端账号
+              {t("cloudModal.title")}
             </h3>
             <button
               id="close-cloud-account-modal-btn"
               type="button"
               className="modal-close-btn"
-              aria-label="关闭"
+              aria-label={t("common.close")}
               onClick={() =>
                 setState((prev) => ({
                   cloudAccountModal: { ...prev.cloudAccountModal, open: false },
@@ -1155,7 +1183,7 @@ export function SecondaryModals() {
           </div>
           <input id="cloud-account-id-input" type="hidden" value={cloudAccountModal.id} readOnly />
           <label className="onboarding-field">
-            <span>云端服务地址（Server URL）</span>
+            <span>{t("cloudModal.urlLabel")}</span>
             <input
               id="cloud-account-url-input"
               type="url"
@@ -1170,12 +1198,12 @@ export function SecondaryModals() {
             />
           </label>
           <label className="onboarding-field">
-            <span>工作台名称</span>
+            <span>{t("cloudModal.nameLabel")}</span>
             <input
               id="cloud-account-name-input"
               type="text"
               className="inline-text-input"
-              placeholder="例如：公司云端工作台"
+              placeholder={t("gate.cloudNamePlaceholder")}
               value={cloudAccountModal.name}
               onChange={(e) =>
                 setState((prev) => ({
@@ -1185,12 +1213,12 @@ export function SecondaryModals() {
             />
           </label>
           <label className="onboarding-field">
-            <span>访问令牌（Bearer Token）</span>
+            <span>{t("cloudModal.tokenLabel")}</span>
             <input
               id="cloud-account-token-input"
               type="password"
               className="inline-text-input"
-              placeholder="输入 CLOUD_AUTH_TOKEN"
+              placeholder={t("cloudModal.tokenPlaceholder")}
               autoComplete="off"
               value={cloudAccountModal.authToken}
               onChange={(e) =>
@@ -1220,7 +1248,7 @@ export function SecondaryModals() {
                 }))
               }
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               id="save-cloud-account-btn"
@@ -1228,7 +1256,7 @@ export function SecondaryModals() {
               className="settings-blue-pill"
               onClick={handleSaveCloudAccount}
             >
-              保存并连接
+              {t("cloudModal.saveAndConnect")}
             </button>
           </div>
         </div>
@@ -1251,13 +1279,13 @@ export function SecondaryModals() {
           className="compact-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label="手机端配对请求"
+          aria-label={t("pairingModal.aria")}
         >
-          <h3 className="compact-dialog-title">手机端请求配对本机</h3>
+          <h3 className="compact-dialog-title">{t("pairing.title")}</h3>
           <p className="settings-row-sub" id="desktop-pairing-device-meta">
             {desktopPairingModal.deviceName
-              ? `来自「${desktopPairingModal.deviceName}」的配对请求，请在手机端输入以下 6 位数字配对码（5 分钟内有效）：`
-              : "请在手机端输入以下 6 位数字配对码（5 分钟内有效）："}
+              ? t("pairingModal.withDevice", { device: desktopPairingModal.deviceName })
+              : t("pairingModal.defaultPrompt")}
           </p>
           <div
             id="desktop-pairing-code-display"
@@ -1286,7 +1314,7 @@ export function SecondaryModals() {
                 }))
               }
             >
-              我知道了
+              {t("pairingModal.gotItBtn")}
             </button>
           </div>
         </div>

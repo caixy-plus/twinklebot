@@ -11,6 +11,7 @@ import {
   getNextCronDates,
   isValidCronExpression,
   parseCronExpression,
+  resolvePresetCronExpression,
 } from "../src/shared/cron.js";
 import { computeInitialNextRun, computeNextRun, createScheduler } from "../src/agent/scheduler.js";
 import { runBotCollabTool } from "../src/agent/bot-tools.js";
@@ -272,15 +273,63 @@ test("HTTP /api/schedules & schedule_manage tool support cron creation, validati
     })
   ).json();
   assert.equal(patchDaily.repeat, "daily");
-  assert.equal(patchDaily.cron, undefined);
+  assert.equal(patchDaily.cron, "30 8 * * *");
 
-  // 5. Bot tool schedule_manage supports create/update/list with cron & blocks bad cron
+  // 4b. resolvePresetCronExpression & POST/PATCH preset Cron backing (once clears cron)
+  assert.equal(resolvePresetCronExpression("daily", { scheduleLabel: "每天 10:00" }), "0 10 * * *");
+  assert.equal(resolvePresetCronExpression("daily", { time: "08:30" }), "30 8 * * *");
+  assert.equal(resolvePresetCronExpression("hourly"), "0 * * * *");
+  assert.equal(resolvePresetCronExpression("hourly", { scheduleLabel: "每小时第 15 分" }), "15 * * * *");
+  assert.equal(resolvePresetCronExpression("weekly", { scheduleLabel: "每周五 09:00" }), "0 9 * * 5");
+  assert.equal(resolvePresetCronExpression("once"), null);
+
+  const presetHourlyPost: any = await (
+    await fetch(`${baseUrl}/api/schedules`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: adminBot.id,
+        title: "整点巡检",
+        prompt: "检查服务",
+        repeat: "hourly",
+      }),
+    })
+  ).json();
+  assert.equal(presetHourlyPost.repeat, "hourly");
+  assert.equal(presetHourlyPost.cron, "0 * * * *");
+
+  const patchOnce: any = await (
+    await fetch(`${baseUrl}/api/schedules/${presetHourlyPost.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repeat: "once", scheduleLabel: "单次执行" }),
+    })
+  ).json();
+  assert.equal(patchOnce.repeat, "once");
+  assert.equal(patchOnce.cron, undefined);
+
+  // 5. Bot tool schedule_manage supports create/update/list with cron, preset-to-cron, & blocks bad cron
   const toolBad: any = await runBotCollabTool(
     "schedule_manage",
     { action: "create", title: "坏Cron", prompt: "test", repeat: "cron", cron: "60 0 * * *" },
     { store, senderSessionId: adminBot.id, senderBot: adminBot }
   );
   assert.equal(toolBad.ok, false);
+
+  const toolPresetWeekly: any = await runBotCollabTool(
+    "schedule_manage",
+    {
+      action: "create",
+      title: "每周五周报",
+      prompt: "整理周报",
+      repeat: "weekly",
+      schedule_label: "每周五 17:30",
+    },
+    { store, senderSessionId: adminBot.id, senderBot: adminBot }
+  );
+  assert.equal(toolPresetWeekly.ok, true);
+  assert.equal(toolPresetWeekly.schedule.repeat, "weekly");
+  assert.equal(toolPresetWeekly.schedule.cron, "30 17 * * 5");
 
   const toolCreate: any = await runBotCollabTool(
     "schedule_manage",

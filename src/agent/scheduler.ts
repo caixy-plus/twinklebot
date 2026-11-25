@@ -1,4 +1,8 @@
-import { getNextCronDate, parseCronExpression } from "../shared/cron.js";
+import {
+  getNextCronDate,
+  parseCronExpression,
+  resolvePresetCronExpression,
+} from "../shared/cron.js";
 
 export function extractHourMinute(text = ""): { hour: number; minute: number } | null {
   const m = String(text || "").match(/(?:^|\D)([01]?\d|2[0-3]):([0-5]\d)(?:\D|$)/);
@@ -44,6 +48,14 @@ export function computeInitialNextRun(
     }
   }
 
+  if (repeat !== "once" && !String(scheduleLabel || "").includes("明天")) {
+    const presetCron = resolvePresetCronExpression(repeat, { scheduleLabel, time });
+    if (presetCron) {
+      const next = getNextCronDate(presetCron, fromDate);
+      if (next) return next.toISOString();
+    }
+  }
+
   const hm = extractHourMinute(rawTime) || extractHourMinute(scheduleLabel);
   if (hm) {
     const target = new Date(fromDate.getTime());
@@ -78,9 +90,14 @@ export function computeNextRun(
   scheduleLabel = "",
   cron = ""
 ): string | null {
-  if (repeat === "cron" && cron) {
-    const nextCron = getNextCronDate(cron, fromDate);
-    return nextCron ? nextCron.toISOString() : null;
+  if (repeat === "once") return null;
+  const effectiveCron =
+    String(cron || "").trim() ||
+    resolvePresetCronExpression(repeat, { scheduleLabel }) ||
+    "";
+  if (effectiveCron) {
+    const nextCron = getNextCronDate(effectiveCron, fromDate);
+    if (nextCron) return nextCron.toISOString();
   }
   const next = new Date(fromDate.getTime());
   const hm = extractHourMinute(scheduleLabel);

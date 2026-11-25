@@ -10,6 +10,7 @@ import {
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson, apiUrl } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import { formatClockTime } from "../../state/helpers.js";
 import { setState, useStore, type TraceItem } from "../../state/store.js";
 import { StatusText, UiIcon } from "./Icon.js";
@@ -21,6 +22,7 @@ export function BotMemoriesList({
   session: any;
   listId: string;
 }) {
+  const { t } = useI18n();
   const memories: any[] = Array.isArray(session?.memories) ? session.memories : [];
 
   const handleToggle = async (mem: any, checked: boolean) => {
@@ -36,11 +38,11 @@ export function BotMemoriesList({
   const handleDelete = async (mem: any) => {
     if (!session?.id) return;
     const ok = await showConfirmDialog({
-      title: "删除专属记忆",
-      message: `确定要删除专属记忆「${mem.name || "专属记忆"}」吗？`,
-      detail: "删除后该 Bot 将不再参考这条记忆。",
-      confirmText: "确认删除",
-      cancelText: "取消",
+      title: t("memory.deleteConfirmTitle"),
+      message: t("memory.deleteConfirmMsg", { name: mem.name || t("memory.defaultName") }),
+      detail: t("memory.deleteConfirmDetail"),
+      confirmText: t("memory.deleteConfirmBtn"),
+      cancelText: t("common.cancel"),
       tone: "danger",
     });
     if (!ok) return;
@@ -50,14 +52,14 @@ export function BotMemoriesList({
       body: JSON.stringify({ memories: next, touch: false }),
     });
     upsertLocalSession(updated);
-    showToast(`已移除专属记忆「${mem.name}」`);
+    showToast(t("memory.deletedToast", { name: mem.name }));
   };
 
   return (
     <div id={listId} className="private-skills-list">
       {memories.length === 0 ? (
         <div className="skills-empty" style={{ fontSize: "12px" }}>
-          该 Bot 会在对话中自动沉淀和管理自己的专属记忆，也可点击右上角「+ 新增」。
+          {t("memory.emptyListHint")}
         </div>
       ) : (
         memories.map((mem) => {
@@ -88,7 +90,7 @@ export function BotMemoriesList({
                 className="skill-row-info is-editable"
                 role="button"
                 tabIndex={0}
-                title="点击编辑专属记忆"
+                title={t("memory.clickEditTitle")}
                 onClick={openEditMemory}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
@@ -97,7 +99,7 @@ export function BotMemoriesList({
                   }
                 }}
               >
-                <div className="skill-row-name">{mem.name || "专属记忆"}</div>
+                <div className="skill-row-name">{mem.name || t("memory.defaultName")}</div>
                 <div className="skill-row-desc">
                   {mem.instruction || mem.content || mem.desc || ""}
                 </div>
@@ -106,7 +108,7 @@ export function BotMemoriesList({
                 <input
                   type="checkbox"
                   checked={enabled}
-                  aria-label={`启用专属记忆 ${mem.name}`}
+                  aria-label={t("memory.toggleAria", { name: mem.name })}
                   onChange={(e) => handleToggle(mem, e.target.checked)}
                 />
                 <span className="ios-switch-track" />
@@ -114,8 +116,8 @@ export function BotMemoriesList({
               <button
                 type="button"
                 className="section-action-link"
-                aria-label={`编辑专属记忆 ${mem.name || "专属记忆"}`}
-                title="编辑"
+                aria-label={t("memory.editAria", { name: mem.name || t("memory.defaultName") })}
+                title={t("common.edit")}
                 onClick={openEditMemory}
               >
                 <UiIcon name="pencil" size={14} />
@@ -125,7 +127,7 @@ export function BotMemoriesList({
                 className="section-action-link danger-text"
                 onClick={() => handleDelete(mem)}
               >
-                删除
+                {t("common.delete")}
               </button>
             </div>
           );
@@ -136,6 +138,7 @@ export function BotMemoriesList({
 }
 
 export function SchedulesList({ listId }: { listId: string }) {
+  const { locale, t } = useI18n();
   const schedules = useStore((s) => s.schedules);
   const activeSessionId = useStore((s) => s.activeSessionId);
 
@@ -153,23 +156,23 @@ export function SchedulesList({ listId }: { listId: string }) {
         s.id === item.id ? { ...s, enabled: checked } : s
       ),
     }));
-    showToast(checked ? "例行任务已启用" : "例行任务已暂停");
+    showToast(checked ? t("schedule.enabledToast") : t("schedule.pausedToast"));
   };
 
   const handleDelete = async (item: any) => {
-    const label = item.title || item.name || "例行任务";
+    const label = item.title || item.name || t("schedule.defaultName");
     const ok = await showConfirmDialog({
-      title: "删除例行任务",
-      message: `确定要删除定时任务「${label}」吗？`,
-      detail: item.cron ? `触发计划：${item.cron}` : "",
-      confirmText: "确认删除",
-      cancelText: "取消",
+      title: t("schedule.deleteConfirmTitle"),
+      message: t("schedule.deleteConfirmMsg", { label }),
+      detail: item.cron ? t("schedule.deleteConfirmDetailCron", { cron: item.cron }) : "",
+      confirmText: t("memory.deleteConfirmBtn"),
+      cancelText: t("common.cancel"),
       tone: "danger",
     });
     if (!ok) return;
     await apiJson(`/api/schedules/${item.id}`, { method: "DELETE" });
     refreshSchedules();
-    showToast(`已删除例行任务「${label}」`);
+    showToast(t("schedule.deletedToast", { label }));
   };
 
   return (
@@ -177,7 +180,7 @@ export function SchedulesList({ listId }: { listId: string }) {
       {items.length === 0 ? (
         <div className="upcoming-card">
           <div className="upcoming-copy">
-            <div className="upcoming-sub">暂无例行提醒，点击右上角「+ 新建」添加</div>
+            <div className="upcoming-sub">{t("inspector.schedulesEmpty")}</div>
           </div>
         </div>
       ) : (
@@ -195,7 +198,7 @@ export function SchedulesList({ listId }: { listId: string }) {
                 className="upcoming-copy is-editable"
                 role="button"
                 tabIndex={0}
-                title="点击编辑例行任务"
+                title={t("schedule.clickEditTitle")}
                 onClick={openEditSchedule}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
@@ -207,8 +210,9 @@ export function SchedulesList({ listId }: { listId: string }) {
                 <div className="upcoming-title">{item.title}</div>
                 <div className="upcoming-sub">
                   <span>
-                    {item.scheduleLabel ||
-                      (item.cron ? describeCronExpression(item.cron) : "定时执行")}
+                    {item.cron
+                      ? describeCronExpression(item.cron, locale)
+                      : item.scheduleLabel || t("schedule.cronFallback")}
                   </span>
                   {item.cron && (
                     <code className="upcoming-cron-badge" title={`Cron: ${item.cron}`}>
@@ -228,8 +232,8 @@ export function SchedulesList({ listId }: { listId: string }) {
               <button
                 type="button"
                 className="section-action-link"
-                aria-label={`编辑例行任务 ${item.title || "例行任务"}`}
-                title="编辑"
+                aria-label={t("schedule.editAria", { title: item.title || t("schedule.defaultName") })}
+                title={t("common.edit")}
                 onClick={openEditSchedule}
               >
                 <UiIcon name="pencil" size={14} />
@@ -237,8 +241,8 @@ export function SchedulesList({ listId }: { listId: string }) {
               <button
                 type="button"
                 className="section-action-link danger-text"
-                aria-label="删除例行任务"
-                title="删除"
+                aria-label={t("schedule.deleteAria")}
+                title={t("common.delete")}
                 onClick={() => handleDelete(item)}
               >
                 <UiIcon name="x" size={13} />
@@ -254,14 +258,17 @@ export function SchedulesList({ listId }: { listId: string }) {
 export function LibraryItemsPanel({
   listId,
   expandBtnId,
-  ariaLabel = "资料库列表",
-  emptyText = "对话中截图或生成的文件会归档在此",
+  ariaLabel,
+  emptyText,
 }: {
   listId: string;
   expandBtnId: string;
   ariaLabel?: string;
   emptyText?: string;
 }) {
+  const { locale, t } = useI18n();
+  const resolvedAriaLabel = ariaLabel || t("inspector.libraryListAria");
+  const resolvedEmptyText = emptyText || t("inspector.libraryDefaultEmpty");
   const libraryItems = useStore((s) => s.libraryItems);
   const libraryFilter = useStore((s) => s.libraryFilter);
   const libraryExpanded = useStore((s) => s.libraryExpanded);
@@ -273,7 +280,7 @@ export function LibraryItemsPanel({
 
   const handleRowClick = (item: any) => {
     if (item.type === "media" && item.url) {
-      openImageLightbox(apiUrl(item.url), item.name || "图片预览");
+      openImageLightbox(apiUrl(item.url), item.name || t("actions.imagePreviewAlt"));
     } else if (item.type !== "media" && item.path && !isMobileViewport()) {
       openLocalFile(item.path, { reveal: false });
     } else if (item.url) {
@@ -284,7 +291,7 @@ export function LibraryItemsPanel({
 
   return (
     <>
-      <div id={listId} className="library-list" role="list" aria-label={ariaLabel}>
+      <div id={listId} className="library-list" role="list" aria-label={resolvedAriaLabel}>
         {filtered.length === 0 ? (
           <div
             style={{
@@ -294,7 +301,7 @@ export function LibraryItemsPanel({
               textAlign: "center",
             }}
           >
-            {libraryItems.length === 0 ? emptyText : "暂无截图或工作区文件产物"}
+            {libraryItems.length === 0 ? resolvedEmptyText : t("inspector.libraryFilteredEmpty")}
           </div>
         ) : (
           visible.map((item: any, idx: number) => {
@@ -315,7 +322,7 @@ export function LibraryItemsPanel({
                 <div className="library-meta">
                   <div className="library-name">{item.name}</div>
                   <div className="library-sub">
-                    {kb} KB · {formatClockTime(item.mtime)}
+                    {kb} KB · {formatClockTime(item.mtime, locale)}
                   </div>
                 </div>
               </div>
@@ -330,7 +337,9 @@ export function LibraryItemsPanel({
         hidden={filtered.length <= 5}
         onClick={() => setState((prev) => ({ libraryExpanded: !prev.libraryExpanded }))}
       >
-        {libraryExpanded ? "收起" : `展开全部 (${filtered.length})`}
+        {libraryExpanded
+          ? t("common.collapse")
+          : t("inspector.libraryExpandAll", { count: filtered.length })}
       </button>
     </>
   );
@@ -339,18 +348,20 @@ export function LibraryItemsPanel({
 export function TraceEventsList({
   id,
   className = "trace-drawer-list",
-  emptyText = "发送任务后，Bot 的思考链路与工具调用会实时记录在此",
+  emptyText,
 }: {
   id: string;
   className?: string;
   emptyText?: string;
 }) {
+  const { t } = useI18n();
+  const resolvedEmptyText = emptyText || t("inspector.traceDefaultEmpty");
   const traceItems = useStore((s) => s.traceItems);
 
   return (
     <div id={id} className={className}>
       {traceItems.length === 0 ? (
-        <div className="trace-empty-placeholder">{emptyText}</div>
+        <div className="trace-empty-placeholder">{resolvedEmptyText}</div>
       ) : (
         traceItems.map((item: TraceItem) => {
           if (item.kind === "thought") {
@@ -364,7 +375,7 @@ export function TraceEventsList({
                         {item.botName}
                       </>
                     ) : (
-                      "思考"
+                      t("inspector.traceThoughtBadge")
                     )}
                   </span>
                   {item.routeLabel && <span className="route-mini-tag">{item.routeLabel}</span>}
@@ -408,11 +419,15 @@ export function TraceEventsList({
                   <img
                     className="trace-thumb"
                     src={item.screenUrl}
-                    alt={item.isMcpScreen ? "Mac 窗口截图" : "桌面截图"}
+                    alt={
+                      item.isMcpScreen
+                        ? t("inspector.macWindowShot")
+                        : t("inspector.desktopShot")
+                    }
                     loading="lazy"
                     onClick={() =>
                       item.isMcpScreen
-                        ? openImageLightbox(item.screenUrl!, "Mac 窗口截图")
+                        ? openImageLightbox(item.screenUrl!, t("inspector.macWindowShot"))
                         : openBotScreenOverlay()
                     }
                   />

@@ -6,7 +6,7 @@ import {
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
 import { useI18n } from "../../services/i18n.js";
-import { PROVIDER_PRESETS_UI } from "../../state/constants.js";
+import { getProviderPresetUi } from "../../state/constants.js";
 import { parseModelsCsv } from "../../state/helpers.js";
 import { useStore } from "../../state/store.js";
 import { StatusText } from "../common/Icon.js";
@@ -22,7 +22,7 @@ export function OnboardingOverlay() {
   const required = useStore((s) => Boolean(s.settings?.onboardingRequired));
   const gcpVertexActive = useStore((s) => Boolean(s.settings?.gcpVertexActive));
   const blockedVertexReason = useStore((s) => String(s.settings?.blockedVertexReason || ""));
-  const { language: currentLanguage, t } = useI18n();
+  const { language: currentLanguage, locale, t } = useI18n();
 
   const [type, setType] = useState("gemini");
   const [name, setName] = useState("Google Gemini");
@@ -62,7 +62,7 @@ export function OnboardingOverlay() {
   }, [modelsInput]);
 
   const handleTypeChange = (nextType: string) => {
-    const preset = PROVIDER_PRESETS_UI[nextType] || PROVIDER_PRESETS_UI.openai;
+    const preset = getProviderPresetUi(nextType, locale);
     setType(nextType);
     setName(preset.name);
     setBaseUrl(preset.baseUrl);
@@ -72,7 +72,7 @@ export function OnboardingOverlay() {
 
   const handleTest = async () => {
     setTesting(true);
-    setFeedback({ text: "正在测试与模型接口的连通性…", kind: "info" });
+    setFeedback({ text: t("onboarding.testingMsg"), kind: "info" });
     try {
       const res = await apiJson("/api/providers/test", {
         method: "POST",
@@ -86,17 +86,19 @@ export function OnboardingOverlay() {
       });
       if (res.ok) {
         setFeedback({
-          text: `✓ 连接成功！模型 ${res.model} 延迟 ${res.latencyMs}ms`,
+          text: t("onboarding.testOk", { model: res.model, latency: res.latencyMs }),
           kind: "ok",
         });
       } else {
         setFeedback({
-          text: `❌ 连接失败：${res.error || "请检查 API Key 或 Base URL"}`,
+          text: t("onboarding.testFail", {
+            error: res.error || t("onboarding.testErrorDefault"),
+          }),
           kind: "error",
         });
       }
     } catch (err: any) {
-      setFeedback({ text: `❌ 测试失败：${err.message}`, kind: "error" });
+      setFeedback({ text: `❌ ${err.message}`, kind: "error" });
     } finally {
       setTesting(false);
     }
@@ -104,7 +106,7 @@ export function OnboardingOverlay() {
 
   const handleSubmit = async () => {
     const pid = `${type}-primary`;
-    const resolvedName = name.trim() || PROVIDER_PRESETS_UI[type]?.name || type;
+    const resolvedName = name.trim() || getProviderPresetUi(type, locale).name || type;
     setSubmitting(true);
     try {
       await apiJson("/api/onboarding/complete", {
@@ -126,7 +128,7 @@ export function OnboardingOverlay() {
         }),
       });
       await refreshSettingsFromServer();
-      showToast("模型接入完成，欢迎使用 TwinkleBot");
+      showToast(t("onboarding.completedToast"));
     } catch (err: any) {
       setFeedback({ text: `❌ ${err.message}`, kind: "error" });
     } finally {
@@ -134,7 +136,7 @@ export function OnboardingOverlay() {
     }
   };
 
-  const activePreset = PROVIDER_PRESETS_UI[type] || PROVIDER_PRESETS_UI.gemini;
+  const activePreset = getProviderPresetUi(type, locale);
 
   return (
     <div
@@ -142,7 +144,7 @@ export function OnboardingOverlay() {
       className="onboarding-overlay"
       role="dialog"
       aria-modal="true"
-      aria-label="首次使用配置引导"
+      aria-label={t("onboarding.dialogAria")}
       hidden={!required}
     >
       <div className="onboarding-card">
@@ -176,9 +178,9 @@ export function OnboardingOverlay() {
 
         <div className="onboarding-field">
           <span>{t("onboarding.providerType")}</span>
-          <div className="provider-preset-pills" role="radiogroup" aria-label="模型供应商">
+          <div className="provider-preset-pills" role="radiogroup" aria-label={t("onboarding.providerGroupAria")}>
             {ONBOARDING_PROVIDER_KEYS.map((pKey) => {
-              const pr = PROVIDER_PRESETS_UI[pKey];
+              const pr = getProviderPresetUi(pKey, locale);
               const active = type === pKey;
               return (
                 <button
@@ -190,7 +192,7 @@ export function OnboardingOverlay() {
                   data-provider-preset={pKey}
                   onClick={() => handleTypeChange(pKey)}
                 >
-                  {pr?.shortLabel || pr?.name || pKey}
+                  {pr.shortLabel || pr.name || pKey}
                 </button>
               );
             })}
@@ -205,7 +207,7 @@ export function OnboardingOverlay() {
           >
             {ONBOARDING_PROVIDER_KEYS.map((pKey) => (
               <option key={pKey} value={pKey}>
-                {PROVIDER_PRESETS_UI[pKey]?.name || pKey}
+                {getProviderPresetUi(pKey, locale).name || pKey}
               </option>
             ))}
           </select>
@@ -214,7 +216,7 @@ export function OnboardingOverlay() {
 
         {type === "gemini" && gcpVertexActive && (
           <div className="mail-feedback-box is-success">
-            当前连接的 GCP 云服务器已通过环境变量启用 Vertex AI 服务账号认证，API Key 可留空。
+            {t("onboarding.gcpVertexNotice")}
           </div>
         )}
         {type === "gemini" && !gcpVertexActive && blockedVertexReason && (
@@ -223,18 +225,21 @@ export function OnboardingOverlay() {
 
         <div className="onboarding-grid">
           <label className="onboarding-field">
-            <span>显示名称</span>
+            <span>{t("onboarding.providerName")}</span>
             <input
               id="onboarding-provider-name"
               type="text"
               className="inline-text-input"
               value={name}
-              placeholder="供应商名称"
+              placeholder={t("onboarding.providerNamePlaceholder")}
               onChange={(e) => setName(e.target.value)}
             />
           </label>
           <label className="onboarding-field" id="onboarding-base-url-wrap">
-            <span>Base URL（{type === "openai-compatible" ? "必填" : "可选"}）</span>
+            <span>
+              {t("onboarding.baseUrl")} (
+              {type === "openai-compatible" ? t("onboarding.required") : t("common.optional")})
+            </span>
             <input
               id="onboarding-base-url"
               type="url"
@@ -248,14 +253,14 @@ export function OnboardingOverlay() {
 
         <label className="onboarding-field">
           <span>
-            API Key
-            {type === "gemini" && gcpVertexActive ? "（GCP Vertex 已启用，可留空）" : ""}
+            {t("onboarding.apiKey")}
+            {type === "gemini" && gcpVertexActive ? t("onboarding.apiKeyVertexOptional") : ""}
           </span>
           <input
             id="onboarding-api-key"
             type="password"
             className="inline-text-input"
-            placeholder="粘贴 API Key 或填环境变量名（如 GEMINI_API_KEY）"
+            placeholder={t("onboarding.apiKeyPlaceholder")}
             autoComplete="off"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
@@ -263,7 +268,7 @@ export function OnboardingOverlay() {
         </label>
 
         <label className="onboarding-field">
-          <span>可用模型列表（逗号分隔）</span>
+          <span>{t("onboarding.modelsLabel")}</span>
           <input
             id="onboarding-models-input"
             type="text"
@@ -274,10 +279,10 @@ export function OnboardingOverlay() {
         </label>
 
         <div className="onboarding-tiers-box">
-          <div className="onboarding-tiers-title">分配 3 档智能路由模型</div>
+          <div className="onboarding-tiers-title">{t("onboarding.tiersHeading")}</div>
           <div className="onboarding-tiers-grid">
             <label className="onboarding-field">
-              <span>极速档（Fast）</span>
+              <span>{t("onboarding.tierFast")}</span>
               <select
                 id="onboarding-tier-fast"
                 className="inline-text-input"
@@ -292,7 +297,7 @@ export function OnboardingOverlay() {
               </select>
             </label>
             <label className="onboarding-field">
-              <span>中等档（Medium）</span>
+              <span>{t("onboarding.tierMedium")}</span>
               <select
                 id="onboarding-tier-medium"
                 className="inline-text-input"
@@ -307,7 +312,7 @@ export function OnboardingOverlay() {
               </select>
             </label>
             <label className="onboarding-field">
-              <span>高级档（Advanced）</span>
+              <span>{t("onboarding.tierAdvanced")}</span>
               <select
                 id="onboarding-tier-advanced"
                 className="inline-text-input"

@@ -7,6 +7,11 @@ import {
   type NetworkHealthState,
   type NetworkStatus,
 } from "../state/store.js";
+import {
+  getActiveLocale,
+  resolveLocalizedAccountName,
+  tr,
+} from "./i18n.js";
 
 export type ActiveAccountKind = "local" | "lan" | "cloud";
 
@@ -43,7 +48,10 @@ export function clearNetworkMonitorTimers() {
   consecutiveHttpFailures = 0;
 }
 
-export function getActiveAccountMeta(s: AppState = getState()): {
+export function getActiveAccountMeta(
+  s: AppState = getState(),
+  localeOverride?: "zh-CN" | "en"
+): {
   type: ActiveAccountKind;
   label: string;
   hasOtherAccounts: boolean;
@@ -54,13 +62,16 @@ export function getActiveAccountMeta(s: AppState = getState()): {
   const type: ActiveAccountKind =
     rawType === "cloud" ? "cloud" : rawType === "lan" ? "lan" : "local";
 
-  const customName = String(activeAcc?.name || "").trim();
-  const label =
-    type === "cloud"
-      ? customName || "云端账号"
-      : type === "lan"
-        ? customName || "本地账号"
-        : customName || "本地账号";
+  const locale = localeOverride || getActiveLocale();
+  const label = resolveLocalizedAccountName(
+    activeAcc ? { ...activeAcc, type } : { type },
+    locale,
+    locale === "en"
+      ? type === "cloud"
+        ? "Cloud Account"
+        : "Local Account"
+      : tr(type === "cloud" ? "net.cloudAccount" : "net.localAccount")
+  );
 
   return {
     type,

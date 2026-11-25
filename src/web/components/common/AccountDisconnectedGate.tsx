@@ -15,7 +15,7 @@ import {
   shouldShowAccountDisconnectedGate,
 } from "../../services/network-monitor.js";
 import { getState, setState, useStore } from "../../state/store.js";
-import { useI18n } from "../../services/i18n.js";
+import { useI18n, resolveLocalizedAccountName } from "../../services/i18n.js";
 import { UiIcon } from "./Icon.js";
 
 type GateSubPanel = "none" | "add-cloud" | "lan-pair";
@@ -31,7 +31,7 @@ export function AccountDisconnectedGate() {
   const mobilePairModalOpen = useStore((s) => s.mobilePairModalOpen);
   const pendingPairingDevice = useStore((s) => s.pendingPairingDevice);
   const mobilePairFeedback = useStore((s) => s.mobilePairFeedback);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
 
   const gateSnapshot = {
     accountsState,
@@ -140,14 +140,14 @@ export function AccountDisconnectedGate() {
   const handleRefreshAccount = async () => {
     if (refreshing || switchingAccountId) return;
     setRefreshing(true);
-    setFeedback({ text: `正在刷新「${accMeta.label}」连接…`, kind: "info" });
+    setFeedback({ text: t("gate.refreshingAccountToast", { label: accMeta.label }), kind: "info" });
     try {
       const res = await refreshActiveAccountConnection(accountEpoch);
       if (!res.ok && isOpenRef.current) {
         setFeedback({
           text: networkHealth.browserOffline
-            ? "当前设备仍无网络连接，请检查网络设置后重试"
-            : `仍无法连接至「${accMeta.label}」，请检查服务端状态或切换其他账号`,
+            ? t("gate.stillOfflineError")
+            : t("gate.stillUnreachableError", { label: accMeta.label }),
           kind: "error",
         });
       }
@@ -161,7 +161,9 @@ export function AccountDisconnectedGate() {
     const targetAcc = accounts.find((a: any) => a.id === targetId);
     setSwitchingAccountId(targetId);
     setFeedback({
-      text: `正在切换至「${targetAcc?.name || targetAcc?.baseUrl || "目标账号"}」…`,
+      text: t("gate.switchingAccountStatus", {
+        name: targetAcc?.name || targetAcc?.baseUrl || t("gate.targetAccountFallback"),
+      }),
       kind: "info",
     });
     try {
@@ -192,7 +194,7 @@ export function AccountDisconnectedGate() {
       await switchAccount(added.id);
     } catch (err: any) {
       setFeedback({
-        text: err?.message || "云端地址格式无效，请输入 http(s):// 地址",
+        text: err?.message || t("gate.invalidCloudUrlError"),
         kind: "error",
       });
     } finally {
@@ -203,13 +205,13 @@ export function AccountDisconnectedGate() {
   const handleManualLanPair = async () => {
     const raw = manualLanIp.trim();
     if (!raw) {
-      setFeedback({ text: "请输入局域网电脑 IP 地址（例如 192.168.1.10:3230）", kind: "error" });
+      setFeedback({ text: t("gate.enterLanIpError"), kind: "error" });
       return;
     }
     const clean = /^https?:\/\//i.test(raw)
       ? raw.replace(/\/+$/, "")
       : `http://${raw.includes(":") ? raw : `${raw}:3230`}`;
-    setFeedback({ text: `正在向 ${clean} 发起配对请求…`, kind: "info" });
+    setFeedback({ text: t("gate.pairingRequestStatus", { url: clean }), kind: "info" });
     await initiateLanPairing({ baseUrl: clean, host: raw, hostname: raw });
   };
 
@@ -275,12 +277,15 @@ export function AccountDisconnectedGate() {
               <span>{accMeta.label}</span>
             </div>
             <div className="account-gate-current-sub">
-              {activeAccount?.baseUrl || (accMeta.type === "lan" ? "局域网电脑" : "云端工作台")}
+              {activeAccount?.baseUrl ||
+                (accMeta.type === "lan"
+                  ? t("sidebar.lanComputer")
+                  : t("gate.cloudWorkspaceLabel"))}
             </div>
           </div>
           <span className="account-gate-status-badge">
             <span className="account-gate-status-dot" aria-hidden="true" />
-            {refreshing ? "刷新中" : "已断开"}
+            {refreshing ? t("gate.statusRefreshing") : t("gate.statusDisconnected")}
           </span>
         </div>
 
@@ -307,7 +312,7 @@ export function AccountDisconnectedGate() {
               strokeLinejoin="round"
             />
           </svg>
-          <span>{refreshing ? "正在刷新连接…" : "刷新当前账号"}</span>
+          <span>{refreshing ? t("gate.refreshingBtn") : t("gate.refreshBtn")}</span>
         </button>
 
         {feedback.text && (
@@ -323,9 +328,11 @@ export function AccountDisconnectedGate() {
 
         <div className="account-gate-section">
           <div className="account-gate-section-head">
-            <span className="account-gate-section-title">切换账号</span>
+            <span className="account-gate-section-title">{t("gate.switchSection")}</span>
             <span className="account-gate-section-count">
-              {otherAccounts.length > 0 ? `${otherAccounts.length} 个可切换` : "暂无其他账号"}
+              {otherAccounts.length > 0
+                ? t("gate.otherCount", { count: otherAccounts.length })
+                : t("gate.noOtherAccounts")}
             </span>
           </div>
 
@@ -333,20 +340,29 @@ export function AccountDisconnectedGate() {
             id="account-gate-account-list"
             className="account-gate-list"
             role="group"
-            aria-label="可切换的账号列表"
+            aria-label={t("gate.switchListAria")}
           >
             {otherAccounts.length === 0 ? (
               <div className="account-gate-empty-hint">
-                当前仅保存了这一个账号。你可以点击下方添加新的云端账号
-                {showMobileLanTools ? "或配对局域网电脑" : ""}。
+                {t("gate.onlyOneAccountHint", {
+                  lanHint: showMobileLanTools ? t("gate.orPairLanHint") : "",
+                })}
               </div>
             ) : (
               otherAccounts.map((acc: any) => {
                 const isSwitching = switchingAccountId === acc.id;
                 const isLocal = acc.type === "local";
                 const subLabel = isLocal
-                  ? "本地工作台 · 始终可用"
-                  : acc.baseUrl || (acc.type === "lan" ? "局域网电脑" : "云端服务");
+                  ? t("gate.localAlwaysAvailable")
+                  : acc.baseUrl ||
+                    (acc.type === "lan"
+                      ? t("sidebar.lanComputer")
+                      : t("sidebar.cloudServiceFallback"));
+                const accDisplayName = resolveLocalizedAccountName(
+                  acc,
+                  locale,
+                  acc.hostname || acc.baseUrl || acc.id
+                );
                 return (
                   <button
                     key={acc.id}
@@ -367,14 +383,12 @@ export function AccountDisconnectedGate() {
                         />
                       </span>
                       <span className="account-gate-item-meta">
-                        <span className="account-gate-item-name">
-                          {acc.name || acc.hostname || acc.baseUrl || acc.id}
-                        </span>
+                        <span className="account-gate-item-name">{accDisplayName}</span>
                         <span className="account-gate-item-sub">{subLabel}</span>
                       </span>
                     </span>
                     <span className="account-gate-item-trailing">
-                      {isSwitching ? "切换中…" : "切换"}
+                      {isSwitching ? t("common.switching") : t("common.switch")}
                       {!isSwitching && (
                         <UiIcon name="chevron-right" className="inline-ui-icon" size={13} />
                       )}
@@ -396,7 +410,7 @@ export function AccountDisconnectedGate() {
                 setSubPanel((prev) => (prev === "add-cloud" ? "none" : "add-cloud"));
               }}
             >
-              + 添加云端账号
+              {t("gate.addCloudBtn")}
             </button>
             {showMobileLanTools && (
               <button
@@ -415,7 +429,7 @@ export function AccountDisconnectedGate() {
                   });
                 }}
               >
-                配对局域网电脑
+                {t("gate.pairLanBtn")}
               </button>
             )}
           </div>
@@ -427,7 +441,7 @@ export function AccountDisconnectedGate() {
               onSubmit={handleAddCloudSubmit}
             >
               <label className="account-gate-field">
-                <span>云端服务地址</span>
+                <span>{t("gate.cloudUrlLabel")}</span>
                 <input
                   id="account-gate-cloud-url"
                   type="url"
@@ -441,23 +455,23 @@ export function AccountDisconnectedGate() {
                 />
               </label>
               <label className="account-gate-field">
-                <span>账号名称（可选）</span>
+                <span>{t("gate.cloudNameLabel")}</span>
                 <input
                   id="account-gate-cloud-name"
                   type="text"
                   className="inline-text-input"
-                  placeholder="例如：公司云端工作台"
+                  placeholder={t("gate.cloudNamePlaceholder")}
                   value={cloudName}
                   onChange={(e) => setCloudName(e.target.value)}
                 />
               </label>
               <label className="account-gate-field">
-                <span>访问令牌（Token）</span>
+                <span>{t("gate.cloudTokenLabel")}</span>
                 <input
                   id="account-gate-cloud-token"
                   type="password"
                   className="inline-text-input"
-                  placeholder="粘贴 TWINKLEBOT_CLOUD_TOKEN"
+                  placeholder={t("gate.cloudTokenPlaceholder")}
                   autoComplete="off"
                   value={cloudToken}
                   onChange={(e) => setCloudToken(e.target.value)}
@@ -469,7 +483,7 @@ export function AccountDisconnectedGate() {
                   className="settings-pill-btn"
                   onClick={() => setSubPanel("none")}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   id="account-gate-cloud-submit-btn"
@@ -477,7 +491,7 @@ export function AccountDisconnectedGate() {
                   className="settings-blue-pill"
                   disabled={cloudSaving || !cloudUrl.trim()}
                 >
-                  {cloudSaving ? "连接中…" : "连接并切换"}
+                  {cloudSaving ? t("gate.connecting") : t("gate.connectAndSwitch")}
                 </button>
               </div>
             </form>
@@ -488,7 +502,9 @@ export function AccountDisconnectedGate() {
               {mobilePairModalOpen && pendingPairingDevice ? (
                 <div className="account-gate-pair-verify">
                   <div className="account-gate-inline-hint">
-                    配对至 {pendingPairingDevice.hostname || pendingPairingDevice.host}：请输入电脑端显示的 6 位配对码
+                    {t("gate.pairPromptWithHost", {
+                      host: pendingPairingDevice.hostname || pendingPairingDevice.host,
+                    })}
                   </div>
                   <input
                     id="account-gate-pair-code"
@@ -499,7 +515,7 @@ export function AccountDisconnectedGate() {
                     maxLength={6}
                     className="inline-text-input"
                     placeholder="000000"
-                    aria-label="6 位数字配对码"
+                    aria-label={t("gate.pairCodeInputAria")}
                     value={pairCode}
                     onChange={(e) =>
                       setPairCode(String(e.target.value || "").replace(/\D+/g, "").slice(0, 6))
@@ -520,7 +536,7 @@ export function AccountDisconnectedGate() {
                       className="settings-pill-btn"
                       onClick={() => setState({ mobilePairModalOpen: false })}
                     >
-                      取消配对
+                      {t("mobile.pairCancel")}
                     </button>
                     <button
                       id="account-gate-pair-submit-btn"
@@ -528,7 +544,7 @@ export function AccountDisconnectedGate() {
                       className="settings-blue-pill"
                       onClick={() => submitLanPairingCode(pairCode)}
                     >
-                      验证并连接
+                      {t("mobile.pairVerify")}
                     </button>
                   </div>
                 </div>
@@ -537,10 +553,10 @@ export function AccountDisconnectedGate() {
                   <div className="account-gate-lan-head">
                     <span className="account-gate-inline-hint">
                       {lanScanning
-                        ? "正在扫描同一 Wi-Fi 下的 TwinkleBot 桌面端…"
+                        ? t("gate.lanScanningHint")
                         : unpairedDiscovered.length > 0
-                          ? `发现 ${unpairedDiscovered.length} 台可配对电脑`
-                          : "未自动发现新电脑，可重新扫描或手动输入 IP"}
+                          ? t("gate.lanFoundCount", { count: unpairedDiscovered.length })
+                          : t("gate.lanNoneFoundHint")}
                     </span>
                     <button
                       type="button"
@@ -548,7 +564,7 @@ export function AccountDisconnectedGate() {
                       disabled={lanScanning}
                       onClick={() => void scanAndRenderLanNodes()}
                     >
-                      {lanScanning ? "扫描中…" : "重新扫描"}
+                      {lanScanning ? t("mobile.lanScanning") : t("gate.lanRescanBtn")}
                     </button>
                   </div>
                   {unpairedDiscovered.length > 0 && (
@@ -571,7 +587,7 @@ export function AccountDisconnectedGate() {
                               <span className="account-gate-item-sub">{dev.baseUrl}</span>
                             </span>
                           </span>
-                          <span className="account-gate-item-trailing">配对</span>
+                          <span className="account-gate-item-trailing">{t("mobile.pair")}</span>
                         </button>
                       ))}
                     </div>
@@ -582,7 +598,7 @@ export function AccountDisconnectedGate() {
                       type="text"
                       className="inline-text-input"
                       placeholder="192.168.1.10:3230"
-                      aria-label="手动输入局域网电脑地址"
+                      aria-label={t("gate.lanManualIpAria")}
                       autoComplete="off"
                       autoCapitalize="none"
                       value={manualLanIp}
@@ -594,7 +610,7 @@ export function AccountDisconnectedGate() {
                       className="settings-blue-pill"
                       onClick={handleManualLanPair}
                     >
-                      配对
+                      {t("mobile.pair")}
                     </button>
                   </div>
                 </>

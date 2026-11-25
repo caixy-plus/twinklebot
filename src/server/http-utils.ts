@@ -41,24 +41,7 @@ export const DEFAULT_POLICY = {
   allowRules: [],
 };
 
-export const DEFAULT_PRIVATE_SKILLS = [
-  {
-    id: "skill-1",
-    name: "工作区整洁约定",
-    desc: "生成的报告、脚本或下载产物统一存放在当前 Bot 专属工作区目录下并告知绝对路径",
-    instruction:
-      "Save generated files inside your dedicated Bot workspace root (your primary writeRoots directory) and report the exact file path when done.",
-    enabled: true,
-  },
-  {
-    id: "skill-2",
-    name: "OrbStack 桌面巡检",
-    desc: "检查 :1 桌面窗口与网络连通状态时优先用 run_shell 与 list_windows 配合",
-    instruction:
-      "When diagnosing desktop or network state, combine list_windows and run_shell before clicking blindly.",
-    enabled: true,
-  },
-];
+export const DEFAULT_PRIVATE_SKILLS: Array<Record<string, any>> = [];
 
 export async function parseJsonBody(
   req: http.IncomingMessage,

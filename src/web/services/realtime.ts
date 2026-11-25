@@ -1,6 +1,7 @@
 import { isMobileAppTarget } from "../mobile-bridge.js";
 import { getState, runtimeRefs, setState } from "../state/store.js";
 import { apiJson, apiUrl, markLanReachable } from "./api-client.js";
+import { tr } from "./i18n.js";
 import {
   computeReconnectDelayMs,
   getActiveAccountMeta,
@@ -54,7 +55,7 @@ export async function forwardHostRpcToLocalExecutor(msg: any) {
       result:
         data?.result ||
         (data?.needsApproval
-          ? { error: `需要审批: ${data.reason || ""}` }
+          ? { error: tr("realtime.needsApproval", { reason: data.reason || "" }) }
           : { error: data?.error || `HTTP ${resp.status}` }),
       screenshot: data?.screenshot || null,
     };
@@ -120,11 +121,11 @@ export function handleRealtimePayload(payload: any) {
       setState({
         desktopPairingModal: {
           open: true,
-          deviceName: payload.deviceName || "手机端",
+          deviceName: payload.deviceName || tr("source.mobile"),
           code: String(payload.code),
         },
       });
-      showToast(`📱 手机端配对码：${payload.code}`);
+      showToast(tr("realtime.pairingCodeToast", { code: payload.code }));
     }
     return;
   }
@@ -133,7 +134,11 @@ export function handleRealtimePayload(payload: any) {
     setState((prev) => ({
       desktopPairingModal: { ...prev.desktopPairingModal, open: false },
     }));
-    showToast(`✓ 已完成配对：${payload.device?.name || "手机端"}`);
+    showToast(
+      tr("realtime.devicePairedToast", {
+        name: payload.device?.name || tr("source.mobile"),
+      })
+    );
     return;
   }
 
@@ -208,7 +213,7 @@ export function handleRealtimePayload(payload: any) {
 
   if (payload.type === "bot_created" && payload.bot) {
     upsertLocalSession(payload.bot);
-    showToast(`新 Bot「${payload.bot.title}」已创建`);
+    showToast(tr("realtime.botCreatedToast", { title: payload.bot.title }));
     return;
   }
 

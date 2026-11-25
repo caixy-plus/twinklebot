@@ -549,12 +549,12 @@ export function createServer({
         ? raw.globalMemories
         : Array.isArray(raw.privateSkills)
           ? raw.privateSkills
-          : DEFAULT_PRIVATE_SKILLS,
+          : [],
       privateSkills: Array.isArray(raw.globalMemories)
         ? raw.globalMemories
         : Array.isArray(raw.privateSkills)
           ? raw.privateSkills
-          : DEFAULT_PRIVATE_SKILLS,
+          : [],
       connectedApps,
       mailAccounts,
       mailIntegrations,

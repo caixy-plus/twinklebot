@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { inferMailServerPreset } from "/skills-catalog.js";
+import { getLocalizedSkillMeta, inferMailServerPreset } from "/skills-catalog.js";
 import {
   closeAppsModal,
   commitSettingsPatch,
@@ -60,19 +60,21 @@ function SkillRemoveConfirmBox({
   onCancel: () => void;
   onDone: () => void;
 }) {
+  const { locale, t } = useI18n();
   const [purge, setPurge] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const saved = Number(skill?.savedAccountCount) || 0;
   const isChannel = skill?.id === "feishu-bot" || skill?.id === "telegram-bot";
+  const displayName = getLocalizedSkillMeta(skill, locale).name || skill?.name || skill?.id || "";
 
   return (
     <div
       className={`skill-remove-confirm${spanGrid ? " skills-grid-span" : ""}`}
       role="group"
-      aria-label={`确认移除${skill.name}`}
+      aria-label={t("skills.removeBoxAria", { name: displayName })}
     >
       <div className="skill-remove-text">
-        确认移除「{skill.name}」？移除后 Bot 将暂停使用该技能，重新添加即可恢复。
+        {t("skills.removeBoxText", { name: displayName })}
       </div>
       {saved > 0 && (
         <label className="skill-remove-purge">
@@ -83,14 +85,14 @@ function SkillRemoveConfirmBox({
           />
           <span>
             {isChannel
-              ? "同时清除已保存的机器人凭据与配置"
-              : `同时清除已保存的 ${saved} 个邮箱凭据`}
+              ? t("skills.removePurgeChannel")
+              : t("skills.removePurgeMail", { count: saved })}
           </span>
         </label>
       )}
       <div className="skill-remove-actions">
         <button type="button" className="skill-pill-btn" onClick={onCancel}>
-          取消
+          {t("common.cancel")}
         </button>
         <button
           type="button"
@@ -104,15 +106,15 @@ function SkillRemoveConfirmBox({
                 { method: "DELETE" }
               );
               setState((prev) => ({ settings: { ...prev.settings, ...res } }));
-              showToast(`已移除「${skill.name}」`);
+              showToast(t("skills.removedToast", { name: displayName }));
               onDone();
             } catch (err: any) {
               setSubmitting(false);
-              showToast(`移除失败：${err.message || ""}`);
+              showToast(t("skills.removeFailedToast", { error: err.message || "" }));
             }
           }}
         >
-          确认移除
+          {t("common.confirmRemove")}
         </button>
       </div>
     </div>
@@ -120,7 +122,7 @@ function SkillRemoveConfirmBox({
 }
 
 export function SkillsStoreModal() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const appsModalOpen = useStore((s) => s.appsModalOpen);
   const skillsView = useStore((s) => s.skillsView);
   const skillFilter = useStore((s) => s.skillFilter);
@@ -583,7 +585,7 @@ export function SkillsStoreModal() {
     }
     const wasEditing = Boolean(editingMailAccountId);
     setMailBusyBtn(`${provider}-save`);
-    setProviderMailFeedback(provider, "正在连接邮箱服务器验证收发通道…", "info");
+    setProviderMailFeedback(provider, t("skills.mailConnectingFeedback"), "info");
     try {
       const payload = collectMailPayload(provider);
       const res = await apiJson("/api/integrations/mail/accounts", {
@@ -593,26 +595,39 @@ export function SkillsStoreModal() {
       applyMailApiResponse(res);
       const savedAcct = res.account || {};
       const stats = res.inboxStats;
-      const unseenInfo = stats?.unseen !== undefined ? `（未读 ${stats.unseen} 封）` : "";
+      const unseenInfo =
+        stats?.unseen !== undefined ? t("skills.mailUnseenParenPart", { count: stats.unseen }) : "";
       resetMailFormsForCreate(provider);
       setState({
         mailEditorOpen: false,
         editingMailAccountId: null,
         mailListFeedback: {
           text: wasEditing
-            ? `✓ 已保存 ${savedAcct.email || payload.email} 的修改，收件箱共 ${stats?.messages ?? 0} 封${unseenInfo}。`
-            : `✓ 已连接 ${savedAcct.email || payload.email}，收件箱共 ${stats?.messages ?? 0} 封${unseenInfo}。`,
+            ? t("skills.mailSavedEditFeedback", {
+                email: savedAcct.email || payload.email,
+                count: stats?.messages ?? 0,
+                unseenInfo,
+              })
+            : t("skills.mailConnectedFeedback", {
+                email: savedAcct.email || payload.email,
+                count: stats?.messages ?? 0,
+                unseenInfo,
+              }),
           kind: "success",
         },
       });
       await refreshSettingsFromServer();
       showToast(
         wasEditing
-          ? `已更新邮箱 ${savedAcct.label || savedAcct.email}`
-          : `已添加邮箱 ${savedAcct.label || savedAcct.email}`
+          ? t("skills.mailUpdatedToast", { label: savedAcct.label || savedAcct.email })
+          : t("skills.mailAddedToast", { label: savedAcct.label || savedAcct.email })
       );
     } catch (err: any) {
-      setProviderMailFeedback(provider, `❌ ${err.message || "邮箱连接验证失败"}`, "error");
+      setProviderMailFeedback(
+        provider,
+        `❌ ${err.message || t("skills.mailConnectFailedFallback")}`,
+        "error"
+      );
     } finally {
       setMailBusyBtn(null);
     }
@@ -627,7 +642,7 @@ export function SkillsStoreModal() {
     setMailBusyBtn(`${provider}-${sendTestMail ? "send" : "test"}`);
     setProviderMailFeedback(
       provider,
-      sendTestMail ? "正在向当前邮箱发送测试邮件…" : "正在测试收件与 SMTP 发件握手…",
+      sendTestMail ? t("skills.mailSendingTestFeedback") : t("skills.mailTestingHandshakeFeedback"),
       "info"
     );
     try {
@@ -637,16 +652,17 @@ export function SkillsStoreModal() {
         body: JSON.stringify(sendTestMail ? { ...payload, sendTestMail: true } : payload),
       });
       if (sendTestMail) {
-        setProviderMailFeedback(
-          provider,
-          "✓ 测试邮件已成功发送至您自己的收件箱，请查收确认。",
-          "success"
-        );
+        setProviderMailFeedback(provider, t("skills.mailTestSentSuccess"), "success");
       } else {
-        const unseenInfo = res.unseen !== undefined ? `，未读 ${res.unseen} 封` : "";
+        const unseenInfo =
+          res.unseen !== undefined ? t("skills.mailUnseenCommaPart", { count: res.unseen }) : "";
         setProviderMailFeedback(
           provider,
-          `✓ 连通性测试成功（耗时 ${res.latencyMs || 0}ms）：收件箱共 ${res.messages ?? 0} 封${unseenInfo}，SMTP 认证正常。`,
+          t("skills.mailHandshakeOkFeedback", {
+            ms: res.latencyMs || 0,
+            count: res.messages ?? 0,
+            unseenInfo,
+          }),
           "success"
         );
       }
@@ -654,8 +670,8 @@ export function SkillsStoreModal() {
       setProviderMailFeedback(
         provider,
         sendTestMail
-          ? `❌ 发送测试信失败：${err.message || ""}`
-          : `❌ ${err.message || "测试失败"}`,
+          ? t("skills.mailSendTestFailed", { error: err.message || "" })
+          : `❌ ${err.message || t("skills.mailTestFailedFallback")}`,
         "error"
       );
     } finally {
@@ -667,11 +683,11 @@ export function SkillsStoreModal() {
     const targetId = editingMailAccountId;
     if (!targetId) return;
     const ok = await showConfirmDialog({
-      title: "移除邮箱账号",
-      message: "确定要移除此邮箱账号吗？",
-      detail: "将断开同步并清除本地保存的邮箱授权凭据。",
-      confirmText: "确认移除",
-      cancelText: "取消",
+      title: t("skills.mailRemoveTitle"),
+      message: t("skills.mailRemoveMsg"),
+      detail: t("skills.mailRemoveDetail"),
+      confirmText: t("common.confirmRemove"),
+      cancelText: t("common.cancel"),
       tone: "danger",
     });
     if (!ok) return;
@@ -687,14 +703,18 @@ export function SkillsStoreModal() {
         mailEditorOpen: false,
         editingMailAccountId: null,
         mailListFeedback: {
-          text: "已移除该邮箱账号并清除本地保存的凭据。",
+          text: t("skills.mailRemovedNotice"),
           kind: "info",
         },
       });
       await refreshSettingsFromServer();
-      showToast("已移除邮箱账号");
+      showToast(t("skills.mailRemovedToast"));
     } catch (err: any) {
-      setProviderMailFeedback(provider, `❌ 移除失败：${err.message || ""}`, "error");
+      setProviderMailFeedback(
+        provider,
+        t("skills.mailRemoveFailedFeedback", { error: err.message || "" }),
+        "error"
+      );
     } finally {
       setMailBusyBtn(null);
     }
@@ -708,27 +728,32 @@ export function SkillsStoreModal() {
       const mergedSettings = { ...getState().settings, ...res };
       setState({ settings: mergedSettings });
       const addedSkill = getConfigurableSkillFromSettings(mergedSettings, skillId);
-      showToast(`已添加「${addedSkill?.name || skillId}」`);
+      const addedName = addedSkill
+        ? getLocalizedSkillMeta(addedSkill, locale).name || addedSkill.name || skillId
+        : skillId;
+      showToast(t("skills.addedToast", { name: addedName }));
       if (addedSkill?.mcpServerId) {
         refreshMcpSkillStatus(addedSkill.mcpServerId, true);
       }
     } catch (err: any) {
-      showToast(`添加失败：${err.message || ""}`);
+      showToast(t("skills.addFailedToast", { error: err.message || "" }));
     }
   };
 
   const officeSkillSubtitle = (skill: any) => {
-    if (!skill.installed) return skill.desc;
+    const loc = getLocalizedSkillMeta(skill, locale);
+    if (!skill.installed) return loc.desc;
     const n = getProviderAccounts(skill.id).length;
-    return n > 0 ? `已配置 ${n} 个账号` : "IMAP / POP3 + SMTP · 待配置";
+    return n > 0 ? t("skills.officeConfiguredSub", { count: n }) : t("skills.officePendingSub");
   };
 
   const isChannelSkillItem = (skill: any) =>
     skill?.id === "feishu-bot" || skill?.id === "telegram-bot";
 
   const channelSkillSubtitle = (skill: any) => {
+    const loc = getLocalizedSkillMeta(skill, locale);
     if (!skill?.installed) {
-      return `手动添加启用 · ${skill?.desc || ""}`;
+      return t("skills.manualEnableSub", { desc: loc.desc });
     }
     const entry = (settings?.channelIntegrations as any)?.[skill.id];
     const accts: any[] = Array.isArray(entry?.accounts) ? entry.accounts : [];
@@ -740,63 +765,78 @@ export function SkillsStoreModal() {
       ).length;
       const errAcct = accts.find((a) => a?.runtime?.status === "error" && a?.runtime?.lastError);
       if (onlineCount > 0) {
-        return `${t("channel.multiBotCountSubtitle", { count: accts.length })}（${onlineCount} 在线）${pendingText} · ${skill.desc}`;
+        return t("skills.channelMultiOnlineSub", {
+          bots: t("channel.multiBotCountSubtitle", { count: accts.length }),
+          online: onlineCount,
+          pendingText,
+          desc: loc.desc,
+        });
       }
       if (errAcct) {
         return `${t("channel.multiBotCountSubtitle", { count: accts.length })} · ${errAcct.runtime.lastError}${pendingText}`;
       }
-      return `${t("channel.multiBotCountSubtitle", { count: accts.length })}${pendingText} · 点击「配置」管理`;
+      return t("skills.channelMultiConfigureSub", {
+        bots: t("channel.multiBotCountSubtitle", { count: accts.length }),
+        pendingText,
+      });
     }
     const cfg = entry?.config;
     const rt = entry?.runtime;
     if (rt?.status === "connected") {
-      return `${t("channel.statusConnected")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${skill.desc}`;
+      return `${t("channel.statusConnected")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${loc.desc}`;
     }
     if (rt?.status === "connecting") {
-      return `${t("channel.statusConnecting")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${skill.desc}`;
+      return `${t("channel.statusConnecting")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${loc.desc}`;
     }
     if (rt?.status === "webhook_ready") {
-      return `${t("channel.statusReady")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${skill.desc}`;
+      return `${t("channel.statusReady")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${loc.desc}`;
     }
     if (rt?.status === "error" && rt.lastError) {
       return `${rt.lastError}${pendingText}`;
     }
     if (cfg?.configured) {
-      return cfg.enabled ? `${t("channel.statusStopped")} · 点击「配置」检查连接` : `已保存凭据（未启用） · 点击「配置」开启`;
+      return cfg.enabled
+        ? t("skills.channelStoppedCheckSub", { status: t("channel.statusStopped") })
+        : t("skills.channelDisabledHintSub");
     }
-    return `待配置凭据与配对规则 · ${skill.desc}`;
+    return t("skills.channelPendingConfigSub", { desc: loc.desc });
   };
 
   const platformSkillSubtitle = (skill: any) => {
     if (isChannelSkillItem(skill)) {
       return channelSkillSubtitle(skill);
     }
+    const loc = getLocalizedSkillMeta(skill, locale);
     if (!skill.removable) {
-      return `${skill.toolCount} 项工具 · ${skill.desc}`;
+      return t("skills.toolCountSub", { count: skill.toolCount, desc: loc.desc });
     }
     if (!skill.installed) {
-      return `手动添加启用 · ${skill.desc}`;
+      return t("skills.manualEnableSub", { desc: loc.desc });
     }
     const srv = mcpStatusByServer?.[skill.mcpServerId || skill.id];
     if (srv?.connected) {
       const ver = srv.serverInfo?.version ? ` v${srv.serverInfo.version}` : "";
-      return `MCP 已连接${ver} · ${srv.toolCount || skill.toolCount} 项工具可用`;
+      return t("skills.mcpConnectedSub", {
+        ver,
+        count: srv.toolCount || skill.toolCount,
+      });
     }
     if (srv?.binaryExists === false || srv?.binaryInstalled === false) {
       return isNonMacHost || srv?.unsupportedPlatform
-        ? "已添加 · 当前系统未安装或不支持 KimiCU，点击「配置」查看"
-        : "已添加 · 未检测到 KimiCU，点击「配置」查看";
+        ? t("skills.mcpUnsupportedSub")
+        : t("skills.mcpMissingBinarySub");
     }
-    return `${skill.toolCount} 项工具 · 已添加，点击「配置」检测或修改 MCP 服务`;
+    return t("skills.mcpAddedSub", { count: skill.toolCount });
   };
 
   const skillMatchesSearch = (skill: any, query: string) => {
     if (!query) return true;
     const q = query.toLowerCase();
+    const loc = getLocalizedSkillMeta(skill, locale);
     const accountText = (skill.id ? getProviderAccounts(skill.id) : [])
       .map((a: any) => `${a.email} ${a.label || ""}`)
       .join(" ");
-    return `${skill.name || ""} ${skill.desc || skill.instruction || ""} ${accountText}`
+    return `${skill.name || ""} ${loc.name || ""} ${skill.desc || skill.instruction || ""} ${loc.desc || ""} ${accountText}`
       .toLowerCase()
       .includes(q);
   };
@@ -857,7 +897,7 @@ export function SkillsStoreModal() {
   };
 
   const buildCustomPreviewMd = () => {
-    const name = csName.trim() || "未命名技能";
+    const name = csName.trim() || t("skills.customUnnamedFallback");
     const slug =
       csSlug.trim() ||
       editingCustomSkillId ||
@@ -867,8 +907,8 @@ export function SkillsStoreModal() {
         .replace(/^-+|-+$/g, "") ||
       "custom-skill";
     const icon = csIcon.trim() || "⚡";
-    const desc = csDesc.trim() || "（尚未填写触发简介）";
-    const body = csInstructions.trim() || "（尚未填写步骤正文）";
+    const desc = csDesc.trim() || t("skills.customDescMissingFallback");
+    const body = csInstructions.trim() || t("skills.customBodyMissingFallback");
     const existing = editingCustomSkillId
       ? customSkills.find((s: any) => s.id === editingCustomSkillId)
       : null;
@@ -898,7 +938,7 @@ export function SkillsStoreModal() {
     const instructions = csInstructions.trim();
     if (!name || !description || !instructions) {
       setState({
-        customSkillFeedback: "请完整填写技能名称、触发简介以及操作步骤正文。",
+        customSkillFeedback: t("skills.customRequiredFieldsMsg"),
       });
       return;
     }
@@ -939,9 +979,13 @@ export function SkillsStoreModal() {
         customSkillFeedback: "",
       });
       await refreshSettingsFromServer();
-      showToast(wasEdit ? `已更新自定义技能「${name}」` : `已创建自定义技能「${name}」`);
+      showToast(
+        wasEdit
+          ? t("skills.customUpdatedToast", { name })
+          : t("skills.customCreatedToast", { name })
+      );
     } catch (err: any) {
-      setState({ customSkillFeedback: err?.message || "保存失败，请检查输入" });
+      setState({ customSkillFeedback: err?.message || t("skills.customSaveFailedFallback") });
     } finally {
       setCsSaving(false);
     }
@@ -957,7 +1001,7 @@ export function SkillsStoreModal() {
     !isMcpSkill &&
     !isChannelSkillDetail &&
     ((mailEditorOpen && !editingMailAccountId) || detailProviderAccounts.length === 0);
-  const detailBackLabel = detailFrom === "manage" ? "管理已添加技能" : "技能商店";
+  const detailBackLabel = detailFrom === "manage" ? t("skills.backManageLabel") : t("skills.title");
 
   const srv = mcpStatusByServer?.[mcpServerId];
   const srvCmdText = srv
@@ -984,8 +1028,8 @@ export function SkillsStoreModal() {
       <div className="custom-skill-editor-top">
         <strong id="custom-skill-editor-title">
           {editingCustomSkillId
-            ? `编辑自定义技能「${csName || editingCustomSkillId}」`
-            : "新建自定义技能"}
+            ? t("skills.customEditTitle", { name: csName || editingCustomSkillId })
+            : t("skills.customNewTitle")}
         </strong>
         <button
           id="custom-skill-preview-toggle-btn"
@@ -997,7 +1041,7 @@ export function SkillsStoreModal() {
             }))
           }
         >
-          {customSkillPreviewMode ? "返回表单编辑" : "预览 SKILL.md"}
+          {customSkillPreviewMode ? t("skills.customBackToFormBtn") : t("skills.customPreviewMdBtn")}
         </button>
       </div>
 
@@ -1008,7 +1052,7 @@ export function SkillsStoreModal() {
       >
         <div className="custom-skill-row-two">
           <label className="field-group custom-skill-icon-field">
-            <span>图标</span>
+            <span>{t("skills.customIconLabel")}</span>
             <input
               id="custom-skill-icon-input"
               type="text"
@@ -1018,48 +1062,48 @@ export function SkillsStoreModal() {
             />
           </label>
           <label className="field-group custom-skill-name-field">
-            <span>技能名称 *</span>
+            <span>{t("skills.customNameLabel")}</span>
             <input
               ref={csNameRef}
               id="custom-skill-name-input"
               type="text"
               maxLength={64}
-              placeholder="例如：周报汇总发送"
+              placeholder={t("skills.customNamePh")}
               required
               value={csName}
               onChange={(e) => setCsName(e.target.value)}
             />
           </label>
           <label className="field-group custom-skill-slug-field">
-            <span>英文标识 (Slug，可选)</span>
+            <span>{t("skills.customSlugLabel")}</span>
             <input
               id="custom-skill-slug-input"
               type="text"
               maxLength={64}
-              placeholder="自动生成如 weekly-report"
+              placeholder={t("skills.customSlugPh")}
               value={csSlug}
               onChange={(e) => setCsSlug(e.target.value)}
             />
           </label>
         </div>
         <label className="field-group">
-          <span>触发简介（注入轻量索引供所有 Bot 按需识别）*</span>
+          <span>{t("skills.customDescLabel")}</span>
           <input
             id="custom-skill-desc-input"
             type="text"
             maxLength={240}
-            placeholder="例如：当需要汇总项目进展并群发团队邮件周报时使用"
+            placeholder={t("skills.customDescPh")}
             required
             value={csDesc}
             onChange={(e) => setCsDesc(e.target.value)}
           />
         </label>
         <label className="field-group">
-          <span>完整操作步骤（Markdown 正文，按需加载给 Bot）*</span>
+          <span>{t("skills.customInstructionsLabel")}</span>
           <textarea
             id="custom-skill-instructions-input"
             rows={6}
-            placeholder={"## 执行步骤\n1. 收集本周关键产出与阻塞事项\n2. 按「摘要 → 明细 → 下周计划」排版\n3. ..."}
+            placeholder={t("skills.customInstructionsPh")}
             required
             value={csInstructions}
             onChange={(e) => setCsInstructions(e.target.value)}
@@ -1091,7 +1135,7 @@ export function SkillsStoreModal() {
             checked={csEnabled}
             onChange={(e) => setCsEnabled(e.target.checked)}
           />
-          <span>保存后全 Bot 启用共享</span>
+          <span>{t("skills.customShareAllBots")}</span>
         </label>
         <div className="custom-skill-editor-btns">
           <button
@@ -1107,7 +1151,7 @@ export function SkillsStoreModal() {
               })
             }
           >
-            取消
+            {t("common.cancel")}
           </button>
           <button
             id="custom-skill-save-btn"
@@ -1115,7 +1159,7 @@ export function SkillsStoreModal() {
             className="skill-pill-btn is-primary"
             disabled={csSaving}
           >
-            保存技能
+            {t("skills.customSaveBtn")}
           </button>
         </div>
       </div>
@@ -1130,7 +1174,7 @@ export function SkillsStoreModal() {
     >
       <div className="mail-editor-mode-bar" hidden>
         <span className="mail-editor-mode-label" id="mail-editor-mode-label">
-          新增邮箱账号
+          {t("skills.mailAddModeBar")}
         </span>
       </div>
 
@@ -1150,19 +1194,21 @@ export function SkillsStoreModal() {
           <div>
             <h3 id="qqmail-form-heading" className="mail-form-title">
               {editingAccount && activeMailProvider === "qqmail"
-                ? `编辑 QQ 邮箱：${editingAccount.email}`
-                : "新增 QQ 邮箱账号"}
+                ? t("skills.qqFormEditTitle", { email: editingAccount.email })
+                : t("skills.qqFormNewTitle")}
             </h3>
             <div className="mail-form-meta" id="qqmail-verified-meta">
               {editingAccount && activeMailProvider === "qqmail"
                 ? editingAccount.inboxStats
-                  ? `当前已连接 · 收件箱共 ${editingAccount.inboxStats.messages ?? 0} 封${
-                      editingAccount.inboxStats.unseen !== undefined
-                        ? `，未读 ${editingAccount.inboxStats.unseen} 封`
-                        : ""
-                    }`
-                  : `正在编辑 ${editingAccount.email}`
-                : "默认使用 imap.qq.com:993 与 smtp.qq.com:465 SSL 加密连接"}
+                  ? t("skills.qqFormInboxStats", {
+                      count: editingAccount.inboxStats.messages ?? 0,
+                      unseenPart:
+                        editingAccount.inboxStats.unseen !== undefined
+                          ? t("skills.mailUnseenCommaPart", { count: editingAccount.inboxStats.unseen })
+                          : "",
+                    })
+                  : t("skills.mailEditingMeta", { email: editingAccount.email })
+                : t("skills.qqFormDefaultMeta")}
             </div>
           </div>
           <button
@@ -1172,17 +1218,17 @@ export function SkillsStoreModal() {
             hidden={detailProviderAccounts.length === 0}
             onClick={() => setState({ mailEditorOpen: false, editingMailAccountId: null })}
           >
-            {inline ? "收起" : "返回账号列表"}
+            {inline ? t("common.collapse") : t("skills.mailBackToListBtn")}
           </button>
         </div>
 
         <div className="mail-form-grid-two">
           <div className="mail-field">
             <label htmlFor="qqmail-email-input">
-              QQ 邮箱地址 <span aria-hidden="true">*</span>
+              {t("skills.qqEmailLabel")} <span aria-hidden="true">*</span>
             </label>
             <span id="qqmail-email-hint" className="mail-field-hint">
-              支持 @qq.com、@foxmail.com 或绑定的域名别名
+              {t("skills.qqEmailHint")}
             </span>
             <input
               id="qqmail-email-input"
@@ -1198,19 +1244,19 @@ export function SkillsStoreModal() {
               aria-invalid="false"
               aria-describedby="qqmail-email-hint"
               data-error="qqmail-email-error"
-              placeholder="例如：12345678@qq.com"
+              placeholder={t("skills.qqEmailPh")}
               value={qqEmail}
               onChange={(e) => setQqEmail(e.target.value)}
             />
             <div id="qqmail-email-error" className="mail-error-msg">
-              请输入有效的 QQ 邮箱地址（如 123456@qq.com）。
+              {t("skills.qqEmailError")}
             </div>
           </div>
 
           <div className="mail-field">
-            <label htmlFor="qqmail-label-input">账号备注（区分多个邮箱，可选）</label>
+            <label htmlFor="qqmail-label-input">{t("skills.mailLabelField")}</label>
             <span id="qqmail-label-hint" className="mail-field-hint">
-              例如「工作QQ」「个人主号」，方便直接对 Bot 指定账号
+              {t("skills.qqLabelHint")}
             </span>
             <input
               id="qqmail-label-input"
@@ -1221,7 +1267,7 @@ export function SkillsStoreModal() {
               enterKeyHint="next"
               aria-invalid="false"
               aria-describedby="qqmail-label-hint"
-              placeholder="例如：工作QQ / 个人邮箱"
+              placeholder={t("skills.qqLabelPh")}
               value={qqLabel}
               onChange={(e) => setQqLabel(e.target.value)}
             />
@@ -1231,7 +1277,7 @@ export function SkillsStoreModal() {
         <div className="mail-field">
           <div className="mail-label-row">
             <label htmlFor="qqmail-authcode-input">
-              16 位 IMAP/POP3/SMTP 授权码{" "}
+              {t("skills.qqAuthCodeLabel")}{" "}
               <span
                 id="qqmail-secret-req"
                 aria-hidden="true"
@@ -1245,14 +1291,14 @@ export function SkillsStoreModal() {
               id="qqmail-toggle-secret-btn"
               className="mail-secret-toggle"
               aria-pressed={qqShowSecret ? "true" : "false"}
-              aria-label="显示 QQ 邮箱授权码"
+              aria-label={t("skills.qqToggleSecretAria")}
               onClick={() => setQqShowSecret((v) => !v)}
             >
-              {qqShowSecret ? "隐藏授权码" : "显示授权码"}
+              {qqShowSecret ? t("skills.qqHideSecret") : t("skills.qqShowSecret")}
             </button>
           </div>
           <span id="qqmail-authcode-hint" className="mail-field-hint">
-            获取路径：网页版 QQ 邮箱 → 设置 → 账户 → 开启「IMAP/SMTP服务」或「POP3/SMTP服务」→ 生成 16 位授权码（非 QQ 密码）
+            {t("skills.qqAuthCodeHint")}
           </span>
           <input
             id="qqmail-authcode-input"
@@ -1271,14 +1317,14 @@ export function SkillsStoreModal() {
             data-error="qqmail-authcode-error"
             placeholder={
               editingAccount
-                ? `已保存授权码 (${editingAccount.maskedSecret || "••••"})，留空保持不变`
-                : "输入 16 位授权码（支持自动去除空格）"
+                ? t("skills.qqAuthKeepPh", { mask: editingAccount.maskedSecret || "••••" })
+                : t("skills.qqAuthNewPh")
             }
             value={qqAuthCode}
             onChange={(e) => setQqAuthCode(e.target.value)}
           />
           <div id="qqmail-authcode-error" className="mail-error-msg">
-            请输入至少 8 位的 QQ 邮箱客户端授权码。
+            {t("skills.qqAuthCodeError")}
           </div>
         </div>
 
@@ -1291,17 +1337,17 @@ export function SkillsStoreModal() {
               checked={qqDefault}
               onChange={(e) => setQqDefault(e.target.checked)}
             />
-            <label htmlFor="qqmail-default-check">设为默认收发邮箱</label>
+            <label htmlFor="qqmail-default-check">{t("skills.mailSetDefaultLabel")}</label>
           </div>
         </div>
 
         <details className="mail-advanced-details">
-          <summary>高级选项（发件人昵称 · IMAP / POP3 协议）</summary>
+          <summary>{t("skills.qqAdvSummary")}</summary>
           <div className="mail-advanced-body">
             <div className="mail-field">
-              <label htmlFor="qqmail-sender-input">发件人显示名称（可选）</label>
+              <label htmlFor="qqmail-sender-input">{t("skills.qqSenderLabel")}</label>
               <span id="qqmail-sender-hint" className="mail-field-hint">
-                发信时收件人看到的名称，留空默认使用邮箱地址
+                {t("skills.qqSenderHint")}
               </span>
               <input
                 id="qqmail-sender-input"
@@ -1312,13 +1358,13 @@ export function SkillsStoreModal() {
                 enterKeyHint="next"
                 aria-invalid="false"
                 aria-describedby="qqmail-sender-hint"
-                placeholder="例如：张工 / 研发助理"
+                placeholder={t("skills.qqSenderPh")}
                 value={qqSender}
                 onChange={(e) => setQqSender(e.target.value)}
               />
             </div>
             <fieldset className="mail-radio-fieldset">
-              <legend>QQ 邮箱收件协议</legend>
+              <legend>{t("skills.qqProtoLegend")}</legend>
               <div className="mail-radio-group">
                 <div className="mail-radio-option">
                   <input
@@ -1330,7 +1376,7 @@ export function SkillsStoreModal() {
                     onChange={() => setQqProto("imap")}
                   />
                   <label htmlFor="qqmail-proto-imap">
-                    IMAP（imap.qq.com:993 · 推荐，支持未读筛选）
+                    {t("skills.qqProtoImapOpt")}
                   </label>
                 </div>
                 <div className="mail-radio-option">
@@ -1373,10 +1419,10 @@ export function SkillsStoreModal() {
             disabled={mailBusyBtn === "qqmail-save"}
           >
             {mailBusyBtn === "qqmail-save"
-              ? "正在验证并保存…"
+              ? t("skills.mailSavingBtn")
               : editingAccount
-                ? "保存修改"
-                : "连接并保存"}
+                ? t("skills.mailSaveEditBtn")
+                : t("skills.mailConnectSaveBtn")}
           </button>
           <button
             id="qqmail-test-btn"
@@ -1385,7 +1431,7 @@ export function SkillsStoreModal() {
             disabled={mailBusyBtn === "qqmail-test"}
             onClick={() => handleMailTest("qqmail", false)}
           >
-            {mailBusyBtn === "qqmail-test" ? "测试中…" : "测试连通性"}
+            {mailBusyBtn === "qqmail-test" ? t("skills.mailTestingBtn") : t("skills.mailTestConnBtn")}
           </button>
           <button
             id="qqmail-send-test-btn"
@@ -1395,7 +1441,7 @@ export function SkillsStoreModal() {
             disabled={mailBusyBtn === "qqmail-send"}
             onClick={() => handleMailTest("qqmail", true)}
           >
-            {mailBusyBtn === "qqmail-send" ? "发送中…" : "给自己发封测试信"}
+            {mailBusyBtn === "qqmail-send" ? t("skills.mailSendingBtn") : t("skills.mailSendTestBtn")}
           </button>
           <button
             id="qqmail-disconnect-btn"
@@ -1405,7 +1451,7 @@ export function SkillsStoreModal() {
             disabled={mailBusyBtn === "qqmail-disconnect"}
             onClick={() => handleMailDisconnect("qqmail")}
           >
-            移除此账号
+            {t("skills.mailRemoveAccountBtn")}
           </button>
         </div>
       </form>
@@ -1426,15 +1472,15 @@ export function SkillsStoreModal() {
           <div>
             <h3 id="custom-mail-form-heading" className="mail-form-title">
               {editingAccount && activeMailProvider === "custom-mail"
-                ? `编辑通用邮箱：${editingAccount.email}`
-                : "新增通用邮箱账号（POP3 / IMAP + SMTP）"}
+                ? t("skills.cmFormEditTitle", { email: editingAccount.email })
+                : t("skills.cmFormNewTitle")}
             </h3>
             <div className="mail-form-meta" id="custom-mail-verified-meta">
               {editingAccount && activeMailProvider === "custom-mail"
-                ? `正在编辑 ${editingAccount.email}`
+                ? t("skills.mailEditingMeta", { email: editingAccount.email })
                 : cmPresetApplied
-                  ? "已根据邮箱域名自动填入推荐服务器，可随时手动修改"
-                  : "自定义收件服务器（POP3 或 IMAP）与发件服务器（SMTP）接入任意标准邮箱"}
+                  ? t("skills.cmPresetAppliedMeta")
+                  : t("skills.cmDefaultMeta")}
             </div>
           </div>
           <button
@@ -1444,17 +1490,17 @@ export function SkillsStoreModal() {
             hidden={detailProviderAccounts.length === 0}
             onClick={() => setState({ mailEditorOpen: false, editingMailAccountId: null })}
           >
-            {inline ? "收起" : "返回账号列表"}
+            {inline ? t("common.collapse") : t("skills.mailBackToListBtn")}
           </button>
         </div>
 
         <div className="mail-form-grid-two">
           <div className="mail-field">
             <label htmlFor="custom-mail-email-input">
-              邮箱账号 <span aria-hidden="true">*</span>
+              {t("skills.cmEmailLabel")} <span aria-hidden="true">*</span>
             </label>
             <span id="custom-mail-email-hint" className="mail-field-hint">
-              完整的登录邮箱地址，如 name@company.com
+              {t("skills.cmEmailHint")}
             </span>
             <input
               id="custom-mail-email-input"
@@ -1479,14 +1525,14 @@ export function SkillsStoreModal() {
               }}
             />
             <div id="custom-mail-email-error" className="mail-error-msg">
-              请输入格式正确的完整邮箱账号（如 user@example.com）。
+              {t("skills.cmEmailError")}
             </div>
           </div>
 
           <div className="mail-field">
             <div className="mail-label-row">
               <label htmlFor="custom-mail-password-input">
-                邮箱密码 / 授权码{" "}
+                {t("skills.cmPasswordLabel")}{" "}
                 <span
                   id="custom-mail-secret-req"
                   aria-hidden="true"
@@ -1500,14 +1546,14 @@ export function SkillsStoreModal() {
                 id="custom-mail-toggle-secret-btn"
                 className="mail-secret-toggle"
                 aria-pressed={cmShowSecret ? "true" : "false"}
-                aria-label="显示通用邮箱密码"
+                aria-label={t("skills.cmToggleSecretAria")}
                 onClick={() => setCmShowSecret((v) => !v)}
               >
-                {cmShowSecret ? "隐藏密码" : "显示密码"}
+                {cmShowSecret ? t("skills.cmHidePassword") : t("skills.cmShowPassword")}
               </button>
             </div>
             <span id="custom-mail-password-hint" className="mail-field-hint">
-              163/阿里/腾讯企业邮开启客户端登录时请填专用密码
+              {t("skills.cmPasswordHint")}
             </span>
             <input
               id="custom-mail-password-input"
@@ -1525,23 +1571,23 @@ export function SkillsStoreModal() {
               data-error="custom-mail-password-error"
               placeholder={
                 editingAccount
-                  ? `已保存密码 (${editingAccount.maskedSecret || "••••"})，留空保持不变`
-                  : "输入邮箱密码或客户端专用授权码"
+                  ? t("skills.cmPasswordKeepPh", { mask: editingAccount.maskedSecret || "••••" })
+                  : t("skills.cmPasswordNewPh")
               }
               value={cmPassword}
               onChange={(e) => setCmPassword(e.target.value)}
             />
             <div id="custom-mail-password-error" className="mail-error-msg">
-              请输入邮箱登录密码或客户端授权码。
+              {t("skills.cmPasswordError")}
             </div>
           </div>
         </div>
 
         <div className="mail-form-grid-two">
           <div className="mail-field">
-            <label htmlFor="custom-mail-label-input">账号备注（区分多个邮箱，可选）</label>
+            <label htmlFor="custom-mail-label-input">{t("skills.mailLabelField")}</label>
             <span id="custom-mail-label-hint" className="mail-field-hint">
-              例如「企业邮箱」「运维告警号」，便于对 Bot 指定收发账号
+              {t("skills.cmLabelHint")}
             </span>
             <input
               id="custom-mail-label-input"
@@ -1552,7 +1598,7 @@ export function SkillsStoreModal() {
               enterKeyHint="next"
               aria-invalid="false"
               aria-describedby="custom-mail-label-hint"
-              placeholder="例如：公司企业邮 / 163 备用号"
+              placeholder={t("skills.cmLabelPh")}
               value={cmLabel}
               onChange={(e) => setCmLabel(e.target.value)}
             />
@@ -1567,13 +1613,13 @@ export function SkillsStoreModal() {
                 checked={cmDefault}
                 onChange={(e) => setCmDefault(e.target.checked)}
               />
-              <label htmlFor="custom-mail-default-check">设为默认收发邮箱</label>
+              <label htmlFor="custom-mail-default-check">{t("skills.mailSetDefaultLabel")}</label>
             </div>
           </div>
         </div>
 
         <fieldset className="mail-radio-fieldset">
-          <legend>收件服务器协议（POP3 / IMAP）</legend>
+          <legend>{t("skills.cmProtoLegend")}</legend>
           <div className="mail-radio-group">
             <div className="mail-radio-option">
               <input
@@ -1590,7 +1636,7 @@ export function SkillsStoreModal() {
                   applyCustomPresetForEmail(cmEmail, "pop3");
                 }}
               />
-              <label htmlFor="custom-proto-pop3">POP3（标准收件协议 · 默认端口 995）</label>
+              <label htmlFor="custom-proto-pop3">{t("skills.cmProtoPop3Opt")}</label>
             </div>
             <div className="mail-radio-option">
               <input
@@ -1608,7 +1654,7 @@ export function SkillsStoreModal() {
                 }}
               />
               <label htmlFor="custom-proto-imap">
-                IMAP（双向同步与未读状态 · 默认端口 993）
+                {t("skills.cmProtoImapOpt")}
               </label>
             </div>
           </div>
@@ -1617,10 +1663,10 @@ export function SkillsStoreModal() {
         <div className="mail-server-grid">
           <div className="mail-field">
             <label htmlFor="custom-mail-inbound-host">
-              收件服务器 (POP3 / IMAP) <span aria-hidden="true">*</span>
+              {t("skills.cmInboundHostLabel")} <span aria-hidden="true">*</span>
             </label>
             <span id="custom-inbound-host-hint" className="mail-field-hint">
-              如 pop.163.com 或 imap.exmail.qq.com
+              {t("skills.cmInboundHostHint")}
             </span>
             <input
               id="custom-mail-inbound-host"
@@ -1643,16 +1689,16 @@ export function SkillsStoreModal() {
               }}
             />
             <div id="custom-inbound-host-error" className="mail-error-msg">
-              请填写收件服务器主机地址（如 pop.example.com）。
+              {t("skills.cmInboundHostError")}
             </div>
           </div>
 
           <div className="mail-field">
             <label htmlFor="custom-mail-inbound-port">
-              收件端口 <span aria-hidden="true">*</span>
+              {t("skills.cmInboundPortLabel")} <span aria-hidden="true">*</span>
             </label>
             <span id="custom-inbound-port-hint" className="mail-field-hint">
-              SSL 常用 995 / 993
+              {t("skills.cmInboundPortHint")}
             </span>
             <input
               id="custom-mail-inbound-port"
@@ -1672,7 +1718,7 @@ export function SkillsStoreModal() {
               }}
             />
             <div id="custom-inbound-port-error" className="mail-error-msg">
-              请输入有效的端口号（如 995 或 993）。
+              {t("skills.cmInboundPortError")}
             </div>
           </div>
 
@@ -1699,13 +1745,13 @@ export function SkillsStoreModal() {
                   }
                 }}
               />
-              <label htmlFor="custom-mail-inbound-tls">收件 SSL/TLS</label>
+              <label htmlFor="custom-mail-inbound-tls">{t("skills.cmInboundTlsLabel")}</label>
             </div>
           </div>
         </div>
 
         <fieldset className="mail-radio-fieldset">
-          <legend>发件服务器加密方式（SMTP）</legend>
+          <legend>{t("skills.cmSmtpSecLegend")}</legend>
           <div className="mail-radio-group">
             <div className="mail-radio-option">
               <input
@@ -1721,7 +1767,7 @@ export function SkillsStoreModal() {
                   }
                 }}
               />
-              <label htmlFor="custom-smtp-ssl">SSL/TLS 加密（端口 465）</label>
+              <label htmlFor="custom-smtp-ssl">{t("skills.cmSmtpSslOpt")}</label>
             </div>
             <div className="mail-radio-option">
               <input
@@ -1737,7 +1783,7 @@ export function SkillsStoreModal() {
                   }
                 }}
               />
-              <label htmlFor="custom-smtp-starttls">STARTTLS 升级（端口 587）</label>
+              <label htmlFor="custom-smtp-starttls">{t("skills.cmSmtpStarttlsOpt")}</label>
             </div>
             <div className="mail-radio-option">
               <input
@@ -1753,7 +1799,7 @@ export function SkillsStoreModal() {
                   }
                 }}
               />
-              <label htmlFor="custom-smtp-none">明文（端口 25）</label>
+              <label htmlFor="custom-smtp-none">{t("skills.cmSmtpNoneOpt")}</label>
             </div>
           </div>
         </fieldset>
@@ -1761,10 +1807,10 @@ export function SkillsStoreModal() {
         <div className="mail-server-grid">
           <div className="mail-field">
             <label htmlFor="custom-mail-smtp-host">
-              发件服务器 (SMTP) <span aria-hidden="true">*</span>
+              {t("skills.cmSmtpHostLabel")} <span aria-hidden="true">*</span>
             </label>
             <span id="custom-smtp-host-hint" className="mail-field-hint">
-              如 smtp.163.com 或 smtp.exmail.qq.com
+              {t("skills.cmSmtpHostHint")}
             </span>
             <input
               id="custom-mail-smtp-host"
@@ -1787,16 +1833,16 @@ export function SkillsStoreModal() {
               }}
             />
             <div id="custom-smtp-host-error" className="mail-error-msg">
-              请填写 SMTP 发件服务器主机地址（如 smtp.example.com）。
+              {t("skills.cmSmtpHostError")}
             </div>
           </div>
 
           <div className="mail-field">
             <label htmlFor="custom-mail-smtp-port">
-              SMTP 端口 <span aria-hidden="true">*</span>
+              {t("skills.cmSmtpPortLabel")} <span aria-hidden="true">*</span>
             </label>
             <span id="custom-smtp-port-hint" className="mail-field-hint">
-              常用 465 或 587
+              {t("skills.cmSmtpPortHint")}
             </span>
             <input
               id="custom-mail-smtp-port"
@@ -1816,18 +1862,18 @@ export function SkillsStoreModal() {
               }}
             />
             <div id="custom-smtp-port-error" className="mail-error-msg">
-              请输入有效的 SMTP 端口号（如 465 或 587）。
+              {t("skills.cmSmtpPortError")}
             </div>
           </div>
         </div>
 
         <details className="mail-advanced-details">
-          <summary>高级选项（发件人昵称）</summary>
+          <summary>{t("skills.cmAdvSummary")}</summary>
           <div className="mail-advanced-body">
             <div className="mail-field">
-              <label htmlFor="custom-mail-sender-input">发件人昵称（可选）</label>
+              <label htmlFor="custom-mail-sender-input">{t("skills.cmSenderLabel")}</label>
               <span id="custom-sender-hint" className="mail-field-hint">
-                对外显示的发件人名
+                {t("skills.cmSenderHint")}
               </span>
               <input
                 id="custom-mail-sender-input"
@@ -1838,7 +1884,7 @@ export function SkillsStoreModal() {
                 enterKeyHint="done"
                 aria-invalid="false"
                 aria-describedby="custom-sender-hint"
-                placeholder="选填"
+                placeholder={t("skills.cmSenderPh")}
                 value={cmSender}
                 onChange={(e) => setCmSender(e.target.value)}
               />
@@ -1870,10 +1916,10 @@ export function SkillsStoreModal() {
             disabled={mailBusyBtn === "custom-mail-save"}
           >
             {mailBusyBtn === "custom-mail-save"
-              ? "正在验证并保存…"
+              ? t("skills.mailSavingBtn")
               : editingAccount
-                ? "保存修改"
-                : "连接并保存"}
+                ? t("skills.mailSaveEditBtn")
+                : t("skills.mailConnectSaveBtn")}
           </button>
           <button
             id="custom-mail-test-btn"
@@ -1882,7 +1928,7 @@ export function SkillsStoreModal() {
             disabled={mailBusyBtn === "custom-mail-test"}
             onClick={() => handleMailTest("custom-mail", false)}
           >
-            {mailBusyBtn === "custom-mail-test" ? "测试中…" : "测试连通性"}
+            {mailBusyBtn === "custom-mail-test" ? t("skills.mailTestingBtn") : t("skills.mailTestConnBtn")}
           </button>
           <button
             id="custom-mail-send-test-btn"
@@ -1892,7 +1938,7 @@ export function SkillsStoreModal() {
             disabled={mailBusyBtn === "custom-mail-send"}
             onClick={() => handleMailTest("custom-mail", true)}
           >
-            {mailBusyBtn === "custom-mail-send" ? "发送中…" : "给自己发封测试信"}
+            {mailBusyBtn === "custom-mail-send" ? t("skills.mailSendingBtn") : t("skills.mailSendTestBtn")}
           </button>
           <button
             id="custom-mail-disconnect-btn"
@@ -1902,7 +1948,7 @@ export function SkillsStoreModal() {
             disabled={mailBusyBtn === "custom-mail-disconnect"}
             onClick={() => handleMailDisconnect("custom-mail")}
           >
-            移除此账号
+            {t("skills.mailRemoveAccountBtn")}
           </button>
         </div>
       </form>
@@ -1918,13 +1964,13 @@ export function SkillsStoreModal() {
         if (e.target === e.currentTarget) closeAppsModal();
       }}
     >
-      <div className="apps-modal skills-modal" role="dialog" aria-modal="true" aria-label="技能商店">
+      <div className="apps-modal skills-modal" role="dialog" aria-modal="true" aria-label={t("skills.title")}>
         <button
           id="close-apps-modal-btn"
           type="button"
           className="modal-close-btn"
-          title="关闭"
-          aria-label="关闭"
+          title={t("common.close")}
+          aria-label={t("common.close")}
           onClick={(e) => {
             e.stopPropagation();
             closeAppsModal();
@@ -1942,7 +1988,7 @@ export function SkillsStoreModal() {
 
         <NetworkStatusBanner
           placement="modal"
-          contextHint="技能配置暂为只读"
+          contextHint={t("skills.remoteOfflineReadonlyHint")}
           onlyWhenOffline
         />
 
@@ -1957,8 +2003,8 @@ export function SkillsStoreModal() {
               id="mobile-apps-back-btn"
               type="button"
               className="mobile-circle-btn mobile-only"
-              title="返回"
-              aria-label="返回"
+              title={t("common.back")}
+              aria-label={t("common.back")}
               onClick={closeAppsModal}
             >
               <UiIcon name="chevron-left" />
@@ -1980,7 +2026,10 @@ export function SkillsStoreModal() {
                 ))}
               </span>
               <span id="connected-count-label">
-                商店已添加 {totalAdded} 个 · 自定义 {customSkills.length} 个
+                {t("skills.connectedCountLabel", {
+                  added: totalAdded,
+                  custom: customSkills.length,
+                })}
               </span>
               <span className="menu-chevron" aria-hidden="true">
                 <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
@@ -2024,25 +2073,24 @@ export function SkillsStoreModal() {
               type="button"
               className="bot-templates-pill"
               disabled={remoteAccountOffline}
-              title="创建专属「邮箱管家」Bot"
+              title={t("skills.botTemplateTitle")}
               onClick={async () => {
                 const tpl = await apiJson("/api/sessions", {
                   method: "POST",
                   body: JSON.stringify({
-                    title: "邮箱管家",
+                    title: t("skills.botTemplateMailTitle"),
                     avatar: { shape: "tablet", color: "blue" },
-                    rolePrompt:
-                      "专门负责协助用户管理已连接的 QQ 邮箱与通用邮箱（POP3/IMAP + SMTP）：拉取最新未读信件、提炼重要邮件摘要与待办清单，并在起草专业得体的回复草稿后交由用户确认发送。",
+                    rolePrompt: t("skills.botTemplateMailRolePrompt"),
                   }),
                 });
                 closeAppsModal();
                 upsertLocalSession(tpl);
                 await selectSession(tpl.id);
-                showToast("已创建专属「邮箱管家」Bot");
+                showToast(t("skills.botTemplateCreatedToast"));
               }}
             >
               <span className="template-blob-dot" aria-hidden="true" />
-              <span>Bot 模板</span>
+              <span>{t("skills.botTemplateBtn")}</span>
               <svg
                 className="icon-svg inline-ui-icon"
                 viewBox="0 0 20 20"
@@ -2060,12 +2108,12 @@ export function SkillsStoreModal() {
             </button>
           </div>
 
-          <div className="skills-filter-pills" role="group" aria-label="技能分类">
+          <div className="skills-filter-pills" role="group" aria-label={t("skills.categoryAria")}>
             {(
               [
-                ["all", "全部"],
-                ["office", "办公"],
-                ["platform", "平台技能"],
+                ["all", t("skills.filterAll")],
+                ["office", t("skills.filterOffice")],
+                ["platform", t("skills.filterPlatform")],
               ] as const
             ).map(([key, label]) => {
               const active = skillFilter === key;
@@ -2091,13 +2139,15 @@ export function SkillsStoreModal() {
           >
           <div id="skills-store-sections" className="apps-sections-scroll skills-sections">
             {filteredOffice.length === 0 && filteredPlatform.length === 0 ? (
-              <div className="skills-empty">没有找到与「{searchTrim}」相关的技能</div>
+              <div className="skills-empty">
+                {t("skills.searchEmpty", { query: searchTrim })}
+              </div>
             ) : (
               <>
                 {filteredOffice.length > 0 && (
                   <section className="apps-section-block">
                     <div className="apps-section-header">
-                      <h4>办公</h4>
+                      <h4>{t("skills.filterOffice")}</h4>
                     </div>
                     <div className="skills-grid">
                       {filteredOffice.map((s: any) => (
@@ -2106,7 +2156,9 @@ export function SkillsStoreModal() {
                             <SkillIconGraphic skillId={s.id} rawIcon={s.icon} />
                           </div>
                           <div className="skill-row-info">
-                            <div className="skill-row-name">{s.name}</div>
+                            <div className="skill-row-name">
+                              {getLocalizedSkillMeta(s, locale).name}
+                            </div>
                             <div className="skill-row-desc">{officeSkillSubtitle(s)}</div>
                           </div>
                           {s.installed ? (
@@ -2117,7 +2169,7 @@ export function SkillsStoreModal() {
                                 openAppsModal("detail", { skillId: s.id, from: "store" })
                               }
                             >
-                              配置
+                              {t("skills.configureBtn")}
                             </button>
                           ) : (
                             <button
@@ -2125,7 +2177,7 @@ export function SkillsStoreModal() {
                               className="skill-pill-btn is-primary"
                               onClick={() => installSkill(s.id)}
                             >
-                              添加
+                              {t("skills.addBtn")}
                             </button>
                           )}
                         </div>
@@ -2137,7 +2189,7 @@ export function SkillsStoreModal() {
                 {filteredPlatform.length > 0 && (
                   <section className="apps-section-block">
                     <div className="apps-section-header">
-                      <h4>平台技能</h4>
+                      <h4>{t("skills.filterPlatform")}</h4>
                     </div>
                     <div className="skills-grid">
                       {filteredPlatform.map((s: any) => (
@@ -2147,7 +2199,7 @@ export function SkillsStoreModal() {
                           </div>
                           <div className="skill-row-info">
                             <div className="skill-row-name">
-                              {s.name}
+                              {getLocalizedSkillMeta(s, locale).name}
                               {renderChannelPendingBadge(s.id, s)}
                             </div>
                             <div className="skill-row-desc">{platformSkillSubtitle(s)}</div>
@@ -2161,7 +2213,7 @@ export function SkillsStoreModal() {
                                   openAppsModal("detail", { skillId: s.id, from: "store" })
                                 }
                               >
-                                配置
+                                {t("skills.configureBtn")}
                               </button>
                             ) : (
                               <button
@@ -2169,11 +2221,11 @@ export function SkillsStoreModal() {
                                 className="skill-pill-btn is-primary"
                                 onClick={() => installSkill(s.id)}
                               >
-                                添加
+                                {t("skills.addBtn")}
                               </button>
                             )
                           ) : (
-                            <span className="skill-builtin-tag">内置</span>
+                            <span className="skill-builtin-tag">{t("skills.builtinTag")}</span>
                           )}
                         </div>
                       ))}
@@ -2185,14 +2237,14 @@ export function SkillsStoreModal() {
           </div>
 
           <div className="skills-store-footer-note">
-            <span>自己或 Bot 创建的自定义技能（全 Bot 共享）不在商店展示</span>
+            <span>{t("skills.storeFooterNote")}</span>
             <button
               id="store-manage-custom-btn"
               type="button"
               className="skills-store-manage-link"
               onClick={() => openAppsModal("manage")}
             >
-              <span>管理我的自定义技能</span>
+              <span>{t("skills.storeManageCustomBtn")}</span>
               <span className="menu-chevron" aria-hidden="true">
                 <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
                   <path
@@ -2219,17 +2271,17 @@ export function SkillsStoreModal() {
             id="back-to-apps-btn"
             type="button"
             className="modal-back-btn"
-            title="返回技能商店"
-            aria-label="返回技能商店"
+            title={t("skills.backToStoreAria")}
+            aria-label={t("skills.backToStoreAria")}
             onClick={() => openAppsModal("store")}
           >
             <UiIcon name="chevron-left" className="inline-ui-icon" />
-            <span>技能商店</span>
+            <span>{t("skills.title")}</span>
           </button>
 
           <div className="apps-header-row skills-subheader">
             <h2 className="apps-modal-title" id="skills-manage-title" tabIndex={-1}>
-              管理已添加技能
+              {t("skills.backManageLabel")}
             </h2>
             <button
               id="add-custom-skill-btn"
@@ -2238,7 +2290,7 @@ export function SkillsStoreModal() {
               disabled={remoteAccountOffline}
               onClick={() => openCustomEditorFor(null)}
             >
-              + 新建自定义技能
+              {t("skills.addCustomBtn")}
             </button>
           </div>
 
@@ -2248,7 +2300,6 @@ export function SkillsStoreModal() {
             disabled={remoteAccountOffline}
           >
           <div className="apps-sections-scroll skills-sections">
-            {/* Section A: 自定义技能 */}
             <section
               id="custom-skills-section"
               className="apps-section-block custom-skills-section"
@@ -2256,11 +2307,14 @@ export function SkillsStoreModal() {
             >
               <div className="apps-section-header custom-skills-section-header">
                 <div className="custom-skills-title-group">
-                  <h4 id="custom-skills-heading">自定义技能（我 / Bot 创建 · 全 Bot 共享）</h4>
+                  <h4 id="custom-skills-heading">{t("skills.customHeading")}</h4>
                   <span id="custom-skills-count-badge" className="custom-skills-count-badge">
                     {customSkills.length > 0
-                      ? `已启用 ${enabledCustomCount} / ${customSkills.length} 项`
-                      : "0 项"}
+                      ? t("skills.customEnabledCountBadge", {
+                          enabled: enabledCustomCount,
+                          total: customSkills.length,
+                        })
+                      : t("skills.customZeroBadge")}
                   </span>
                 </div>
                 <label className="custom-skill-search-wrap">
@@ -2268,8 +2322,8 @@ export function SkillsStoreModal() {
                     id="custom-skill-search-input"
                     type="search"
                     className="custom-skill-search-input"
-                    placeholder="搜索自定义技能…"
-                    aria-label="搜索自定义技能"
+                    placeholder={t("skills.customSearchPh")}
+                    aria-label={t("skills.customSearchAria")}
                     autoComplete="off"
                     value={customSkillSearch}
                     onChange={(e) => setState({ customSkillSearch: e.target.value })}
@@ -2287,8 +2341,8 @@ export function SkillsStoreModal() {
                 {filteredCustomSkills.length === 0 ? (
                   <div className="skills-empty">
                     {csQuery
-                      ? `没有找到与「${customSkillSearch.trim()}」匹配的自定义技能`
-                      : "暂无自定义技能。可点击右上角「+ 新建自定义技能」，或在对话中让任意 Bot 总结创建（例如「把刚才的流程沉淀成自定义技能」）。"}
+                      ? t("skills.customSearchEmpty", { query: customSkillSearch.trim() })
+                      : t("skills.customListEmpty")}
                   </div>
                 ) : (
                   filteredCustomSkills.map((s: any) => {
@@ -2322,10 +2376,10 @@ export function SkillsStoreModal() {
                                     size={12}
                                   />
                                   {isBot
-                                    ? `Bot「${s.createdByBotName || "Bot"}」创建`
-                                    : "用户创建"}
+                                    ? t("skills.customCreatedByBot", { name: s.createdByBotName || "Bot" })
+                                    : t("skills.customCreatedByUser")}
                                 </span>
-                                <span className="custom-skill-shared-tag">全 Bot 共享</span>
+                                <span className="custom-skill-shared-tag">{t("skills.customSharedTag")}</span>
                               </div>
                               <div className="custom-skill-card-desc">
                                 {s.description || ""}
@@ -2338,14 +2392,14 @@ export function SkillsStoreModal() {
                               className="ios-switch"
                               title={
                                 s.enabled !== false
-                                  ? "全局启用（点击停用）"
-                                  : "已停用（点击启用）"
+                                  ? t("skills.customEnabledSwitchTitle")
+                                  : t("skills.customDisabledSwitchTitle")
                               }
                             >
                               <input
                                 type="checkbox"
                                 checked={s.enabled !== false}
-                                aria-label={`全局启用自定义技能 ${s.name}`}
+                                aria-label={t("skills.customToggleAria", { name: s.name })}
                                 onChange={async (e) => {
                                   const checked = e.target.checked;
                                   try {
@@ -2358,10 +2412,12 @@ export function SkillsStoreModal() {
                                     );
                                     await refreshSettingsFromServer();
                                     showToast(
-                                      `${checked ? "已启用" : "已停用"}自定义技能「${s.name}」`
+                                      t(checked ? "skills.customEnabledToast" : "skills.customDisabledToast", {
+                                        name: s.name,
+                                      })
                                     );
                                   } catch (err: any) {
-                                    showToast(err?.message || "更新状态失败");
+                                    showToast(err?.message || t("skills.statusUpdateFailed"));
                                   }
                                 }}
                               />
@@ -2373,7 +2429,7 @@ export function SkillsStoreModal() {
                               aria-expanded={isEditingThisSkill}
                               onClick={() => openCustomEditorFor(s)}
                             >
-                              {isEditingThisSkill ? "收起" : "查看 / 编辑"}
+                              {isEditingThisSkill ? t("common.collapse") : t("settings.viewEditBtn")}
                             </button>
                             <button
                               type="button"
@@ -2385,7 +2441,7 @@ export function SkillsStoreModal() {
                                 }))
                               }
                             >
-                              删除
+                              {t("common.delete")}
                             </button>
                           </div>
                         </div>
@@ -2395,7 +2451,7 @@ export function SkillsStoreModal() {
                         {pendingDeleteCustomSkillId === s.id && (
                           <div className="skill-remove-confirm">
                             <div className="skill-remove-text">
-                              确定永久删除自定义技能「{s.name}」({s.id}.md)？所有 Bot 将立即停止共享此技能。
+                              {t("skills.customDeleteInlineText", { name: s.name, id: s.id })}
                             </div>
                             <div className="skill-remove-actions">
                               <button
@@ -2403,7 +2459,7 @@ export function SkillsStoreModal() {
                                 className="skill-pill-btn"
                                 onClick={() => setState({ pendingDeleteCustomSkillId: null })}
                               >
-                                取消
+                                {t("common.cancel")}
                               </button>
                               <button
                                 type="button"
@@ -2426,15 +2482,15 @@ export function SkillsStoreModal() {
                                         : {}),
                                     }));
                                     await refreshSettingsFromServer();
-                                    showToast(`已删除自定义技能「${s.name}」`);
+                                    showToast(t("skills.customDeletedToast", { name: s.name }));
                                   } catch (err: any) {
-                                    showToast(err?.message || "删除失败");
+                                    showToast(err?.message || t("skills.deleteFailedFallback"));
                                   } finally {
                                     setDeletingCsId(null);
                                   }
                                 }}
                               >
-                                确认删除
+                                {t("common.confirmDelete")}
                               </button>
                             </div>
                           </div>
@@ -2448,10 +2504,9 @@ export function SkillsStoreModal() {
 
             <div className="custom-skills-divider" aria-hidden="true" />
 
-            {/* Section B: 商店技能与内置平台能力 */}
             <section className="apps-section-block" aria-labelledby="skills-added-heading">
               <div className="apps-section-header">
-                <h4 id="skills-added-heading">商店技能与内置平台能力</h4>
+                <h4 id="skills-added-heading">{t("skills.addedSectionHeading")}</h4>
               </div>
               <div id="installed-plugins-grid" className="skills-grid">
                 {removableInstalled.map((s: any) => (
@@ -2462,7 +2517,7 @@ export function SkillsStoreModal() {
                       </div>
                       <div className="skill-row-info">
                         <div className="skill-row-name">
-                          {s.name}
+                          {getLocalizedSkillMeta(s, locale).name}
                           {renderChannelPendingBadge(s.id, s)}
                         </div>
                         <div className="skill-row-desc">
@@ -2472,7 +2527,7 @@ export function SkillsStoreModal() {
                         </div>
                       </div>
                       <div className="skill-row-actions">
-                        <span className="skill-added-status">已添加</span>
+                        <span className="skill-added-status">{t("skills.addedStatusLabel")}</span>
                         <button
                           type="button"
                           className="skill-pill-btn"
@@ -2480,7 +2535,7 @@ export function SkillsStoreModal() {
                             openAppsModal("detail", { skillId: s.id, from: "manage" })
                           }
                         >
-                          配置
+                          {t("skills.configureBtn")}
                         </button>
                         <button
                           type="button"
@@ -2492,7 +2547,7 @@ export function SkillsStoreModal() {
                             }))
                           }
                         >
-                          移除
+                          {t("common.remove")}
                         </button>
                       </div>
                     </div>
@@ -2522,8 +2577,8 @@ export function SkillsStoreModal() {
             id="skill-detail-back-btn"
             type="button"
             className="modal-back-btn"
-            title={`返回${detailBackLabel}`}
-            aria-label={`返回${detailBackLabel}`}
+            title={t("skills.detailBackBtnTitle", { label: detailBackLabel })}
+            aria-label={t("skills.detailBackBtnTitle", { label: detailBackLabel })}
             onClick={() => {
               if (!isMcpSkill && mailEditorOpen && detailProviderAccounts.length > 0) {
                 setState({ mailEditorOpen: false, editingMailAccountId: null });
@@ -2546,7 +2601,9 @@ export function SkillsStoreModal() {
             </div>
             <div className="skill-detail-heading">
               <h2 className="apps-modal-title" id="skill-detail-title" tabIndex={-1}>
-                {detailSkill?.name || "QQ 邮箱"}
+                {detailSkill
+                  ? getLocalizedSkillMeta(detailSkill, locale).name
+                  : t("skills.qqMailFallbackName")}
                 {detailSkill?.id && renderChannelPendingBadge(detailSkill.id, detailSkill)}
               </h2>
               <div className="skill-row-desc" id="skill-detail-sub">
@@ -2573,7 +2630,7 @@ export function SkillsStoreModal() {
                 }))
               }
             >
-              移除技能
+              {t("skills.removeSkillBtn")}
             </button>
           </div>
 
@@ -2599,7 +2656,7 @@ export function SkillsStoreModal() {
             <section
               id="mail-accounts-section"
               className="mail-accounts-section"
-              aria-label="已绑定的邮箱账号"
+              aria-label={t("skills.mailBoundListAria")}
               hidden={isMcpSkill || isChannelSkillDetail || showMailCreateForm}
             >
               <div
@@ -2622,16 +2679,20 @@ export function SkillsStoreModal() {
                 id="mail-accounts-list"
                 className="mail-accounts-list"
                 role="list"
-                aria-label="已绑定的邮箱账号列表"
+                aria-label={t("skills.mailBoundListItemsAria")}
               >
                 {detailProviderAccounts.map((acct: any) => {
                   const isEditingThisAcct =
                     mailEditorOpen && editingMailAccountId === acct.id;
                   const stats = acct.inboxStats;
                   const statsPart = stats
-                    ? ` · 收件箱 ${stats.messages ?? 0} 封${
-                        stats.unseen !== undefined ? `（未读 ${stats.unseen}）` : ""
-                      }`
+                    ? t("skills.mailAccountStatsPart", {
+                        count: stats.messages ?? 0,
+                        unseenPart:
+                          stats.unseen !== undefined
+                            ? t("skills.mailAccountUnseenPart", { count: stats.unseen })
+                            : "",
+                      })
                     : "";
                   return (
                     <div
@@ -2647,7 +2708,7 @@ export function SkillsStoreModal() {
                                 {acct.label ? `${acct.label} · ${acct.email}` : acct.email}
                               </span>
                               {acct.isDefault && (
-                                <span className="mail-default-badge">默认</span>
+                                <span className="mail-default-badge">{t("skills.mailDefaultBadge")}</span>
                               )}
                             </div>
                             <div className="mail-account-sub">
@@ -2675,21 +2736,21 @@ export function SkillsStoreModal() {
                                   await refreshSettingsFromServer();
                                   setState({
                                     mailListFeedback: {
-                                      text: `✓ 已将 ${acct.email} 设为默认收发邮箱。`,
+                                      text: t("skills.mailSetDefaultFeedback", { email: acct.email }),
                                       kind: "success",
                                     },
                                   });
                                 } catch (err: any) {
                                   setState({
                                     mailListFeedback: {
-                                      text: `❌ 设置默认失败：${err.message || ""}`,
+                                      text: t("skills.mailSetDefaultFailed", { error: err.message || "" }),
                                       kind: "error",
                                     },
                                   });
                                 }
                               }}
                             >
-                              设为默认
+                              {t("skills.mailSetDefaultBtn")}
                             </button>
                           )}
                           <button
@@ -2700,7 +2761,7 @@ export function SkillsStoreModal() {
                               setTestingAccountId(acct.id);
                               setState({
                                 mailListFeedback: {
-                                  text: `正在测试 ${acct.email} 的收发连接…`,
+                                  text: t("skills.mailTestingAccountFeedback", { email: acct.email }),
                                   kind: "info",
                                 },
                               });
@@ -2710,17 +2771,27 @@ export function SkillsStoreModal() {
                                   { method: "POST", body: JSON.stringify({}) }
                                 );
                                 const unseenInfo =
-                                  res.unseen !== undefined ? `，未读 ${res.unseen} 封` : "";
+                                  res.unseen !== undefined
+                                    ? t("skills.mailUnseenCommaPart", { count: res.unseen })
+                                    : "";
                                 setState({
                                   mailListFeedback: {
-                                    text: `✓ ${acct.email} 连通正常（${res.latencyMs || 0}ms）：收件箱共 ${res.messages ?? 0} 封${unseenInfo}。`,
+                                    text: t("skills.mailAccountTestOkFeedback", {
+                                      email: acct.email,
+                                      ms: res.latencyMs || 0,
+                                      count: res.messages ?? 0,
+                                      unseenInfo,
+                                    }),
                                     kind: "success",
                                   },
                                 });
                               } catch (err: any) {
                                 setState({
                                   mailListFeedback: {
-                                    text: `❌ ${acct.email} 测试失败：${err.message || ""}`,
+                                    text: t("skills.mailAccountTestFailFeedback", {
+                                      email: acct.email,
+                                      error: err.message || "",
+                                    }),
                                     kind: "error",
                                   },
                                 });
@@ -2729,7 +2800,7 @@ export function SkillsStoreModal() {
                               }
                             }}
                           >
-                            {testingAccountId === acct.id ? "测试中…" : "测试"}
+                            {testingAccountId === acct.id ? t("common.testing") : t("skills.testShortBtn")}
                           </button>
                           <button
                             type="button"
@@ -2737,7 +2808,7 @@ export function SkillsStoreModal() {
                             aria-expanded={isEditingThisAcct}
                             onClick={() => startEditingMailAccount(acct)}
                           >
-                            {isEditingThisAcct ? "收起" : "编辑"}
+                            {isEditingThisAcct ? t("common.collapse") : t("common.edit")}
                           </button>
                         </div>
                       </div>
@@ -2758,7 +2829,7 @@ export function SkillsStoreModal() {
                   setState({ mailEditorOpen: true });
                 }}
               >
-                + 添加邮箱账号
+                {t("skills.mailAddBtn")}
               </button>
             </section>
 
@@ -3027,7 +3098,7 @@ export function SkillsStoreModal() {
                     setEditingChannelAcctId(null);
                     setChannelEditorOpen(false);
                     setChConfirmDeleteId(null);
-                    setChListFeedback({ text: "✓ 已删除机器人实例", kind: "success" });
+                    setChListFeedback({ text: `✓ ${t("channel.deletedBotFeedback")}`, kind: "success" });
                   } catch (err: any) {
                     setChFeedback({
                       text: `❌ ${err?.message || "Delete failed"}`,
@@ -3075,7 +3146,9 @@ export function SkillsStoreModal() {
                     chLabel ||
                     channelRt.botName ||
                     chFsAppId ||
-                    (detailSkillId === "feishu-bot" ? "飞书机器人" : "Telegram Bot");
+                    (detailSkillId === "feishu-bot"
+                      ? t("channel.feishuBotFallback")
+                      : "Telegram Bot");
                   const webhookPath =
                     chEditorTarget?.webhookPath ||
                     (detailSkillId === "telegram-bot"
@@ -3298,7 +3371,7 @@ export function SkillsStoreModal() {
                                       checked={chClearTgSecret}
                                       onChange={(e) => setChClearTgSecret(e.target.checked)}
                                     />
-                                    <span>保存时清除已配置的 Webhook Secret</span>
+                                    <span>{t("channel.clearWebhookSecretHint")}</span>
                                   </label>
                                 )}
                               </div>
@@ -3317,7 +3390,7 @@ export function SkillsStoreModal() {
                                   value={chFsDomain}
                                   onChange={(e) => setChFsDomain(e.target.value)}
                                 >
-                                  <option value="feishu">飞书中国 (open.feishu.cn)</option>
+                                  <option value="feishu">{t("channel.feishuDomainChinaOpt")}</option>
                                   <option value="lark">Lark International (open.larksuite.com)</option>
                                 </select>
                               </div>
@@ -3391,7 +3464,7 @@ export function SkillsStoreModal() {
                                         checked={chClearFsVerify}
                                         onChange={(e) => setChClearFsVerify(e.target.checked)}
                                       />
-                                      <span>保存时清除已配置的 Verification Token</span>
+                                      <span>{t("channel.clearVerifyTokenHint")}</span>
                                     </label>
                                   )}
                                 </div>
@@ -3431,7 +3504,7 @@ export function SkillsStoreModal() {
                                         checked={chClearFsEncrypt}
                                         onChange={(e) => setChClearFsEncrypt(e.target.checked)}
                                       />
-                                      <span>保存时清除已配置的 Encrypt Key</span>
+                                      <span>{t("channel.clearEncryptKeyHint")}</span>
                                     </label>
                                   )}
                                 </div>
@@ -3689,7 +3762,11 @@ export function SkillsStoreModal() {
                   <section
                     id="channel-skill-config-panel"
                     className="mcp-skill-config-panel"
-                    aria-label={detailSkill?.name || "对话渠道配置"}
+                    aria-label={
+                      detailSkill
+                        ? getLocalizedSkillMeta(detailSkill, locale).name
+                        : t("channel.panelAriaFallback")
+                    }
                   >
                     <div
                       id="channel-list-feedback"
@@ -3708,7 +3785,7 @@ export function SkillsStoreModal() {
                     </div>
 
                     {channelAccounts.length > 0 && (
-                      <section className="mail-accounts-section" aria-label="机器人实例列表">
+                      <section className="mail-accounts-section" aria-label={t("channel.accountsListAria")}>
                         <div className="mail-accounts-list">
                           {channelAccounts.map((acct: any) => {
                             const cfg = acct?.config || {};
@@ -3720,7 +3797,9 @@ export function SkillsStoreModal() {
                               cfg.label ||
                               rt.botName ||
                               cfg.appId ||
-                              (detailSkillId === "feishu-bot" ? "飞书机器人" : "Telegram Bot");
+                              (detailSkillId === "feishu-bot"
+                                ? t("channel.feishuBotFallback")
+                                : "Telegram Bot");
                             const targetLabel = resolveTargetBotTitle(cfg.defaultSessionId);
                             const whitelistCount = Array.isArray(cfg.allowedSenderIds)
                               ? cfg.allowedSenderIds.length
@@ -3745,10 +3824,16 @@ export function SkillsStoreModal() {
                                       <div className="mail-account-sub">
                                         {cfg.connectionMode ||
                                           (detailSkillId === "feishu-bot" ? "websocket" : "polling")}
-                                        {` · 路由至：${targetLabel}`}
-                                        {cfg.requirePairing !== false ? " · 配对码开启" : " · 仅白名单"}
-                                        {approvedCount > 0 ? ` · 已批准 ${approvedCount}` : ""}
-                                        {whitelistCount > 0 ? ` · 白名单 ${whitelistCount}` : ""}
+                                        {t("channel.routeToPart", { target: targetLabel })}
+                                        {cfg.requirePairing !== false
+                                          ? t("channel.pairingOnPart")
+                                          : t("channel.whitelistOnlyPart")}
+                                        {approvedCount > 0
+                                          ? t("channel.approvedCountPart", { count: approvedCount })
+                                          : ""}
+                                        {whitelistCount > 0
+                                          ? t("channel.whitelistCountPart", { count: whitelistCount })
+                                          : ""}
                                       </div>
                                       {rt.lastEventAt && (
                                         <div className="mail-account-sub">
@@ -3777,7 +3862,9 @@ export function SkillsStoreModal() {
                                       disabled={chTestingAccountId === acct.id}
                                       onClick={() => runChannelTest(acct)}
                                     >
-                                      {chTestingAccountId === acct.id ? "测试中…" : "测试"}
+                                      {chTestingAccountId === acct.id
+                                        ? t("common.testing")
+                                        : t("skills.testShortBtn")}
                                     </button>
                                     <button
                                       type="button"
@@ -3785,7 +3872,7 @@ export function SkillsStoreModal() {
                                       aria-expanded={isEditingThis}
                                       onClick={() => startEditingChannelAccount(acct)}
                                     >
-                                      {isEditingThis ? "收起" : "编辑"}
+                                      {isEditingThis ? t("common.collapse") : t("common.edit")}
                                     </button>
                                   </div>
                                 </div>
@@ -3849,7 +3936,10 @@ export function SkillsStoreModal() {
                                         </span>
                                       </div>
                                       <div className="channel-pairing-meta">
-                                        chatId: {p.chatId} · 路由至：{resolveTargetBotTitle(p.defaultSessionId)}
+                                        chatId: {p.chatId}
+                                        {t("channel.routeToPart", {
+                                          target: resolveTargetBotTitle(p.defaultSessionId),
+                                        })}
                                       </div>
                                     </div>
                                     <div className="mail-account-actions">
@@ -3864,7 +3954,7 @@ export function SkillsStoreModal() {
                                             "/api/integrations/channels/pairings/approve",
                                             "POST",
                                             { code: p.code },
-                                            `已放行配对码 ${p.code}`
+                                            t("channel.approvedCodeToast", { code: p.code })
                                           )
                                         }
                                       >
@@ -3881,7 +3971,7 @@ export function SkillsStoreModal() {
                                             "/api/integrations/channels/pairings/reject",
                                             "POST",
                                             { code: p.code },
-                                            `已拒绝配对码 ${p.code}`
+                                            t("channel.rejectedCodeToast", { code: p.code })
                                           )
                                         }
                                       >
@@ -3929,7 +4019,10 @@ export function SkillsStoreModal() {
                                         </span>
                                       </div>
                                       <div className="channel-pairing-meta">
-                                        chatId: {a.chatId} · 路由至：{resolveTargetBotTitle(a.defaultSessionId)}
+                                        chatId: {a.chatId}
+                                        {t("channel.routeToPart", {
+                                          target: resolveTargetBotTitle(a.defaultSessionId),
+                                        })}
                                       </div>
                                     </div>
                                     <div className="mail-account-actions">
@@ -3949,8 +4042,8 @@ export function SkillsStoreModal() {
                                               enabled: !enabled,
                                             },
                                             enabled
-                                              ? `已暂停会话 ${a.chatId}`
-                                              : `已恢复会话 ${a.chatId}`
+                                              ? t("channel.suspendedChatToast", { chatId: a.chatId })
+                                              : t("channel.resumedChatToast", { chatId: a.chatId })
                                           )
                                         }
                                       >
@@ -3972,7 +4065,7 @@ export function SkillsStoreModal() {
                                               accountId: a.accountId,
                                               chatId: a.chatId,
                                             },
-                                            `已删除已批准会话 ${a.chatId}`
+                                            t("channel.deletedChatToast", { chatId: a.chatId })
                                           )
                                         }
                                       >
@@ -3995,20 +4088,20 @@ export function SkillsStoreModal() {
             <section
               id="mcp-skill-config-panel"
               className="mcp-skill-config-panel"
-              aria-label="MCP 服务连接与配置"
+              aria-label={t("skills.mcpPanelAria")}
               hidden={!isMcpSkill}
             >
               <div className="mcp-status-card">
                 <div className="mcp-status-head">
-                  <span className="mcp-status-title">MCP 服务状态（stdio 本地直连）</span>
+                  <span className="mcp-status-title">{t("skills.mcpStatusTitle")}</span>
                   {!srv ? (
                     <span id="mcp-status-badge" className="mcp-status-badge">
-                      检测中…
+                      {t("skills.mcpCheckingBadge")}
                     </span>
                   ) : srv.connected ? (
                     <span id="mcp-status-badge" className="mcp-status-badge is-online">
                       <span className="status-dot-inline is-ok" aria-hidden="true" />
-                      已就绪 · {srv.toolCount || 0} 项工具
+                      {t("skills.mcpReadyToolsBadge", { count: srv.toolCount || 0 })}
                     </span>
                   ) : srvBinMissing ? (
                     <span id="mcp-status-badge" className="mcp-status-badge is-offline">
@@ -4017,7 +4110,9 @@ export function SkillsStoreModal() {
                         className="inline-ui-icon inline-status-svg is-warn"
                         size={13}
                       />
-                      {isNonMacHost || srv?.unsupportedPlatform ? "当前系统不可用" : "未安装 KimiCU"}
+                      {isNonMacHost || srv?.unsupportedPlatform
+                        ? t("skills.mcpUnsupportedBadge")
+                        : t("skills.mcpMissingBinaryBadge")}
                     </span>
                   ) : srvErr ? (
                     <span id="mcp-status-badge" className="mcp-status-badge is-offline">
@@ -4026,41 +4121,45 @@ export function SkillsStoreModal() {
                         className="inline-ui-icon inline-status-svg is-warn"
                         size={13}
                       />
-                      连接异常
+                      {t("skills.mcpErrorBadge")}
                     </span>
                   ) : (
                     <span id="mcp-status-badge" className="mcp-status-badge">
                       <span className="status-dot-inline is-muted" aria-hidden="true" />
-                      已就绪（按需拉起）
+                      {t("skills.mcpOnDemandBadge")}
                     </span>
                   )}
                 </div>
                 <div id="mcp-status-detail" className="mcp-status-detail">
                   {!srv
                     ? isNonMacHost
-                      ? "正在检测本地 MCP 服务状态…"
-                      : `正在检测 ${
-                          settings?.mcpServers?.[mcpServerId]?.command ||
-                          defaultKimiConfig.command ||
-                          "本地 MCP 服务"
-                        } …`
+                      ? t("skills.mcpCheckingLocal")
+                      : t("skills.mcpCheckingCmd", {
+                          cmd:
+                            settings?.mcpServers?.[mcpServerId]?.command ||
+                            defaultKimiConfig.command ||
+                            t("skills.mcpLocalFallback"),
+                        })
                     : srv.connected
-                      ? `${srv.serverInfo?.name || "kimi-cu"}${
-                          srv.serverInfo?.version ? ` v${srv.serverInfo.version}` : ""
-                        } 握手成功 · ${srvCmdText}`
+                      ? t("skills.mcpHandshakeOkDetail", {
+                          name: srv.serverInfo?.name || "kimi-cu",
+                          ver: srv.serverInfo?.version ? ` v${srv.serverInfo.version}` : "",
+                          cmd: srvCmdText,
+                        })
                       : srvBinMissing
                         ? isNonMacHost || srv?.unsupportedPlatform
-                          ? srvErr ||
-                            "当前系统未安装或暂不支持 KimiCU（仅支持 macOS），如需使用其它本地 MCP 服务请在下方配置可执行路径。"
-                          : `未在本机检测到可执行文件：${srv.command || "未配置"}。请先安装 KimiCU，或在下方修改 command 路径后点击「保存并连接测试」。`
+                          ? srvErr || t("skills.mcpUnsupportedDetail")
+                          : t("skills.mcpMissingBinaryDetail", {
+                              cmd: srv.command || t("skills.mcpUnconfiguredFallback"),
+                            })
                         : srvErr
-                          ? `${srvErr}${srvCmdText ? `（${srvCmdText}）` : ""}`
-                          : `已检测到可执行文件：${srvCmdText}。点击「重新握手检测」可立即验证工具列表。`}
+                          ? `${srvErr}${srvCmdText ? ` (${srvCmdText})` : ""}`
+                          : t("skills.mcpExecutableReadyDetail", { cmd: srvCmdText })}
                 </div>
                 <div
                   id="mcp-tools-chips"
                   className="mcp-tools-chips"
-                  aria-label="已发现的 MCP 工具"
+                  aria-label={t("skills.mcpToolsAria")}
                 >
                   {srv?.connected &&
                     (srv.tools || []).map((toolName: string) => (
@@ -4072,17 +4171,15 @@ export function SkillsStoreModal() {
               </div>
 
               <div className="mail-field mcp-json-block">
-                <label htmlFor="mcp-config-json-input">MCP Server 配置（JSON）</label>
+                <label htmlFor="mcp-config-json-input">{t("skills.mcpJsonLabel")}</label>
                 <span className="mail-field-hint">
                   {isNonMacHost ? (
-                    <>
-                      填写兼容 stdio 协议的本地 MCP 可执行路径与参数（KimiCU 桌面软件操控目前仅支持
-                      macOS）。
-                    </>
+                    <>{t("skills.mcpNonMacHint")}</>
                   ) : (
                     <>
-                      默认调用 <code>/Applications/KimiCU.app/Contents/MacOS/kimi-cu mcp -s user</code>
-                      ，后台无感操控本机任意 Mac 桌面软件且不抢占物理鼠标指针。
+                      {t("skills.mcpMacHintBefore")}{" "}
+                      <code>/Applications/KimiCU.app/Contents/MacOS/kimi-cu mcp -s user</code>
+                      {t("skills.mcpMacHintAfter")}
                     </>
                   )}
                 </span>
@@ -4091,7 +4188,7 @@ export function SkillsStoreModal() {
                   className="inline-textarea mcp-json-textarea"
                   rows={8}
                   spellCheck={false}
-                  aria-label="MCP Server JSON 配置"
+                  aria-label={t("skills.mcpJsonAria")}
                   value={mcpJsonText}
                   onChange={(e) => setMcpJsonText(e.target.value)}
                 />
@@ -4125,12 +4222,13 @@ export function SkillsStoreModal() {
                       nextMcpServers = parseMcpConfigJsonInput(
                         mcpJsonText,
                         settings?.mcpServers,
-                        mcpServerId
+                        mcpServerId,
+                        locale
                       );
                     } catch (err: any) {
                       setState({
                         mcpFeedback: {
-                          text: `❌ JSON 配置格式错误：${err.message}`,
+                          text: t("skills.mcpJsonError", { error: err.message }),
                           kind: "error",
                         },
                       });
@@ -4139,7 +4237,7 @@ export function SkillsStoreModal() {
                     setMcpBusy("save");
                     setState({
                       mcpFeedback: {
-                        text: "正在保存 MCP 配置并启动本地握手检测…",
+                        text: t("skills.mcpSavingHandshakeFeedback"),
                         kind: "info",
                       },
                     });
@@ -4161,17 +4259,22 @@ export function SkillsStoreModal() {
                       if (nextSrv?.connected) {
                         setState({
                           mcpFeedback: {
-                            text: `✓ MCP 配置已保存，成功连接并发现 ${nextSrv.toolCount || 0} 项工具。`,
+                            text: t("skills.mcpSavedConnectedFeedback", {
+                              count: nextSrv.toolCount || 0,
+                            }),
                             kind: "success",
                           },
                         });
-                        showToast("KimiCU MCP 已连接就绪");
+                        showToast(t("skills.mcpConnectedToast"));
                       } else {
                         setState({
                           mcpFeedback: {
-                            text: `⚠ 配置已保存，但握手未就绪：${
-                              nextSrv?.error || nextSrv?.lastError || "请检查可执行文件路径"
-                            }`,
+                            text: t("skills.mcpSavedNotReadyFeedback", {
+                              error:
+                                nextSrv?.error ||
+                                nextSrv?.lastError ||
+                                t("skills.mcpCheckPathFallback"),
+                            }),
                             kind: "error",
                           },
                         });
@@ -4180,7 +4283,9 @@ export function SkillsStoreModal() {
                       await refreshMcpSkillStatus(mcpServerId, false);
                       setState({
                         mcpFeedback: {
-                          text: `❌ 连接失败：${err.message || ""}`,
+                          text: t("skills.mcpConnectFailedFeedback", {
+                            error: err.message || "",
+                          }),
                           kind: "error",
                         },
                       });
@@ -4189,7 +4294,7 @@ export function SkillsStoreModal() {
                     }
                   }}
                 >
-                  {mcpBusy === "save" ? "正在保存并握手…" : "保存并连接测试"}
+                  {mcpBusy === "save" ? t("skills.mcpSavingBtn") : t("skills.mcpSaveAndTestBtn")}
                 </button>
                 <button
                   id="mcp-test-reconnect-btn"
@@ -4200,7 +4305,7 @@ export function SkillsStoreModal() {
                     setMcpBusy("test");
                     setState({
                       mcpFeedback: {
-                        text: "正在重新启动 MCP stdio 握手并读取工具列表…",
+                        text: t("skills.mcpRetestingFeedback"),
                         kind: "info",
                       },
                     });
@@ -4221,20 +4326,24 @@ export function SkillsStoreModal() {
                       if (nextSrv?.connected) {
                         setState({
                           mcpFeedback: {
-                            text: `✓ 重新握手成功（${
-                              nextSrv.serverInfo?.version
+                            text: t("skills.mcpRetestOkFeedback", {
+                              ver: nextSrv.serverInfo?.version
                                 ? `v${nextSrv.serverInfo.version}`
-                                : "已就绪"
-                            }），共 ${nextSrv.toolCount || 0} 项工具可用。`,
+                                : t("skills.mcpReadyWord"),
+                              count: nextSrv.toolCount || 0,
+                            }),
                             kind: "success",
                           },
                         });
                       } else {
                         setState({
                           mcpFeedback: {
-                            text: `❌ 握手检测未通过：${
-                              nextSrv?.error || nextSrv?.lastError || "无法拉起 MCP 进程"
-                            }`,
+                            text: t("skills.mcpRetestFailFeedback", {
+                              error:
+                                nextSrv?.error ||
+                                nextSrv?.lastError ||
+                                t("skills.mcpLaunchFailFallback"),
+                            }),
                             kind: "error",
                           },
                         });
@@ -4243,7 +4352,9 @@ export function SkillsStoreModal() {
                       await refreshMcpSkillStatus(mcpServerId, false);
                       setState({
                         mcpFeedback: {
-                          text: `❌ 握手检测失败：${err.message || ""}`,
+                          text: t("skills.mcpRetestErrorFeedback", {
+                            error: err.message || "",
+                          }),
                           kind: "error",
                         },
                       });
@@ -4252,7 +4363,7 @@ export function SkillsStoreModal() {
                     }
                   }}
                 >
-                  {mcpBusy === "test" ? "握手中…" : "重新握手检测"}
+                  {mcpBusy === "test" ? t("skills.mcpHandshakingBtn") : t("skills.mcpRetestBtn")}
                 </button>
               </div>
             </section>

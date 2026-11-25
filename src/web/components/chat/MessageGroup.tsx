@@ -7,6 +7,7 @@ import {
   showToast,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import {
   formatClockTime,
   isImeConfirmEnter,
@@ -56,6 +57,7 @@ export function MessageGroup({
   const primarySessionId = useStore((s) => s.primarySessionId);
   const mobileActionsOpenSeq = useStore((s) => s.mobileActionsOpenSeq);
 
+  const { locale, t } = useI18n();
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(item.text || "");
   const [editSubmitting, setEditSubmitting] = useState(false);
@@ -64,7 +66,7 @@ export function MessageGroup({
   const isUser = item.isUser;
   const isGroup = activeSession?.type === "group";
   const authorName = isUser
-    ? "你"
+    ? t("chat.you")
     : item.botName ||
       (activeSession?.title && activeSession.title !== "New Session"
         ? activeSession.title
@@ -73,7 +75,7 @@ export function MessageGroup({
   const chunks = isUser
     ? [String(item.text || "")]
     : splitIntoMessageChunksWithMarkup(item.text);
-  const exactClock = formatClockTime(item.at);
+  const exactClock = formatClockTime(item.at, locale);
 
   const isActionsOpen =
     item.seq !== undefined && mobileActionsOpenSeq === item.seq;
@@ -91,7 +93,7 @@ export function MessageGroup({
       targetEl.classList.add("is-reply-target-flash");
       setTimeout(() => targetEl.classList.remove("is-reply-target-flash"), 1400);
     } else {
-      showToast("原消息位于更早对话记录");
+      showToast(t("chat.replyEarlierToast"));
     }
   };
 
@@ -112,7 +114,7 @@ export function MessageGroup({
   const commitInlineEdit = async () => {
     const nextText = editText.trim();
     if (!nextText) {
-      showToast("消息内容不能为空");
+      showToast(t("chat.editEmptyToast"));
       editTaRef.current?.focus();
       return;
     }
@@ -128,10 +130,10 @@ export function MessageGroup({
       if (runtimeRefs.wsSocket?.readyState !== WebSocket.OPEN) {
         await selectSession(activeSessionId);
       }
-      showToast("已覆盖后续记录并重新发送");
+      showToast(t("chat.editResentToast"));
     } catch (err: any) {
       setEditSubmitting(false);
-      showToast(`修改失败: ${err?.message || "请重试"}`);
+      showToast(t("chat.editFailedToast", { error: err?.message || t("chat.retryFallback") }));
     }
   };
 
@@ -158,8 +160,8 @@ export function MessageGroup({
         <button
           type="button"
           className="msg-action-icon"
-          title="修改并重发"
-          aria-label="修改并重发"
+          title={t("chat.msgEdit")}
+          aria-label={t("chat.msgEdit")}
           onClick={startInlineEdit}
         >
           <ActionSvg kind="edit" />
@@ -168,14 +170,14 @@ export function MessageGroup({
       <button
         type="button"
         className="msg-action-icon"
-        title="回复此消息"
-        aria-label="回复此消息"
+        title={t("chat.msgReply")}
+        aria-label={t("chat.msgReply")}
         onClick={() => {
           setState({
             mobileActionsOpenSeq: null,
             replyTarget: {
               seq: item.seq ?? null,
-              author: authorName || "消息",
+              author: authorName || t("chat.messageFallback"),
               botId: isUser ? null : item.botId || activeSessionId,
               snippet: String(item.text || "").replace(/\s+/g, " ").slice(0, 64),
             },
@@ -189,14 +191,14 @@ export function MessageGroup({
       <button
         type="button"
         className="msg-action-icon"
-        title="复制文本"
-        aria-label="复制文本"
+        title={t("chat.msgCopy")}
+        aria-label={t("chat.msgCopy")}
         onClick={async () => {
           setState({ mobileActionsOpenSeq: null });
           try {
             await navigator.clipboard.writeText(String(item.text || ""));
           } catch {}
-          showToast("已复制到剪贴板");
+          showToast(t("chat.copiedToast"));
         }}
       >
         <ActionSvg kind="copy" />
@@ -228,7 +230,7 @@ export function MessageGroup({
           title={item.channelMeta.senderId || item.channelMeta.chatId || undefined}
         >
           <span>
-            {item.channelMeta.channel === "feishu-bot" ? "来自飞书" : "来自 Telegram"}
+            {item.channelMeta.channel === "feishu-bot" ? t("chat.fromFeishu") : t("chat.fromTelegram")}
             {item.channelMeta.accountLabel ? ` · ${item.channelMeta.accountLabel}` : ""}
           </span>
         </div>
@@ -242,7 +244,7 @@ export function MessageGroup({
 
       {item.replyTo && typeof item.replyTo === "object" && (
         <button type="button" className="msg-reply-anchor" onClick={handleReplyJump}>
-          <span className="msg-reply-author">{item.replyTo.author || "原消息"}</span>
+          <span className="msg-reply-author">{item.replyTo.author || t("chat.originalMessageFallback")}</span>
           <span className="msg-reply-snippet">
             {String(item.replyTo.snippet || "")
               .replace(/\s+/g, " ")
@@ -308,7 +310,7 @@ export function MessageGroup({
                         setEditing(false);
                       }}
                     >
-                      取消
+                      {t("common.cancel")}
                     </button>
                     <button
                       type="button"
@@ -319,7 +321,7 @@ export function MessageGroup({
                         commitInlineEdit();
                       }}
                     >
-                      保存并重发
+                      {t("chat.saveAndResend")}
                     </button>
                   </div>
                 </div>

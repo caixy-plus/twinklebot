@@ -238,34 +238,6 @@ dialog::backdrop {
   line-height: 1.4;
 }
 
-.sched-cron-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.sched-cron-preset-btn {
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--border-hairline);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.sched-cron-preset-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--accent-blue, #2563eb);
-}
-
-.sched-cron-preset-btn.is-active {
-  color: var(--accent-blue, #3b82f6);
-  border-color: color-mix(in srgb, var(--accent-blue, #2563eb) 45%, var(--border-hairline));
-  background: color-mix(in srgb, var(--accent-blue, #2563eb) 14%, transparent);
-}
-
 .sched-cron-preview {
   font-size: 11.5px;
   line-height: 1.45;

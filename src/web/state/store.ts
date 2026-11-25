@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { resolveEffectiveLocale, type ResolvedLocale } from "/shared/i18n.js";
 import {
   DEFAULT_KIMI_CU_MCP_CONFIG,
 } from "./constants.js";
@@ -630,7 +631,7 @@ export function createInitialState(): AppState {
     sessionUsageByModel: {},
     sessionUsageByProviderModel: {},
     lastObservedModel: "gemini-4-argon",
-    lastRouteLabel: "自动调配",
+    lastRouteLabel: "",
     lastRouteReason: "",
     lastRoutePlan: null,
     lastTierPath: "",
@@ -689,12 +690,12 @@ export function createInitialState(): AppState {
     shortcutsDialogOpen: false,
     botExchangeSheet: { open: false, participants: [], messages: [] },
     traceDrawerOpen: false,
-    imageLightbox: { open: false, url: "", alt: "图片预览" },
+    imageLightbox: { open: false, url: "", alt: "" },
     htmlPreviewModal: {
       open: false,
       code: "",
       kind: "html",
-      badgeLabel: "HTML 预览",
+      badgeLabel: "",
       lang: "html",
       canvasBg: "light",
       mode: "preview",
@@ -703,11 +704,11 @@ export function createInitialState(): AppState {
     },
     confirmDialog: {
       open: false,
-      title: "确认操作",
+      title: "",
       message: "",
       detail: "",
-      confirmText: "确认",
-      cancelText: "取消",
+      confirmText: "",
+      cancelText: "",
       tone: "danger",
     },
     toast: { open: false, message: "" },
@@ -971,13 +972,16 @@ export function getPrimarySessionFromState(s: AppState = currentState): any | nu
 
 export function finalizeOrphanedInteractiveItems(
   items: StreamItem[],
-  reasonText = "⏹ 本轮任务已结束"
+  reasonText?: string,
+  locale: ResolvedLocale = "zh-CN"
 ): StreamItem[] {
+  const resolvedReason =
+    reasonText ?? (locale === "en" ? "⏹ Turn ended" : "⏹ 本轮任务已结束");
   let changed = false;
   const next = items.map((item): StreamItem => {
     if (item.kind === "approval" && !item.resolved) {
       changed = true;
-      return { ...item, resolved: true, receiptText: reasonText };
+      return { ...item, resolved: true, receiptText: resolvedReason };
     }
     if (item.kind === "choice" && item.status === "pending") {
       changed = true;
@@ -985,7 +989,7 @@ export function finalizeOrphanedInteractiveItems(
     }
     if (item.kind === "draft" && !item.resolved) {
       changed = true;
-      return { ...item, resolved: true, approved: false, finalTitle: reasonText };
+      return { ...item, resolved: true, approved: false, finalTitle: resolvedReason };
     }
     if (item.kind === "credential" && !item.resolved) {
       changed = true;
@@ -1012,6 +1016,8 @@ export function reduceSessionEvent(
   const replay = Boolean(opts.replay);
   const effects: EventApplySideEffects = {};
   if (!evt || typeof evt !== "object") return { next: prev, effects };
+  const locale = resolveEffectiveLocale(prev.settings?.language);
+  const isEn = locale === "en";
 
   if (evt.seq !== undefined) {
     if (!replay && prev.renderedSeqs.has(evt.seq)) {
@@ -1047,7 +1053,7 @@ export function reduceSessionEvent(
     const ts = Date.parse(iso);
     if (Number.isNaN(ts)) return;
     if (!lastClusterTs || ts - lastClusterTs >= 5 * 60 * 1000) {
-      const label = formatClusterHeaderTime(iso);
+      const label = formatClusterHeaderTime(iso, locale);
       if (label) {
         streamItems = [
           ...streamItems,
@@ -1125,7 +1131,7 @@ export function reduceSessionEvent(
 
     case "thinking_summary": {
       if (evt.text && isSessionCurrentlyBusy(sessionStatus)) {
-        liveThinkingSummary = sanitizeLiveThinkingSummary(evt.text, "正在思考处理中");
+        liveThinkingSummary = sanitizeLiveThinkingSummary(evt.text, undefined, locale);
       }
       break;
     }
@@ -1145,7 +1151,7 @@ export function reduceSessionEvent(
         lastObservedModel = String(evt.usedModel).replace(/^models\//i, "");
       }
       if (evt.routeLabel) {
-        lastRouteLabel = formatClientRouteLabel(evt.routeLabel, evt.usedModel);
+        lastRouteLabel = formatClientRouteLabel(evt.routeLabel, evt.usedModel, locale);
       }
       if (!evt.text) break;
       traceItems = [
@@ -1154,7 +1160,7 @@ export function reduceSessionEvent(
           kind: "thought",
           id: nextStreamItemId("tr-thought"),
           botName: evt.botName,
-          routeLabel: evt.routeLabel ? formatClientRouteLabel(evt.routeLabel, evt.usedModel) : "",
+          routeLabel: evt.routeLabel ? formatClientRouteLabel(evt.routeLabel, evt.usedModel, locale) : "",
           text: evt.text,
         },
       ];
@@ -1164,7 +1170,8 @@ export function reduceSessionEvent(
     case "action":
     case "tool_call": {
       stepCount += 1;
-      const argSummary = summarizeArgs(evt.args) || `步骤 #${stepCount}`;
+      const argSummary =
+        summarizeArgs(evt.args) || (isEn ? `Step #${stepCount}` : `步骤 #${stepCount}`);
       traceItems = [
         ...traceItems,
         {
@@ -1215,7 +1222,9 @@ export function reduceSessionEvent(
             : typeof resultCopy.error === "string"
               ? resultCopy.error.slice(0, 44)
               : resultCopy.ok
-                ? "完成"
+                ? isEn
+                  ? "Done"
+                  : "完成"
                 : "";
         const endTs = evt.at ? Date.parse(evt.at) : Date.now();
         const elapsedMs = Math.max(0, endTs - (existing.at || endTs));
@@ -1233,6 +1242,7 @@ export function reduceSessionEvent(
           isMcpScreen,
         };
       } else {
+        const doneSummary = isEn ? "Done" : "执行完成";
         traceItems = [
           ...traceItems,
           {
@@ -1240,11 +1250,11 @@ export function reduceSessionEvent(
             id: nextStreamItemId("tr-res"),
             callId: evt.callId,
             name: evt.name || "result",
-            argSummary: summarizeArgs(resultCopy) || "执行完成",
+            argSummary: summarizeArgs(resultCopy) || doneSummary,
             argsJson: "",
             at: evt.at ? Date.parse(evt.at) : Date.now(),
             status: "ok",
-            summaryText: summarizeArgs(resultCopy) || "执行完成",
+            summaryText: summarizeArgs(resultCopy) || doneSummary,
             resultJson: Object.keys(resultCopy).length > 0 ? JSON.stringify(resultCopy, null, 2) : undefined,
             screenUrl,
             isMcpScreen,
@@ -1276,10 +1286,16 @@ export function reduceSessionEvent(
     case "confirmation_resolved": {
       const ok = evt.allowed ?? evt.approved;
       const receiptText = evt.superseded
-        ? "↻ 已收到新消息，已跳过本次确认"
+        ? isEn
+          ? "↻ New message received; skipped confirmation"
+          : "↻ 已收到新消息，已跳过本次确认"
         : ok
-          ? "✓ 已允许该操作"
-          : "✕ 已暂不允许该操作";
+          ? isEn
+            ? "✓ Allowed"
+            : "✓ 已允许该操作"
+          : isEn
+            ? "✕ Denied"
+            : "✕ 已暂不允许该操作";
       streamItems = streamItems.map((it) =>
         it.kind === "approval" && it.callId === evt.callId && !it.resolved
           ? { ...it, resolved: true, receiptText }
@@ -1297,18 +1313,26 @@ export function reduceSessionEvent(
         Array.isArray(evt.questions) && evt.questions.length > 0
           ? evt.questions.map((q: any, idx: number) => ({
               id: q.id || `q${idx + 1}`,
-              question: q.question || "请选择下一步操作",
+              question:
+                q.question ||
+                (isEn ? "Please choose the next step" : "请选择下一步操作"),
               options: Array.isArray(q.options) ? q.options : [],
               multiSelect: Boolean(q.multiSelect),
-              placeholder: q.placeholder || "输入你自己的回答…",
+              placeholder:
+                q.placeholder ||
+                (isEn ? "Enter your own answer…" : "输入你自己的回答…"),
             }))
           : [
               {
                 id: "q1",
-                question: evt.question || "接下来先帮你做哪一步？",
+                question:
+                  evt.question ||
+                  (isEn ? "Which step would you like first?" : "接下来先帮你做哪一步？"),
                 options: Array.isArray(evt.options) ? evt.options : [],
                 multiSelect: Boolean(evt.multiSelect),
-                placeholder: evt.placeholder || "输入你自己的回答…",
+                placeholder:
+                  evt.placeholder ||
+                  (isEn ? "Enter your own answer…" : "输入你自己的回答…"),
               },
             ];
       streamItems = [
@@ -1340,7 +1364,12 @@ export function reduceSessionEvent(
           return { ...it, status: "superseded" };
         }
         if (it.kind === "draft" && it.callId === evt.callId && !it.resolved) {
-          return { ...it, resolved: true, approved: false, finalTitle: "已跳过" };
+          return {
+            ...it,
+            resolved: true,
+            approved: false,
+            finalTitle: isEn ? "Skipped" : "已跳过",
+          };
         }
         if (it.kind === "credential" && it.callId === evt.callId && !it.resolved) {
           return { ...it, resolved: true, submitted: false };
@@ -1464,7 +1493,7 @@ export function reduceSessionEvent(
         };
       }
       if (evt.routeLabel && evt.routeTier !== "router" && evt.routeTier !== "summary") {
-        lastRouteLabel = formatClientRouteLabel(evt.routeLabel, evt.model);
+        lastRouteLabel = formatClientRouteLabel(evt.routeLabel, evt.model, locale);
         lastRouteReason = evt.routeReason || lastRouteReason || "";
         if (evt.tierPath) lastTierPath = evt.tierPath;
       }
@@ -1555,7 +1584,14 @@ export function reduceSessionEvent(
           liveThinkingSummary = "";
           streamItems = finalizeOrphanedInteractiveItems(
             streamItems,
-            evt.status === "stopped" ? "⏹ 已停止当前操作" : "⏹ 上一轮操作已结束"
+            evt.status === "stopped"
+              ? isEn
+                ? "⏹ Stopped"
+                : "⏹ 已停止当前操作"
+              : isEn
+                ? "⏹ Previous turn ended"
+                : "⏹ 上一轮操作已结束",
+            locale
           );
           effects.shouldRefreshUsage = true;
         }
@@ -1582,7 +1618,11 @@ export function reduceSessionEvent(
           level: evt.level,
           maxSteps: Number.isFinite(Number(evt.maxSteps)) ? Number(evt.maxSteps) : undefined,
           toolCount: Number.isFinite(Number(evt.toolCount)) ? Number(evt.toolCount) : undefined,
-          text: evt.text || "本轮费用已接近预算上限",
+          text:
+            evt.text ||
+            (isEn
+              ? "Turn cost is approaching the budget cap"
+              : "本轮费用已接近预算上限"),
         },
       ];
       break;
@@ -1595,7 +1635,9 @@ export function reduceSessionEvent(
       }
       const errSeq =
         typeof evt.seq === "number" && Number.isFinite(evt.seq) ? evt.seq : undefined;
-      const errMsg = evt.message || "任务中断或遇到异常";
+      const errMsg =
+        evt.message ||
+        (isEn ? "Task interrupted or encountered an error" : "任务中断或遇到异常");
       const errSession = String(evt.sessionId || prev.activeSessionId || "default");
       const errMarker = errSeq ?? evt.ts ?? evt.id ?? "";
       const dismissKey = `${errSession}:${errMarker}:${String(errMsg).slice(0, 120)}`;
@@ -1667,10 +1709,26 @@ export function reduceSessionEvent(
   };
 }
 
-export function resolveApprovalItemSummary(name: string, args: any, kind: "custom" | "always" | "allow" | "deny"): string {
-  const summaryLabel = translateToolHumanSummary(name, args);
-  if (kind === "custom") return `🛡 已保存自定义规则并允许 · ${summaryLabel}`;
-  if (kind === "always") return `🛡 已设为始终允许 · ${summaryLabel}`;
-  if (kind === "allow") return `✓ 已允许 · ${summaryLabel}`;
-  return `✕ 已暂不允许 · ${summaryLabel}`;
+export function resolveApprovalItemSummary(
+  name: string,
+  args: any,
+  kind: "custom" | "always" | "allow" | "deny",
+  locale: ResolvedLocale = "zh-CN"
+): string {
+  const isEn = locale === "en";
+  const summaryLabel = translateToolHumanSummary(name, args, locale);
+  if (kind === "custom") {
+    return isEn
+      ? `🛡 Saved custom rule & allowed · ${summaryLabel}`
+      : `🛡 已保存自定义规则并允许 · ${summaryLabel}`;
+  }
+  if (kind === "always") {
+    return isEn
+      ? `🛡 Set to always allow · ${summaryLabel}`
+      : `🛡 已设为始终允许 · ${summaryLabel}`;
+  }
+  if (kind === "allow") {
+    return isEn ? `✓ Allowed · ${summaryLabel}` : `✓ 已允许 · ${summaryLabel}`;
+  }
+  return isEn ? `✕ Denied · ${summaryLabel}` : `✕ 已暂不允许 · ${summaryLabel}`;
 }

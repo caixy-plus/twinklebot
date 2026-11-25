@@ -8,6 +8,7 @@ import {
   readWebSourceTs,
   renderFullAppHtml,
 } from "./helpers/react-test-helpers.js";
+import { ZH_CN_MESSAGES, type I18nKey } from "../src/shared/i18n.js";
 
 test("public/index.html, React App & mobile.css provide 2-level stack navigation, Bottom Sheets, and preserve forbidden-string rules", () => {
   const html = renderFullAppHtml();
@@ -153,21 +154,24 @@ test("Confirmation prompts use branded native <dialog> (#app-confirm-dialog) wit
   assert.ok(mobileCss.includes(".clear-session-icon"));
   assert.ok(bundleJs.includes("showConfirmDialog"));
   assert.equal(/\bwindow\.(?:confirm|alert|prompt)\s*\(/.test(bundleJs), false, "native window.confirm/alert/prompt must not be used");
-  for (const title of [
-    "清空对话记录",
-    "删除 Bot",
-    "删除群聊",
-    "删除模型供应商",
-    "删除例行任务",
-    "移除保险库条目",
-    "删除全局记忆",
-    "删除专属记忆",
-    "移除权限规则",
-    "移除群聊成员",
-    "移除云端账号",
-    "移除邮箱账号",
-  ]) {
-    assert.ok(bundleJs.includes(title), `missing confirmation prompt for ${title}`);
+  for (const [key, title] of [
+    ["sidebar.ctxClear", "清空对话记录"],
+    ["sidebar.ctxDelete", "删除 Bot"],
+    ["sidebar.ctxDeleteGroup", "删除群聊"],
+    ["settings.provDeleteTitle", "删除模型供应商"],
+    ["schedule.deleteConfirmTitle", "删除例行任务"],
+    ["settings.vaultRemoveTitle", "移除保险库条目"],
+    ["settings.memDeleteTitle", "删除全局记忆"],
+    ["memory.deleteConfirmTitle", "删除专属记忆"],
+    ["settings.permRemoveTitle", "移除权限规则"],
+    ["inspector.removeMemberTitle", "移除群聊成员"],
+    ["actions.removeCloudTitle", "移除云端账号"],
+    ["skills.mailRemoveTitle", "移除邮箱账号"],
+  ] as ReadonlyArray<[I18nKey, string]>) {
+    assert.ok(
+      bundleJs.includes(key) && ZH_CN_MESSAGES[key] === title,
+      `missing confirmation prompt for ${title}`
+    );
   }
 });
 

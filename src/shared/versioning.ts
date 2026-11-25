@@ -125,6 +125,7 @@ export interface LocalUpdateEnv {
   builtInWebBuild?: string;
   supportsCoreOta?: boolean;
   activeCoreBuild?: string;
+  locale?: "zh-CN" | "en";
 }
 
 export type CompatibilityDecisionStatus =
@@ -430,6 +431,7 @@ export function evaluateUpdateCompatibility(
   manifest: VersionManifest,
   localEnv: LocalUpdateEnv
 ): CompatibilityDecision {
+  const isEn = localEnv.locale === "en";
   const platform = localEnv.platform;
   const shellSpec =
     platform === "desktop"
@@ -457,7 +459,9 @@ export function evaluateUpdateCompatibility(
       return {
         ...baseMeta,
         status: "reload-required",
-        reason: "前端静态资源已更新，刷新浏览器页面即可加载最新版本",
+        reason: isEn
+          ? "Web static assets have been updated. Refresh the browser page to load the latest version."
+          : "前端静态资源已更新，刷新浏览器页面即可加载最新版本",
       };
     }
     return { ...baseMeta, status: "up-to-date" };
@@ -491,7 +495,9 @@ export function evaluateUpdateCompatibility(
         ...baseMeta,
         status: "shell-update-required",
         ...resolvedShell,
-        reason: `当前桌面原生壳版本（v${localEnv.nativeVersion}）低于 Core 热更新最低要求（v${minCoreShell}），请下载新版安装包`,
+        reason: isEn
+          ? `Desktop shell v${localEnv.nativeVersion} is below the minimum required for Core OTA (v${minCoreShell}). Please download the new installer.`
+          : `当前桌面原生壳版本（v${localEnv.nativeVersion}）低于 Core 热更新最低要求（v${minCoreShell}），请下载新版安装包`,
       };
     }
 
@@ -523,9 +529,13 @@ export function evaluateUpdateCompatibility(
         ...(newerShell && resolvedShell.shellUpdate
           ? { optionalShellUpdate: resolvedShell.shellUpdate }
           : {}),
-        reason: `发现兼容的免重装一体化热更新（含本地 Node 服务、前端与执行器${
-          coreBundle.coreVersion ? ` v${coreBundle.coreVersion}` : ""
-        }）`,
+        reason: isEn
+          ? `Compatible no-reinstall Core hot update available (Node runtime, frontend & executor${
+              coreBundle.coreVersion ? ` v${coreBundle.coreVersion}` : ""
+            })`
+          : `发现兼容的免重装一体化热更新（含本地 Node 服务、前端与执行器${
+              coreBundle.coreVersion ? ` v${coreBundle.coreVersion}` : ""
+            }）`,
       };
     }
 
@@ -534,7 +544,9 @@ export function evaluateUpdateCompatibility(
         ...baseMeta,
         status: "shell-update-required",
         ...resolvedShell,
-        reason: `发现新版桌面客户端 v${shellSpec?.latestVersion}`,
+        reason: isEn
+          ? `New desktop client v${shellSpec?.latestVersion} available`
+          : `发现新版桌面客户端 v${shellSpec?.latestVersion}`,
       };
     }
 
@@ -559,8 +571,11 @@ export function evaluateUpdateCompatibility(
       ...baseMeta,
       status: "shell-update-required",
       ...resolvedShell,
-      reason:
-        platform === "desktop"
+      reason: isEn
+        ? platform === "desktop"
+          ? `Desktop version (v${localEnv.nativeVersion}) is below minimum OTA requirement (v${shellSpec?.minVersionForOta}). Please download the new installer.`
+          : `Native app (v${localEnv.nativeVersion}) is below minimum OTA requirement (v${shellSpec?.minVersionForOta}). Please update the installer.`
+        : platform === "desktop"
           ? `当前桌面端版本（v${localEnv.nativeVersion}）低于热更新最低要求（v${shellSpec?.minVersionForOta}），请下载新版安装包`
           : `当前原生客户端（v${localEnv.nativeVersion}）低于热更新最低要求（v${shellSpec?.minVersionForOta}），请更新安装包`,
     };
@@ -572,7 +587,9 @@ export function evaluateUpdateCompatibility(
       ...baseMeta,
       status: "shell-update-required",
       ...resolvedShell,
-      reason: `发现新版桌面客户端 v${shellSpec?.latestVersion}（包含内嵌后端引擎与宿主更新）`,
+      reason: isEn
+        ? `New desktop client v${shellSpec?.latestVersion} available (includes embedded backend & shell updates)`
+        : `发现新版桌面客户端 v${shellSpec?.latestVersion}（包含内嵌后端引擎与宿主更新）`,
     };
   }
 
@@ -595,7 +612,9 @@ export function evaluateUpdateCompatibility(
       ...(newerShell && resolvedShell.shellUpdate
         ? { optionalShellUpdate: resolvedShell.shellUpdate }
         : {}),
-      reason: "GitHub Releases 已发布兼容的纯前端热更新包，可免重装秒级生效",
+      reason: isEn
+        ? "Compatible frontend hot-update package published on GitHub Releases — applies in seconds without reinstall."
+        : "GitHub Releases 已发布兼容的纯前端热更新包，可免重装秒级生效",
     };
   }
 
@@ -605,7 +624,9 @@ export function evaluateUpdateCompatibility(
       ...baseMeta,
       status: "shell-update-required",
       ...resolvedShell,
-      reason: `发现 ${platform === "ios" ? "iOS" : "Android"} 原生客户端新版本 v${resolvedShell.shellUpdate.latestVersion}`,
+      reason: isEn
+        ? `New ${platform === "ios" ? "iOS" : "Android"} native app v${resolvedShell.shellUpdate.latestVersion} available`
+        : `发现 ${platform === "ios" ? "iOS" : "Android"} 原生客户端新版本 v${resolvedShell.shellUpdate.latestVersion}`,
     };
   }
 

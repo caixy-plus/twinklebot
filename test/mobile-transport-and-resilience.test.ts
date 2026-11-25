@@ -7,6 +7,7 @@ import {
   upsertLanAccount,
   removeCloudAccount,
 } from "../src/shared/accounts-store.js";
+import { ZH_CN_MESSAGES } from "../src/shared/i18n.js";
 
 test("accounts-store supports paired LAN computer nodes alongside local and cloud accounts", () => {
   const init = normalizeAccountsState(null, "");
@@ -49,7 +50,10 @@ test("public/app.js implements mobile LAN fast-fail, foreground WS reconnect, an
   assert.ok(appJs.includes("/api/lan/pair/request"));
   assert.ok(appJs.includes("/api/lan/pair/verify"));
   assert.ok(appJs.includes("/api/computer/hosts"));
-  assert.ok(appJs.includes("宿主机离线/不可用"));
+  assert.ok(
+    appJs.includes("mobile.hostOffline") &&
+      ZH_CN_MESSAGES["mobile.hostOffline"] === "宿主机离线/不可用"
+  );
   assert.ok(appJs.includes("onAppForeground"));
 
   const bridgeJs = fs.readFileSync(path.resolve("public/dist/mobile-bridge.js"), "utf8");

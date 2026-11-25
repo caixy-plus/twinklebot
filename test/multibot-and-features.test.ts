@@ -452,3 +452,64 @@ test("end-to-end new HTTP APIs: search, clone, patch, delete, attachments, libra
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("fresh-install store and HTTP APIs return empty globalMemories, schedules, and vault without sample data", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fresh-install-empty-"));
+  const wsDir = path.join(tmpDir, "workspace");
+  fs.mkdirSync(wsDir, { recursive: true });
+
+  const store = createStore(tmpDir);
+  const runner = {
+    status: () => ({ sessionId: null, state: "idle" }),
+    activeSessions: () => ({}),
+    start: () => {},
+    stop: () => {},
+    pause: () => {},
+    resume: () => {},
+    approve: () => {},
+    choose: () => {},
+    broadcastGlobal: () => {},
+    subscribe: () => () => {},
+  };
+  const scheduler = createScheduler({ store, runner });
+  const server = createServer({
+    config: {
+      dataDir: tmpDir,
+      writeRoots: [wsDir],
+      models: ["gemini-4-argon", "gemini-4-hydrogen"],
+    },
+    store,
+    runner,
+    scheduler,
+  });
+
+  t.after(async () => {
+    scheduler.stop();
+    await new Promise<void>((r) => server.close(() => r()));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  assert.deepEqual(store.readSchedules(), []);
+  scheduler.start();
+  assert.deepEqual(store.readSchedules(), []);
+  assert.deepEqual(store.readVault(), []);
+  assert.deepEqual(store.readVaultPublic(), []);
+
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const baseUrl = `http://127.0.0.1:${(server.address() as any).port}`;
+
+  const schedulesJson: any = await (await fetch(`${baseUrl}/api/schedules`)).json();
+  assert.deepEqual(schedulesJson.schedules, []);
+
+  const vaultJson: any = await (await fetch(`${baseUrl}/api/vault`)).json();
+  assert.deepEqual(vaultJson.items, []);
+
+  const settingsJson: any = await (await fetch(`${baseUrl}/api/settings`)).json();
+  assert.deepEqual(settingsJson.globalMemories, []);
+  assert.deepEqual(settingsJson.privateSkills, []);
+
+  const sessionsJson: any = await (await fetch(`${baseUrl}/api/sessions`)).json();
+  assert.equal(sessionsJson.sessions.length, 1);
+  assert.equal(sessionsJson.sessions[0].isAdmin, true);
+  assert.equal((sessionsJson.sessions[0].memories || []).length, 0);
+});

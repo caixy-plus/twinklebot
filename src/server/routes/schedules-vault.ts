@@ -21,7 +21,7 @@ import {
   sendJson,
 } from "../http-utils.js";
 import { computeInitialNextRun } from "../../agent/scheduler.js";
-import { describeCronExpression, parseCronExpression } from "../../shared/cron.js";
+import { describeCronExpression, resolveScheduleCronConfig } from "../../shared/cron.js";
 
 export async function handleSchedulesVaultRoutes(
   req: http.IncomingMessage,
@@ -75,24 +75,30 @@ export async function handleSchedulesVaultRoutes(
             const list = ctx.store?.readSchedules?.() || [];
             const rawCron = typeof body.cron === "string" ? body.cron.trim() : "";
             const repeat = body.repeat || (rawCron ? "cron" : "daily");
-            let normalizedCron = "";
-            if (repeat === "cron") {
-              const parsed = parseCronExpression(rawCron);
-              if (!parsed.ok) {
-                return sendJson(res, 400, { error: parsed.error });
-              }
-              normalizedCron = parsed.normalized;
+            const resolvedCron = resolveScheduleCronConfig({
+              repeat,
+              rawCron,
+              scheduleLabel: body.scheduleLabel,
+              time: body.time,
+            });
+            if (!resolvedCron.ok) {
+              return sendJson(res, 400, { error: resolvedCron.error });
             }
+            const normalizedCron = resolvedCron.cron;
             const scheduleLabel =
               String(body.scheduleLabel || "").trim() ||
-              (repeat === "cron" ? describeCronExpression(normalizedCron) : "每天 10:00");
+              (normalizedCron
+                ? describeCronExpression(normalizedCron)
+                : repeat === "once"
+                  ? "单次执行"
+                  : "每天 10:00");
             const item = {
               id: crypto.randomUUID(),
               sessionId: body.sessionId,
               title: String(body.title).trim(),
               scheduleLabel,
               repeat,
-              ...(repeat === "cron" ? { cron: normalizedCron } : {}),
+              ...(normalizedCron ? { cron: normalizedCron } : {}),
               prompt: String(body.prompt).trim(),
               nextRunAt:
                 body.nextRunAt ||
@@ -135,28 +141,6 @@ export async function handleSchedulesVaultRoutes(
             const nextRepeat = String(
               body?.repeat !== undefined ? body.repeat : body?.cron ? "cron" : prev.repeat || "daily"
             ).trim();
-            let normalizedCron = "";
-            if (nextRepeat === "cron") {
-              const rawCron = String(
-                body?.cron !== undefined ? body.cron : prev.cron || ""
-              ).trim();
-              const parsed = parseCronExpression(rawCron);
-              if (!parsed.ok) {
-                return sendJson(res, 400, { error: parsed.error });
-              }
-              normalizedCron = parsed.normalized;
-            }
-            const nextLabel =
-              body?.scheduleLabel !== undefined
-                ? String(body.scheduleLabel).trim() ||
-                  (nextRepeat === "cron"
-                    ? describeCronExpression(normalizedCron)
-                    : prev.scheduleLabel || "每天 10:00")
-                : nextRepeat === "cron" &&
-                    (body?.cron !== undefined || prev.repeat !== "cron") &&
-                    (!prev.scheduleLabel || prev.scheduleLabel === "每天 10:00")
-                  ? describeCronExpression(normalizedCron)
-                  : prev.scheduleLabel;
             const prevNextMs = prev.nextRunAt ? Date.parse(prev.nextRunAt) : NaN;
             const enablingStale =
               body?.enabled === true &&
@@ -169,6 +153,30 @@ export async function handleSchedulesVaultRoutes(
               body?.time !== undefined ||
               body?.delayMinutes !== undefined ||
               enablingStale;
+            const resolvedCron = resolveScheduleCronConfig({
+              repeat: nextRepeat,
+              rawCron: body?.cron,
+              fallbackCron: prev.cron,
+              scheduleLabel:
+                body?.scheduleLabel !== undefined ? body.scheduleLabel : prev.scheduleLabel,
+              time: body?.time,
+              preserveFallbackPreset: !timingChanged && nextRepeat === (prev.repeat || "daily"),
+            });
+            if (!resolvedCron.ok) {
+              return sendJson(res, 400, { error: resolvedCron.error });
+            }
+            const normalizedCron = resolvedCron.cron;
+            const nextLabel =
+              body?.scheduleLabel !== undefined
+                ? String(body.scheduleLabel).trim() ||
+                  (normalizedCron
+                    ? describeCronExpression(normalizedCron)
+                    : prev.scheduleLabel || "每天 10:00")
+                : nextRepeat === "cron" &&
+                    (body?.cron !== undefined || prev.repeat !== "cron") &&
+                    (!prev.scheduleLabel || prev.scheduleLabel === "每天 10:00")
+                  ? describeCronExpression(normalizedCron)
+                  : prev.scheduleLabel;
             const nextRunAt =
               body?.nextRunAt !== undefined
                 ? body.nextRunAt
@@ -190,7 +198,7 @@ export async function handleSchedulesVaultRoutes(
               scheduleLabel: nextLabel,
               nextRunAt,
             };
-            if (nextRepeat === "cron") {
+            if (normalizedCron) {
               updated.cron = normalizedCron;
             } else {
               delete updated.cron;

@@ -6,6 +6,7 @@ import {
   showToast,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import {
   isImeConfirmEnter,
   translateToolHumanSummary,
@@ -48,16 +49,17 @@ export function ChoiceCard({
 }: {
   item: Extract<StreamItem, { kind: "choice" }>;
 }) {
+  const { t } = useI18n();
   const questions =
     Array.isArray(item.questions) && item.questions.length > 0
       ? item.questions
       : [
           {
             id: "q1",
-            question: "接下来先帮你做哪一步？",
+            question: t("card.choiceDefaultQuestion"),
             options: [],
             multiSelect: false,
-            placeholder: "输入你自己的回答…",
+            placeholder: t("card.choiceCustomPlaceholder"),
           },
         ];
 
@@ -94,7 +96,7 @@ export function ChoiceCard({
       }));
     } catch (err: any) {
       setSubmitting(false);
-      showToast(`提交选择失败: ${err.message}`);
+      showToast(t("card.choiceSubmitFailed", { error: err.message }));
     }
   };
 
@@ -117,19 +119,20 @@ export function ChoiceCard({
   if (item.status === "resolved") {
     const chosenBadge = item.chosenBadge || "✓";
     const summary = item.selectedSummary;
+    const multiJoiner = t("card.choiceMultiJoiner");
     const summaryText =
       typeof summary === "object" && summary !== null && !Array.isArray(summary)
         ? Object.values(summary)
-            .map((v) => (Array.isArray(v) ? v.join("、") : String(v ?? "")))
+            .map((v) => (Array.isArray(v) ? v.join(multiJoiner) : String(v ?? "")))
             .join(" · ")
         : Array.isArray(summary)
-          ? summary.join("、")
+          ? summary.join(multiJoiner)
           : String(summary ?? "");
 
     return (
       <div className="choice-card is-resolved">
         <div className="choice-card-header">
-          <div className="choice-card-question">{curQ.question || "请选择下一步操作"}</div>
+          <div className="choice-card-question">{curQ.question || t("card.choiceFallbackQuestion")}</div>
         </div>
         <div className="choice-options-stack">
           <div className="choice-option-btn" style={{ cursor: "default" }}>
@@ -153,11 +156,11 @@ export function ChoiceCard({
     return (
       <div className="choice-card is-superseded">
         <div className="choice-card-header">
-          <div className="choice-card-question">{curQ.question || "请选择下一步操作"}</div>
+          <div className="choice-card-question">{curQ.question || t("card.choiceFallbackQuestion")}</div>
         </div>
         <div className="choice-options-stack">
           <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-            已通过后续对话直接回复
+            {t("card.choiceSuperseded")}
           </div>
         </div>
       </div>
@@ -169,7 +172,7 @@ export function ChoiceCard({
   return (
     <div className="choice-card">
       <div className="choice-card-header">
-        <div className="choice-card-question">{curQ.question || "请选择下一步操作"}</div>
+        <div className="choice-card-question">{curQ.question || t("card.choiceFallbackQuestion")}</div>
         {questions.length > 1 && (
           <span className="choice-stepper-pill">
             {stepIdx + 1} / {questions.length}
@@ -213,13 +216,13 @@ export function ChoiceCard({
               disabled={submitting}
               onClick={() => {
                 if (selectedMulti.length === 0) {
-                  showToast("请至少选择一项，或输入你自己的回答");
+                  showToast(t("card.choiceSelectOneToast"));
                   return;
                 }
                 advanceOrSubmit(selectedMulti, "✓");
               }}
             >
-              {stepIdx + 1 < questions.length ? "下一题" : "确认选择"}
+              {stepIdx + 1 < questions.length ? t("card.choiceNextStep") : t("card.choiceConfirm")}
             </button>
           </div>
         )}
@@ -239,7 +242,7 @@ export function ChoiceCard({
               <span className="choice-letter-badge" style={{ opacity: 0.75 }}>
                 <UiIcon name="pencil" size={12} />
               </span>
-              <span>{curQ.placeholder || "输入你自己的回答…"}</span>
+              <span>{curQ.placeholder || t("card.choiceCustomPlaceholder")}</span>
             </button>
 
             <div className="choice-custom-form" hidden={!customOpen}>
@@ -247,7 +250,7 @@ export function ChoiceCard({
                 ref={customInputRef}
                 type="text"
                 className="choice-custom-input"
-                placeholder={curQ.placeholder || "输入你自己的回答，按 Enter 提交…"}
+                placeholder={curQ.placeholder || t("card.choiceCustomInputPlaceholder")}
                 value={customValue}
                 disabled={submitting}
                 onChange={(e) => setCustomValue(e.target.value)}
@@ -268,8 +271,8 @@ export function ChoiceCard({
               <button
                 type="button"
                 className="choice-custom-submit"
-                aria-label="提交自定义回答"
-                title="提交自定义回答"
+                aria-label={t("card.choiceSubmitCustomAria")}
+                title={t("card.choiceSubmitCustomAria")}
                 disabled={submitting}
                 onClick={() => {
                   const val = customValue.trim();
@@ -291,6 +294,7 @@ export function ApprovalCard({
 }: {
   item: Extract<StreamItem, { kind: "approval" }>;
 }) {
+  const { locale, t } = useI18n();
   const defaultPattern =
     extractSuggestedCommandPattern(item.args?.command) ||
     item.args?.path ||
@@ -307,7 +311,7 @@ export function ApprovalCard({
   if (item.resolved) {
     return (
       <div className="confirm-card is-collapsed">
-        <ReceiptStatusText text={item.receiptText || "✓ 已处理"} />
+        <ReceiptStatusText text={item.receiptText || t("card.approvalHandledFallback")} />
       </div>
     );
   }
@@ -335,7 +339,8 @@ export function ApprovalCard({
       const receipt = resolveApprovalItemSummary(
         item.name,
         item.args,
-        customRule ? "custom" : saveAlways ? "always" : allow ? "allow" : "deny"
+        customRule ? "custom" : saveAlways ? "always" : allow ? "allow" : "deny",
+        locale
       );
       setState((prev) => ({
         streamItems: prev.streamItems.map((it) =>
@@ -345,25 +350,25 @@ export function ApprovalCard({
         ),
       }));
       if (saveAlways || customRule) {
-        showToast("权限规则已更新");
+        showToast(t("card.approvalRuleUpdatedToast"));
         refreshSettingsFromServer();
       }
     } catch (err: any) {
       setSubmitting(false);
-      showToast(`审批提交失败: ${err.message}`);
+      showToast(t("card.approvalSubmitFailed", { error: err.message }));
     }
   };
 
   return (
     <div className="confirm-card">
       <div className="confirm-header">
-        {translateToolHumanSummary(item.name, item.args)}
+        {translateToolHumanSummary(item.name, item.args, locale)}
       </div>
       <div style={{ fontSize: "12.5px", color: "var(--text-secondary)" }}>
-        {item.reason || "请确认是否允许执行该操作。"}
+        {item.reason || t("card.approvalDefaultReason")}
       </div>
       <details className="confirm-cmd-details">
-        <summary>查看详细参数 ({item.name || "tool"})</summary>
+        <summary>{t("card.approvalViewDetails", { name: item.name || "tool" })}</summary>
         <pre className="trace-pre">{JSON.stringify(item.args || {}, null, 2)}</pre>
       </details>
 
@@ -375,8 +380,8 @@ export function ApprovalCard({
             value={ruleMode}
             onChange={(e) => setRuleMode(e.target.value as "allow" | "ask")}
           >
-            <option value="allow">今后自动允许</option>
-            <option value="ask">每次先询问</option>
+            <option value="allow">{t("card.approvalRuleAllow")}</option>
+            <option value="ask">{t("card.approvalRuleAsk")}</option>
           </select>
           <input
             ref={patternInputRef}
@@ -384,7 +389,7 @@ export function ApprovalCard({
             className="inline-text-input"
             style={{ flex: 1 }}
             value={pattern}
-            placeholder="匹配命令前缀或路径关键词…"
+            placeholder={t("card.approvalRulePatternPlaceholder")}
             onChange={(e) => setPattern(e.target.value)}
           />
           <button
@@ -401,7 +406,7 @@ export function ApprovalCard({
               });
             }}
           >
-            保存规则并继续
+            {t("card.approvalSaveRuleAndContinue")}
           </button>
         </div>
       </div>
@@ -413,7 +418,7 @@ export function ApprovalCard({
           disabled={submitting}
           onClick={() => decide(true, false)}
         >
-          允许
+          {t("card.approvalAllow")}
         </button>
         <button
           type="button"
@@ -421,7 +426,7 @@ export function ApprovalCard({
           disabled={submitting}
           onClick={() => decide(false, false)}
         >
-          暂不允许
+          {t("card.approvalDeny")}
         </button>
         <button
           type="button"
@@ -429,7 +434,7 @@ export function ApprovalCard({
           disabled={submitting}
           onClick={() => decide(true, true)}
         >
-          始终允许
+          {t("card.approvalAlwaysAllow")}
         </button>
         <button
           type="button"
@@ -443,7 +448,7 @@ export function ApprovalCard({
             }
           }}
         >
-          编辑规则…
+          {t("card.approvalEditRule")}
         </button>
       </div>
     </div>
@@ -455,6 +460,7 @@ export function DraftCard({
 }: {
   item: Extract<StreamItem, { kind: "draft" }>;
 }) {
+  const { t } = useI18n();
   const [recipient, setRecipient] = useState(item.recipient || "");
   const [title, setTitle] = useState(item.title || "");
   const [content, setContent] = useState(item.content || "");
@@ -465,8 +471,8 @@ export function DraftCard({
     const raw =
       item.overrideText ||
       (approved
-        ? `✓ 已确认草稿：${item.finalTitle || item.title || "内容"}`
-        : `✕ 已取消草稿：${item.finalTitle || item.title || "内容"}`);
+        ? t("card.draftApprovedReceipt", { title: item.finalTitle || item.title || t("card.draftContentFallback") })
+        : t("card.draftCancelledReceipt", { title: item.finalTitle || item.title || t("card.draftContentFallback") }));
     return (
       <div className="draft-card is-collapsed">
         <ReceiptStatusText text={raw} forceTone={approved ? "ok" : "error"} />
@@ -496,7 +502,7 @@ export function DraftCard({
       }));
     } catch (err: any) {
       setSubmitting(false);
-      showToast(`草稿提交失败: ${err.message}`);
+      showToast(t("card.draftSubmitFailed", { error: err.message }));
     }
   };
 
@@ -505,7 +511,7 @@ export function DraftCard({
       <div className="draft-header-row">
         <span className="draft-badge">
           <UiIcon name="pencil" className="inline-ui-icon" size={13} />
-          草稿 · {item.draftKind || "待确认内容"}
+          {t("card.draftBadge", { kind: item.draftKind || t("card.draftKindFallback") })}
         </span>
       </div>
       {Boolean(item.recipient) && (
@@ -513,7 +519,7 @@ export function DraftCard({
           type="text"
           className="draft-field-input"
           value={recipient}
-          placeholder="收件人 / 目标渠道"
+          placeholder={t("card.draftRecipientPlaceholder")}
           onChange={(e) => setRecipient(e.target.value)}
         />
       )}
@@ -521,13 +527,13 @@ export function DraftCard({
         type="text"
         className="draft-field-input"
         value={title}
-        placeholder="标题 / 主题"
+        placeholder={t("card.draftTitlePlaceholder")}
         onChange={(e) => setTitle(e.target.value)}
       />
       <textarea
         className="draft-body-textarea"
         value={content}
-        placeholder="可在此直接修改草稿正文…"
+        placeholder={t("card.draftBodyPlaceholder")}
         onChange={(e) => setContent(e.target.value)}
       />
       <div className="confirm-actions">
@@ -537,7 +543,7 @@ export function DraftCard({
           disabled={submitting}
           onClick={() => submitDraft(true)}
         >
-          确认发送
+          {t("card.draftSend")}
         </button>
         <button
           type="button"
@@ -545,7 +551,7 @@ export function DraftCard({
           disabled={submitting}
           onClick={() => submitDraft(false)}
         >
-          取消草稿
+          {t("card.draftCancel")}
         </button>
       </div>
     </div>
@@ -557,6 +563,7 @@ export function CredentialCard({
 }: {
   item: Extract<StreamItem, { kind: "credential" }>;
 }) {
+  const { t } = useI18n();
   const [secret, setSecret] = useState("");
   const [saveToVault, setSaveToVault] = useState(
     !item.hideVaultCheckbox && item.fieldType !== "otp"
@@ -567,8 +574,8 @@ export function CredentialCard({
     const raw = item.resolvedText
       ? item.resolvedText
       : item.submitted
-        ? `🔒 已安全提交 ${item.service || ""} 验证信息`
-        : `✕ 已跳过 ${item.service || ""} 验证输入`;
+        ? t("card.credentialSubmittedReceipt", { service: item.service || "" })
+        : t("card.credentialSkippedReceipt", { service: item.service || "" });
     return (
       <div className="credential-card is-collapsed">
         <ReceiptStatusText text={raw} />
@@ -602,7 +609,7 @@ export function CredentialCard({
       if (shouldVault) refreshVault();
     } catch (err: any) {
       setSubmitting(false);
-      showToast(`凭据提交失败: ${err.message}`);
+      showToast(t("card.credentialSubmitFailed", { error: err.message }));
     }
   };
 
@@ -611,17 +618,21 @@ export function CredentialCard({
       <div className="draft-header-row">
         <span className="draft-badge">
           <UiIcon name="lock" className="inline-ui-icon" size={13} />
-          安全凭据 · {item.service || "验证"}
+          {t("card.credentialBadge", { service: item.service || t("card.credentialServiceFallback") })}
         </span>
       </div>
       <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-        {item.label || "请输入密码或一次性验证码（不会明文显示在聊天记录中）"}
+        {item.label || t("card.credentialDefaultLabel")}
       </div>
       <input
         type={item.fieldType === "text" ? "text" : "password"}
         autoComplete={item.fieldType === "otp" ? "one-time-code" : "off"}
         className="credential-secret-input"
-        placeholder={item.fieldType === "otp" ? "输入动态验证码…" : "输入密码或凭据…"}
+        placeholder={
+          item.fieldType === "otp"
+            ? t("card.credentialOtpPlaceholder")
+            : t("card.credentialPasswordPlaceholder")
+        }
         value={secret}
         disabled={submitting}
         onChange={(e) => setSecret(e.target.value)}
@@ -638,7 +649,7 @@ export function CredentialCard({
           checked={saveToVault}
           onChange={(e) => setSaveToVault(e.target.checked)}
         />
-        <span>保存到本地保险库 (Vault) 以便下次复用</span>
+        <span>{t("card.credentialSaveToVault")}</span>
       </label>
       <div className="confirm-actions">
         <button
@@ -647,7 +658,7 @@ export function CredentialCard({
           disabled={submitting}
           onClick={() => sendCred(true)}
         >
-          安全提交
+          {t("card.credentialSubmit")}
         </button>
         <button
           type="button"
@@ -655,7 +666,7 @@ export function CredentialCard({
           disabled={submitting}
           onClick={() => sendCred(false)}
         >
-          跳过
+          {t("card.credentialSkip")}
         </button>
       </div>
     </div>
@@ -667,13 +678,14 @@ export function BotExchangePill({
 }: {
   item: Extract<StreamItem, { kind: "bot_exchange" }>;
 }) {
+  const { t } = useI18n();
   const count = Number(item.messageCount) || 1;
   const labelText =
     count === 1
       ? item.direction === "inbound"
-        ? "消息来自"
-        : "已发消息给"
-      : `${count} 条消息往来：`;
+        ? t("card.exchangeInbound")
+        : t("card.exchangeOutbound")
+      : t("card.exchangeCount", { count });
 
   const handleOpen = async () => {
     if (!item.exchangeId) return;
@@ -687,7 +699,7 @@ export function BotExchangePill({
         },
       });
     } catch (err: any) {
-      showToast(`无法读取交流记录: ${err.message}`);
+      showToast(t("card.exchangeLoadFailed", { error: err.message }));
     }
   };
 

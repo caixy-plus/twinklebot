@@ -67,7 +67,7 @@ export function Composer({
 
   const [stopping, setStopping] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const busy = isSessionCurrentlyBusy(sessionStatus);
@@ -79,8 +79,8 @@ export function Composer({
       : "Twinkle";
   const placeholder =
     activeSession?.type === "group"
-      ? "给群组发消息（输入 @ 可点名某位 Bot）"
-      : `给 ${displayName} 发消息`;
+      ? t("chat.composerGroupPlaceholder")
+      : t("chat.composerPlaceholder", { name: displayName });
 
   const hasReply = Boolean(replyTarget || replyQuote);
   const hasQuotes = pendingQuotes.length > 0;
@@ -88,9 +88,12 @@ export function Composer({
   const showTray = hasReply || hasQuotes || hasAtts;
 
   const replyText = replyTarget
-    ? `回复 ${replyTarget.author || "消息"}：${replyTarget.snippet || ""}`
+    ? t("chat.replyPrefixTarget", {
+        author: replyTarget.author || t("chat.messageFallback"),
+        snippet: replyTarget.snippet || "",
+      })
     : replyQuote
-      ? `回复：${replyQuote}`
+      ? t("chat.replyPrefixQuote", { quote: replyQuote })
       : "";
 
   const atMatch = composerText.match(/@([^\s@]*)$/);
@@ -185,12 +188,12 @@ export function Composer({
   const showQueueBanner = queuedCount > 0 && busy;
   const waitHint =
     sessionStatus === "awaiting_approval"
-      ? `⏳ 已排队 ${queuedCount} 条消息 · 当前等待操作审批，批准或停止后继续`
+      ? t("chat.queueWaitApproval", { count: queuedCount })
       : sessionStatus === "awaiting_choice"
-        ? `⏳ 已排队 ${queuedCount} 条消息 · 当前等待你的选择，确认或停止后继续`
+        ? t("chat.queueWaitChoice", { count: queuedCount })
         : sessionStatus === "paused"
-          ? `⏳ 已排队 ${queuedCount} 条消息 · 当前处于接管状态，恢复或停止后继续`
-          : `⏳ 已排队 ${queuedCount} 条消息，上一轮执行完成后将自动衔接`;
+          ? t("chat.queueWaitPaused", { count: queuedCount })
+          : t("chat.queueWaitDefault", { count: queuedCount });
 
   const sendTitle = busy
     ? t("chat.sendMessage")
@@ -204,18 +207,18 @@ export function Composer({
         <div id="live-working-bubble" className="live-activity-row">
           <span className="live-pulse-dot" aria-hidden="true" />
           <span className="live-working-text">
-            {getLiveWorkingLabel(sessionStatus, liveThinkingSummary)}
+            {getLiveWorkingLabel(sessionStatus, liveThinkingSummary, locale)}
           </span>
           <button
             type="button"
             id="live-working-stop-btn"
             className="live-working-stop-btn"
-            title="停止当前任务"
-            aria-label="停止当前任务"
+            title={t("chat.stopTask")}
+            aria-label={t("chat.stopTask")}
             disabled={stopping}
             onClick={handleStop}
           >
-            停止
+            {t("common.stop")}
           </button>
         </div>
       )}
@@ -229,7 +232,7 @@ export function Composer({
             disabled={stopping}
             onClick={handleStop}
           >
-            停止当前任务
+            {t("chat.stopTask")}
           </button>
         </div>
       )}
@@ -307,7 +310,7 @@ export function Composer({
               id="reply-quote-clear"
               type="button"
               className="reply-quote-close"
-              aria-label="取消回复"
+              aria-label={t("chat.cancelReply")}
               onClick={() => setState({ replyQuote: null, replyTarget: null })}
             >
               <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -330,7 +333,7 @@ export function Composer({
                 </span>
                 <button
                   type="button"
-                  aria-label="移除引用"
+                  aria-label={t("chat.removeQuoteAria")}
                   onClick={() =>
                     setState((prev) => ({
                       pendingQuotes: prev.pendingQuotes.filter((_, i) => i !== idx),
@@ -368,7 +371,7 @@ export function Composer({
                   <button
                     type="button"
                     className="attachment-chip-remove"
-                    aria-label={`移除附件 ${att.name}`}
+                    aria-label={t("chat.removeAttachmentAria", { name: att.name })}
                     onClick={() =>
                       setState((prev) => ({
                         pendingAttachments: prev.pendingAttachments.filter((_, i) => i !== idx),
@@ -406,14 +409,14 @@ export function Composer({
             </svg>
           </button>
           <label htmlFor="message-input" className="sr-only">
-            给当前 Bot 发送消息
+            {t("chat.composerSrLabel")}
           </label>
           <textarea
             ref={textareaRef}
             id="message-input"
             className="composer-input"
             rows={1}
-            aria-label="提示词"
+            aria-label={t("chat.composerPromptAria")}
             placeholder={placeholder}
             enterKeyHint={mobileMode ? "enter" : "send"}
             spellCheck={spellcheckEnabled}
@@ -428,10 +431,10 @@ export function Composer({
             type="button"
             className="composer-stop-pill"
             hidden={true}
-            title="停止当前任务"
+            title={t("chat.stopTask")}
             onClick={handleStop}
           >
-            停止
+            {t("common.stop")}
           </button>
           <button
             id="send-btn"
@@ -439,7 +442,7 @@ export function Composer({
             className="composer-voice-send-btn"
             data-mode="send"
             title={sendTitle}
-            aria-label="发送消息"
+            aria-label={t("chat.sendMessage")}
             onPointerDown={preserveComposerFocusOnSend}
             onMouseDown={preserveComposerFocusOnSend}
           >

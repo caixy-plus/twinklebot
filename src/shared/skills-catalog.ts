@@ -6,7 +6,9 @@
 export interface SkillMeta {
   id: string;
   name: string;
+  nameEn?: string;
   desc: string;
+  descEn?: string;
   icon: string;
   category: "office" | "platform" | "builtin";
   builtin?: boolean;
@@ -16,9 +18,9 @@ export interface SkillMeta {
 }
 
 export const SKILL_CATEGORIES = {
-  office: { id: "office", label: "办公", hidden: false },
-  platform: { id: "platform", label: "平台技能", hidden: false },
-  builtin: { id: "builtin", label: "内置", hidden: true },
+  office: { id: "office", label: "办公", labelEn: "Office", hidden: false },
+  platform: { id: "platform", label: "平台技能", labelEn: "Platform", hidden: false },
+  builtin: { id: "builtin", label: "内置", labelEn: "Built-in", hidden: true },
 } as const;
 
 export const VISIBLE_SKILL_CATEGORIES = Object.values(SKILL_CATEGORIES).filter(
@@ -29,7 +31,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "desktop-control",
     name: "电脑桌面操控",
+    nameEn: "Desktop Control",
     desc: "截屏、点击、拖拽、键鼠输入与窗口和浏览器操作",
+    descEn: "Screenshots, clicks, drags, keyboard/mouse input, and window/browser actions",
     icon: "🖥️",
     category: "builtin",
     builtin: true,
@@ -39,7 +43,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "shell-and-files",
     name: "终端与文件读写",
+    nameEn: "Terminal & Files",
     desc: "在沙盒与授权目录内执行命令、读写工作区文件",
+    descEn: "Run shell commands and read/write workspace files inside authorized directories",
     icon: "⌨️",
     category: "builtin",
     builtin: true,
@@ -49,7 +55,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "ai-image",
     name: "AI 图像生成与重绘",
+    nameEn: "AI Image Generation",
     desc: "优先调用生图模型，未配置或不可用时自动降级为大模型编写 SVG（支持按需转格式接口 /api/images/convert）",
+    descEn: "Generate images with configured image models, falling back to SVG synthesis with on-demand conversion",
     icon: "🎨",
     category: "builtin",
     builtin: true,
@@ -59,7 +67,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "multi-bot-collab",
     name: "多 Bot 派生与群聊协作",
+    nameEn: "Multi-Bot Collaboration",
     desc: "创建专职子 Bot、跨 Bot 委派与群聊协同",
+    descEn: "Spawn specialized sub-bots, delegate across bots, and collaborate in group chats",
     icon: "🤝",
     category: "builtin",
     builtin: true,
@@ -69,7 +79,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "interactive-cards",
     name: "交互提问与安全审批",
+    nameEn: "Interactive Cards & Approvals",
     desc: "多选提问卡、草稿审核卡与加密凭据输入卡",
+    descEn: "Choice prompts, draft review cards, and encrypted credential inputs",
     icon: "🛡️",
     category: "builtin",
     builtin: true,
@@ -79,7 +91,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "custom-skill-manager",
     name: "自定义技能与记忆管理",
+    nameEn: "Custom Skills & Memory",
     desc: "支持 Bot 自动判断沉淀可复用工作流（SKILL.md）或记忆，全 Bot 共享与按需读取",
+    descEn: "Save reusable workflows (SKILL.md) and memories shared across bots on demand",
     icon: "🧩",
     category: "builtin",
     builtin: true,
@@ -89,7 +103,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "websearch",
     name: "联网搜索与网页读取",
+    nameEn: "Web Search & Fetch",
     desc: "实时全网检索（web_search）与网页正文抓取（web_fetch），无需打开浏览器即可查证最新资讯",
+    descEn: "Real-time web search and page extraction without opening a browser",
     icon: "🌐",
     category: "builtin",
     builtin: true,
@@ -99,7 +115,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "kimi-cu",
     name: "KimiCU 桌面软件操控",
+    nameEn: "KimiCU Desktop Control",
     desc: "通过 MCP 后台无感操控 Mac 任意桌面软件（单窗口截图 + AX 树 + 键鼠注入，不抢物理鼠标）",
+    descEn: "Control macOS desktop apps silently via MCP (window capture + AX tree + cursor-safe input)",
     icon: "🖱️",
     category: "platform",
     builtin: false,
@@ -110,7 +128,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "feishu-bot",
     name: "飞书机器人",
+    nameEn: "Feishu / Lark Bot",
     desc: "将飞书（Feishu / Lark）机器人接入为对话渠道，支持 WebSocket 长连接与 Webhook 收发消息及审批确认",
+    descEn: "Connect Feishu / Lark bots via WebSocket or Webhook for messaging, pairing, and approvals",
     icon: "💬",
     category: "platform",
     builtin: false,
@@ -119,7 +139,9 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
   {
     id: "telegram-bot",
     name: "Telegram 机器人",
+    nameEn: "Telegram Bot",
     desc: "将 Telegram Bot 接入为对话渠道，支持长轮询（免公网 IP）与 Webhook 与你的 Bot 直接收发消息",
+    descEn: "Connect Telegram bots via Long Polling (no public IP needed) or Webhook with your bots",
     icon: "✈️",
     category: "platform",
     builtin: false,
@@ -138,14 +160,18 @@ export const OFFICE_SKILLS: SkillMeta[] = [
   {
     id: "qqmail",
     name: "QQ 邮箱",
+    nameEn: "QQ Mail",
     desc: "绑定多个 QQ 邮箱，IMAP/POP3 收信 + SMTP 发信",
+    descEn: "Bind multiple QQ Mail accounts for IMAP/POP3 receiving & SMTP sending",
     icon: "✉️",
     category: "office",
   },
   {
     id: "custom-mail",
     name: "通用邮箱",
+    nameEn: "Generic Email",
     desc: "POP3 / IMAP + SMTP 接入 163、企业邮、Outlook 等",
+    descEn: "Connect 163, enterprise mail, Outlook, Gmail, and more via POP3/IMAP + SMTP",
     icon: "📬",
     category: "office",
   },
@@ -200,6 +226,32 @@ export function getSkillMeta(id: string): SkillMeta | null {
     PLATFORM_SKILLS.find((s) => s.id === id) ||
     null
   );
+}
+
+export function getLocalizedSkillMeta<T extends { id?: string; name?: string; nameEn?: string; desc?: string; descEn?: string }>(
+  skill: T,
+  locale: "zh-CN" | "en" = "zh-CN"
+): { name: string; desc: string } {
+  const catalog = skill?.id ? getSkillMeta(String(skill.id)) : null;
+  if (locale === "en") {
+    return {
+      name: String(skill?.nameEn || catalog?.nameEn || skill?.name || catalog?.name || skill?.id || ""),
+      desc: String(skill?.descEn || catalog?.descEn || skill?.desc || catalog?.desc || ""),
+    };
+  }
+  return {
+    name: String(skill?.name || catalog?.name || skill?.id || ""),
+    desc: String(skill?.desc || catalog?.desc || ""),
+  };
+}
+
+export function getSkillCategoryLabel(
+  categoryId: string,
+  locale: "zh-CN" | "en" = "zh-CN"
+): string {
+  const cat = (SKILL_CATEGORIES as Record<string, { label: string; labelEn?: string }>)[categoryId];
+  if (!cat) return categoryId;
+  return locale === "en" ? cat.labelEn || cat.label : cat.label;
 }
 
 export function resolveInstalledSkillIds(settings: any): string[] {

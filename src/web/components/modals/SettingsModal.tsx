@@ -8,7 +8,7 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
-  CONTEXT_COMPRESSION_PRESETS,
+  getLocalizedContextCompressionPresets,
   matchContextCompressionPreset,
   normalizeContextCompressionSettings,
 } from "/shared/context-compression.js";
@@ -59,18 +59,24 @@ import {
 } from "../../services/ota-updater.js";
 import {
   CLIENT_USD_TO_CNY,
-  PROFILE_COLORS,
-  PROVIDER_PRESETS_UI,
+  getProfileColors,
+  getProviderPresetUi,
 } from "../../state/constants.js";
 import {
   formatBillingTime,
   formatCny,
+  getClientModelMeta,
   isImeConfirmEnter,
   parseModelsCsv,
 } from "../../state/helpers.js";
 import { getState, setState, useStore } from "../../state/store.js";
 import { isRemoteAccountOffline } from "../../services/network-monitor.js";
-import { useI18n } from "../../services/i18n.js";
+import {
+  resolveLocalizedGlobalMemory,
+  resolveLocalizedProfileName,
+  resolveLocalizedVaultItem,
+  useI18n,
+} from "../../services/i18n.js";
 import { StatusText, UiIcon } from "../common/Icon.js";
 import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
 import { TraceEventsList } from "../common/SharedPanels.js";
@@ -83,13 +89,13 @@ const SETTINGS_PROVIDER_KEYS = [
 ] as const;
 
 const SETTINGS_TABS = [
-  ["general", "gear", "通用"],
-  ["models", "models-diamond", "模型接入与路由"],
-  ["computer", "monitor", "电脑"],
-  ["permissions", "shield-check", "权限"],
-  ["vault", "vault-safe", "保险库"],
-  ["usage", "bar-chart", "用量与账单"],
-  ["updates", "sparkle", "关于与诊断"],
+  ["general", "gear"],
+  ["models", "models-diamond"],
+  ["computer", "monitor"],
+  ["permissions", "shield-check"],
+  ["vault", "vault-safe"],
+  ["usage", "bar-chart"],
+  ["updates", "sparkle"],
 ] as const;
 
 function isHorizontallyScrollableAncestor(
@@ -111,21 +117,8 @@ function isHorizontallyScrollableAncestor(
   return false;
 }
 
-const PERMISSION_RULE_TOOLS = [
-  ["*", "任意工具 (*)"],
-  ["host_run_shell", "host_run_shell (宿主机终端)"],
-  ["host_open", "host_open (宿主机打开应用)"],
-  ["host_write_file", "host_write_file (宿主机写文件)"],
-  ["mcp__kimi_cu__click", "mcp__kimi_cu__click (Mac 点击)"],
-  ["mcp__kimi_cu__type_text", "mcp__kimi_cu__type_text (Mac 输入)"],
-  ["mcp__kimi_cu__js", "mcp__kimi_cu__js (Mac 页面脚本)"],
-  ["run_shell", "run_shell (Bot 电脑终端)"],
-  ["write_file", "write_file (Bot 电脑写文件)"],
-  ["open_url", "open_url"],
-  ["click", "click"],
-] as const;
-
 function ProviderCalibrationForm({ provider: p }: { provider: any }) {
+  const { t } = useI18n();
   const savedMode = useStore(
     (s) => s.providerCalibrationModes[p.providerId] || "set"
   );
@@ -166,21 +159,29 @@ function ProviderCalibrationForm({ provider: p }: { provider: any }) {
   const rawTrim = remAmount.trim();
   if (rawTrim === "") {
     if (curMode === "sub" && curVal === null) {
-      previewText = "尚未设置初始余额，请先选择「直接修改」或「+ 增加」";
+      previewText = t("settings.calNeedInitialBalance");
     }
   } else {
     const amt = Number(rawTrim);
     if (Number.isFinite(amt) && amt >= 0) {
       if (curMode === "add") {
         const base = curVal ?? 0;
-        previewText = `当前 ¥${base.toFixed(2)} + ¥${amt.toFixed(2)} = ¥${(base + amt).toFixed(2)}`;
+        previewText = t("settings.calPreviewAdd", {
+          base: base.toFixed(2),
+          amt: amt.toFixed(2),
+          total: (base + amt).toFixed(2),
+        });
       } else if (curMode === "sub") {
         previewText =
           curVal === null
-            ? "尚未设置初始余额，请先选择「直接修改」或「+ 增加」"
-            : `当前 ¥${curVal.toFixed(2)} - ¥${amt.toFixed(2)} = ¥${Math.max(0, curVal - amt).toFixed(2)}`;
+            ? t("settings.calNeedInitialBalance")
+            : t("settings.calPreviewSub", {
+                cur: curVal.toFixed(2),
+                amt: amt.toFixed(2),
+                rem: Math.max(0, curVal - amt).toFixed(2),
+              });
       } else {
-        previewText = `保存后将从 ¥${amt.toFixed(2)} 开始按实时用量自动扣减`;
+        previewText = t("settings.calPreviewSet", { amt: amt.toFixed(2) });
       }
     }
   }
@@ -220,27 +221,27 @@ function ProviderCalibrationForm({ provider: p }: { provider: any }) {
           });
           showToast(
             curMode === "add"
-              ? "已增加额度并更新扣减基线"
+              ? t("settings.calToastAdded")
               : curMode === "sub"
-                ? "已扣减额度并更新扣减基线"
-                : "余额设置已保存"
+                ? t("settings.calToastSubtracted")
+                : t("settings.calToastSaved")
           );
         } catch (err: any) {
-          showToast(err?.message || "保存失败");
+          showToast(err?.message || t("settings.calSaveFailed"));
         }
       }}
     >
       <div className="usage-gcp-mode-row">
-        <span className="usage-gcp-mode-caption">校准方式</span>
+        <span className="usage-gcp-mode-caption">{t("settings.calModeLabel")}</span>
         <div
           className="usage-gcp-mode-tabs"
           role="tablist"
-          aria-label={`${p.providerName} 校准方式`}
+          aria-label={t("settings.calModeAria", { name: p.providerName })}
         >
           {[
-            { id: "add", label: "+ 增加" },
-            { id: "sub", label: "- 扣减" },
-            { id: "set", label: "直接修改" },
+            { id: "add", label: t("settings.calModeAdd") },
+            { id: "sub", label: t("settings.calModeSub") },
+            { id: "set", label: t("settings.calModeSet") },
           ].map((mDef) => (
             <button
               key={mDef.id}
@@ -259,32 +260,36 @@ function ProviderCalibrationForm({ provider: p }: { provider: any }) {
         <label className="usage-gcp-field">
           <span>
             {curMode === "add"
-              ? "增加额度（¥ 人民币）"
+              ? t("settings.calFieldAddLabel")
               : curMode === "sub"
-                ? "扣减额度（¥ 人民币）"
-                : "设为剩余余额（¥ 人民币）"}
+                ? t("settings.calFieldSubLabel")
+                : t("settings.calFieldSetLabel")}
           </span>
           <input
             ref={remInputRef}
             type="number"
             step="0.01"
             min="0"
-            aria-label={`${p.providerName} 校准金额（人民币）`}
+            aria-label={t("settings.calAmountAria", { name: p.providerName })}
             placeholder={
-              curMode === "add" ? "如 500.00" : curMode === "sub" ? "如 35.00" : "如 1500.00"
+              curMode === "add"
+                ? t("settings.calAmountAddPh")
+                : curMode === "sub"
+                  ? t("settings.calAmountSubPh")
+                  : t("settings.calAmountSetPh")
             }
             value={remAmount}
             onChange={(e) => setRemAmount(e.target.value)}
           />
         </label>
         <label className="usage-gcp-field">
-          <span>总额度（¥，可选，显示进度条）</span>
+          <span>{t("settings.calTotalCreditsLabel")}</span>
           <input
             type="number"
             step="1"
             min="0"
-            placeholder="如 2000"
-            aria-label={`${p.providerName} 总额度（人民币）`}
+            placeholder={t("settings.calTotalCreditsPh")}
+            aria-label={t("settings.calTotalCreditsAria", { name: p.providerName })}
             value={totAmount}
             onChange={(e) => setTotAmount(e.target.value)}
           />
@@ -297,7 +302,7 @@ function ProviderCalibrationForm({ provider: p }: { provider: any }) {
 
       <div className="usage-gcp-form-actions">
         <button type="submit" className="settings-pill-btn usage-gcp-save-btn">
-          保存
+          {t("common.save")}
         </button>
         <button
           type="button"
@@ -313,16 +318,16 @@ function ProviderCalibrationForm({ provider: p }: { provider: any }) {
                 delete nextOpen[p.providerId];
                 return { providerOpenCalibrationIds: nextOpen, providerBilling: data };
               });
-              showToast("已清除余额设置");
+              showToast(t("settings.calToastCleared"));
             } catch (err: any) {
-              showToast(err?.message || "清除失败");
+              showToast(err?.message || t("settings.calClearFailed"));
             }
           }}
         >
-          清除设置
+          {t("settings.calClearBtn")}
         </button>
         <button type="button" className="settings-pill-btn" onClick={closeCalibration}>
-          取消
+          {t("common.cancel")}
         </button>
       </div>
     </form>
@@ -715,10 +720,11 @@ export function SettingsModal() {
       paneEl.style.transform = `translateY(${offsetPx}px)`;
     }
 
+    const targetTabLabel = settingsTabLabels[targetTab[0]] || targetTab[0];
     setEdgePullHint((prev) =>
-      prev && prev.dir === dir && prev.targetLabel === targetTab[2]
+      prev && prev.dir === dir && prev.targetLabel === targetTabLabel
         ? prev
-        : { dir, targetLabel: targetTab[2] }
+        : { dir, targetLabel: targetTabLabel }
     );
     if (edgeFillRef.current) {
       edgeFillRef.current.style.transform = `scaleX(${progress.toFixed(3)})`;
@@ -860,9 +866,33 @@ export function SettingsModal() {
     }
   };
 
+  const { language: currentLanguage, locale: currentLocale, t } = useI18n();
+  const settingsTabLabels: Record<string, string> = {
+    general: t("settings.tabGeneral"),
+    models: t("settings.tabModels"),
+    computer: t("settings.tabComputer"),
+    permissions: t("settings.tabPermissions"),
+    vault: t("settings.tabVault"),
+    usage: t("settings.tabUsage"),
+    updates: t("settings.tabUpdates"),
+  };
+  const permissionRuleTools = [
+    ["*", t("settings.permToolAny")],
+    ["host_run_shell", t("settings.permToolHostShell")],
+    ["host_open", t("settings.permToolHostOpen")],
+    ["host_write_file", t("settings.permToolHostWrite")],
+    ["mcp__kimi_cu__click", t("settings.permToolMacClick")],
+    ["mcp__kimi_cu__type_text", t("settings.permToolMacType")],
+    ["mcp__kimi_cu__js", t("settings.permToolMacJs")],
+    ["run_shell", t("settings.permToolBotShell")],
+    ["write_file", t("settings.permToolBotWrite")],
+    ["open_url", "open_url"],
+    ["click", "click"],
+  ] as const;
+
   // Profile local state
-  const profile = settings?.profile || { name: "本地用户", color: "slate" };
-  const profileName = String(profile.name || "本地用户").trim() || "本地用户";
+  const profile = settings?.profile || { name: "", color: "slate" };
+  const profileName = resolveLocalizedProfileName(profile.name, currentLocale);
   const profileColor = String(profile.color || "slate");
   const profileInitial = Array.from(profileName)[0]?.toUpperCase() || "U";
   const [profileNameInput, setProfileNameInput] = useState(profileName);
@@ -922,7 +952,8 @@ export function SettingsModal() {
   });
   const ctxEnabled = ctxEffective.enabled !== false;
   const matchedPresetId = matchContextCompressionPreset(ctxEffective);
-  const presetMeta = CONTEXT_COMPRESSION_PRESETS.find((p) => p.id === matchedPresetId);
+  const ctxPresets = getLocalizedContextCompressionPresets(currentLocale);
+  const presetMeta = ctxPresets.find((p) => p.id === matchedPresetId);
 
   const screenBudget =
     settings?.screenPool?.budget && typeof settings.screenPool.budget === "object"
@@ -960,16 +991,6 @@ export function SettingsModal() {
   const localBrowserSupported = hasConnectedNodeCapability("local-browser-automation-v1", {
     diagnostics,
   });
-  const { language: currentLanguage, locale: currentLocale, t } = useI18n();
-  const settingsTabLabels: Record<string, string> = {
-    general: t("settings.tabGeneral"),
-    models: t("settings.tabModels"),
-    computer: t("settings.tabComputer"),
-    permissions: t("settings.tabPermissions"),
-    vault: t("settings.tabVault"),
-    usage: t("settings.tabUsage"),
-    updates: t("settings.tabUpdates"),
-  };
   const browserAutomationCfg = normalizeBrowserAutomationSettings(settings?.browserAutomation);
   const [browserPortDraft, setBrowserPortDraft] = useState<string>(
     String(browserAutomationCfg.debugPort)
@@ -1119,7 +1140,7 @@ export function SettingsModal() {
   };
 
   const applyProviderTypePreset = (nextType: string, keepCustomEdits = false) => {
-    const preset = PROVIDER_PRESETS_UI[nextType] || PROVIDER_PRESETS_UI.gemini;
+    const preset = getProviderPresetUi(nextType, currentLocale);
     setProvType(nextType);
     if (!keepCustomEdits) {
       setProvName(preset.name);
@@ -1141,13 +1162,13 @@ export function SettingsModal() {
       return;
     }
     const rawT = p?.type === "vertex" ? "gemini" : p?.type || "gemini";
-    const t = PROVIDER_PRESETS_UI[rawT] ? rawT : "gemini";
-    const preset = PROVIDER_PRESETS_UI[t] || PROVIDER_PRESETS_UI.gemini;
+    const tKey = (SETTINGS_PROVIDER_KEYS as readonly string[]).includes(rawT) ? rawT : "gemini";
+    const preset = getProviderPresetUi(tKey, currentLocale);
     setProvId(targetId);
-    setProvType(t);
+    setProvType(tKey);
     setProvName(p?.name || preset.name);
     setProvCurrency(
-      p?.billingCurrency || preset.billingCurrency || (t === "deepseek" ? "CNY" : "USD")
+      p?.billingCurrency || preset.billingCurrency || (tKey === "deepseek" ? "CNY" : "USD")
     );
     setProvApiKey("");
     setProvShowKey(false);
@@ -1210,9 +1231,9 @@ export function SettingsModal() {
     }
     try {
       await commitSettingsPatch({ routing: { ...routing, tiers: nextTiers } });
-      showToast("模型路由配置已保存");
+      showToast(t("settings.modelRoutingSavedToast"));
     } catch (err: any) {
-      showToast(`保存失败: ${err.message}`);
+      showToast(t("actions.saveFailed", { error: err.message }));
     }
   };
 
@@ -1271,7 +1292,7 @@ export function SettingsModal() {
         setCtxPercentDraft(ctxBase.triggerPercent);
         setCtxInstructionDraft(String(ctxBase.customInstruction || ""));
       }
-      showToast(`保存上下文压缩设置失败：${err?.message || "请求异常"}`);
+      showToast(t("settings.ctxCompressSaveFailed", { error: err?.message || t("actions.requestError") }));
     }
   };
 
@@ -1314,7 +1335,7 @@ export function SettingsModal() {
         screenMaxDraftRef.current = screenPoolBase.maxConcurrentScreens;
         setScreenMaxDraft(screenPoolBase.maxConcurrentScreens);
       }
-      showToast(`保存屏幕并发上限失败：${err?.message || "请求异常"}`);
+      showToast(t("settings.screenPoolSaveFailed", { error: err?.message || t("actions.requestError") }));
     }
   };
 
@@ -1333,7 +1354,7 @@ export function SettingsModal() {
     } catch (err: any) {
       setBudgetInput(cnyBudgetDefault);
       budgetInputRef.current = cnyBudgetDefault;
-      showToast(`保存预算上限失败：${err?.message || "请求异常"}`);
+      showToast(t("settings.budgetSaveFailed", { error: err?.message || t("actions.requestError") }));
     }
   };
 
@@ -1413,16 +1434,16 @@ export function SettingsModal() {
   const handleSaveProfile = async () => {
     const nextName = profileNameInput.trim();
     if (!nextName) {
-      showToast("请输入有效的显示昵称");
+      showToast(t("settings.profileNameInvalid"));
       return;
     }
     try {
       const saved = await commitSettingsPatch({
         profile: { name: nextName, color: profileColor },
       });
-      showToast(`个人资料已保存为「${saved?.profile?.name || nextName}」`);
+      showToast(t("settings.profileSavedToast", { name: saved?.profile?.name || nextName }));
     } catch (err: any) {
-      showToast(`保存个人资料失败：${err?.message || "请求异常"}`);
+      showToast(t("settings.profileSaveFailed", { error: err?.message || t("actions.requestError") }));
     }
   };
 
@@ -1436,23 +1457,28 @@ export function SettingsModal() {
   const isSessionScope = Boolean(requestedSid || usagePayload?.scope === "session");
   const scopedSession =
     usagePayload?.session || sessions.find((s: any) => s.id === requestedSid) || null;
-  const scopedSessionTitle = scopedSession?.title || "当前 Bot";
+  const scopedSessionTitle = scopedSession?.title || t("settings.usageCurrentBotFallback");
 
   const totalTok = Number(usagePayload?.totalTokens) || 0;
   const estCny = Number(usagePayload?.estimatedCostCny) || 0;
   const extraParts: string[] = [];
   if (Number(usagePayload?.cachedTokens) > 0) {
-    extraParts.push(`缓存命中 ${Number(usagePayload.cachedTokens).toLocaleString()}`);
+    extraParts.push(
+      t("settings.usageCacheHitPart", { n: Number(usagePayload.cachedTokens).toLocaleString() })
+    );
   }
   if (Number(usagePayload?.thoughtTokens) > 0) {
-    extraParts.push(`含思考 ${Number(usagePayload.thoughtTokens).toLocaleString()}`);
+    extraParts.push(
+      t("settings.usageThoughtPart", { n: Number(usagePayload.thoughtTokens).toLocaleString() })
+    );
   }
-  const extraSuffix = extraParts.length > 0 ? `（${extraParts.join(" · ")}）` : "";
+  const extraSuffix =
+    extraParts.length > 0 ? t("settings.usageParenWrap", { text: extraParts.join(" · ") }) : "";
   const tailSuffix = isSessionScope
     ? requestedSid === activeSessionId && stepCount > 0
-      ? ` · 执行 ${stepCount} 步`
+      ? t("settings.usageExecStepsPart", { count: stepCount })
       : ""
-    : ` · 共 ${usagePayload?.sessionCount ?? sessions.length} 个 Bot/群聊`;
+    : t("settings.usageSessionCountPart", { count: usagePayload?.sessionCount ?? sessions.length });
 
   const byModel: any[] = Array.isArray(usagePayload?.byModel) ? usagePayload.byModel : [];
   const nonZeroModels = byModel.filter((m) => (Number(m.totalTokens) || 0) > 0);
@@ -1477,8 +1503,11 @@ export function SettingsModal() {
     const tabOk =
       vaultTab === "all" ||
       (vaultTab === "login" ? isAccountLike : it.category === vaultTab);
+    const locIt = resolveLocalizedVaultItem(it, currentLocale);
     const searchOk =
       !vQuery ||
+      locIt.title.toLowerCase().includes(vQuery) ||
+      locIt.subtitle.toLowerCase().includes(vQuery) ||
       String(it.title || "").toLowerCase().includes(vQuery) ||
       String(it.subtitle || "").toLowerCase().includes(vQuery);
     return tabOk && searchOk;
@@ -1493,12 +1522,13 @@ export function SettingsModal() {
   const hostExecMode = settings?.hostComputer?.executionMode || "always";
   const hostModeLabel =
     hostExecMode === "off"
-      ? "宿主机执行已关闭"
+      ? t("settings.computerExecHostOffLabel")
       : hostExecMode === "ask"
-        ? "宿主机操作每次询问"
-        : "允许直接操控你的电脑";
+        ? t("settings.computerExecHostAskLabel")
+        : t("settings.computerExecHostAlwaysLabel");
   const compStatusView = resolveBotComputerStatusDisplay(computerStatus, {
     detecting: detectingComputer,
+    locale: currentLocale,
   });
   const hasCompProbe = compStatusView.hasProbe;
 
@@ -1520,7 +1550,9 @@ export function SettingsModal() {
     ? Boolean(diagnostics.llmConfigured ?? diagnostics.geminiKeyConfigured)
     : enabledProviders.length > 0;
   const diagEnvLabel =
-    diagnostics?.deployEnv === "cloud" ? "云端主控模式" : "本地守护进程模式";
+    diagnostics?.deployEnv === "cloud"
+      ? t("settings.diagEnvCloud")
+      : t("settings.diagEnvLocal");
   const diagExecOnline = Boolean(diagnostics?.executorOnline);
   const diagExecUrl = diagnostics?.executorUrl || "http://127.0.0.1:7300";
 
@@ -1544,30 +1576,30 @@ export function SettingsModal() {
     >
       {!inline && (
         <div className="custom-skill-editor-top">
-          <strong>新建全局记忆</strong>
+          <strong>{t("settings.memEditorNewTitle")}</strong>
         </div>
       )}
       <div className="custom-skill-fields">
         <label className="field-group">
-          <span>记忆标题（可选）</span>
+          <span>{t("settings.memEditorNameLabel")}</span>
           <input
             ref={memNameRef}
             id="memory-name-input"
             type="text"
-            placeholder="例如：周报排版规范 / 汇报语气偏好"
-            aria-label="记忆标题"
+            placeholder={t("settings.memEditorNamePh")}
+            aria-label={t("settings.memEditorNameAria")}
             value={memName}
             onChange={(e) => setMemName(e.target.value)}
           />
         </label>
         <label className="field-group">
-          <span>记忆内容（所有 Bot 共享遵守）*</span>
+          <span>{t("settings.memEditorContentLabel")}</span>
           <textarea
             id="memory-content-input"
             className="is-compact-textarea"
             rows={3}
-            placeholder="输入希望所有 Bot 长期遵守的背景、偏好或执行约定（也可直接在聊天中说「记住…」自动添加）..."
-            aria-label="记忆内容"
+            placeholder={t("settings.memEditorContentPh")}
+            aria-label={t("settings.memEditorContentAria")}
             value={memContent}
             onChange={(e) => setMemContent(e.target.value)}
           />
@@ -1583,7 +1615,7 @@ export function SettingsModal() {
             setEditingMemId(null);
           }}
         >
-          取消
+          {t("common.cancel")}
         </button>
         <button
           id="save-memory-btn"
@@ -1592,7 +1624,7 @@ export function SettingsModal() {
           onClick={async () => {
             const content = memContent.trim();
             if (!content) {
-              showToast("请输入记忆内容");
+              showToast(t("settings.memContentRequiredToast"));
               return;
             }
             const title = memName.trim() || content.replace(/\s+/g, " ").slice(0, 18);
@@ -1628,13 +1660,13 @@ export function SettingsModal() {
               setMemContent("");
               setEditingMemId(null);
               setMemFormOpen(false);
-              showToast(editingMemId ? "全局记忆已更新" : "全局记忆已保存");
+              showToast(editingMemId ? t("settings.memUpdatedToast") : t("settings.memSavedToast"));
             } catch (err: any) {
-              showToast(`保存全局记忆失败：${err?.message || "请求异常"}`);
+              showToast(t("settings.memSaveFailedToast", { error: err?.message || t("actions.requestError") }));
             }
           }}
         >
-          保存记忆
+          {t("settings.memSaveBtn")}
         </button>
       </div>
     </div>
@@ -1648,7 +1680,7 @@ export function SettingsModal() {
       onSubmit={async (e: FormEvent) => {
         e.preventDefault();
         const resolvedName =
-          provName.trim() || PROVIDER_PRESETS_UI[provType]?.name || provType;
+          provName.trim() || getProviderPresetUi(provType, currentLocale).name || provType;
         try {
           const res = await apiJson("/api/providers", {
             method: "POST",
@@ -1669,8 +1701,8 @@ export function SettingsModal() {
           refreshSystemDiagnostics(false);
           showToast(
             res.autoAssignedTiers
-              ? `已保存「${resolvedName}」，已为你自动选好 3 档路由模型，可自行修改`
-              : `已保存模型供应商「${resolvedName}」`
+              ? t("settings.provSavedAutoTiersToast", { name: resolvedName })
+              : t("settings.provSavedToast", { name: resolvedName })
           );
         } catch (err: any) {
           setProvFeedback({ text: `❌ ${err.message}`, kind: "error" });
@@ -1680,20 +1712,20 @@ export function SettingsModal() {
       <input id="provider-id-input" type="hidden" value={provId} readOnly />
       {!inline && (
         <div className="custom-skill-editor-top">
-          <strong>添加模型供应商</strong>
+          <strong>{t("settings.provAddTitle")}</strong>
         </div>
       )}
 
       <div className="custom-skill-fields">
         <div className="field-group">
-          <span>供应商类型</span>
+          <span>{t("settings.provTypeLabel")}</span>
           <div
             className="provider-preset-pills"
             role="radiogroup"
-            aria-label="供应商类型"
+            aria-label={t("settings.provTypeLabel")}
           >
             {SETTINGS_PROVIDER_KEYS.map((pKey) => {
-              const pr = PROVIDER_PRESETS_UI[pKey];
+              const pr = getProviderPresetUi(pKey, currentLocale);
               const active = provType === pKey;
               return (
                 <button
@@ -1720,20 +1752,21 @@ export function SettingsModal() {
           >
             {SETTINGS_PROVIDER_KEYS.map((pKey) => (
               <option key={pKey} value={pKey}>
-                {PROVIDER_PRESETS_UI[pKey]?.name || pKey}
+                {getProviderPresetUi(pKey, currentLocale).name || pKey}
               </option>
             ))}
           </select>
           <span className="provider-preset-hint">
-            {PROVIDER_PRESETS_UI[provType]?.hint || ""}
+            {getProviderPresetUi(provType, currentLocale).hint || ""}
           </span>
         </div>
 
         {provType === "gemini" && Boolean(settings?.gcpVertexActive) && (
           <div className="mail-feedback-box is-success">
-            当前 GCP 云服务器已通过环境变量启用 Vertex AI 服务账号认证（
-            {settings?.gcpVertexProject} · {settings?.gcpVertexLocation}
-            ），API Key 可留空。
+            {t("settings.provGcpVertexNotice", {
+              project: settings?.gcpVertexProject || "",
+              location: settings?.gcpVertexLocation || "",
+            })}
           </div>
         )}
         {provType === "gemini" &&
@@ -1746,27 +1779,27 @@ export function SettingsModal() {
 
         <div className="custom-skill-row-two">
           <label className="field-group custom-skill-name-field">
-            <span>显示名称 *</span>
+            <span>{t("settings.provDisplayNameLabel")}</span>
             <input
               ref={provNameRef}
               id="provider-name-input"
               type="text"
-              placeholder="例如：Google Gemini / DeepSeek 主力"
-              aria-label="供应商名称"
+              placeholder={t("settings.provDisplayNamePh")}
+              aria-label={t("settings.provDisplayNameAria")}
               value={provName}
               onChange={(e) => setProvName(e.target.value)}
             />
           </label>
           <label className="field-group custom-skill-slug-field">
-            <span>计费结算币种</span>
+            <span>{t("settings.provCurrencyLabel")}</span>
             <select
               id="provider-billing-currency-select"
-              aria-label="计费结算币种"
+              aria-label={t("settings.provCurrencyLabel")}
               value={provCurrency}
               onChange={(e) => setProvCurrency(e.target.value as "USD" | "CNY")}
             >
-              <option value="USD">USD（美元，自动折算人民币 ¥）</option>
-              <option value="CNY">CNY（人民币 ¥ 原币计费）</option>
+              <option value="USD">{t("settings.provCurrencyUsd")}</option>
+              <option value="CNY">{t("settings.provCurrencyCny")}</option>
             </select>
           </label>
         </div>
@@ -1774,22 +1807,22 @@ export function SettingsModal() {
         <div className="field-group">
           <div className="mail-label-row">
             <span>
-              API Key / 环境变量名
-              {provId ? "（留空保留原密钥）" : ""}
+              {t("settings.provApiKeyLabel")}
+              {provId ? t("settings.provApiKeyKeepHint") : ""}
             </span>
             <button
               type="button"
               className="mail-secret-toggle"
               onClick={() => setProvShowKey((v) => !v)}
             >
-              {provShowKey ? "隐藏" : "显示"}
+              {provShowKey ? t("common.hide") : t("common.show")}
             </button>
           </div>
           <input
             id="provider-api-key-input"
             type={provShowKey ? "text" : "password"}
-            placeholder="粘贴 API Key 或填环境变量名（如 GEMINI_API_KEY）"
-            aria-label="供应商 API Key"
+            placeholder={t("settings.provApiKeyPh")}
+            aria-label={t("settings.provApiKeyAria")}
             autoComplete="off"
             value={provApiKey}
             onChange={(e) => setProvApiKey(e.target.value)}
@@ -1798,41 +1831,44 @@ export function SettingsModal() {
 
         <label className="field-group">
           <span>
-            接口地址 Base URL（
-            {provType === "openai-compatible" ? "自定义兼容必填" : "官方接口可留空"}
-            ）
+            {t("settings.provBaseUrlLabel", {
+              hint:
+                provType === "openai-compatible"
+                  ? t("settings.provBaseUrlRequiredHint")
+                  : t("settings.provBaseUrlOptionalHint"),
+            })}
           </span>
           <input
             id="provider-base-url-input"
             type="url"
-            placeholder="例如：https://api.openai.com/v1"
-            aria-label="供应商 Base URL"
+            placeholder={t("settings.provBaseUrlPh")}
+            aria-label={t("settings.provBaseUrlAria")}
             value={provBaseUrl}
             onChange={(e) => setProvBaseUrl(e.target.value)}
           />
         </label>
 
         <label className="field-group">
-          <span>大语言模型列表（逗号或换行分隔）*</span>
+          <span>{t("settings.provModelsLabel")}</span>
           <textarea
             id="provider-models-input"
             className="is-compact-textarea"
             rows={2}
-            placeholder="例如：gemini-4-hydrogen, gemini-4-argon, gemini-4-carbon"
-            aria-label="大语言模型列表"
+            placeholder={t("settings.provModelsPh")}
+            aria-label={t("settings.provModelsAria")}
             value={provModels}
             onChange={(e) => setProvModels(e.target.value)}
           />
         </label>
 
         <label className="field-group">
-          <span>生图模型列表（可选，逗号或换行分隔）</span>
+          <span>{t("settings.provImageModelsLabel")}</span>
           <textarea
             id="provider-image-models-input"
             className="is-compact-textarea"
             rows={1}
-            placeholder="例如：gemini-3.1-flash-image, gpt-image-1"
-            aria-label="生图模型列表"
+            placeholder={t("settings.provImageModelsPh")}
+            aria-label={t("settings.provImageModelsAria")}
             value={provImageModels}
             onChange={(e) => setProvImageModels(e.target.value)}
           />
@@ -1865,7 +1901,7 @@ export function SettingsModal() {
             setProvId("");
           }}
         >
-          取消
+          {t("common.cancel")}
         </button>
         <button
           id="provider-test-btn"
@@ -1873,7 +1909,7 @@ export function SettingsModal() {
           className="skill-pill-btn"
           onClick={async () => {
             const models = parseModelsCsv(provModels);
-            setProvFeedback({ text: "正在测试连接…", kind: "info" });
+            setProvFeedback({ text: t("settings.provTestingConn"), kind: "info" });
             try {
               const res = await apiJson("/api/providers/test", {
                 method: "POST",
@@ -1887,7 +1923,9 @@ export function SettingsModal() {
                 }),
               });
               setProvFeedback({
-                text: res.ok ? `✓ 连接成功 (${res.latencyMs}ms)` : `❌ 失败：${res.error}`,
+                text: res.ok
+                  ? t("settings.provConnOk", { ms: res.latencyMs })
+                  : t("settings.provConnFail", { error: res.error }),
                 kind: res.ok ? "ok" : "error",
               });
             } catch (err: any) {
@@ -1895,14 +1933,14 @@ export function SettingsModal() {
             }
           }}
         >
-          测试连接
+          {t("settings.provTestBtn")}
         </button>
         <button
           id="provider-save-btn"
           type="submit"
           className="skill-pill-btn is-primary"
         >
-          保存供应商
+          {t("settings.provSaveBtn")}
         </button>
       </div>
     </form>
@@ -1916,48 +1954,48 @@ export function SettingsModal() {
     >
       {!inline && (
         <div className="custom-skill-editor-top">
-          <strong>新建保险库条目</strong>
+          <strong>{t("settings.vaultNewItemTitle")}</strong>
         </div>
       )}
       <div className="custom-skill-fields">
         <div className="custom-skill-row-two">
           <label className="field-group custom-skill-slug-field">
-            <span>条目分类</span>
+            <span>{t("settings.vaultCatLabel")}</span>
             <select
               id="vault-cat-input"
               value={vaultCat}
               onChange={(e) => setVaultCat(e.target.value)}
             >
-              <option value="contact">联系信息</option>
-              <option value="credential">登录凭据（账号 + 密码）</option>
-              <option value="login">账号备注</option>
+              <option value="contact">{t("settings.vaultCatContact")}</option>
+              <option value="credential">{t("settings.vaultCatCredential")}</option>
+              <option value="login">{t("settings.vaultCatLogin")}</option>
             </select>
           </label>
           <label className="field-group custom-skill-name-field">
-            <span>名称 *</span>
+            <span>{t("settings.vaultNameLabel")}</span>
             <input
               ref={vaultTitleRef}
               id="vault-title-input"
               type="text"
-              placeholder="如：测试站账号 / 常用收件人"
+              placeholder={t("settings.vaultNamePh")}
               value={vaultTitle}
               onChange={(e) => setVaultTitle(e.target.value)}
             />
           </label>
         </div>
         <label className="field-group">
-          <span>邮箱 / 用户名 / 备注内容</span>
+          <span>{t("settings.vaultSubLabel")}</span>
           <input
             id="vault-sub-input"
             type="text"
-            placeholder="邮箱 / 用户名 / 备注内容"
+            placeholder={t("settings.vaultSubLabel")}
             value={vaultSub}
             onChange={(e) => setVaultSub(e.target.value)}
           />
         </label>
         {vaultSecretSupported && (
           <label className="field-group">
-            <span>密码 / 授权码（可选 · 本机 AES-256-GCM 加密）</span>
+            <span>{t("settings.vaultPasswordLabel")}</span>
             <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
               <input
                 id="vault-password-input"
@@ -1966,8 +2004,8 @@ export function SettingsModal() {
                 style={{ flex: 1, minWidth: 0 }}
                 placeholder={
                   editingVaultId && vaultHasPassword && !vaultPasswordTouched
-                    ? "••••••••（已加密保存，留空则保持不变）"
-                    : "输入密码或授权码，留空表示不存密码"
+                    ? t("settings.vaultPasswordKeepPh")
+                    : t("settings.vaultPasswordNewPh")
                 }
                 value={vaultPassword}
                 onChange={(e) => {
@@ -1996,7 +2034,7 @@ export function SettingsModal() {
                         setVaultPassword(String(res?.password || ""));
                         setVaultPasswordVisible(true);
                       } catch (err: any) {
-                        showToast(`读取密码失败: ${err?.message || "请重试"}`);
+                        showToast(t("settings.vaultRevealFailedToast", { error: err?.message || t("settings.vaultRetry") }));
                       } finally {
                         setVaultRevealing(false);
                       }
@@ -2005,7 +2043,11 @@ export function SettingsModal() {
                     }
                   }}
                 >
-                  {vaultRevealing ? "解密中…" : vaultPasswordVisible ? "隐藏" : "查看"}
+                  {vaultRevealing
+                    ? t("settings.vaultDecrypting")
+                    : vaultPasswordVisible
+                      ? t("common.hide")
+                      : t("settings.vaultViewBtn")}
                 </button>
               )}
               {editingVaultId && vaultHasPassword && (
@@ -2020,7 +2062,7 @@ export function SettingsModal() {
                     setVaultPasswordVisible(false);
                   }}
                 >
-                  清除
+                  {t("settings.vaultClearBtn")}
                 </button>
               )}
             </div>
@@ -2040,7 +2082,7 @@ export function SettingsModal() {
             setVaultPasswordVisible(false);
           }}
         >
-          取消
+          {t("common.cancel")}
         </button>
         <button
           type="button"
@@ -2049,7 +2091,7 @@ export function SettingsModal() {
           onClick={async () => {
             const title = vaultTitle.trim();
             if (!title) {
-              showToast("请输入条目名称");
+              showToast(t("settings.vaultNameRequiredToast"));
               return;
             }
             const payload: Record<string, any> = {
@@ -2086,10 +2128,10 @@ export function SettingsModal() {
             setEditingVaultId(null);
             setVaultFormOpen(false);
             refreshVault();
-            showToast(editingVaultId ? "保险库项目已更新" : "保险库项目已保存");
+            showToast(editingVaultId ? t("settings.vaultUpdatedToast") : t("settings.vaultSavedToast"));
           }}
         >
-          保存项目
+          {t("settings.vaultSaveBtn")}
         </button>
       </div>
     </div>
@@ -2100,12 +2142,12 @@ export function SettingsModal() {
       <div className="custom-skill-fields">
         <div className="custom-skill-row-two">
           <label className="field-group custom-skill-name-field">
-            <span>目标工具</span>
+            <span>{t("settings.permTargetToolLabel")}</span>
             <select
               value={editRuleTool}
               onChange={(e) => setEditRuleTool(e.target.value)}
             >
-              {PERMISSION_RULE_TOOLS.map(([val, label]) => (
+              {permissionRuleTools.map(([val, label]) => (
                 <option key={val} value={val}>
                   {label}
                 </option>
@@ -2113,10 +2155,10 @@ export function SettingsModal() {
             </select>
           </label>
           <label className="field-group custom-skill-slug-field">
-            <span>参数匹配关键词（留空匹配全部）</span>
+            <span>{t("settings.permPatternLabel")}</span>
             <input
               type="text"
-              placeholder={kind === "ask" ? "如 rm、git push、pay" : "如 /tmp/、npm test"}
+              placeholder={kind === "ask" ? t("settings.permAskPatternPh") : t("settings.permAllowPatternPh")}
               value={editRulePattern}
               onChange={(e) => setEditRulePattern(e.target.value)}
             />
@@ -2129,7 +2171,7 @@ export function SettingsModal() {
           className="skill-pill-btn"
           onClick={() => setEditingRuleKey(null)}
         >
-          取消
+          {t("common.cancel")}
         </button>
         <button
           type="button"
@@ -2151,13 +2193,13 @@ export function SettingsModal() {
             try {
               await commitSettingsPatch({ policy: { [listKey]: nextList } });
               setEditingRuleKey(null);
-              showToast("权限规则已更新");
+              showToast(t("settings.permRuleUpdatedToast"));
             } catch (err: any) {
-              showToast(`更新权限规则失败：${err?.message || "请求异常"}`);
+              showToast(t("settings.permRuleUpdateFailedToast", { error: err?.message || t("actions.requestError") }));
             }
           }}
         >
-          保存规则
+          {t("settings.permSaveRuleBtn")}
         </button>
       </div>
     </div>
@@ -2176,14 +2218,14 @@ export function SettingsModal() {
         className={`settings-modal${isStandalone ? " is-standalone-pane" : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="TwinkleBot 设置"
+        aria-label={t("settings.modalAria")}
       >
         <button
           id="close-settings-modal-btn"
           type="button"
           className="modal-close-btn"
-          title="关闭"
-          aria-label="关闭"
+          title={t("common.close")}
+          aria-label={t("common.close")}
           onClick={closeSettingsModal}
         >
           <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -2207,8 +2249,8 @@ export function SettingsModal() {
               </span>
               <span className="settings-edge-hint-text">
                 {edgePullHint.dir > 0
-                  ? `继续下滑切换「${edgePullHint.targetLabel}」`
-                  : `继续上滑切换「${edgePullHint.targetLabel}」`}
+                  ? t("settings.edgePullDown", { target: edgePullHint.targetLabel })
+                  : t("settings.edgePullUp", { target: edgePullHint.targetLabel })}
               </span>
               <span className="settings-edge-hint-track">
                 <span ref={edgeFillRef} className="settings-edge-hint-fill" />
@@ -2222,15 +2264,15 @@ export function SettingsModal() {
             id="mobile-settings-modal-back-btn"
             type="button"
             className="mobile-circle-btn mobile-only"
-            title="返回"
-            aria-label="返回"
+            title={t("common.back")}
+            aria-label={t("common.back")}
             onClick={closeSettingsModal}
           >
             <UiIcon name="chevron-left" />
           </button>
           <div className="settings-nav-wrap">
-            <nav ref={settingsNavRef} className="settings-nav" role="tablist" aria-label="设置分区">
-              {SETTINGS_TABS.map(([tabKey, iconName, label]) => (
+            <nav ref={settingsNavRef} className="settings-nav" role="tablist" aria-label={t("settings.navAria")}>
+              {SETTINGS_TABS.map(([tabKey, iconName]) => (
                 <button
                   key={tabKey}
                   type="button"
@@ -2254,9 +2296,9 @@ export function SettingsModal() {
                   <span className="settings-nav-icon" aria-hidden="true">
                     <UiIcon name={iconName} />
                   </span>
-                  <span>{settingsTabLabels[tabKey] || label}</span>
+                  <span>{settingsTabLabels[tabKey] || tabKey}</span>
                   {tabKey === "updates" && hasVisibleUpdate && (
-                    <span className="settings-nav-update-dot" aria-label="有可用更新" />
+                    <span className="settings-nav-update-dot" aria-label={t("settings.updateDotAria")} />
                   )}
                 </button>
               ))}
@@ -2279,7 +2321,7 @@ export function SettingsModal() {
         >
           <NetworkStatusBanner
             placement="modal"
-            contextHint="远端配置暂为只读（外观与账号切换仍可用）"
+            contextHint={t("settings.remoteOfflineReadonlyHint")}
             onlyWhenOffline
           />
 
@@ -2296,7 +2338,7 @@ export function SettingsModal() {
               data-remote-offline-guard="profile"
               disabled={remoteAccountOffline}
             >
-            <div className="settings-group-label">个人资料（本机工作台）</div>
+            <div className="settings-group-label">{t("settings.profileGroupTitle")}</div>
             <div className="settings-card">
               <div className="settings-account-row">
                 <div className="settings-account-left">
@@ -2314,8 +2356,8 @@ export function SettingsModal() {
                         type="text"
                         className="inline-text-input profile-name-input"
                         maxLength={32}
-                        placeholder="输入你的显示昵称"
-                        aria-label="显示昵称"
+                        placeholder={t("settings.profileNamePh")}
+                        aria-label={t("settings.profileNameAria")}
                         value={profileNameInput}
                         onChange={(e) => setProfileNameInput(e.target.value)}
                         onCompositionEnd={(e) => {
@@ -2334,16 +2376,16 @@ export function SettingsModal() {
                         id="save-profile-btn"
                         onClick={handleSaveProfile}
                       >
-                        保存资料
+                        {t("settings.profileSaveBtn")}
                       </button>
                     </div>
                     <div
                       className="profile-color-swatches"
                       id="profile-color-swatches"
                       role="group"
-                      aria-label="头像配色"
+                      aria-label={t("settings.profileColorAria")}
                     >
-                      {PROFILE_COLORS.map((c) => (
+                      {getProfileColors(currentLocale).map((c) => (
                         <button
                           key={c.key}
                           type="button"
@@ -2357,9 +2399,9 @@ export function SettingsModal() {
                               await commitSettingsPatch({
                                 profile: { name: curName, color: c.key },
                               });
-                              showToast("个人头像配色已更新");
+                              showToast(t("settings.profileColorUpdatedToast"));
                             } catch (err: any) {
-                              showToast(`更新头像配色失败：${err?.message || "请求异常"}`);
+                              showToast(t("settings.profileColorFailedToast", { error: err?.message || t("actions.requestError") }));
                             }
                           }}
                         />
@@ -2367,10 +2409,14 @@ export function SettingsModal() {
                     </div>
                     <div className="settings-row-sub" id="profile-api-status-sub">
                       {diagnostics
-                        ? `${diagEnvLabel} v${diagnostics.appVersion || "1.0.0"} · ${
-                            diagLlmReady ? "模型路由已就绪" : "请先完成模型接入"
-                          }`
-                        : "本地守护进程模式 · 模型路由已就绪"}
+                        ? t("settings.profileApiStatusLine", {
+                            env: diagEnvLabel,
+                            version: diagnostics.appVersion || "1.0.0",
+                            state: diagLlmReady
+                              ? t("settings.profileRoutingReady")
+                              : t("settings.profileRoutingMissing"),
+                          })
+                        : t("settings.profileApiStatusDefault")}
                     </div>
                   </div>
                 </div>
@@ -2435,8 +2481,8 @@ export function SettingsModal() {
               </div>
               <div className="settings-divider" />
               <div className="settings-item-row">
-                <span className="settings-row-title">输入时检查拼写</span>
-                <label className="ios-switch" aria-label="输入时检查拼写">
+                <span className="settings-row-title">{t("settings.spellcheckTitle")}</span>
+                <label className="ios-switch" aria-label={t("settings.spellcheckTitle")}>
                   <input
                     id="setting-spellcheck-toggle"
                     type="checkbox"
@@ -2453,16 +2499,16 @@ export function SettingsModal() {
               data-remote-offline-guard="general-remote"
               disabled={remoteAccountOffline}
             >
-            <div className="settings-group-label">智能模型路由</div>
+            <div className="settings-group-label">{t("settings.smartRoutingGroup")}</div>
             <div className="settings-card">
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">模型参与路由判断</div>
+                  <div className="settings-row-title">{t("settings.smartRouterToggleTitle")}</div>
                   <div className="settings-row-sub">
-                    每轮先由极速档模型制定包含分步模型分配的执行计划（纯文字聊天直接走极速档），再按需调度极速档 · 中等档 · 高级档；关闭后退回关键词规则路由
+                    {t("settings.smartRouterToggleDesc")}
                   </div>
                 </div>
-                <label className="ios-switch" aria-label="模型参与路由判断">
+                <label className="ios-switch" aria-label={t("settings.smartRouterToggleTitle")}>
                   <input
                     id="setting-smart-router-toggle"
                     type="checkbox"
@@ -2472,7 +2518,7 @@ export function SettingsModal() {
                       try {
                         await commitSettingsPatch({ routing: nextRouting });
                       } catch (err: any) {
-                        showToast(`保存路由设置失败：${err?.message || "请求异常"}`);
+                        showToast(t("settings.routingSaveFailed", { error: err?.message || t("actions.requestError") }));
                       }
                     }}
                   />
@@ -2482,15 +2528,15 @@ export function SettingsModal() {
               <div className="settings-divider" />
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">路由模式</div>
+                  <div className="settings-row-title">{t("settings.routingModeTitle")}</div>
                   <div className="settings-row-sub">
-                    经济：全线优先极速档，高级档最多 1 步；均衡：极速档负责日常看屏/读图与脚本，重型工程用中等档，高级档最多 3 步；质量：复杂与视觉任务优先中等档，高级档最多 5 步
+                    {t("settings.routingModeDesc")}
                   </div>
                 </div>
                 <select
                   id="setting-routing-mode"
                   className="settings-select"
-                  aria-label="路由模式"
+                  aria-label={t("settings.routingModeTitle")}
                   disabled={routing.smartRouter === false}
                   value={routing.mode || "balanced"}
                   onChange={async (e) => {
@@ -2498,21 +2544,21 @@ export function SettingsModal() {
                     try {
                       await commitSettingsPatch({ routing: nextRouting });
                     } catch (err: any) {
-                      showToast(`保存路由模式失败：${err?.message || "请求异常"}`);
+                      showToast(t("settings.routingModeSaveFailed", { error: err?.message || t("actions.requestError") }));
                     }
                   }}
                 >
-                  <option value="economy">经济</option>
-                  <option value="balanced">均衡</option>
-                  <option value="quality">质量</option>
+                  <option value="economy">{t("settings.routingModeEconomy")}</option>
+                  <option value="balanced">{t("settings.routingModeBalanced")}</option>
+                  <option value="quality">{t("settings.routingModeQuality")}</option>
                 </select>
               </div>
               <div className="settings-divider" />
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">单轮预算上限（¥）</div>
+                  <div className="settings-row-title">{t("settings.turnBudgetTitle")}</div>
                   <div className="settings-row-sub">
-                    达到 80% 停止升级深度推理，达到 100% 不再升档（不会中断任务）
+                    {t("settings.turnBudgetDesc")}
                   </div>
                 </div>
                 <input
@@ -2524,7 +2570,7 @@ export function SettingsModal() {
                   step="0.35"
                   disabled={routing.smartRouter === false}
                   value={budgetInput}
-                  aria-label="单轮预算上限（人民币）"
+                  aria-label={t("settings.turnBudgetAria")}
                   onChange={(e) => {
                     const v = e.target.value;
                     budgetInputRef.current = v;
@@ -2544,20 +2590,20 @@ export function SettingsModal() {
               </div>
             </div>
 
-            <div className="settings-group-label">上下文自动压缩</div>
+            <div className="settings-group-label">{t("settings.ctxCompressGroup")}</div>
             <div className="settings-card">
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">启用上下文过长自动压缩</div>
+                  <div className="settings-row-title">{t("settings.ctxCompressEnableTitle")}</div>
                   <div className="settings-row-sub" id="ctx-compress-summary-sub">
                     {!ctxEnabled
-                      ? "已关闭（长对话将保留完整历史，可能更快触及上下文上限）"
+                      ? t("settings.ctxCompressDisabledSub")
                       : presetMeta
-                        ? `已开启 · ${presetMeta.label}模式（${presetMeta.desc}）`
-                        : `已开启 · 自定义（达到模型上下文窗口 ${ctxEffective.triggerPercent}% 时自动压缩）`}
+                        ? t("settings.ctxCompressPresetSub", { label: presetMeta.label, desc: presetMeta.desc })
+                        : t("settings.ctxCompressCustomSub", { pct: ctxEffective.triggerPercent })}
                   </div>
                 </div>
-                <label className="ios-switch" aria-label="启用上下文过长自动压缩">
+                <label className="ios-switch" aria-label={t("settings.ctxCompressEnableTitle")}>
                   <input
                     id="setting-ctx-compress-enabled"
                     type="checkbox"
@@ -2575,28 +2621,8 @@ export function SettingsModal() {
                 id="ctx-compress-presets-wrap"
                 className={`ctx-presets-wrap${!ctxEnabled ? " is-disabled" : ""}`}
               >
-                <div className="ctx-presets-grid" role="group" aria-label="压缩阈值预设">
-                  {[
-                    {
-                      id: "compact",
-                      name: "省 Token",
-                      desc: "窗口 50% 触发 · 更省开销",
-                      pct: 50,
-                    },
-                    {
-                      id: "balanced",
-                      name: "均衡",
-                      badge: "推荐",
-                      desc: "窗口 75% 触发 · 兼顾记忆与成本",
-                      pct: 75,
-                    },
-                    {
-                      id: "long",
-                      name: "长记忆",
-                      desc: "窗口 85% 触发 · 保留更长对话",
-                      pct: 85,
-                    },
-                  ].map((pr) => (
+                <div className="ctx-presets-grid" role="group" aria-label={t("settings.ctxCompressPresetsAria")}>
+                  {ctxPresets.map((pr) => (
                     <button
                       key={pr.id}
                       type="button"
@@ -2607,14 +2633,17 @@ export function SettingsModal() {
                       disabled={!ctxEnabled}
                       onClick={() => {
                         ctxDraftRef.current.enabled = true;
-                        ctxDraftRef.current.triggerPercent = pr.pct;
+                        ctxDraftRef.current.triggerPercent = pr.values.triggerPercent;
                         ctxPercentDirtyRef.current = true;
-                        setCtxPercentDraft(pr.pct);
-                        void saveCtxCompression({ enabled: true, triggerPercent: pr.pct });
+                        setCtxPercentDraft(pr.values.triggerPercent);
+                        void saveCtxCompression({
+                          enabled: true,
+                          triggerPercent: pr.values.triggerPercent,
+                        });
                       }}
                     >
                       <div className="ctx-preset-head">
-                        <span className="ctx-preset-name">{pr.name}</span>
+                        <span className="ctx-preset-name">{pr.label}</span>
                         {pr.badge && <span className="ctx-preset-badge">{pr.badge}</span>}
                       </div>
                       <div className="ctx-preset-desc">{pr.desc}</div>
@@ -2625,7 +2654,7 @@ export function SettingsModal() {
                 <div className="ctx-percent-control">
                   <div className="ctx-percent-header">
                     <label className="ctx-adv-label" htmlFor="setting-ctx-compress-percent">
-                      触发压缩比例（上下文窗口占比）
+                      {t("settings.ctxCompressPercentLabel")}
                     </label>
                     <span className="ctx-percent-value" id="ctx-compress-percent-label">
                       {ctxEffective.triggerPercent}%
@@ -2682,20 +2711,20 @@ export function SettingsModal() {
                     }}
                   />
                   <div className="ctx-percent-scale" aria-hidden="true">
-                    <span>30%（更省开销）</span>
-                    <span>95%（更长记忆）</span>
+                    <span>{t("settings.ctxScaleMin")}</span>
+                    <span>{t("settings.ctxScaleMax")}</span>
                   </div>
                 </div>
 
                 <details className="ctx-advanced-details" id="ctx-compress-advanced">
                   <summary className="ctx-advanced-summary">
-                    <span>自定义摘要保留规则（可选）</span>
+                    <span>{t("settings.ctxAdvancedTitle")}</span>
                     <span
                       className="ctx-custom-pill"
                       id="ctx-compress-custom-badge"
                       hidden={!ctxEnabled || !ctxInstructionDraft.trim()}
                     >
-                      已自定义
+                      {t("settings.ctxCustomBadge")}
                     </span>
                   </summary>
                   <div className="ctx-advanced-body">
@@ -2706,8 +2735,8 @@ export function SettingsModal() {
                         className="inline-textarea"
                         rows={2}
                         maxLength={500}
-                        placeholder="例如：保留所有文件路径、已执行命令结果、用户约束与未完成任务..."
-                        aria-label="自定义压缩规则"
+                        placeholder={t("settings.ctxInstructionPh")}
+                        aria-label={t("settings.ctxInstructionAria")}
                         disabled={!ctxEnabled}
                         value={ctxInstructionDraft}
                         onChange={(e) => {
@@ -2743,7 +2772,7 @@ export function SettingsModal() {
 
             <div className="section-header-row" style={{ marginTop: "20px", marginBottom: "8px" }}>
               <div className="settings-group-label" style={{ margin: 0 }}>
-                全局记忆（所有 Bot 共享的长期偏好与规则）
+                {t("settings.globalMemGroup")}
               </div>
               <button
                 id="new-memory-btn"
@@ -2751,7 +2780,7 @@ export function SettingsModal() {
                 className="settings-blue-pill"
                 onClick={() => openMemoryEditor(null)}
               >
-                + 新增记忆
+                {t("settings.newMemoryBtn")}
               </button>
             </div>
 
@@ -2760,11 +2789,13 @@ export function SettingsModal() {
             <div id="global-memories-list" className="private-skills-list">
               {globalMemories.length === 0 ? (
                 <div className="skills-empty">
-                  暂无全局记忆。可点击右上角「+ 新增记忆」，或直接在对话中对 Bot 说「记住…」。
+                  {t("settings.globalMemEmpty")}
                 </div>
               ) : (
                 globalMemories.map((mem: any) => {
                   const memId = String(mem.id || mem.name);
+                  const locMem = resolveLocalizedGlobalMemory(mem, currentLocale);
+                  const memDisplayName = locMem.name || t("settings.memFallbackName");
                   const isEditingThisMem = memFormOpen && editingMemId === memId;
                   const deleteGlobalMemory = async () => {
                     const next = globalMemories.filter((x: any) => (x.id || x.name) !== memId);
@@ -2775,9 +2806,9 @@ export function SettingsModal() {
                         setEditingMemId(null);
                         setMemFormOpen(false);
                       }
-                      showToast(`已移除全局记忆「${mem.name}」`);
+                      showToast(t("settings.memRemovedToast", { name: locMem.name }));
                     } catch (err: any) {
-                      showToast(`移除全局记忆失败：${err?.message || "请求异常"}`);
+                      showToast(t("settings.memRemoveFailedToast", { error: err?.message || t("actions.requestError") }));
                     }
                   };
 
@@ -2792,9 +2823,9 @@ export function SettingsModal() {
                             <UiIcon name="brain" size={19} />
                           </div>
                           <div className="skill-row-info">
-                            <div className="skill-row-name">{mem.name || "全局记忆"}</div>
+                            <div className="skill-row-name">{memDisplayName}</div>
                             <div className="skill-row-desc">
-                              {mem.instruction || mem.content || mem.desc || ""}
+                              {locMem.desc}
                             </div>
                           </div>
                         </div>
@@ -2803,7 +2834,7 @@ export function SettingsModal() {
                             <input
                               type="checkbox"
                               checked={mem.enabled !== false}
-                              aria-label={`启用记忆 ${mem.name}`}
+                              aria-label={t("settings.memToggleAria", { name: locMem.name })}
                               onChange={async (e) => {
                                 const next = globalMemories.map((x: any) =>
                                   (x.id || x.name) === memId
@@ -2816,7 +2847,7 @@ export function SettingsModal() {
                                     privateSkills: next,
                                   });
                                 } catch (err: any) {
-                                  showToast(`更新全局记忆状态失败：${err?.message || "请求异常"}`);
+                                  showToast(t("settings.memToggleFailedToast", { error: err?.message || t("actions.requestError") }));
                                 }
                               }}
                             />
@@ -2828,7 +2859,7 @@ export function SettingsModal() {
                             aria-expanded={isEditingThisMem}
                             onClick={() => openMemoryEditor(mem)}
                           >
-                            {isEditingThisMem ? "收起" : "查看 / 编辑"}
+                            {isEditingThisMem ? t("common.collapse") : t("settings.viewEditBtn")}
                           </button>
                           <button
                             type="button"
@@ -2836,11 +2867,11 @@ export function SettingsModal() {
                             onClick={async () => {
                               if (isMobileViewport()) {
                                 const ok = await showConfirmDialog({
-                                  title: "删除全局记忆",
-                                  message: `确定要删除全局记忆「${mem.name || "全局记忆"}」吗？`,
-                                  detail: "删除后所有 Bot 将不再共享此记忆内容。",
-                                  confirmText: "确认删除",
-                                  cancelText: "取消",
+                                  title: t("settings.memDeleteTitle"),
+                                  message: t("settings.memDeleteMsg", { name: memDisplayName }),
+                                  detail: t("settings.memDeleteDetail"),
+                                  confirmText: t("common.confirmDelete"),
+                                  cancelText: t("common.cancel"),
                                   tone: "danger",
                                 });
                                 if (ok) await deleteGlobalMemory();
@@ -2851,7 +2882,7 @@ export function SettingsModal() {
                               );
                             }}
                           >
-                            删除
+                            {t("common.delete")}
                           </button>
                         </div>
                       </div>
@@ -2861,7 +2892,7 @@ export function SettingsModal() {
                       {pendingDeleteMemId === memId && (
                         <div className="skill-remove-confirm">
                           <div className="skill-remove-text">
-                            确定删除全局记忆「{mem.name || "全局记忆"}」？删除后所有 Bot 将不再共享此记忆内容。
+                            {t("settings.memDeleteInlineText", { name: memDisplayName })}
                           </div>
                           <div className="skill-remove-actions">
                             <button
@@ -2869,14 +2900,14 @@ export function SettingsModal() {
                               className="skill-pill-btn"
                               onClick={() => setPendingDeleteMemId(null)}
                             >
-                              取消
+                              {t("common.cancel")}
                             </button>
                             <button
                               type="button"
                               className="skill-pill-btn is-danger"
                               onClick={deleteGlobalMemory}
                             >
-                              确认删除
+                              {t("common.confirmDelete")}
                             </button>
                           </div>
                         </div>
@@ -2901,24 +2932,24 @@ export function SettingsModal() {
               disabled={remoteAccountOffline}
             >
             <div className="vault-header-row">
-              <h2 className="settings-pane-title">模型接入与路由</h2>
+              <h2 className="settings-pane-title">{t("settings.tabModels")}</h2>
               <button
                 id="add-provider-btn"
                 type="button"
                 className="settings-blue-pill"
                 onClick={() => openProviderEditor(null)}
               >
-                + 添加供应商
+                {t("settings.addProviderBtn")}
               </button>
             </div>
 
-            <div className="settings-group-label">3 档智能路由模型绑定</div>
+            <div className="settings-group-label">{t("settings.tiersGroupTitle")}</div>
             <div className="settings-card">
               {(
                 [
-                  ["fast", "tier-fast-select", "极速档（Fast）", "用于路由规划、标题/思考摘要与轻量日常对话", "极速档模型"],
-                  ["medium", "tier-medium-select", "中等档（Medium）", "主力日常任务、代码编写与桌面操作执行", "中等档模型"],
-                  ["advanced", "tier-advanced-select", "高级档（Advanced）", "复杂系统架构、疑难排错与跨步骤救援", "高级档模型"],
+                  ["fast", "tier-fast-select", t("settings.tierFastTitle"), t("settings.tierFastDesc"), t("settings.tierFastAria")],
+                  ["medium", "tier-medium-select", t("settings.tierMediumTitle"), t("settings.tierMediumDesc"), t("settings.tierMediumAria")],
+                  ["advanced", "tier-advanced-select", t("settings.tierAdvTitle"), t("settings.tierAdvDesc"), t("settings.tierAdvAria")],
                 ] as const
               ).map(([tKey, selId, title, sub, aria], idx) => (
                 <Fragment key={tKey}>
@@ -2936,7 +2967,7 @@ export function SettingsModal() {
                       onChange={(e) => handleTierChange(tKey, e.target.value)}
                     >
                       {textModelOptions.length === 0 ? (
-                        <option value="">暂无可用模型（请先启用供应商）</option>
+                        <option value="">{t("settings.tierNoModelOpt")}</option>
                       ) : (
                         textModelOptions.map((o) => (
                           <option key={o.value} value={o.value}>
@@ -2952,19 +2983,19 @@ export function SettingsModal() {
               <div className="settings-divider" />
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">生图模型（Image）</div>
+                  <div className="settings-row-title">{t("settings.tierImageTitle")}</div>
                   <div className="settings-row-sub">
-                    用于绘图工具与头像生成（支持 Gemini 或 OpenAI 兼容生图模型）
+                    {t("settings.tierImageDesc")}
                   </div>
                 </div>
                 <select
                   id="tier-image-select"
                   className="settings-select tier-select"
-                  aria-label="生图模型"
+                  aria-label={t("settings.tierImageAria")}
                   value={resolveTierSelectVal("image", imageModelOptions, true)}
                   onChange={(e) => handleTierChange("image", e.target.value)}
                 >
-                  <option value="">未配置</option>
+                  <option value="">{t("settings.tierImageUnsetOpt")}</option>
                   {imageModelOptions.map((o) => (
                     <option key={o.value} value={o.value}>
                       {o.label}
@@ -2975,7 +3006,7 @@ export function SettingsModal() {
             </div>
 
             <div className="settings-group-label">
-              已接入模型供应商（Google Gemini / OpenAI / DeepSeek / 自定义兼容）
+              {t("settings.providersGroupTitle")}
             </div>
 
             {(!provFormOpen || !provId) && renderProviderEditor(false, provFormOpen && !provId)}
@@ -2983,17 +3014,17 @@ export function SettingsModal() {
             <div id="providers-list" className="providers-list">
               {providers.length === 0 ? (
                 <div className="skills-empty">
-                  暂未配置模型供应商，请点击右上角「+ 添加供应商」。
+                  {t("settings.providersEmpty")}
                 </div>
               ) : (
                 providers.map((p: any) => {
                   const isEditingThisProv = provFormOpen && provId === p.id;
                   const billingCurr =
                     p.billingCurrency || (p.type === "deepseek" ? "CNY" : "USD");
-                  const modelsText = (p.models || []).join(" · ") || "未指定大语言模型";
+                  const modelsText = (p.models || []).join(" · ") || t("settings.provNoLlm");
                   const imgText =
                     Array.isArray(p.imageModels) && p.imageModels.length > 0
-                      ? `生图: ${p.imageModels.join(" · ")}`
+                      ? t("settings.provImgPrefix", { list: p.imageModels.join(" · ") })
                       : "";
                   const isGcpVertex = p.authMode === "gcp-vertex";
                   const endpointMeta = isGcpVertex
@@ -3016,11 +3047,11 @@ export function SettingsModal() {
                       refreshSystemDiagnostics(false);
                       showToast(
                         res.autoAssignedTiers
-                          ? `已移除「${p.name}」，已为你自动选好 3 档路由模型，可自行修改`
-                          : `已移除供应商「${p.name}」`
+                          ? t("settings.provRemovedAutoTiersToast", { name: p.name })
+                          : t("settings.provRemovedToast", { name: p.name })
                       );
                     } catch (err: any) {
-                      showToast(`删除失败: ${err.message}`);
+                      showToast(t("settings.provDeleteFailedToast", { error: err.message }));
                     }
                   };
 
@@ -3043,12 +3074,12 @@ export function SettingsModal() {
                           ) : (
                             <span className="provider-type-badge">
                               {p.hasApiKey
-                                ? `Key ${p.maskedApiKey || "已配置"}`
-                                : "未填 Key"}
+                                ? t("settings.provKeySetBadge", { mask: p.maskedApiKey || t("settings.provKeyConfiguredFallback") })
+                                : t("settings.provKeyMissingBadge")}
                             </span>
                           )}
                           {p.enabled === false && (
-                            <span className="provider-type-badge">已禁用</span>
+                            <span className="provider-type-badge">{t("settings.provDisabledBadge")}</span>
                           )}
                         </div>
                         <div className="provider-card-actions">
@@ -3056,14 +3087,14 @@ export function SettingsModal() {
                             className="ios-switch"
                             title={
                               p.enabled !== false
-                                ? "已启用（点击禁用）"
-                                : "已禁用（点击启用）"
+                                ? t("settings.provEnabledSwitchTitle")
+                                : t("settings.provDisabledSwitchTitle")
                             }
                           >
                             <input
                               type="checkbox"
                               checked={p.enabled !== false}
-                              aria-label={`启用或禁用模型供应商 ${p.name || p.type}`}
+                              aria-label={t("settings.provToggleAria", { name: p.name || p.type })}
                               onChange={async (e) => {
                                 const checked = e.target.checked;
                                 try {
@@ -3079,11 +3110,15 @@ export function SettingsModal() {
                                   refreshSystemDiagnostics(false);
                                   showToast(
                                     res.autoAssignedTiers
-                                      ? `${checked ? "已启用" : "已禁用"}「${p.name || p.type}」，已为你自动选好 3 档路由模型，可自行修改`
-                                      : `${checked ? "已启用" : "已禁用"}供应商「${p.name || p.type}」`
+                                      ? t(checked ? "settings.provEnabledAutoTiersToast" : "settings.provDisabledAutoTiersToast", {
+                                          name: p.name || p.type,
+                                        })
+                                      : t(checked ? "settings.provEnabledToast" : "settings.provDisabledToast", {
+                                          name: p.name || p.type,
+                                        })
                                   );
                                 } catch (err: any) {
-                                  showToast(`更新状态失败: ${err.message}`);
+                                  showToast(t("settings.provStatusFailedToast", { error: err.message }));
                                 }
                               }}
                             />
@@ -3095,7 +3130,7 @@ export function SettingsModal() {
                             aria-expanded={isEditingThisProv}
                             onClick={() => openProviderEditor(p)}
                           >
-                            {isEditingThisProv ? "收起" : "查看 / 编辑"}
+                            {isEditingThisProv ? t("common.collapse") : t("settings.viewEditBtn")}
                           </button>
                           <button
                             type="button"
@@ -3115,17 +3150,17 @@ export function SettingsModal() {
                                 });
                                 showToast(
                                   res.ok
-                                    ? `✓ ${p.name} 连接正常 (${res.latencyMs}ms)`
-                                    : `❌ 连接失败: ${res.error}`
+                                    ? t("settings.provPingOkToast", { name: p.name, ms: res.latencyMs })
+                                    : t("settings.provPingFailToast", { error: res.error })
                                 );
                               } catch (err: any) {
-                                showToast(`❌ 测试失败: ${err.message}`);
+                                showToast(t("settings.provTestFailedToast", { error: err.message }));
                               } finally {
                                 setTestingProviderId(null);
                               }
                             }}
                           >
-                            {testingProviderId === p.id ? "测试中…" : "测速"}
+                            {testingProviderId === p.id ? t("settings.provTestingShort") : t("settings.provSpeedTestBtn")}
                           </button>
                           <button
                             type="button"
@@ -3133,12 +3168,11 @@ export function SettingsModal() {
                             onClick={async () => {
                               if (isMobileViewport()) {
                                 const ok = await showConfirmDialog({
-                                  title: "删除模型供应商",
-                                  message: `确定要删除供应商「${p.name}」吗？`,
-                                  detail:
-                                    "删除后将清除其 API 密钥配置；若当前智能路由正使用其模型，系统会自动切换至其他可用模型。",
-                                  confirmText: "确认删除",
-                                  cancelText: "取消",
+                                  title: t("settings.provDeleteTitle"),
+                                  message: t("settings.provDeleteMsg", { name: p.name }),
+                                  detail: t("settings.provDeleteDetail"),
+                                  confirmText: t("common.confirmDelete"),
+                                  cancelText: t("common.cancel"),
                                   tone: "danger",
                                 });
                                 if (ok) await executeDeleteProvider();
@@ -3149,7 +3183,7 @@ export function SettingsModal() {
                               );
                             }}
                           >
-                            删除
+                            {t("common.delete")}
                           </button>
                         </div>
                       </div>
@@ -3164,7 +3198,7 @@ export function SettingsModal() {
                       {pendingDeleteProviderId === p.id && (
                         <div className="skill-remove-confirm">
                           <div className="skill-remove-text">
-                            确定删除供应商「{p.name}」？删除后将清除其密钥配置，并自动为 3 档路由切换至其他可用模型。
+                            {t("settings.provDeleteInlineText", { name: p.name })}
                           </div>
                           <div className="skill-remove-actions">
                             <button
@@ -3172,14 +3206,14 @@ export function SettingsModal() {
                               className="skill-pill-btn"
                               onClick={() => setPendingDeleteProviderId(null)}
                             >
-                              取消
+                              {t("common.cancel")}
                             </button>
                             <button
                               type="button"
                               className="skill-pill-btn is-danger"
                               onClick={executeDeleteProvider}
                             >
-                              确认删除
+                              {t("common.confirmDelete")}
                             </button>
                           </div>
                         </div>
@@ -3226,7 +3260,7 @@ export function SettingsModal() {
                         hostComputer: { ...(settings?.hostComputer || {}), executionMode },
                       });
                     } catch (err: any) {
-                      showToast(`保存宿主机执行模式失败：${err?.message || "请求异常"}`);
+                      showToast(t("settings.hostExecSaveFailed", { error: err?.message || t("actions.requestError") }));
                     }
                   }}
                 >
@@ -3363,7 +3397,7 @@ export function SettingsModal() {
 
             {onlineCloudHosts.length > 0 && (
               <>
-                <div className="settings-group-label">已连接的远程宿主机</div>
+                <div className="settings-group-label">{t("settings.computerRemoteHostsTitle")}</div>
                 <div className="settings-card">
                   {onlineCloudHosts.map((h: any, idx: number) => (
                     <Fragment key={h.clientId}>
@@ -3392,10 +3426,12 @@ export function SettingsModal() {
                             setState({
                               selectedCloudHostId: res.selectedHostId || h.clientId,
                             });
-                            showToast("已切换目标执行宿主机");
+                            showToast(t("settings.computerHostSwitchedToast"));
                           }}
                         >
-                          {selectedCloudHostId === h.clientId ? "当前目标" : "选择"}
+                          {selectedCloudHostId === h.clientId
+                            ? t("settings.computerHostSelectedBtn")
+                            : t("settings.computerHostSelectBtn")}
                         </button>
                       </div>
                     </Fragment>
@@ -3404,7 +3440,7 @@ export function SettingsModal() {
               </>
             )}
 
-            <div className="settings-group-label">管理设备</div>
+            <div className="settings-group-label">{t("settings.computerDevicesTitle")}</div>
             <div className="settings-card">
               <div className="settings-item-row">
                 <div className="settings-account-left">
@@ -3413,12 +3449,14 @@ export function SettingsModal() {
                   </span>
                   <div>
                     <div className="settings-row-title" id="host-device-hostname">
-                      {computerStatus?.hostComputer?.hostname || "本地宿主机"}
+                      {computerStatus?.hostComputer?.hostname || t("settings.computerLocalHostFallback")}
                     </div>
                     <div className="settings-row-sub" id="host-device-status-line">
                       <span className="status-dot-inline is-ok" aria-hidden="true" />
                       <span>
-                        电脑 · 当前在线{hasCompProbe ? ` · ${hostModeLabel}` : ""}
+                        {t("settings.computerHostOnlineLine", {
+                          mode: hasCompProbe ? ` · ${hostModeLabel}` : "",
+                        })}
                       </span>
                     </div>
                   </div>
@@ -3440,18 +3478,22 @@ export function SettingsModal() {
                     </div>
                     <div className="settings-row-sub" id="computer-health-line">
                       {detectingComputer || !hasCompProbe ? (
-                        "正在检测 Executor 状态…"
+                        t("settings.computerCheckingExec")
                       ) : computerStatus?.online ? (
                         <>
                           <span className="status-dot-inline is-ok" aria-hidden="true" />
-                          在线 · {computerStatus.latencyMs ?? 0}ms ·{" "}
-                          {computerStatus.screen?.width || 1440}×
-                          {computerStatus.screen?.height || 900}
+                          {t("settings.computerExecOnlineLine", {
+                            ms: computerStatus.latencyMs ?? 0,
+                            width: computerStatus.screen?.width || 1440,
+                            height: computerStatus.screen?.height || 900,
+                          })}
                         </>
                       ) : (
                         <>
                           <span className="status-dot-inline is-err" aria-hidden="true" />
-                          离线（{compStatusView.settingsOfflineReason}）
+                          {t("settings.computerExecOfflineLine", {
+                            reason: compStatusView.settingsOfflineReason,
+                          })}
                         </>
                       )}
                     </div>
@@ -3468,29 +3510,33 @@ export function SettingsModal() {
                       const c = await refreshComputerStatus({ force: true, suppressLanOfflineModal: true });
                       void refreshSystemDiagnostics(false);
                       if (c?.online) {
-                        showToast(`✓ Bot 的电脑在线 · ${c.latencyMs ?? 0}ms`);
+                        showToast(t("settings.computerOnlineToast", { ms: c.latencyMs ?? 0 }));
                       } else if (c) {
-                        showToast(`Bot 的电脑离线：${c.error || c.detail || "执行器未响应"}`);
+                        showToast(
+                          t("settings.computerOfflineToast", {
+                            error: c.error || c.detail || t("settings.computerExecNoResponse"),
+                          })
+                        );
                       } else {
-                        showToast("Bot 的电脑状态检测失败");
+                        showToast(t("settings.computerCheckFailedToast"));
                       }
                     } finally {
                       setDetectingComputer(false);
                     }
                   }}
                 >
-                  {detectingComputer ? "检测中…" : "重新检测"}
+                  {detectingComputer ? t("settings.computerCheckingBtn") : t("settings.computerRecheckBtn")}
                 </button>
               </div>
             </div>
 
-            <div className="settings-group-label">Bot 的电脑</div>
+            <div className="settings-group-label">{t("settings.computerBotPcGroup")}</div>
             <div className="settings-card">
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">更新 Bot 的电脑</div>
+                  <div className="settings-row-title">{t("settings.computerUpdateTitle")}</div>
                   <div className="settings-row-sub">
-                    客户端升级后会在启动或使用 Bot 的电脑时自动同步；异常时可手动强制更新并重启服务
+                    {t("settings.computerUpdateDesc")}
                   </div>
                 </div>
                 <button
@@ -3502,23 +3548,27 @@ export function SettingsModal() {
                     setUpdatingComputer(true);
                     try {
                       await updateBotComputerComponents();
-                      showToast("✓ Bot 的电脑已同步最新执行器并重启");
+                      showToast(t("settings.computerUpdatedToast"));
                     } catch (err: any) {
-                      showToast(`更新失败：${err.message || "无法连接桌面执行器"}`);
+                      showToast(
+                        t("settings.computerUpdateFailedToast", {
+                          error: err.message || t("settings.computerExecConnectFail"),
+                        })
+                      );
                     } finally {
                       setUpdatingComputer(false);
                     }
                   }}
                 >
-                  {updatingComputer ? "更新中…" : "更新"}
+                  {updatingComputer ? t("settings.computerUpdatingBtn") : t("settings.computerUpdateBtn")}
                 </button>
               </div>
               <div className="settings-divider" />
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">重置桌面连接与在途任务</div>
+                  <div className="settings-row-title">{t("settings.computerResetTitle")}</div>
                   <div className="settings-row-sub">
-                    当桌面控制卡住时停止当前动作队列并重连 noVNC
+                    {t("settings.computerResetDesc")}
                   </div>
                 </div>
                 <button
@@ -3532,20 +3582,26 @@ export function SettingsModal() {
                       const { res, latest } = await resetBotComputerConnection();
                       const isOnline = latest ? Boolean(latest.online) : res?.online !== false;
                       if (isOnline) {
-                        showToast("✓ 已停止在途任务并重连 noVNC 桌面");
+                        showToast(t("settings.computerResetOkToast"));
                       } else {
                         showToast(
-                          `已停止在途任务，当前执行器离线（${latest?.error || res?.status?.error || "执行器未响应"}）`
+                          t("settings.computerResetOfflineToast", {
+                            error: latest?.error || res?.status?.error || t("settings.computerExecNoResponse"),
+                          })
                         );
                       }
                     } catch (err: any) {
-                      showToast(`重置失败：${err?.message || "无法重置桌面连接"}`);
+                      showToast(
+                        t("settings.computerResetFailedToast", {
+                          error: err?.message || t("settings.computerResetCantFail"),
+                        })
+                      );
                     } finally {
                       setResettingComputer(false);
                     }
                   }}
                 >
-                  {resettingComputer ? "重置中…" : "重置"}
+                  {resettingComputer ? t("settings.computerResettingBtn") : t("settings.computerResetBtn")}
                 </button>
               </div>
               {multiDisplaySupported && (
@@ -3554,20 +3610,23 @@ export function SettingsModal() {
                   <div className="settings-item-block" id="settings-screen-pool-block">
                     <div className="settings-item-row" style={{ padding: 0 }}>
                       <div>
-                        <div className="settings-row-title">同时运行屏幕上限</div>
+                        <div className="settings-row-title">{t("settings.screenPoolTitle")}</div>
                         <div className="settings-row-sub">
-                          Bot 数量不设上限；共享主 Google Chrome 登录态并在独立浏览器窗口并发运行（每窗口支持自由多标签页），超出上限自动进入 FIFO 队列等待
+                          {t("settings.screenPoolDesc")}
                           {computerDisplays?.pool
-                            ? `（当前活跃 ${computerDisplays.pool.activeCount} / ${computerDisplays.pool.maxConcurrentScreens} 屏${
-                                computerDisplays.pool.queuedCount > 0
-                                  ? ` · 排队 ${computerDisplays.pool.queuedCount}`
-                                  : ""
-                              }）`
+                            ? t("settings.screenPoolActiveMeta", {
+                                active: computerDisplays.pool.activeCount,
+                                max: computerDisplays.pool.maxConcurrentScreens,
+                                queued:
+                                  computerDisplays.pool.queuedCount > 0
+                                    ? t("settings.screenPoolQueuedMeta", { count: computerDisplays.pool.queuedCount })
+                                    : "",
+                              })
                             : ""}
                         </div>
                       </div>
                       <span className="ctx-percent-value" id="screen-pool-limit-label">
-                        {screenPoolEffective.maxConcurrentScreens} 屏
+                        {t("settings.screenPoolLimitLabel", { n: screenPoolEffective.maxConcurrentScreens })}
                       </span>
                     </div>
 
@@ -3575,23 +3634,27 @@ export function SettingsModal() {
                       {[
                         {
                           id: "min" as const,
-                          name: "省资源",
-                          desc: `下限 ${screenBudget.min} 屏 · 低内存占用`,
+                          name: t("settings.screenPresetMin"),
+                          desc: t("settings.screenPresetMinDesc", { n: screenBudget.min }),
                           mode: "custom" as const,
                           val: screenBudget.min,
                         },
                         {
                           id: "balanced" as const,
-                          name: "均衡",
-                          badge: "默认",
-                          desc: `推荐 ${screenBudget.defaultBalanced} 屏 · 兼顾并发与流畅`,
+                          name: t("settings.screenPresetBalanced"),
+                          badge: t("settings.screenPresetDefaultBadge"),
+                          desc: t("settings.screenPresetBalancedDesc", { n: screenBudget.defaultBalanced }),
                           mode: "auto" as const,
                           val: screenBudget.defaultBalanced,
                         },
                         {
                           id: "max" as const,
-                          name: "高并发",
-                          desc: `上限 ${screenBudget.max} 屏 · 基于 ${screenBudget.totalMemGiB}GB/${screenBudget.cpuCores}核预算`,
+                          name: t("settings.screenPresetMax"),
+                          desc: t("settings.screenPresetMaxDesc", {
+                            n: screenBudget.max,
+                            mem: screenBudget.totalMemGiB,
+                            cores: screenBudget.cpuCores,
+                          }),
                           mode: "custom" as const,
                           val: screenBudget.max,
                         },
@@ -3707,9 +3770,9 @@ export function SettingsModal() {
                         }}
                       />
                       <div className="ctx-percent-scale" aria-hidden="true">
-                        <span>{screenBudget.min} 屏（配置预算下限）</span>
-                        <span>{screenBudget.defaultBalanced} 屏（均衡默认）</span>
-                        <span>{screenBudget.max} 屏（配置预算上限）</span>
+                        <span>{t("settings.screenScaleMin", { n: screenBudget.min })}</span>
+                        <span>{t("settings.screenScaleBalanced", { n: screenBudget.defaultBalanced })}</span>
+                        <span>{t("settings.screenScaleMax", { n: screenBudget.max })}</span>
                       </div>
                     </div>
                   </div>
@@ -3730,17 +3793,17 @@ export function SettingsModal() {
               data-remote-offline-guard="permissions"
               disabled={remoteAccountOffline}
             >
-            <h2 className="settings-pane-title">权限</h2>
+            <h2 className="settings-pane-title">{t("settings.tabPermissions")}</h2>
 
             <div className="settings-card">
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">自动审核自定义规则</div>
+                  <div className="settings-row-title">{t("settings.permAutoAuditTitle")}</div>
                   <div className="settings-row-sub">
-                    敏感路径（.ssh / .env / 钥匙串）始终强制拦截，不可绕过
+                    {t("settings.permAutoAuditDesc")}
                   </div>
                 </div>
-                <label className="ios-switch" aria-label="自动审核">
+                <label className="ios-switch" aria-label={t("settings.permAutoAuditAria")}>
                   <input
                     id="policy-auto-audit-toggle"
                     type="checkbox"
@@ -3751,7 +3814,7 @@ export function SettingsModal() {
                           policy: { autoAudit: e.target.checked },
                         });
                       } catch (err: any) {
-                        showToast(`更新自动审核失败：${err?.message || "请求异常"}`);
+                        showToast(t("settings.permAutoAuditFailedToast", { error: err?.message || t("actions.requestError") }));
                       }
                     }}
                   />
@@ -3763,9 +3826,9 @@ export function SettingsModal() {
             <div className="settings-perm-block">
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">始终询问</div>
+                  <div className="settings-row-title">{t("settings.permAlwaysAskTitle")}</div>
                   <div className="settings-row-sub">
-                    工具或参数包含指定关键词时，强制弹出审批卡片
+                    {t("settings.permAlwaysAskDesc")}
                   </div>
                 </div>
                 <button
@@ -3774,7 +3837,7 @@ export function SettingsModal() {
                   id="add-ask-rule-btn"
                   onClick={() => setAskFormOpen((v) => !v)}
                 >
-                  + 添加规则
+                  {t("settings.permAddRuleBtn")}
                 </button>
               </div>
 
@@ -3784,18 +3847,18 @@ export function SettingsModal() {
                 hidden={!askFormOpen}
               >
                 <div className="custom-skill-editor-top">
-                  <strong>添加「始终询问」规则</strong>
+                  <strong>{t("settings.permAddAskTitle")}</strong>
                 </div>
                 <div className="custom-skill-fields">
                   <div className="custom-skill-row-two">
                     <label className="field-group custom-skill-name-field">
-                      <span>目标工具</span>
+                      <span>{t("settings.permTargetToolLabel")}</span>
                       <select
                         id="ask-rule-tool"
                         value={askTool}
                         onChange={(e) => setAskTool(e.target.value)}
                       >
-                        {PERMISSION_RULE_TOOLS.map(([val, label]) => (
+                        {permissionRuleTools.map(([val, label]) => (
                           <option key={val} value={val}>
                             {label}
                           </option>
@@ -3803,11 +3866,11 @@ export function SettingsModal() {
                       </select>
                     </label>
                     <label className="field-group custom-skill-slug-field">
-                      <span>参数匹配关键词（留空匹配全部）</span>
+                      <span>{t("settings.permPatternLabel")}</span>
                       <input
                         id="ask-rule-pattern"
                         type="text"
-                        placeholder="如 rm、git push、pay"
+                        placeholder={t("settings.permAskPatternPh")}
                         value={askPattern}
                         onChange={(e) => setAskPattern(e.target.value)}
                       />
@@ -3820,7 +3883,7 @@ export function SettingsModal() {
                     className="skill-pill-btn"
                     onClick={() => setAskFormOpen(false)}
                   >
-                    取消
+                    {t("common.cancel")}
                   </button>
                   <button
                     type="button"
@@ -3841,13 +3904,13 @@ export function SettingsModal() {
                         await commitSettingsPatch({ policy: { askRules: nextAskRules } });
                         setAskPattern("");
                         setAskFormOpen(false);
-                        showToast("询问规则已生效");
+                        showToast(t("settings.permAskSavedToast"));
                       } catch (err: any) {
-                        showToast(`保存询问规则失败：${err?.message || "请求异常"}`);
+                        showToast(t("settings.permAskSaveFailedToast", { error: err?.message || t("actions.requestError") }));
                       }
                     }}
                   >
-                    保存询问规则
+                    {t("settings.permSaveAskRuleBtn")}
                   </button>
                 </div>
               </div>
@@ -3862,7 +3925,7 @@ export function SettingsModal() {
                       setPendingDeleteRuleId(null);
                       if (isEditingRule) setEditingRuleKey(null);
                     } catch (err: any) {
-                      showToast(`移除询问规则失败：${err?.message || "请求异常"}`);
+                      showToast(t("settings.permAskRemoveFailedToast", { error: err?.message || t("actions.requestError") }));
                     }
                   };
                   return (
@@ -3872,7 +3935,7 @@ export function SettingsModal() {
                     >
                       <div className="perm-rule-chip-row">
                         <span>
-                          <code>{rule.tool || "*"}</code> · {rule.pattern || "全部参数"}
+                          <code>{rule.tool || "*"}</code> · {rule.pattern || t("settings.permAllParams")}
                         </span>
                         {pendingDeleteRuleId === rule.id ? (
                           <span className="perm-inline-confirm">
@@ -3881,14 +3944,14 @@ export function SettingsModal() {
                               className="skill-pill-btn"
                               onClick={() => setPendingDeleteRuleId(null)}
                             >
-                              取消
+                              {t("common.cancel")}
                             </button>
                             <button
                               type="button"
                               className="skill-pill-btn is-danger"
                               onClick={removeAskRule}
                             >
-                              确认移除
+                              {t("common.confirmRemove")}
                             </button>
                           </span>
                         ) : (
@@ -3899,7 +3962,7 @@ export function SettingsModal() {
                               aria-expanded={isEditingRule}
                               onClick={() => openRuleEditor("ask", rule)}
                             >
-                              {isEditingRule ? "收起" : "编辑"}
+                              {isEditingRule ? t("common.collapse") : t("common.edit")}
                             </button>
                             <button
                               type="button"
@@ -3907,11 +3970,11 @@ export function SettingsModal() {
                               onClick={async () => {
                                 if (isMobileViewport()) {
                                   const ok = await showConfirmDialog({
-                                    title: "移除权限规则",
-                                    message: "确定要移除这条每次询问规则吗？",
-                                    detail: `${rule.tool || "*"} · ${rule.pattern || "全部参数"}`,
-                                    confirmText: "确认移除",
-                                    cancelText: "取消",
+                                    title: t("settings.permRemoveTitle"),
+                                    message: t("settings.permRemoveAskMsg"),
+                                    detail: `${rule.tool || "*"} · ${rule.pattern || t("settings.permAllParams")}`,
+                                    confirmText: t("common.confirmRemove"),
+                                    cancelText: t("common.cancel"),
                                     tone: "danger",
                                   });
                                   if (ok) await removeAskRule();
@@ -3920,7 +3983,7 @@ export function SettingsModal() {
                                 setPendingDeleteRuleId(rule.id);
                               }}
                             >
-                              移除
+                              {t("common.remove")}
                             </button>
                           </span>
                         )}
@@ -3935,9 +3998,9 @@ export function SettingsModal() {
             <div className="settings-perm-block">
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">无需询问直接允许</div>
+                  <div className="settings-row-title">{t("settings.permAlwaysAllowTitle")}</div>
                   <div className="settings-row-sub">
-                    审批时点击「始终允许」也会自动保存在此处
+                    {t("settings.permAlwaysAllowDesc")}
                   </div>
                 </div>
                 <button
@@ -3946,7 +4009,7 @@ export function SettingsModal() {
                   id="add-allow-rule-btn"
                   onClick={() => setAllowFormOpen((v) => !v)}
                 >
-                  + 添加规则
+                  {t("settings.permAddRuleBtn")}
                 </button>
               </div>
 
@@ -3956,18 +4019,18 @@ export function SettingsModal() {
                 hidden={!allowFormOpen}
               >
                 <div className="custom-skill-editor-top">
-                  <strong>添加「始终允许」规则</strong>
+                  <strong>{t("settings.permAddAllowTitle")}</strong>
                 </div>
                 <div className="custom-skill-fields">
                   <div className="custom-skill-row-two">
                     <label className="field-group custom-skill-name-field">
-                      <span>目标工具</span>
+                      <span>{t("settings.permTargetToolLabel")}</span>
                       <select
                         id="allow-rule-tool"
                         value={allowTool}
                         onChange={(e) => setAllowTool(e.target.value)}
                       >
-                        {PERMISSION_RULE_TOOLS.map(([val, label]) => (
+                        {permissionRuleTools.map(([val, label]) => (
                           <option key={val} value={val}>
                             {label}
                           </option>
@@ -3975,11 +4038,11 @@ export function SettingsModal() {
                       </select>
                     </label>
                     <label className="field-group custom-skill-slug-field">
-                      <span>参数匹配关键词（留空匹配全部）</span>
+                      <span>{t("settings.permPatternLabel")}</span>
                       <input
                         id="allow-rule-pattern"
                         type="text"
-                        placeholder="如 /tmp/、npm test"
+                        placeholder={t("settings.permAllowPatternPh")}
                         value={allowPattern}
                         onChange={(e) => setAllowPattern(e.target.value)}
                       />
@@ -3992,7 +4055,7 @@ export function SettingsModal() {
                     className="skill-pill-btn"
                     onClick={() => setAllowFormOpen(false)}
                   >
-                    取消
+                    {t("common.cancel")}
                   </button>
                   <button
                     type="button"
@@ -4013,13 +4076,13 @@ export function SettingsModal() {
                         await commitSettingsPatch({ policy: { allowRules: nextAllowRules } });
                         setAllowPattern("");
                         setAllowFormOpen(false);
-                        showToast("允许规则已生效");
+                        showToast(t("settings.permAllowSavedToast"));
                       } catch (err: any) {
-                        showToast(`保存允许规则失败：${err?.message || "请求异常"}`);
+                        showToast(t("settings.permAllowSaveFailedToast", { error: err?.message || t("actions.requestError") }));
                       }
                     }}
                   >
-                    保存允许规则
+                    {t("settings.permSaveAllowRuleBtn")}
                   </button>
                 </div>
               </div>
@@ -4034,7 +4097,7 @@ export function SettingsModal() {
                       setPendingDeleteRuleId(null);
                       if (isEditingRule) setEditingRuleKey(null);
                     } catch (err: any) {
-                      showToast(`移除允许规则失败：${err?.message || "请求异常"}`);
+                      showToast(t("settings.permAllowRemoveFailedToast", { error: err?.message || t("actions.requestError") }));
                     }
                   };
                   return (
@@ -4044,7 +4107,7 @@ export function SettingsModal() {
                     >
                       <div className="perm-rule-chip-row">
                         <span>
-                          <code>{rule.tool || "*"}</code> · {rule.pattern || "全部参数"}
+                          <code>{rule.tool || "*"}</code> · {rule.pattern || t("settings.permAllParams")}
                         </span>
                         {pendingDeleteRuleId === rule.id ? (
                           <span className="perm-inline-confirm">
@@ -4053,14 +4116,14 @@ export function SettingsModal() {
                               className="skill-pill-btn"
                               onClick={() => setPendingDeleteRuleId(null)}
                             >
-                              取消
+                              {t("common.cancel")}
                             </button>
                             <button
                               type="button"
                               className="skill-pill-btn is-danger"
                               onClick={removeAllowRule}
                             >
-                              确认移除
+                              {t("common.confirmRemove")}
                             </button>
                           </span>
                         ) : (
@@ -4071,7 +4134,7 @@ export function SettingsModal() {
                               aria-expanded={isEditingRule}
                               onClick={() => openRuleEditor("allow", rule)}
                             >
-                              {isEditingRule ? "收起" : "编辑"}
+                              {isEditingRule ? t("common.collapse") : t("common.edit")}
                             </button>
                             <button
                               type="button"
@@ -4079,11 +4142,11 @@ export function SettingsModal() {
                               onClick={async () => {
                                 if (isMobileViewport()) {
                                   const ok = await showConfirmDialog({
-                                    title: "移除权限规则",
-                                    message: "确定要移除这条始终允许规则吗？",
-                                    detail: `${rule.tool || "*"} · ${rule.pattern || "全部参数"}`,
-                                    confirmText: "确认移除",
-                                    cancelText: "取消",
+                                    title: t("settings.permRemoveTitle"),
+                                    message: t("settings.permRemoveAllowMsg"),
+                                    detail: `${rule.tool || "*"} · ${rule.pattern || t("settings.permAllParams")}`,
+                                    confirmText: t("common.confirmRemove"),
+                                    cancelText: t("common.cancel"),
                                     tone: "danger",
                                   });
                                   if (ok) await removeAllowRule();
@@ -4092,7 +4155,7 @@ export function SettingsModal() {
                                 setPendingDeleteRuleId(rule.id);
                               }}
                             >
-                              移除
+                              {t("common.remove")}
                             </button>
                           </span>
                         )}
@@ -4118,24 +4181,24 @@ export function SettingsModal() {
               disabled={remoteAccountOffline}
             >
             <div className="vault-header-row">
-              <h2 className="settings-pane-title">保险库</h2>
+              <h2 className="settings-pane-title">{t("settings.tabVault")}</h2>
               <button
                 type="button"
                 className="settings-blue-pill"
                 id="vault-new-item-btn"
                 onClick={() => openVaultEditor(null)}
               >
-                + 新项目
+                {t("settings.vaultNewBtn")}
               </button>
             </div>
 
             <div className="vault-toolbar-row">
-              <div className="vault-tabs" role="tablist" aria-label="项目类型">
+              <div className="vault-tabs" role="tablist" aria-label={t("settings.vaultTabsAria")}>
                 {(
                   [
-                    ["all", "全部"],
-                    ["login", "账号与凭据"],
-                    ["contact", "联系信息"],
+                    ["all", t("settings.vaultTabAll")],
+                    ["login", t("settings.vaultTabLogin")],
+                    ["contact", t("settings.vaultTabContact")],
                   ] as const
                 ).map(([vKey, vLabel]) => (
                   <button
@@ -4153,8 +4216,8 @@ export function SettingsModal() {
                 id="vault-search-input"
                 type="search"
                 className="vault-search-input"
-                placeholder="搜索保险库..."
-                aria-label="搜索保险库"
+                placeholder={t("settings.vaultSearchPh")}
+                aria-label={t("settings.vaultSearchAria")}
                 value={vaultSearch}
                 onChange={(e) => setState({ vaultSearch: e.target.value })}
               />
@@ -4165,11 +4228,12 @@ export function SettingsModal() {
             <div className="settings-card" id="vault-items-list">
               {filteredVault.length === 0 ? (
                 <div className="settings-item-row">
-                  <span className="settings-row-sub">暂无匹配项目，可点击右上角新增</span>
+                  <span className="settings-row-sub">{t("settings.vaultEmpty")}</span>
                 </div>
               ) : (
                 filteredVault.map((it: any, idx: number) => {
                   const isEditingThisVault = vaultFormOpen && editingVaultId === it.id;
+                  const locItem = resolveLocalizedVaultItem(it, currentLocale);
                   const executeDeleteVault = async () => {
                     await apiJson(`/api/vault/${encodeURIComponent(it.id)}`, {
                       method: "DELETE",
@@ -4180,7 +4244,7 @@ export function SettingsModal() {
                       setVaultFormOpen(false);
                     }
                     refreshVault();
-                    showToast(`已移除「${it.title || "条目"}」`);
+                    showToast(t("settings.vaultRemovedToast", { title: locItem.title || t("settings.vaultItemFallback") }));
                   };
 
                   return (
@@ -4204,17 +4268,17 @@ export function SettingsModal() {
                             </span>
                             <div>
                               <div className="settings-row-title">
-                                {it.title}
+                                {locItem.title}
                                 {it.hasPassword && (
                                   <span
                                     className="settings-row-sub"
                                     style={{ marginLeft: "6px", fontWeight: 500 }}
                                   >
-                                    · 已存加密密码
+                                    {t("settings.vaultHasEncryptedPasswordBadge")}
                                   </span>
                                 )}
                               </div>
-                              <div className="settings-row-sub">{it.subtitle || ""}</div>
+                              <div className="settings-row-sub">{locItem.subtitle || ""}</div>
                             </div>
                           </div>
                           <div className="private-skill-card-actions">
@@ -4224,7 +4288,7 @@ export function SettingsModal() {
                               aria-expanded={isEditingThisVault}
                               onClick={() => openVaultEditor(it)}
                             >
-                              {isEditingThisVault ? "收起" : "查看 / 编辑"}
+                              {isEditingThisVault ? t("common.collapse") : t("settings.viewEditBtn")}
                             </button>
                             <button
                               type="button"
@@ -4232,13 +4296,13 @@ export function SettingsModal() {
                               onClick={async () => {
                                 if (isMobileViewport()) {
                                   const ok = await showConfirmDialog({
-                                    title: "移除保险库条目",
-                                    message: `确定要移除「${it.title || "此条目"}」吗？`,
+                                    title: t("settings.vaultRemoveTitle"),
+                                    message: t("settings.vaultRemoveMsg", { title: locItem.title || t("settings.vaultThisItemFallback") }),
                                     detail:
-                                      it.subtitle ||
-                                      "移除后相关登录态或个人资料将不再保存在保险库中。",
-                                    confirmText: "确认移除",
-                                    cancelText: "取消",
+                                      locItem.subtitle ||
+                                      t("settings.vaultRemoveDetail"),
+                                    confirmText: t("common.confirmRemove"),
+                                    cancelText: t("common.cancel"),
                                     tone: "danger",
                                   });
                                   if (ok) await executeDeleteVault();
@@ -4249,7 +4313,7 @@ export function SettingsModal() {
                                 );
                               }}
                             >
-                              移除
+                              {t("common.remove")}
                             </button>
                           </div>
                         </div>
@@ -4259,7 +4323,7 @@ export function SettingsModal() {
                         {pendingDeleteVaultId === it.id && (
                           <div className="skill-remove-confirm">
                             <div className="skill-remove-text">
-                              确定移除保险库条目「{it.title || "此条目"}」？
+                              {t("settings.vaultRemoveInlineText", { title: locItem.title || t("settings.vaultThisItemFallback") })}
                             </div>
                             <div className="skill-remove-actions">
                               <button
@@ -4267,14 +4331,14 @@ export function SettingsModal() {
                                 className="skill-pill-btn"
                                 onClick={() => setPendingDeleteVaultId(null)}
                               >
-                                取消
+                                {t("common.cancel")}
                               </button>
                               <button
                                 type="button"
                                 className="skill-pill-btn is-danger"
                                 onClick={executeDeleteVault}
                               >
-                                确认移除
+                                {t("common.confirmRemove")}
                               </button>
                             </div>
                           </div>
@@ -4286,7 +4350,7 @@ export function SettingsModal() {
               )}
             </div>
             <p className="vault-footnote">
-              本机 AES-256-GCM 加密存储于 data/vault.json（密钥受系统钥匙串/本机安全存储保护），明文密码绝不会发送给大模型。
+              {t("settings.vaultFootnote")}
             </p>
             </fieldset>
           </div>
@@ -4306,9 +4370,9 @@ export function SettingsModal() {
               <h2 className="settings-pane-title" id="usage-pane-title">
                 {isSessionScope
                   ? usageTraceActive
-                    ? `${scopedSessionTitle} · 执行步数`
-                    : `${scopedSessionTitle} · 用量与账单`
-                  : "用量与账单"}
+                    ? t("settings.usageSessionStepsTitle", { title: scopedSessionTitle })
+                    : t("settings.usageSessionTitle", { title: scopedSessionTitle })
+                  : t("settings.tabUsage")}
               </h2>
               <button
                 type="button"
@@ -4320,12 +4384,14 @@ export function SettingsModal() {
                 {usageTraceActive ? (
                   <>
                     <UiIcon name="chevron-left" className="inline-ui-icon" size={13} />
-                    返回用量与账单
+                    {t("settings.usageBackToUsage")}
                   </>
                 ) : (
                   <>
                     <span>
-                      {stepCount > 0 ? `执行步数 (${stepCount})` : "执行步数"}
+                      {stepCount > 0
+                        ? t("settings.usageStepsWithCount", { count: stepCount })
+                        : t("settings.usageStepsBtn")}
                     </span>
                     <UiIcon name="chevron-right" className="inline-ui-icon" size={13} />
                   </>
@@ -4339,15 +4405,15 @@ export function SettingsModal() {
                   <div>
                     <div className="usage-label" id="usage-hero-label">
                       {isSessionScope
-                        ? `${scopedSessionTitle} 真实累计 Token 用量`
-                        : "全部 Bot 真实累计 Token 用量"}
+                        ? t("settings.usageHeroSessionLabel", { title: scopedSessionTitle })
+                        : t("settings.usageHeroGlobalLabel")}
                     </div>
                     <div className="usage-big-stat">
                       <strong id="usage-total-tokens">{totalTok.toLocaleString()}</strong> tokens
                     </div>
                   </div>
                   <div className="usage-cost-hero-box">
-                    <div className="usage-label">累计预估费用（人民币）</div>
+                    <div className="usage-label">{t("settings.usageEstCostLabel")}</div>
                     <div className="usage-cost-primary" id="usage-total-cost-cny">
                       {formatCny(estCny)}
                     </div>
@@ -4373,19 +4439,21 @@ export function SettingsModal() {
                   )}
                 </div>
                 <div className="usage-reset-sub" id="settings-token-summary">
-                  输入 {(Number(usagePayload?.inputTokens) || 0).toLocaleString()} · 输出{" "}
-                  {(Number(usagePayload?.outputTokens) || 0).toLocaleString()}
+                  {t("settings.usageTokenSummaryLine", {
+                    input: (Number(usagePayload?.inputTokens) || 0).toLocaleString(),
+                    output: (Number(usagePayload?.outputTokens) || 0).toLocaleString(),
+                  })}
                   {extraSuffix}
                   {tailSuffix}
                 </div>
               </div>
 
-              <div className="settings-group-label">API 合并剩余余额</div>
+              <div className="settings-group-label">{t("settings.usageMergedGroupTitle")}</div>
               <div className="settings-card usage-merged-card" id="usage-merged-balance-card">
                 <div className="usage-gcp-head">
                   <div className="usage-gcp-info">
                     <div className="usage-gcp-title-row">
-                      <span className="settings-row-title">已启用供应商合并余额</span>
+                      <span className="settings-row-title">{t("settings.usageMergedTitle")}</span>
                       <span
                         className={`usage-gcp-badge${
                           !providerBilling
@@ -4399,22 +4467,27 @@ export function SettingsModal() {
                         id="usage-merged-status-badge"
                       >
                         {!providerBilling
-                          ? "汇总中"
+                          ? t("settings.usageMergedLoadingBadge")
                           : billingCards.length === 0
-                            ? "无可展示供应商"
+                            ? t("settings.usageMergedEmptyBadge")
                             : mergedBilling.hasAnyBalance
-                              ? `已汇总 ${mergedBilling.providersWithBalanceCount}/${mergedBilling.totalEnabledProviders} 家`
-                              : "待设置或刷新"}
+                              ? t("settings.usageMergedCountBadge", {
+                                  ok: mergedBilling.providersWithBalanceCount,
+                                  total: mergedBilling.totalEnabledProviders,
+                                })
+                              : t("settings.usageMergedPendingBadge")}
                       </span>
                     </div>
                     <div className="usage-reset-sub" id="usage-merged-sub">
                       {!providerBilling
-                        ? "按各供应商实际结算币种核算后统一折算为人民币（¥），已禁用供应商自动隐藏"
+                        ? t("settings.usageMergedSubBase")
                         : billingCards.length === 0
-                          ? "当前没有已启用的模型供应商；启用后将在此展示合并余额"
-                          : `按各供应商实际结算币种核算后统一折算为人民币（¥）${
+                          ? t("settings.usageMergedSubNoProviders")
+                          : `${t("settings.usageMergedSubBase")}${
                               mergedBilling.lastRefreshedAt
-                                ? ` · 最近实时同步 ${formatBillingTime(mergedBilling.lastRefreshedAt)}`
+                                ? t("settings.usageMergedLastSyncPart", {
+                                    time: formatBillingTime(mergedBilling.lastRefreshedAt, currentLocale),
+                                  })
                                 : ""
                             }`}
                     </div>
@@ -4423,15 +4496,15 @@ export function SettingsModal() {
                       id="usage-merged-provider-tags"
                       hidden={mergedTags.length === 0}
                     >
-                      {mergedTags.map((t: any) => (
-                        <span key={t.providerId || t.providerName} className="usage-merged-tag">
-                          {t.providerName}: {formatCny(t.remainingCny)}
+                      {mergedTags.map((tg: any) => (
+                        <span key={tg.providerId || tg.providerName} className="usage-merged-tag">
+                          {tg.providerName}: {formatCny(tg.remainingCny)}
                         </span>
                       ))}
                     </div>
                   </div>
                   <div className="usage-cost-hero-box">
-                    <div className="usage-label">合并可用余额（人民币）</div>
+                    <div className="usage-label">{t("settings.usageMergedAvailLabel")}</div>
                     <div className="usage-cost-primary" id="usage-merged-balance-cny">
                       {mergedBilling.hasAnyBalance
                         ? formatCny(mergedBilling.remainingCny)
@@ -4450,19 +4523,21 @@ export function SettingsModal() {
                           setRefreshingAllBilling(false);
                         }}
                       >
-                        {refreshingAllBilling ? "刷新中…" : "全部刷新"}
+                        {refreshingAllBilling
+                          ? t("settings.usageRefreshingBtn")
+                          : t("settings.usageRefreshAllBtn")}
                       </button>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="settings-group-label">分供应商额度与余额管理</div>
+              <div className="settings-group-label">{t("settings.usageByProviderGroupTitle")}</div>
               <div className="usage-provider-balance-list" id="usage-provider-balance-list">
                 {providerBilling && billingCards.length === 0 ? (
                   <div className="settings-card usage-provider-card">
                     <div className="settings-row-sub">
-                      当前所有模型供应商均已禁用，已隐藏其消费记录与余额卡片。
+                      {t("settings.usageNoEnabledProvidersDesc")}
                     </div>
                   </div>
                 ) : (
@@ -4480,37 +4555,49 @@ export function SettingsModal() {
                         : "is-warn";
                     const statusLabel = p.supportsLiveBalance
                       ? p.status === "live_error"
-                        ? "刷新失败"
+                        ? t("settings.usageProvStatusError")
                         : p.status === "live_ok"
                           ? p.liveAvailable === false
-                            ? "余额不足"
-                            : "接口实时同步"
-                          : "待刷新余额"
+                            ? t("settings.usageProvStatusLowBalance")
+                            : t("settings.usageProvStatusLiveOk")
+                          : t("settings.usageProvStatusLivePending")
                       : p.remainingCny !== null
                         ? p.remainingPct != null
-                          ? `已设置 · 剩 ${p.remainingPct}%`
-                          : "实时扣减中"
-                        : "未设置余额";
+                          ? t("settings.usageProvStatusSetPct", { pct: p.remainingPct })
+                          : t("settings.usageProvStatusDeducting")
+                        : t("settings.usageProvStatusUnset");
 
                     let metaText = "";
                     if (p.supportsLiveBalance) {
-                      const subParts = [`本机累计消耗 ${formatCny(p.spentCny)}`];
+                      const subParts = [t("settings.usageProvLocalSpent", { amount: formatCny(p.spentCny) })];
                       if (p.grantedCny != null || p.toppedUpCny != null) {
                         subParts.push(
-                          `赠金 ${formatCny(p.grantedCny || 0)} · 充值 ${formatCny(p.toppedUpCny || 0)}`
+                          t("settings.usageProvGrantAndTopup", {
+                            granted: formatCny(p.grantedCny || 0),
+                            topup: formatCny(p.toppedUpCny || 0),
+                          })
                         );
                       }
-                      subParts.push(`上次同步：${formatBillingTime(p.lastRefreshedAt)}`);
+                      subParts.push(
+                        t("settings.usageProvLastSync", {
+                          time: formatBillingTime(p.lastRefreshedAt, currentLocale),
+                        })
+                      );
                       metaText = subParts.join(" · ");
                     } else if (p.remainingCny !== null) {
-                      const calTime = formatBillingTime(p.calibratedAt);
+                      const calTime = formatBillingTime(p.calibratedAt, currentLocale);
                       const totalTag =
                         p.totalCreditsCny != null
-                          ? ` · 总额度 ${formatCny(p.totalCreditsCny)}`
+                          ? t("settings.usageProvTotalCreditsPart", { amount: formatCny(p.totalCreditsCny) })
                           : "";
-                      metaText = `基准 ${formatCny(p.baselineRemainingCny || 0)}（${calTime}） · 之后已扣减 ${formatCny(p.deltaSinceCalibrationCny || 0)}${totalTag}`;
+                      metaText = t("settings.usageProvCalibratedMeta", {
+                        base: formatCny(p.baselineRemainingCny || 0),
+                        time: calTime,
+                        delta: formatCny(p.deltaSinceCalibrationCny || 0),
+                        totalTag,
+                      });
                     } else {
-                      metaText = `本机累计消耗 ${formatCny(p.spentCny)} · 设置初始余额后自动扣减`;
+                      metaText = t("settings.usageProvUnsetMeta", { amount: formatCny(p.spentCny) });
                     }
 
                     return (
@@ -4527,7 +4614,7 @@ export function SettingsModal() {
                               </span>
                               <span className="usage-gcp-badge">
                                 {p.billingCurrency === "CNY"
-                                  ? `${p.providerType} · CNY 计费`
+                                  ? t("settings.usageProvCnyBadge", { type: p.providerType })
                                   : `${p.providerType} · USD→¥`}
                               </span>
                               <span className={`usage-gcp-badge ${statusClass}`}>
@@ -4538,7 +4625,9 @@ export function SettingsModal() {
                           </div>
                           <div className="usage-cost-hero-box">
                             <div className="usage-label">
-                              {p.supportsLiveBalance ? "接口剩余余额" : "预估剩余余额"}
+                              {p.supportsLiveBalance
+                                ? t("settings.usageProvLiveRemLabel")
+                                : t("settings.usageProvEstRemLabel")}
                             </div>
                             <div className="usage-cost-primary">
                               {p.remainingCny !== null ? formatCny(p.remainingCny) : "—"}
@@ -4561,8 +4650,8 @@ export function SettingsModal() {
 
                         {p.supportsLiveBalance && p.lastError && (
                           <div className="usage-provider-error-banner">
-                            上次刷新异常：{p.lastError}
-                            {p.remainingCny !== null ? "（当前展示最近一次成功缓存）" : ""}
+                            {t("settings.usageProvLastErrorPrefix", { error: p.lastError })}
+                            {p.remainingCny !== null ? t("settings.usageProvCachedSuffix") : ""}
                           </div>
                         )}
 
@@ -4595,8 +4684,10 @@ export function SettingsModal() {
                                     });
                                     showToast(
                                       res.ok
-                                        ? `✓ ${p.providerName} 余额已更新`
-                                        : `刷新失败：${res.error || "请检查 API Key"}`
+                                        ? t("settings.usageProvRefreshedToast", { name: p.providerName })
+                                        : t("settings.usageProvRefreshFailToast", {
+                                            error: res.error || t("settings.usageCheckApiKeyFallback"),
+                                          })
                                     );
                                   } catch (err: any) {
                                     setState((prev) => {
@@ -4604,17 +4695,21 @@ export function SettingsModal() {
                                       delete next[p.providerId];
                                       return { providerRefreshingIds: next };
                                     });
-                                    showToast(`刷新失败：${err?.message || "网络异常"}`);
+                                    showToast(
+                                      t("settings.usageProvRefreshFailToast", {
+                                        error: err?.message || t("settings.networkErrorFallback"),
+                                      })
+                                    );
                                   }
                                 }}
                               >
-                                {isBusy ? "刷新中…" : "立即刷新余额"}
+                                {isBusy ? t("settings.usageRefreshingBtn") : t("settings.usageRefreshNowBtn")}
                               </button>
                               <label className="usage-provider-schedule-wrap">
-                                <span>定时刷新</span>
+                                <span>{t("settings.usageAutoRefreshLabel")}</span>
                                 <select
                                   className="usage-provider-schedule-select"
-                                  aria-label={`${p.providerName} 自动刷新频率`}
+                                  aria-label={t("settings.usageAutoRefreshAria", { name: p.providerName })}
                                   value={String(p.autoRefreshMinutes ?? 15)}
                                   onChange={async (e) => {
                                     const mins = Number(e.target.value);
@@ -4629,19 +4724,19 @@ export function SettingsModal() {
                                       setState({ providerBilling: res });
                                       showToast(
                                         mins === 0
-                                          ? `已关闭 ${p.providerName} 自动刷新`
-                                          : `已设 ${p.providerName} 每 ${mins} 分钟自动刷新`
+                                          ? t("settings.usageScheduleOffToast", { name: p.providerName })
+                                          : t("settings.usageScheduleOnToast", { name: p.providerName, mins })
                                       );
                                     } catch (err: any) {
-                                      showToast(err?.message || "保存刷新周期失败");
+                                      showToast(err?.message || t("settings.usageScheduleFailedToast"));
                                     }
                                   }}
                                 >
-                                  <option value="0">关闭自动刷新</option>
-                                  <option value="5">每 5 分钟</option>
-                                  <option value="15">每 15 分钟</option>
-                                  <option value="30">每 30 分钟</option>
-                                  <option value="60">每 60 分钟</option>
+                                  <option value="0">{t("settings.usageScheduleOffOpt")}</option>
+                                  <option value="5">{t("settings.usageScheduleMinOpt", { mins: 5 })}</option>
+                                  <option value="15">{t("settings.usageScheduleMinOpt", { mins: 15 })}</option>
+                                  <option value="30">{t("settings.usageScheduleMinOpt", { mins: 30 })}</option>
+                                  <option value="60">{t("settings.usageScheduleMinOpt", { mins: 60 })}</option>
                                 </select>
                               </label>
                             </>
@@ -4658,7 +4753,7 @@ export function SettingsModal() {
                                 })
                               }
                             >
-                              {isCalOpen ? "收起校准" : "校准 / 设置余额"}
+                              {isCalOpen ? t("settings.usageCalCollapseBtn") : t("settings.usageCalOpenBtn")}
                             </button>
                           )}
                         </div>
@@ -4672,11 +4767,11 @@ export function SettingsModal() {
                 )}
               </div>
 
-              <div className="settings-group-label">分模型消耗与费用预估</div>
+              <div className="settings-group-label">{t("settings.usageByModelGroupTitle")}</div>
               <div className="settings-card usage-models-card" id="usage-by-model-list">
                 {byModel.length === 0 ? (
                   <div className="usage-session-row">
-                    <span className="settings-row-sub">当前已启用供应商暂无模型消耗记录</span>
+                    <span className="settings-row-sub">{t("settings.usageByModelEmpty")}</span>
                   </div>
                 ) : (
                   byModel.map((m: any) => {
@@ -4715,22 +4810,40 @@ export function SettingsModal() {
                           : -1;
                       const outR = Number(cnyRates.outputPer1M) || 0;
                       const cacheRatePart =
-                        cacheR > 0 && cacheR < inR ? ` (缓存 ¥${fmtRate(cacheR)}/M)` : "";
-                      const offPeakPart = m.offPeakHalfPrice ? " · 闲时半价" : "";
-                      rateText = `¥${fmtRate(inR)}/M 输入${cacheRatePart} · ¥${fmtRate(outR)}/M 输出${offPeakPart}`;
+                        cacheR > 0 && cacheR < inR
+                          ? t("settings.usageModelCacheRatePart", { rate: fmtRate(cacheR) })
+                          : "";
+                      const offPeakPart = m.offPeakHalfPrice ? t("settings.usageModelOffPeakPart") : "";
+                      rateText = t("settings.usageModelRateLine", {
+                        inRate: fmtRate(inR),
+                        cacheRatePart,
+                        outRate: fmtRate(outR),
+                        offPeakPart,
+                      });
                     }
                     const inpCount = Number(m.inputTokens) || 0;
                     const cachedCount = Number(m.cachedTokens) || 0;
                     const cacheHitPct = inpCount > 0 ? Math.round((cachedCount / inpCount) * 100) : 0;
                     const cachePart =
                       cachedCount > 0
-                        ? `（缓存命中 ${cachedCount.toLocaleString()} · ${cacheHitPct}%）`
+                        ? t("settings.usageModelCacheHitPart", {
+                            count: cachedCount.toLocaleString(),
+                            pct: cacheHitPct,
+                          })
                         : "";
                     const thoughtPart =
                       m.thoughtTokens > 0
-                        ? `（含思考 ${Number(m.thoughtTokens).toLocaleString()}）`
+                        ? t("settings.usageModelThoughtPart", {
+                            count: Number(m.thoughtTokens).toLocaleString(),
+                          })
                         : "";
-                    const callPart = m.calls > 0 ? `${m.calls} 次调用 · ` : "";
+                    const callPart =
+                      m.calls > 0 ? t("settings.usageModelCallsPart", { calls: m.calls }) : "";
+                    const clientMeta = getClientModelMeta(m.model, currentLocale);
+                    const displayRole =
+                      currentLocale === "en"
+                        ? clientMeta.role
+                        : m.role || clientMeta.role || t("settings.usageAutoRouteModel");
 
                     return (
                       <div key={m.model} className="usage-model-row">
@@ -4740,9 +4853,7 @@ export function SettingsModal() {
                               className={`model-accent-dot model-accent-${m.accent || "blue"}`}
                             />
                             <span className="usage-model-name">{m.label || m.model}</span>
-                            <span className="usage-model-role">
-                              {m.role || "自动路由模型"}
-                            </span>
+                            <span className="usage-model-role">{displayRole}</span>
                             <span className="usage-model-rate">{rateText}</span>
                           </div>
                           <div className="usage-model-cost-col">
@@ -4751,13 +4862,19 @@ export function SettingsModal() {
                         </div>
                         <div className="usage-model-metrics">
                           <span>
-                            {callPart}输入 {inpCount.toLocaleString()}
-                            {cachePart} · 输出 {(Number(m.outputTokens) || 0).toLocaleString()}
+                            {callPart}
+                            {t("settings.usageModelInputPrefix", { count: inpCount.toLocaleString() })}
+                            {cachePart}
+                            {t("settings.usageModelOutputPart", {
+                              count: (Number(m.outputTokens) || 0).toLocaleString(),
+                            })}
                             {thoughtPart}
                           </span>
                           <span>
-                            共 {(Number(m.totalTokens) || 0).toLocaleString()} tok ({m.sharePct || 0}
-                            %)
+                            {t("settings.usageModelTotalLine", {
+                              total: (Number(m.totalTokens) || 0).toLocaleString(),
+                              pct: m.sharePct || 0,
+                            })}
                           </span>
                         </div>
                         <div className="usage-mini-bar-track">
@@ -4779,7 +4896,7 @@ export function SettingsModal() {
                 id="usage-sessions-group-label"
                 hidden={isSessionScope}
               >
-                各 Bot / 群聊消耗排行
+                {t("settings.usageBySessionGroupTitle")}
               </div>
               <div
                 className="settings-card usage-sessions-card"
@@ -4788,7 +4905,7 @@ export function SettingsModal() {
               >
                 {bySession.length === 0 ? (
                   <div className="usage-session-row">
-                    <span className="settings-row-sub">暂无会话消耗记录</span>
+                    <span className="settings-row-sub">{t("settings.usageBySessionEmpty")}</span>
                   </div>
                 ) : (
                   bySession.map((s: any) => (
@@ -4808,7 +4925,7 @@ export function SettingsModal() {
               </div>
 
               <p className="vault-footnote" id="usage-pricing-footnote">
-                各模型按对应供应商结算币种（CNY / USD）独立计费，界面统一按 ¥ 人民币实时折算并汇总显示；禁用的供应商及其消费与余额不会展示。
+                {t("settings.usagePricingFootnote")}
               </p>
             </div>
 
@@ -4830,7 +4947,7 @@ export function SettingsModal() {
             hidden={activeTab !== "updates"}
           >
             <div className="vault-header-row">
-              <h2 className="settings-pane-title">关于与诊断</h2>
+              <h2 className="settings-pane-title">{t("settings.tabUpdates")}</h2>
               <button
                 type="button"
                 className="settings-pill-btn"
@@ -4857,11 +4974,11 @@ export function SettingsModal() {
                     strokeLinejoin="round"
                   />
                 </svg>
-                <span>刷新诊断</span>
+                <span>{t("settings.refreshDiagBtn")}</span>
               </button>
             </div>
 
-            <div className="settings-group-label">版本检测与热更新</div>
+            <div className="settings-group-label">{t("settings.otaGroupTitle")}</div>
             <div className="settings-card ota-update-card">
               <div className="settings-item-row">
                 <div>
@@ -4871,14 +4988,14 @@ export function SettingsModal() {
                       const plat = lm?.platform || "desktop";
                       const platLabel =
                         plat === "ios"
-                          ? "iOS 原生壳"
+                          ? t("settings.otaPlatIos")
                           : plat === "android"
-                            ? "Android 原生壳"
+                            ? t("settings.otaPlatAndroid")
                             : plat === "desktop"
                               ? lm?.supportsCoreOta
-                                ? "桌面端原生壳（独立可升级架构）"
-                                : "桌面端壳（含内嵌后端）"
-                              : "Web 浏览器端";
+                                ? t("settings.otaPlatDesktopCore")
+                                : t("settings.otaPlatDesktopEmbedded")
+                              : t("settings.otaPlatWeb");
                       const verStr = lm?.nativeVersion || diagnostics?.appVersion || "1.0.0";
                       const codeSuffix = lm?.nativeBuildCode ? ` (Build ${lm.nativeBuildCode})` : "";
                       return `${platLabel} v${verStr}${codeSuffix}`;
@@ -4889,16 +5006,21 @@ export function SettingsModal() {
                       const lm = updateState?.localMeta;
                       const wb = lm?.activeWebBuild || diagnostics?.webBuild || "builtin";
                       const cb = lm?.activeCoreBuild || wb;
-                      const tag = lm?.usingBuiltIn === false ? "热更新生效中" : "随包内置基线";
+                      const tag =
+                        lm?.usingBuiltIn === false
+                          ? t("settings.otaTagActive")
+                          : t("settings.otaTagBuiltin");
                       if (lm?.supportsCoreOta) {
-                        return `核心运行时：${cb}（含本地 Node 服务、前端与执行器 · ${tag}）`;
+                        return t("settings.otaCoreRuntimeLine", { cb, tag });
                       }
-                      return `前端资源：${wb}（${tag}）`;
+                      return t("settings.otaWebAssetsLine", { wb, tag });
                     })()}
                   </div>
                   {updateState?.lastCheckedAt > 0 && (
                     <div className="settings-row-sub">
-                      上次检查：{formatBillingTime(updateState.lastCheckedAt)}
+                      {t("settings.otaLastCheckedLine", {
+                        time: formatBillingTime(updateState.lastCheckedAt, currentLocale),
+                      })}
                     </div>
                   )}
                 </div>
@@ -4912,18 +5034,18 @@ export function SettingsModal() {
                       void checkForAppUpdates({ force: true }).then((res) => {
                         if (!res) return;
                         if (res.status === "up-to-date") {
-                          showToast("当前已是最新版本");
+                          showToast(t("settings.otaUpToDateToast"));
                         } else if (res.status === "ota-available") {
                           showToast(
                             res.otaKind === "core"
-                              ? "发现 Core 运行时热更新包（本地服务 + 前端 + 执行器），可一键平滑升级"
-                              : "发现纯前端热更新包，可一键生效"
+                              ? t("settings.otaCoreFoundToast")
+                              : t("settings.otaWebFoundToast")
                           );
                         }
                       });
                     }}
                   >
-                    {updateState?.checking ? "检查中…" : "检查更新"}
+                    {updateState?.checking ? t("settings.otaCheckingBtn") : t("settings.otaCheckBtn")}
                   </button>
                 </div>
               </div>
@@ -4932,7 +5054,7 @@ export function SettingsModal() {
                 <>
                   <div className="settings-divider" />
                   <div className="mail-feedback-box is-error ota-inline-banner">
-                    自愈回滚保护已触发：{updateState.localMeta?.lastRollbackReason}
+                    {t("settings.otaRollbackBanner", { reason: updateState.localMeta?.lastRollbackReason || "" })}
                   </div>
                 </>
               )}
@@ -4965,8 +5087,11 @@ export function SettingsModal() {
                       <span>
                         {updateState.progress?.message ||
                           (updateState?.localMeta?.deferredSwitch
-                            ? `新版本 ${updateState.localMeta.deferredSwitch.buildId} 已下载就绪；当前有 ${updateState.localMeta.deferredSwitch.activeRunCount} 个 Bot 正在运行，空闲后将自动平滑切换`
-                            : "正在更新…")}
+                            ? t("settings.otaDeferredMsg", {
+                                buildId: updateState.localMeta.deferredSwitch.buildId,
+                                count: updateState.localMeta.deferredSwitch.activeRunCount,
+                              })
+                            : t("settings.otaUpdatingMsg"))}
                       </span>
                       <span>
                         {Math.round(
@@ -5001,11 +5126,15 @@ export function SettingsModal() {
                           disabled={Boolean(updateState?.applying)}
                           onClick={() => {
                             void forceSwitchCoreOtaNow().catch((err: any) => {
-                              showToast(`强制切换失败: ${err?.message || "未知错误"}`);
+                              showToast(
+                                t("settings.otaForceSwitchFailToast", {
+                                  error: err?.message || t("actions.unknownError"),
+                                })
+                              );
                             });
                           }}
                         >
-                          立即强制重启切换
+                          {t("settings.otaForceSwitchBtn")}
                         </button>
                         <button
                           type="button"
@@ -5014,11 +5143,11 @@ export function SettingsModal() {
                           disabled={Boolean(updateState?.applying)}
                           onClick={() => {
                             void cancelDeferredCoreOta().then(() => {
-                              showToast("已取消待切换的核心更新");
+                              showToast(t("settings.otaCancelledDeferredToast"));
                             });
                           }}
                         >
-                          取消
+                          {t("common.cancel")}
                         </button>
                       </div>
                     )}
@@ -5035,38 +5164,43 @@ export function SettingsModal() {
                         <span className="ota-offer-title">
                           {updateDecision.status === "ota-available"
                             ? updateDecision.otaKind === "core"
-                              ? "发现兼容的 Core 运行时热更新（本地服务 + 前端 + 执行器）"
-                              : "发现兼容的纯前端热更新"
+                              ? t("settings.otaOfferCoreTitle")
+                              : t("settings.otaOfferWebTitle")
                             : updateDecision.status === "reload-required"
-                              ? "前端资源已更新"
-                              : `发现新版安装包 v${updateDecision.shellUpdate?.latestVersion || ""}`}
+                              ? t("settings.otaOfferReloadTitle")
+                              : t("settings.otaOfferShellTitle", {
+                                  version: updateDecision.shellUpdate?.latestVersion || "",
+                                })}
                         </span>
                         <span className="provider-type-badge is-gcp-vertex">
                           {updateDecision.status === "ota-available"
-                            ? "GitHub Releases · 免重装"
+                            ? t("settings.otaBadgeNoReinstall")
                             : "GitHub Releases"}
                         </span>
                       </div>
                       {(updateDecision.coreBundle || updateDecision.otaBundle) && (
                         <span className="ota-offer-sub">
-                          目标构建：
-                          {updateDecision.coreBundle?.coreBuild ||
-                            updateDecision.otaBundle?.webBuild}{" "}
-                          ·{" "}
-                          {Math.max(
-                            1,
-                            Math.round(
-                              ((updateDecision.coreBundle?.sizeBytes ??
-                                updateDecision.otaBundle?.sizeBytes) ||
-                                0) / 1024
-                            )
-                          )}{" "}
-                          KB
+                          {t("settings.otaTargetBuildLine", {
+                            build:
+                              updateDecision.coreBundle?.coreBuild ||
+                              updateDecision.otaBundle?.webBuild ||
+                              "",
+                            kb: Math.max(
+                              1,
+                              Math.round(
+                                ((updateDecision.coreBundle?.sizeBytes ??
+                                  updateDecision.otaBundle?.sizeBytes) ||
+                                  0) / 1024
+                              )
+                            ),
+                          })}
                         </span>
                       )}
                       {updateDecision.resolvedAsset?.fileName && (
                         <span className="ota-offer-sub">
-                          安装包：{updateDecision.resolvedAsset.fileName}
+                          {t("settings.otaAssetNameLine", {
+                            name: updateDecision.resolvedAsset.fileName,
+                          })}
                         </span>
                       )}
                       {Boolean(updateDecision.reason) && (
@@ -5091,24 +5225,26 @@ export function SettingsModal() {
                             void applyAvailableOtaUpdate()
                               .then((res) => {
                                 if (res?.queuedForIdle) {
-                                  showToast(
-                                    "新版本已下载就绪，当前 Bot 任务结束后将自动平滑切换"
-                                  );
+                                  showToast(t("settings.otaQueuedIdleToast"));
                                 }
                               })
                               .catch((err: any) => {
-                                showToast(`热更新失败: ${err?.message || "未知错误"}`);
+                                showToast(
+                                  t("settings.otaApplyFailToast", {
+                                    error: err?.message || t("actions.unknownError"),
+                                  })
+                                );
                               });
                           }}
                         >
                           {updateState?.applying
-                            ? "热更新中…"
+                            ? t("settings.otaApplyingBtn")
                             : updateState?.progress?.phase === "waiting_idle" ||
                                 updateState?.localMeta?.deferredSwitch
-                              ? "已就绪 · 等待空闲自动切换"
+                              ? t("settings.otaWaitingIdleBtn")
                               : updateDecision.otaKind === "core"
-                                ? "立即热更新并平滑切换"
-                                : "立即热更新并生效"}
+                                ? t("settings.otaApplyCoreBtn")
+                                : t("settings.otaApplyWebBtn")}
                         </button>
                       )}
                       {updateDecision.status === "reload-required" && (
@@ -5117,7 +5253,7 @@ export function SettingsModal() {
                           className="skill-pill-btn is-primary"
                           onClick={() => window.location.reload()}
                         >
-                          立即刷新页面
+                          {t("settings.otaReloadBtn")}
                         </button>
                       )}
                       {(updateDecision.status === "shell-update-required" ||
@@ -5133,13 +5269,19 @@ export function SettingsModal() {
                           disabled={Boolean(updateState?.applying)}
                           onClick={() => {
                             void downloadOrOpenFullShellUpdate().catch((err: any) => {
-                              showToast(`下载失败: ${err?.message || "请前往 Release 页面手动下载"}`);
+                              showToast(
+                                t("settings.otaDownloadFailToast", {
+                                  error: err?.message || t("settings.otaManualDownloadFallback"),
+                                })
+                              );
                             });
                           }}
                         >
                           {updateDecision.status === "shell-update-required"
-                            ? "下载新版安装包"
-                            : `同步下载新版原生壳 v${updateDecision.optionalShellUpdate?.latestVersion || ""}`}
+                            ? t("settings.otaDownloadShellBtn")
+                            : t("settings.otaDownloadOptionalShellBtn", {
+                                version: updateDecision.optionalShellUpdate?.latestVersion || "",
+                              })}
                         </button>
                       )}
                       <button
@@ -5147,7 +5289,7 @@ export function SettingsModal() {
                         className="section-action-link"
                         onClick={() => dismissCurrentUpdateNotice()}
                       >
-                        暂不提醒
+                        {t("settings.otaDismissBtn")}
                       </button>
                     </div>
                   </div>
@@ -5155,7 +5297,7 @@ export function SettingsModal() {
               )}
             </div>
 
-            <div className="settings-group-label">运行时与接口连通性</div>
+            <div className="settings-group-label">{t("settings.diagRuntimeGroupTitle")}</div>
             <div className="settings-card">
               <div className="settings-item-row">
                 <div>
@@ -5166,8 +5308,11 @@ export function SettingsModal() {
                   </div>
                   <div className="settings-row-sub" id="update-check-status">
                     {diagnostics
-                      ? `Node.js ${diagnostics.nodeVersion || ""} · 当前管理 ${diagnostics.sessionCount ?? 0} 个会话`
-                      : "正在读取本机运行时信息…"}
+                      ? t("settings.diagRuntimeSub", {
+                          node: diagnostics.nodeVersion || "",
+                          count: diagnostics.sessionCount ?? 0,
+                        })
+                      : t("settings.diagRuntimeLoading")}
                   </div>
                 </div>
                 <span
@@ -5178,34 +5323,44 @@ export function SettingsModal() {
                     className={`status-dot-inline ${diagLlmReady ? "is-ok" : "is-warn"}`}
                     aria-hidden="true"
                   />
-                  <span>{diagLlmReady ? "模型已就绪" : "未配置模型"}</span>
+                  <span>
+                    {diagLlmReady ? t("settings.diagModelsReadyBadge") : t("settings.diagModelsMissingBadge")}
+                  </span>
                 </span>
               </div>
               {Boolean(updateState?.connectedNodeStatus?.nodeOutdated) && (
                 <>
                   <div className="settings-divider" />
                   <div className="mail-feedback-box ota-inline-banner" id="connected-node-outdated-banner">
-                    当前所连服务端节点（v{updateState.connectedNodeStatus?.nodeVersion}）落后于 GitHub 最新服务端版本（v
-                    {updateState.connectedNodeStatus?.latestBackendVersion}）；基线对话与核心功能不受影响，如需使用新版专属后端特性请在对应主机升级服务。
+                    {t("settings.diagConnectedNodeOutdated", {
+                      nodeVersion: updateState.connectedNodeStatus?.nodeVersion || "",
+                      latestVersion: updateState.connectedNodeStatus?.latestBackendVersion || "",
+                    })}
                   </div>
                 </>
               )}
               <div className="settings-divider" />
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">桌面执行器 (Ubuntu Executor)</div>
+                  <div className="settings-row-title">{t("settings.diagExecutorTitle")}</div>
                   <div className="settings-row-sub" id="diag-executor-line">
                     {!diagnostics ? (
-                      "正在检测…"
+                      t("settings.diagExecutorChecking")
                     ) : diagExecOnline ? (
                       <>
                         <span className="status-dot-inline is-ok" aria-hidden="true" />{" "}
-                        在线 ({diagExecUrl}) · 响应延迟 {diagnostics.executorLatencyMs ?? 0}ms
+                        {t("settings.diagExecutorOnlineLine", {
+                          url: diagExecUrl,
+                          ms: diagnostics.executorLatencyMs ?? 0,
+                        })}
                       </>
                     ) : (
                       <>
                         <span className="status-dot-inline is-err" aria-hidden="true" />{" "}
-                        离线 ({diagExecUrl}) · {diagnostics.executorError || "无响应"}
+                        {t("settings.diagExecutorOfflineLine", {
+                          url: diagExecUrl,
+                          error: diagnostics.executorError || t("settings.diagExecutorNoResp"),
+                        })}
                       </>
                     )}
                   </div>
@@ -5214,20 +5369,20 @@ export function SettingsModal() {
               <div className="settings-divider" />
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">已启用模型池</div>
+                  <div className="settings-row-title">{t("settings.diagEnabledModelsTitle")}</div>
                   <div className="settings-row-sub" id="diag-models-line">
                     {!diagnostics
-                      ? "正在读取已启用模型…"
+                      ? t("settings.diagEnabledModelsLoading")
                       : diagAllModels.length > 0
                         ? diagAllModels.join(" · ")
-                        : "暂未启用任何模型（请在「模型接入与路由」中配置并启用）"}
+                        : t("settings.diagEnabledModelsEmpty")}
                   </div>
                 </div>
               </div>
               <div className="settings-divider" />
               <div className="settings-item-row">
                 <div>
-                  <div className="settings-row-title">安全允许写入根目录</div>
+                  <div className="settings-row-title">{t("settings.diagWriteRootTitle")}</div>
                   <div className="settings-row-sub" id="diag-workspace-line">
                     {Array.isArray(diagnostics?.writeRoots)
                       ? diagnostics.writeRoots.join("  |  ")

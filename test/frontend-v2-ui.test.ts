@@ -8,6 +8,7 @@ import {
   renderAppHtml,
   renderFullAppHtml,
 } from "./helpers/react-test-helpers.js";
+import { ZH_CN_MESSAGES } from "../src/shared/i18n.js";
 
 const html = renderFullAppHtml();
 const appJs = readWebSourceTs();
@@ -118,7 +119,9 @@ test("React web bundle implements v2.0 account switching, onboarding, multi-prov
     "BotComputerOverlay must not hardcode view_only=0 unconditionally"
   );
   assert.ok(
-    appJs.includes("view_only") && appJs.includes("仅观看"),
+    appJs.includes("view_only") &&
+      appJs.includes("computer.viewOnly") &&
+      ZH_CN_MESSAGES["computer.viewOnly"] === "仅观看",
     "BotComputerOverlay must toggle view_only based on takeover mode and display 仅观看 when read-only"
   );
 });

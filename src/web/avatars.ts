@@ -7,6 +7,7 @@ export type MascotFaceKind = "visor" | "star" | "happy" | "focused";
 export interface BotShapeSpec {
   key: string;
   label: string;
+  labelEn: string;
   keywords: string[];
   path: string;
   face: MascotFaceKind;
@@ -22,6 +23,7 @@ export const BOT_COLORS = [
   {
     key: "black",
     label: "黑色",
+    labelEn: "Obsidian",
     swatch: "#1c1c1e",
     darkBright: "#f5f5f7",
     darkBrightFg: "#121212",
@@ -37,6 +39,7 @@ export const BOT_COLORS = [
   {
     key: "brown",
     label: "棕色",
+    labelEn: "Bronze",
     swatch: "#a06b39",
     bright: "#a06b39",
     brightFg: "#ffffff",
@@ -47,6 +50,7 @@ export const BOT_COLORS = [
   {
     key: "red",
     label: "红色",
+    labelEn: "Crimson",
     swatch: "#fb2b3e",
     bright: "#fb2b3e",
     brightFg: "#ffffff",
@@ -57,6 +61,7 @@ export const BOT_COLORS = [
   {
     key: "orange",
     label: "橙色",
+    labelEn: "Tangerine",
     swatch: "#fd690f",
     bright: "#fd690f",
     brightFg: "#ffffff",
@@ -67,6 +72,7 @@ export const BOT_COLORS = [
   {
     key: "yellow",
     label: "黄色",
+    labelEn: "Amber",
     swatch: "#f59312",
     bright: "#f59312",
     brightFg: "#ffffff",
@@ -77,6 +83,7 @@ export const BOT_COLORS = [
   {
     key: "green",
     label: "绿色",
+    labelEn: "Emerald",
     swatch: "#14c16f",
     bright: "#14c16f",
     brightFg: "#ffffff",
@@ -87,6 +94,7 @@ export const BOT_COLORS = [
   {
     key: "cyan",
     label: "青色",
+    labelEn: "Teal",
     swatch: "#13b7a2",
     bright: "#13b7a2",
     brightFg: "#ffffff",
@@ -97,6 +105,7 @@ export const BOT_COLORS = [
   {
     key: "blue",
     label: "蓝色",
+    labelEn: "Cobalt",
     swatch: "#1e86fc",
     bright: "#1e86fc",
     brightFg: "#ffffff",
@@ -107,6 +116,7 @@ export const BOT_COLORS = [
   {
     key: "violet",
     label: "紫罗兰色",
+    labelEn: "Violet",
     swatch: "#8f59f9",
     bright: "#8f59f9",
     brightFg: "#ffffff",
@@ -117,6 +127,7 @@ export const BOT_COLORS = [
   {
     key: "magenta",
     label: "洋红色",
+    labelEn: "Magenta",
     swatch: "#f93498",
     bright: "#f93498",
     brightFg: "#ffffff",
@@ -127,6 +138,7 @@ export const BOT_COLORS = [
   {
     key: "gray",
     label: "灰色",
+    labelEn: "Slate",
     swatch: "#71717a",
     bright: "#71717a",
     brightFg: "#ffffff",
@@ -140,7 +152,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "blob",
     label: "星灵",
-    keywords: ["星灵", "机甲", "默认", "主控", "圆"],
+    labelEn: "Astro",
+    keywords: ["星灵", "机甲", "默认", "主控", "圆", "astro", "bot", "default"],
     // Primary TwinkleBot Astro-Visor Mascot: rounded squircle helmet + side ear-pods + top antenna orb
     path:
       "M32 4.6C34.1 4.6 35.8 6.3 35.8 8.4C35.8 9.9 34.9 11.2 33.6 11.8V14.2H40.2C47.8 14.2 53.2 19.6 53.2 27.2V28.2H54.6C56.6 28.2 58.2 29.8 58.2 31.8V37.2C58.2 39.2 56.6 40.8 54.6 40.8H53.2V42.4C53.2 50 47.8 55.4 40.2 55.4H23.8C16.2 55.4 10.8 50 10.8 42.4V40.8H9.4C7.4 40.8 5.8 39.2 5.8 37.2V31.8C5.8 29.8 7.4 28.2 9.4 28.2H10.8V27.2C10.8 19.6 16.2 14.2 23.8 14.2H30.4V11.8C29.1 11.2 28.2 9.9 28.2 8.4C28.2 6.3 29.9 4.6 32 4.6Z",
@@ -150,7 +163,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "cloud",
     label: "云灵",
-    keywords: ["云", "天气", "同步"],
+    labelEn: "Cloud",
+    keywords: ["云", "天气", "同步", "cloud", "sync"],
     path:
       "M23.5 12.5C27.8 8.2 36.2 8.2 40.5 12.5C46.5 12 52.2 16.2 53.2 22C58 25.8 58.8 33 55.2 38.2C57.2 44.2 53.8 50.8 47.6 52.8C43.2 56.8 36.4 57.2 32 55C27.6 57.2 20.8 56.8 16.4 52.8C10.2 50.8 6.8 44.2 8.8 38.2C5.2 33 6 25.8 10.8 22C11.8 16.2 17.5 12 23.5 12.5Z",
     face: "happy",
@@ -159,7 +173,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "square",
     label: "魔方",
-    keywords: ["方", "盒", "块", "代码", "工程"],
+    labelEn: "Cube",
+    keywords: ["方", "盒", "块", "代码", "工程", "cube", "code", "dev"],
     // Cyber module block with top tech crown notch & chamfered side tabs
     path:
       "M19.5 8.5H26.5L28.5 11H35.5L37.5 8.5H44.5C51.2 8.5 55.5 12.8 55.5 19.5V44.5C55.5 51.2 51.2 55.5 44.5 55.5H19.5C12.8 55.5 8.5 51.2 8.5 44.5V19.5C8.5 12.8 12.8 8.5 19.5 8.5Z",
@@ -169,7 +184,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "sparkle",
     label: "双子星",
-    keywords: ["芒", "闪", "光", "双子"],
+    labelEn: "Gemini",
+    keywords: ["芒", "闪", "光", "双子", "spark", "gemini", "light"],
     // Plump rounded 4-point Gemini star
     path:
       "M32 5.5C34.4 5.5 36.1 7.3 37.3 10.8C39.8 18.2 45.8 24.2 53.2 26.7C56.7 27.9 58.5 29.6 58.5 32C58.5 34.4 56.7 36.1 53.2 37.3C45.8 39.8 39.8 45.8 37.3 53.2C36.1 56.7 34.4 58.5 32 58.5C29.6 58.5 27.9 56.7 26.7 53.2C24.2 45.8 18.2 39.8 10.8 37.3C7.3 36.1 5.5 34.4 5.5 32C5.5 29.6 7.3 27.9 10.8 26.7C18.2 24.2 24.2 18.2 26.7 10.8C27.9 7.3 29.6 5.5 32 5.5Z",
@@ -179,7 +195,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "clover",
     label: "四叶灵",
-    keywords: ["草", "叶", "幸运"],
+    labelEn: "Clover",
+    keywords: ["草", "叶", "幸运", "clover", "leaf"],
     path:
       "M32 7C38.6 7 43.8 11.8 44.4 18.2C50.8 18.8 55.6 24 55.6 30.6C55.6 34.2 54.1 37.4 51.6 39.6C54.1 41.8 55.6 45 55.6 48.6C55.6 54.2 51 57 45.2 57C40.4 57 35.6 54.6 32 51.2C28.4 54.6 23.6 57 18.8 57C13 57 8.4 54.2 8.4 48.6C8.4 45 9.9 41.8 12.4 39.6C9.9 37.4 8.4 34.2 8.4 30.6C8.4 24 13.2 18.8 19.6 18.2C20.2 11.8 25.4 7 32 7Z",
     face: "happy",
@@ -188,7 +205,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "heart",
     label: "暖心核",
-    keywords: ["心", "爱", "关怀"],
+    labelEn: "Heart",
+    keywords: ["心", "爱", "关怀", "heart", "care", "love"],
     path:
       "M32 55.5C28.6 55.5 9.2 42.8 7.6 25.8C6.4 14.6 14.4 8.2 22.4 8.2C26.9 8.2 30.2 10.6 32 13.8C33.8 10.6 37.1 8.2 41.6 8.2C49.6 8.2 57.6 14.6 56.4 25.8C54.8 42.8 35.4 55.5 32 55.5Z",
     face: "happy",
@@ -197,7 +215,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "flower",
     label: "向阳花",
-    keywords: ["花", "设计", "创意"],
+    labelEn: "Blossom",
+    keywords: ["花", "设计", "创意", "flower", "design", "creative"],
     path:
       "M32 6.5C36.8 6.5 40.4 9.8 41 14.2C45.2 12.2 50.2 14.2 52.6 18.2C55 22.2 53.6 27.2 50 30.2C53.8 32.8 55.2 37.8 52.8 42C50.4 46 45.4 47.6 41 45.8C40.4 50.5 36.8 54.5 32 54.5C27.2 54.5 23.6 50.5 23 45.8C18.6 47.6 13.6 46 11.2 42C8.8 37.8 10.2 32.8 14 30.2C10.4 27.2 9 22.2 11.4 18.2C13.8 14.2 18.8 12.2 23 14.2C23.6 9.8 27.2 6.5 32 6.5Z",
     face: "happy",
@@ -206,7 +225,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "teardrop",
     label: "灵火滴",
-    keywords: ["水", "滴", "火", "灵感"],
+    labelEn: "Flame",
+    keywords: ["水", "滴", "火", "灵感", "flame", "drop", "idea"],
     path:
       "M32 6.8C35.8 6.8 53.5 23.2 53.5 37.8C53.5 49.4 44.2 56.8 32 56.8C19.8 56.8 10.5 49.4 10.5 37.8C10.5 23.2 28.2 6.8 32 6.8Z",
     face: "star",
@@ -215,7 +235,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "tablet",
     label: "护盾舱",
-    keywords: ["胶囊", "屏", "盾", "终端"],
+    labelEn: "Pod",
+    keywords: ["胶囊", "屏", "盾", "终端", "pod", "terminal", "screen"],
     path:
       "M19 12H45C52.2 12 57.5 18.2 57.5 32C57.5 45.8 52.2 52 45 52H19C11.8 52 6.5 45.8 6.5 32C6.5 18.2 11.8 12 19 12Z",
     face: "visor",
@@ -224,7 +245,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "wedge",
     label: "灵狐",
-    keywords: ["三角", "狐", "猫", "敏捷"],
+    labelEn: "Fox",
+    keywords: ["三角", "狐", "猫", "敏捷", "fox", "cat", "agile"],
     // Cyber-fox / cat-ear bot silhouette instead of plain wedge
     path:
       "M14.5 9.5C17.2 9.5 22.5 13.5 25.8 17.2H38.2C41.5 13.5 46.8 9.5 49.5 9.5C52.2 9.5 53.8 11.8 53.8 15.5V36.5C53.8 48.2 45 55.5 32 55.5C19 55.5 10.2 48.2 10.2 36.5V15.5C10.2 11.8 11.8 9.5 14.5 9.5Z",
@@ -234,7 +256,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "house",
     label: "守护堡",
-    keywords: ["房", "家", "屋", "管家", "安全"],
+    labelEn: "Fortress",
+    keywords: ["房", "家", "屋", "管家", "安全", "home", "steward", "security"],
     path:
       "M32 7.5C34.2 7.5 36.2 8.4 38 9.8L52.5 21.5C55 23.6 56 26.2 56 29.8V45.5C56 51.5 51.8 55.5 45.8 55.5H18.2C12.2 55.5 8 51.5 8 45.5V29.8C8 26.2 9 23.6 11.5 21.5L26 9.8C27.8 8.4 29.8 7.5 32 7.5Z",
     face: "focused",
@@ -243,7 +266,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "star",
     label: "五芒星",
-    keywords: ["星", "五角星", "精选"],
+    labelEn: "Star",
+    keywords: ["星", "五角星", "精选", "star"],
     path:
       "M32 6.8C34.2 6.8 35.8 8.2 37 11L40.8 19.8L50.4 20.8C53.4 21.1 55 22.8 55 25C55 26.6 54.1 28.1 52 30L44.8 36.4L46.9 45.8C47.6 48.8 46.6 51 44.4 52.2C42.6 53.1 40.6 52.8 38.2 51.4L32 47.6L25.8 51.4C23.4 52.8 21.4 53.1 19.6 52.2C17.4 51 16.4 48.8 17.1 45.8L19.2 36.4L12 30C9.9 28.1 9 26.6 9 25C9 22.8 10.6 21.1 13.6 20.8L23.2 19.8L27 11C28.2 8.2 29.8 6.8 32 6.8Z",
     face: "star",
@@ -252,7 +276,8 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   {
     key: "hex",
     label: "晶核盾",
-    keywords: ["六边", "宝石", "机械", "运维"],
+    labelEn: "Hex",
+    keywords: ["六边", "宝石", "机械", "运维", "hex", "ops"],
     path:
       "M28.2 7.8C30.6 6.5 33.4 6.5 35.8 7.8L50.8 16.4C53.2 17.8 54.6 20.2 54.6 23V41C54.6 43.8 53.2 46.2 50.8 47.6L35.8 56.2C33.4 57.5 30.6 57.5 28.2 56.2L13.2 47.6C10.8 46.2 9.4 43.8 9.4 41V23C9.4 20.2 10.8 17.8 13.2 16.4L28.2 7.8Z",
     face: "visor",
@@ -260,11 +285,31 @@ export const BOT_SHAPES: BotShapeSpec[] = [
   },
 ];
 
+export function getBotColorLabel(
+  key: string,
+  locale: "zh-CN" | "en" = "zh-CN"
+): string {
+  const found = BOT_COLORS.find((c) => c.key === key);
+  if (!found) return key;
+  return locale === "en" ? found.labelEn : found.label;
+}
+
+export function getBotShapeLabel(
+  key: string,
+  locale: "zh-CN" | "en" = "zh-CN"
+): string {
+  const found = BOT_SHAPES.find((s) => s.key === key);
+  if (!found) return key;
+  return locale === "en" ? found.labelEn : found.label;
+}
+
 export const APPS_CATALOG = [
   {
     id: "qqmail",
     name: "QQ 邮箱",
+    nameEn: "QQ Mail",
     desc: "使用 QQ 邮箱账号与 16 位授权码快速接入收发信",
+    descEn: "Connect QQ Mail via email & 16-digit authorization code",
     cat: "communication",
     section: "邮箱接入",
     icon: "✉️",
@@ -272,7 +317,9 @@ export const APPS_CATALOG = [
   {
     id: "custom-mail",
     name: "通用邮箱 (POP3 / IMAP + SMTP)",
+    nameEn: "Generic Email (POP3 / IMAP + SMTP)",
     desc: "自定义 POP3/IMAP 收件服务器与 SMTP 发件服务器接入任意邮箱",
+    descEn: "Configure custom POP3/IMAP & SMTP servers for any mailbox",
     cat: "communication",
     section: "邮箱接入",
     icon: "📬",
@@ -565,17 +612,33 @@ export function parsePromptToAvatar(promptText = "") {
   const p = String(promptText || "").toLowerCase();
   const colorMap = [
     ["蓝", "blue"],
+    ["blue", "blue"],
     ["绿", "green"],
+    ["green", "green"],
     ["红", "red"],
+    ["red", "red"],
     ["橙", "orange"],
+    ["orange", "orange"],
     ["黄", "yellow"],
+    ["yellow", "yellow"],
+    ["amber", "yellow"],
     ["紫", "violet"],
+    ["violet", "violet"],
+    ["purple", "violet"],
     ["粉", "magenta"],
     ["洋红", "magenta"],
+    ["magenta", "magenta"],
+    ["pink", "magenta"],
     ["青", "cyan"],
+    ["cyan", "cyan"],
+    ["teal", "cyan"],
     ["棕", "brown"],
+    ["brown", "brown"],
     ["灰", "gray"],
+    ["gray", "gray"],
+    ["grey", "gray"],
     ["黑", "black"],
+    ["black", "black"],
   ];
   let matchedColor: string | null = null;
   for (const [kw, key] of colorMap) {
@@ -587,7 +650,11 @@ export function parsePromptToAvatar(promptText = "") {
 
   let matchedShape: string | null = null;
   for (const s of BOT_SHAPES) {
-    if (p.includes(s.label) || s.keywords.some((kw) => p.includes(kw))) {
+    if (
+      p.includes(s.label) ||
+      p.includes(s.labelEn.toLowerCase()) ||
+      s.keywords.some((kw) => p.includes(kw))
+    ) {
       matchedShape = s.key;
       break;
     }
@@ -602,13 +669,19 @@ export function parsePromptToAvatar(promptText = "") {
   };
 }
 
-export function cropImageFileToDataUrl(file: Blob, size = 128) {
+export function cropImageFileToDataUrl(
+  file: Blob,
+  size = 128,
+  locale: "zh-CN" | "en" = "zh-CN"
+) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error("读取图片失败"));
+    reader.onerror = () =>
+      reject(new Error(locale === "en" ? "Failed to read image" : "读取图片失败"));
     reader.onload = () => {
       const img = new Image();
-      img.onerror = () => reject(new Error("解析图片失败"));
+      img.onerror = () =>
+        reject(new Error(locale === "en" ? "Failed to decode image" : "解析图片失败"));
       img.onload = () => {
         const canvas = document.createElement("canvas");
         canvas.width = size;

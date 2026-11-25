@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { resolveEffectiveLocale, t as translateI18n } from "/shared/i18n.js";
 import { App } from "./components/App.js";
 import {
   ApprovalCard,
@@ -108,6 +109,7 @@ export function renderStreamItemToStaticMarkup(
   overrides?: Partial<AppState>
 ): string {
   resetStoreForTest(overrides);
+  const locale = resolveEffectiveLocale(getState().settings?.language);
   switch (item.kind) {
     case "message":
       return renderToStaticMarkup(<MessageGroup item={item} />);
@@ -126,7 +128,7 @@ export function renderStreamItemToStaticMarkup(
         return renderToStaticMarkup(
           <div className="confirm-card max-steps-card" role="status">
             <div className="confirm-header max-steps-header">
-              <span>已达单轮步数上限</span>
+              <span>{translateI18n("chat.maxStepsTitle", locale)}</span>
             </div>
             <div className="max-steps-body">{item.text}</div>
           </div>
@@ -134,11 +136,12 @@ export function renderStreamItemToStaticMarkup(
       }
       return renderToStaticMarkup(
         <div className="route-notice-pill" role="status">
-          {item.text || "本轮费用已接近预算上限"}
+          {item.text || translateI18n("ssr.budgetNearCap", locale)}
         </div>
       );
     case "error": {
-      const formatted = formatErrorNotice(item.message || "");
+      const formatted = formatErrorNotice(item.message || "", undefined, locale);
+      const closeLabel = translateI18n("card.errorClose", locale);
       return renderToStaticMarkup(
         <div className="error-card" role="alert">
           <div className="error-card-main">
@@ -149,15 +152,17 @@ export function renderStreamItemToStaticMarkup(
             <button
               type="button"
               className="error-card-close-btn"
-              aria-label="关闭提示"
-              title="关闭提示"
+              aria-label={closeLabel}
+              title={closeLabel}
             >
               <UiIcon name="x" size={12} />
             </button>
           </div>
           {formatted.detail && (
             <details className="error-card-details">
-              <summary className="error-card-details-summary">查看详情</summary>
+              <summary className="error-card-details-summary">
+                {translateI18n("card.errorDetails", locale)}
+              </summary>
               <pre className="error-card-raw">{formatted.detail}</pre>
             </details>
           )}
@@ -167,7 +172,7 @@ export function renderStreamItemToStaticMarkup(
     case "unread_divider":
       return renderToStaticMarkup(
         <div className="unread-divider">
-          <span>以下为新消息</span>
+          <span>{translateI18n("chat.unreadDivider", locale)}</span>
         </div>
       );
     case "date_divider":

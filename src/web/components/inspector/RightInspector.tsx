@@ -9,6 +9,8 @@ import {
   BOT_COLORS,
   BOT_SHAPES,
   cropImageFileToDataUrl,
+  getBotColorLabel,
+  getBotShapeLabel,
   resolveBotAvatar,
 } from "../../avatars.js";
 import {
@@ -137,6 +139,7 @@ export function RightInspector({
     multiDisplayEnabled,
     computerDisplays,
     activeSessionId: activeSession?.id,
+    locale,
   });
 
   // Usage & route stats
@@ -147,40 +150,51 @@ export function RightInspector({
     sessionUsageByModel,
     usage,
     lastObservedModel,
+    locale,
   });
   const routeDisplay =
-    formatClientRouteLabel(lastRouteLabel, lastObservedModel) || "自动调配";
+    formatClientRouteLabel(lastRouteLabel, lastObservedModel, locale) || t("actions.autoRouting");
   const complexityLabel: Record<string, string> = {
-    trivial: "简单",
-    standard: "常规",
-    complex: "复杂",
+    trivial: t("inspector.complexityTrivial"),
+    standard: t("inspector.complexityStandard"),
+    complex: t("inspector.complexityComplex"),
   };
   const stepPlanText =
     Array.isArray(lastRoutePlan?.step_plan) && lastRoutePlan.step_plan.length > 0
-      ? `分步计划：${lastRoutePlan.step_plan
-          .map((sp: any) => {
-            const range =
-              sp.fromStep === sp.toStep ? `第${sp.fromStep}步` : `第${sp.fromStep}-${sp.toStep}步`;
-            const mName =
-              sp.model === "carbon" || sp.model === "advanced"
-                ? "高级档"
-                : sp.model === "argon" || sp.model === "medium"
-                  ? "中等档"
-                  : "极速档";
-            const tName = sp.thinking ? ` ${sp.thinking}` : "";
-            return `${range} ${mName}${tName}${sp.task ? `(${sp.task})` : ""}`;
-          })
-          .join(" → ")}`
+      ? t("inspector.stepPlanPrefix", {
+          plan: lastRoutePlan.step_plan
+            .map((sp: any) => {
+              const range =
+                sp.fromStep === sp.toStep
+                  ? t("inspector.stepRangeSingle", { step: sp.fromStep })
+                  : t("inspector.stepRangeMulti", { from: sp.fromStep, to: sp.toStep });
+              const mName =
+                sp.model === "carbon" || sp.model === "advanced"
+                  ? t("inspector.tierAdvanced")
+                  : sp.model === "argon" || sp.model === "medium"
+                    ? t("inspector.tierMedium")
+                    : t("inspector.tierFast");
+              const tName = sp.thinking ? ` ${sp.thinking}` : "";
+              return `${range} ${mName}${tName}${sp.task ? `(${sp.task})` : ""}`;
+            })
+            .join(" → "),
+        })
       : "";
   const routeTipLines = [
-    lastRouteReason ? `路由理由：${lastRouteReason}` : "",
+    lastRouteReason ? t("inspector.routeReasonLine", { reason: lastRouteReason }) : "",
     lastRoutePlan
-      ? `任务画像：${complexityLabel[lastRoutePlan.complexity] || lastRoutePlan.complexity} · ${lastRoutePlan.category} · 置信度 ${Math.round((lastRoutePlan.confidence || 0) * 100)}%`
+      ? t("inspector.routeTaskLine", {
+          complexity: complexityLabel[lastRoutePlan.complexity] || lastRoutePlan.complexity,
+          category: lastRoutePlan.category,
+          confidence: Math.round((lastRoutePlan.confidence || 0) * 100),
+        })
       : "",
     stepPlanText,
-    lastTierPath ? `本轮档位路径：${lastTierPath}` : "",
+    lastTierPath ? t("inspector.routeTierPathLine", { path: lastTierPath }) : "",
   ].filter(Boolean);
-  const routeTitle = routeTipLines.length ? routeTipLines.join("\n") : "当前路由档位";
+  const routeTitle = routeTipLines.length
+    ? routeTipLines.join("\n")
+    : t("inspector.routeDefaultTitle");
 
   const handleRenameCommit = async () => {
     const title = nameInput.trim();
@@ -200,7 +214,7 @@ export function RightInspector({
     });
     upsertLocalSession(updated);
     setPersonaDirty(false);
-    showToast("职责与人设已保存");
+    showToast(t("inspector.personaSaved"));
   };
 
   const handleAddGroupMember = async () => {
@@ -208,7 +222,7 @@ export function RightInspector({
     const existing = new Set(memberIds);
     const candidate = sessions.find((s: any) => s.type !== "group" && !existing.has(s.id));
     if (!candidate) {
-      showToast("所有现有 Bot 均已在群内，可先新建专职 Bot");
+      showToast(t("inspector.allBotsInGroupToast"));
       return;
     }
     const nextIds = [...existing, candidate.id];
@@ -217,22 +231,22 @@ export function RightInspector({
       body: JSON.stringify({ memberBotIds: nextIds }),
     });
     upsertLocalSession(updated);
-    showToast(`已将「${candidate.title}」拉入群聊`);
+    showToast(t("inspector.addedToGroupToast", { name: candidate.title }));
   };
 
   const handleRemoveGroupMember = async (member: any) => {
     if (!activeSession) return;
     const nextIds = memberIds.filter((id) => id !== member.id);
     if (nextIds.length < 2) {
-      showToast("群聊至少保留 2 位 Bot 成员");
+      showToast(t("inspector.groupMinMembersToast"));
       return;
     }
     const ok = await showConfirmDialog({
-      title: "移除群聊成员",
-      message: `确定将「${member.title || "Bot"}」移出当前群聊吗？`,
-      detail: "该成员仅移出当前群聊，其自身历史对话与配置不受影响。",
-      confirmText: "确认移除",
-      cancelText: "取消",
+      title: t("inspector.removeMemberTitle"),
+      message: t("inspector.removeMemberMsg", { name: member.title || "Bot" }),
+      detail: t("inspector.removeMemberDetail"),
+      confirmText: t("inspector.removeMemberConfirm"),
+      cancelText: t("common.cancel"),
       tone: "danger",
     });
     if (!ok) return;
@@ -253,7 +267,7 @@ export function RightInspector({
         noLanTimeout: true,
         body: JSON.stringify({
           prompt: `Cute minimalist flat vector avatar icon, centered mascot character, clean solid pastel background, no text: ${promptText}`,
-          title: `头像_${promptText.slice(0, 12)}`,
+          title: t("inspector.avatarTitlePrefix", { name: promptText.slice(0, 12) }),
           aspectRatio: "1:1",
           quality: "standard",
           sessionId: activeSessionId || undefined,
@@ -284,11 +298,17 @@ export function RightInspector({
       refreshLibrary();
       showToast(
         data.degraded
-          ? `已降级为大模型生成头像（${data.degradedReason || "未配置生图模型"}）`
-          : "已生成专属头像"
+          ? t("inspector.avatarDegradedToast", {
+              reason: data.degradedReason || t("inspector.avatarNoImageModel"),
+            })
+          : t("inspector.avatarGeneratedToast")
       );
     } catch (err: any) {
-      showToast(`头像生成失败：${err?.message || "请稍后重试"}`);
+      showToast(
+        t("inspector.avatarFailedToast", {
+          error: err?.message || t("inspector.retryLater"),
+        })
+      );
     } finally {
       setAvatarGenerating(false);
     }
@@ -296,9 +316,9 @@ export function RightInspector({
 
   const handleUploadAvatarFile = async (file: File | undefined) => {
     if (!file) return;
-    const dataUrl = await cropImageFileToDataUrl(file, 128);
+    const dataUrl = await cropImageFileToDataUrl(file, 128, locale);
     await saveActiveAvatarPatch({ imageDataUrl: dataUrl });
-    showToast("自定义图片头像已保存");
+    showToast(t("inspector.avatarUploadedToast"));
   };
 
   const handleDropAvatar = async (e: DragEvent<HTMLDivElement>) => {
@@ -316,13 +336,13 @@ export function RightInspector({
       className="inspector-right"
       id="desktop-pane"
       data-takeover={takeoverActive ? "true" : "false"}
-      aria-label="对话详情"
+      aria-label={t("inspector.title")}
     >
       <div
         id="right-splitter"
         className="pane-splitter splitter-left"
         role="separator"
-        aria-label="调整详情面板大小"
+        aria-label={t("inspector.resizeAria")}
         onMouseDown={onStartRightResize}
       />
 
@@ -332,8 +352,8 @@ export function RightInspector({
           id="close-inspector-btn"
           type="button"
           className="inspector-close-btn"
-          title="关闭"
-          aria-label="关闭"
+          title={t("common.close")}
+          aria-label={t("common.close")}
           onClick={onCloseInspector}
         >
           <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -354,8 +374,8 @@ export function RightInspector({
             id="edit-avatar-btn"
             type="button"
             className="inspector-avatar-btn"
-            title="编辑 Bot 头像"
-            aria-label="编辑 Bot 头像"
+            title={t("inspector.editAvatarBtn")}
+            aria-label={t("inspector.editAvatarBtn")}
             onClick={(e) => {
               e.stopPropagation();
               const nextOpen = !isAvatarEditorOpen;
@@ -377,22 +397,22 @@ export function RightInspector({
             </div>
           </button>
 
-          {/* Secondary Popover: 头像编辑器 (Bot / 生成 / 上传) */}
+          {/* Secondary Popover: Avatar Editor */}
           <div
             id="avatar-editor-popover"
             className="avatar-editor-popover"
             role="dialog"
-            aria-label="头像编辑器"
+            aria-label={t("inspector.avatarEditorAria")}
             hidden={!isAvatarEditorOpen}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="avatar-editor-header">
-              <div className="avatar-source-tabs" role="tablist" aria-label="头像来源">
+              <div className="avatar-source-tabs" role="tablist" aria-label={t("inspector.avatarSourceAria")}>
                 {(
                   [
                     ["bot", "Bot"],
-                    ["generate", "生成"],
-                    ["upload", "上传"],
+                    ["generate", t("inspector.avatarTabGenerate")],
+                    ["upload", t("inspector.avatarTabUpload")],
                   ] as const
                 ).map(([key, label]) => (
                   <button
@@ -412,7 +432,7 @@ export function RightInspector({
                 id="reset-avatar-btn"
                 type="button"
                 className="avatar-reset-btn"
-                aria-label="将角色重置为默认"
+                aria-label={t("inspector.avatarResetAria")}
                 onClick={() => {
                   const isPrimary = activeSessionId === primarySessionId;
                   saveActiveAvatarPatch({
@@ -420,10 +440,10 @@ export function RightInspector({
                     color: isPrimary ? "black" : "blue",
                     imageDataUrl: null,
                   });
-                  showToast("已重置默认形象");
+                  showToast(t("inspector.avatarResetToast"));
                 }}
               >
-                重置
+                {t("inspector.avatarResetBtn")}
               </button>
             </div>
 
@@ -432,7 +452,7 @@ export function RightInspector({
                 id="avatar-shapes-grid"
                 className="avatar-shapes-grid"
                 role="group"
-                aria-label="角色形状"
+                aria-label={t("inspector.avatarShapeGroupAria")}
               >
                 {BOT_SHAPES.map((s) => {
                   const selected = s.key === currentAvatar.shape && !currentAvatar.imageDataUrl;
@@ -442,7 +462,7 @@ export function RightInspector({
                       type="button"
                       className={`avatar-shape-btn${selected ? " is-selected" : ""}`}
                       data-shape-key={s.key}
-                      title={s.label}
+                      title={getBotShapeLabel(s.key, locale)}
                       onClick={() =>
                         saveActiveAvatarPatch({ shape: s.key, imageDataUrl: null })
                       }
@@ -456,7 +476,7 @@ export function RightInspector({
                 id="avatar-colors-grid"
                 className="avatar-colors-grid"
                 role="group"
-                aria-label="角色颜色"
+                aria-label={t("inspector.avatarColorGroupAria")}
               >
                 {BOT_COLORS.map((c) => {
                   const selected = c.key === currentAvatar.color && !currentAvatar.imageDataUrl;
@@ -466,7 +486,7 @@ export function RightInspector({
                       type="button"
                       className={`avatar-color-btn${selected ? " is-selected" : ""}`}
                       data-color-key={c.key}
-                      title={c.label}
+                      title={getBotColorLabel(c.key, locale)}
                       onClick={() =>
                         saveActiveAvatarPatch({ color: c.key, imageDataUrl: null })
                       }
@@ -489,8 +509,8 @@ export function RightInspector({
               <textarea
                 id="avatar-prompt-input"
                 className="avatar-prompt-textarea"
-                placeholder="输入画面描述，由已配置的生图模型生成专属头像（如：戴护目镜的彩虹小机器人扁平风头像）…"
-                aria-label="描述你的头像"
+                placeholder={t("inspector.avatarPromptPlaceholder")}
+                aria-label={t("inspector.avatarPromptAria")}
                 value={avatarPrompt}
                 onChange={(e) => setAvatarPrompt(e.target.value)}
               />
@@ -501,7 +521,9 @@ export function RightInspector({
                 disabled={avatarGenerating || !avatarPrompt.trim()}
                 onClick={handleGenerateAvatar}
               >
-                {avatarGenerating ? "AI 绘制中…" : "AI 生成头像"}
+                {avatarGenerating
+                  ? t("inspector.avatarGeneratingBtn")
+                  : t("inspector.avatarGenerateBtn")}
               </button>
             </div>
 
@@ -516,8 +538,8 @@ export function RightInspector({
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={handleDropAvatar}
               >
-                <p className="upload-dropzone-title">拖入图片或点击选择文件</p>
-                <p className="upload-dropzone-sub">自动居中裁剪为 128×128 高清圆形头像并保存</p>
+                <p className="upload-dropzone-title">{t("inspector.uploadDropTitle")}</p>
+                <p className="upload-dropzone-sub">{t("inspector.uploadDropSub")}</p>
                 <input
                   ref={avatarFileInputRef}
                   id="avatar-file-input"
@@ -536,7 +558,7 @@ export function RightInspector({
                   className="settings-pill-btn"
                   onClick={() => avatarFileInputRef.current?.click()}
                 >
-                  选择图片
+                  {t("inspector.uploadPickBtn")}
                 </button>
               </div>
             </div>
@@ -548,7 +570,7 @@ export function RightInspector({
           type="text"
           className="inspector-name-input"
           value={nameInput}
-          aria-label="Bot 名称"
+          aria-label={t("inspector.botNameAria")}
           onChange={(e) => setNameInput(e.target.value)}
           onBlur={handleRenameCommit}
           onKeyDown={(e) => {
@@ -596,7 +618,9 @@ export function RightInspector({
         <section className="inspector-section" id="group-members-section" hidden={!isGroup}>
           <div className="section-header-row">
             <h3 className="section-label" id="group-members-count-label">
-              {isGroup ? `${groupMembers.length} 位成员` : "成员"}
+              {isGroup
+                ? t("inspector.membersCount", { count: groupMembers.length })
+                : t("inspector.memberFallback")}
             </h3>
             <button
               id="add-group-member-btn"
@@ -604,7 +628,7 @@ export function RightInspector({
               className="section-action-link"
               onClick={handleAddGroupMember}
             >
-              + 添加成员
+              {t("inspector.addMember")}
             </button>
           </div>
           <div className="grouped-card" id="group-members-list">
@@ -623,7 +647,7 @@ export function RightInspector({
                   className="section-action-link danger-text"
                   onClick={() => handleRemoveGroupMember(m)}
                 >
-                  移除
+                  {t("common.remove")}
                 </button>
               </div>
             ))}
@@ -709,7 +733,7 @@ export function RightInspector({
         <section className="inspector-section" id="bot-memory-section" hidden={isGroup}>
           <div className="section-header-row">
             <h3 className="section-label">
-              专属记忆{" "}
+              {t("inspector.memoryLabel")}{" "}
               <span id="bot-memory-count-badge" className="section-sub-count">
                 {memCountBadge}
               </span>
@@ -737,16 +761,16 @@ export function RightInspector({
                 });
               }}
             >
-              + 新增
+              {t("inspector.memoryAdd")}
             </button>
           </div>
           <BotMemoriesList session={activeSession} listId="bot-memories-list" />
         </section>
 
-        {/* Section: 即将进行 (Real Per-Bot Schedules) */}
+        {/* Section: Upcoming Schedules */}
         <section className="inspector-section" id="upcoming-section">
           <div className="section-header-row">
-            <h3 className="section-label">即将进行</h3>
+            <h3 className="section-label">{t("inspector.schedulesLabel")}</h3>
             <button
               id="new-schedule-btn"
               type="button"
@@ -758,18 +782,18 @@ export function RightInspector({
                 });
               }}
             >
-              + 新建
+              {t("inspector.schedulesAdd")}
             </button>
           </div>
           <SchedulesList listId="upcoming-schedules-list" />
         </section>
 
-        {/* Section: 电脑 */}
+        {/* Section: Computer */}
         <section className="inspector-section">
           <div className="section-header-row">
-            <h3 className="section-label">电脑</h3>
+            <h3 className="section-label">{t("inspector.computerSection")}</h3>
             <span id="vnc-mode-badge" className="sr-only">
-              {takeoverActive ? "人工接管中" : "只看不操作 (view_only=1)"}
+              {takeoverActive ? t("inspector.vncTakeover") : t("inspector.vncViewOnly")}
             </span>
           </div>
 
@@ -778,7 +802,7 @@ export function RightInspector({
             className="computer-card"
             role="button"
             tabIndex={0}
-            aria-label="Bot 的电脑"
+            aria-label={t("inspector.botComputerLabel")}
             data-computer-state={compState}
             data-computer-online={isCompOnline ? "true" : "false"}
             onClick={handleBotComputerCardActivate}
@@ -790,7 +814,7 @@ export function RightInspector({
             }}
           >
             <div className="computer-card-info">
-              <div className="computer-card-title">Bot 的电脑</div>
+              <div className="computer-card-title">{t("inspector.botComputerLabel")}</div>
               <div id="computer-card-status" className="computer-card-sub">
                 {compStatusText}
               </div>
@@ -800,7 +824,7 @@ export function RightInspector({
                 id="computer-mini-thumb"
                 className="computer-mini-thumb"
                 src={computerMiniThumbUrl || undefined}
-                alt="最新桌面画面预览"
+                alt={t("inspector.computerThumbAlt")}
                 hidden={!computerMiniThumbUrl}
               />
               <div
@@ -831,14 +855,14 @@ export function RightInspector({
           </div>
         </section>
 
-        {/* Section: 模型用量 */}
+        {/* Section: Model Usage */}
         <section className="inspector-section">
           <div className="section-header-row">
-            <h3 className="section-label">模型用量</h3>
+            <h3 className="section-label">{t("inspector.modelUsageSection")}</h3>
           </div>
           <div className="kv-list">
             <div className="kv-row">
-              <span className="kv-label">智能路由</span>
+              <span className="kv-label">{t("inspector.smartRouting")}</span>
               <span className="kv-value" id="auto-route-indicator" title={routeTitle}>
                 {routeDisplay}
               </span>
@@ -848,7 +872,7 @@ export function RightInspector({
               id="open-trace-drawer-row"
               role="button"
               tabIndex={0}
-              title="点击查看当前 Bot 的用量与账单"
+              title={t("inspector.openUsageTitle")}
               onClick={() => openBotUsageModal(activeSessionId)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
@@ -857,22 +881,27 @@ export function RightInspector({
                 }
               }}
             >
-              <span className="kv-label">用量与账单</span>
+              <span className="kv-label">{t("inspector.usageAndBilling")}</span>
               <span className="kv-value kv-value-trailing">
                 <span className="kv-value-summary">
-                  <span id="step-count">{stepCount} 步</span> ·{" "}
-                  <span id="token-usage" title="当前会话累计 Token">
+                  <span id="step-count">{t("chat.traceStepsCount", { count: stepCount })}</span> ·{" "}
+                  <span id="token-usage" title={t("inspector.tokenUsageTitle")}>
                     {totalTok.toLocaleString()} tok
                   </span>
                 </span>
                 <span
                   id="session-cost-badge"
                   className="session-cost-inline"
-                  title={`当前会话预估费用 ${formatCny(costSummary.costCny)}${
-                    routerUsage.calls > 0
-                      ? `\n其中路由判断 ${routerUsage.calls} 次 · ${routerUsage.tokens.toLocaleString()} tokens（按极速档计价）`
-                      : ""
-                  }`}
+                  title={t("inspector.sessionCostTitle", {
+                    cost: formatCny(costSummary.costCny),
+                    routerNote:
+                      routerUsage.calls > 0
+                        ? t("inspector.sessionRouterCostNote", {
+                            calls: routerUsage.calls,
+                            tokens: routerUsage.tokens.toLocaleString(),
+                          })
+                        : "",
+                  })}
                 >
                   ≈ {formatCny(costSummary.costCny)}
                 </span>
@@ -893,18 +922,18 @@ export function RightInspector({
         </section>
       </div>
 
-      {/* ==================== RIGHT TAB 2: 资料库 (Library) ==================== */}
+      {/* ==================== RIGHT TAB 2: Library ==================== */}
       <div
         id="inspector-pane-library"
         className="inspector-body"
         hidden={inspectorTab !== "library"}
       >
-        <div className="library-filter-pills" role="group" aria-label="类型">
+        <div className="library-filter-pills" role="group" aria-label={t("inspector.libraryTypeAria")}>
           {(
             [
-              ["all", "全部"],
-              ["media", "媒体"],
-              ["file", "文件"],
+              ["all", t("inspector.libraryAll")],
+              ["media", t("inspector.libraryMedia")],
+              ["file", t("inspector.libraryFiles")],
             ] as const
           ).map(([key, label]) => (
             <button
@@ -921,14 +950,14 @@ export function RightInspector({
 
         <section className="inspector-section">
           <div className="section-header-row">
-            <h3 className="section-label">工作区与会话产物</h3>
+            <h3 className="section-label">{t("inspector.libraryArtifactsTitle")}</h3>
             <button
               id="refresh-library-btn"
               type="button"
               className="section-action-link"
               onClick={refreshLibrary}
             >
-              刷新
+              {t("common.refresh")}
             </button>
           </div>
           <div className="library-card">

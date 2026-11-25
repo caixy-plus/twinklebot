@@ -3,6 +3,33 @@
  * Gracefully falls back to standard browser APIs when running on desktop/web.
  */
 
+function resolveBridgeLocale(): "zh-CN" | "en" {
+  try {
+    const stored = String(
+      typeof localStorage !== "undefined" ? localStorage.getItem("twinklebot.language") || "" : ""
+    )
+      .trim()
+      .toLowerCase();
+    if (stored === "en" || stored.startsWith("en-")) return "en";
+    if (stored === "zh" || stored.startsWith("zh-") || stored.startsWith("zh_")) return "zh-CN";
+    if (typeof window !== "undefined") {
+      const nav = window.navigator;
+      const candidate =
+        (Array.isArray(nav?.languages) && nav.languages.find((l) => typeof l === "string" && l.trim())) ||
+        nav?.language ||
+        "";
+      const norm = String(candidate).trim().toLowerCase();
+      if (!norm || norm === "zh" || norm.startsWith("zh-") || norm.startsWith("zh_")) {
+        return "zh-CN";
+      }
+      return "en";
+    }
+    return "zh-CN";
+  } catch {
+    return "zh-CN";
+  }
+}
+
 export function isMobileAppTarget() {
   if (typeof window === "undefined") return false;
   if (window.__TWINKLEBOT_APP_TARGET__ === "mobile") return true;
@@ -82,7 +109,11 @@ export async function downloadAndApplyMobileWebOta({
 }) {
   const plugin = getWebUpdaterPlugin();
   if (!plugin || typeof plugin.downloadAndApply !== "function") {
-    throw new Error("当前客户端暂不支持原生热更新插件");
+    throw new Error(
+      resolveBridgeLocale() === "en"
+        ? "Native hot-update plugin is not supported in the current client"
+        : "当前客户端暂不支持原生热更新插件"
+    );
   }
   return await plugin.downloadAndApply({ url, sha256, webBuild });
 }
@@ -162,7 +193,9 @@ export async function discoverLanDevices({ timeoutMs = 1200 } = {}) {
         const baseUrl = String(d.baseUrl || (host ? `http://${host}:${port}` : "")).trim();
         return {
           instanceId: String(d.instanceId || "").trim(),
-          hostname: String(d.hostname || host || "桌面电脑").trim(),
+          hostname: String(
+            d.hostname || host || (resolveBridgeLocale() === "en" ? "Desktop" : "桌面电脑")
+          ).trim(),
           platform: String(d.platform || "").trim(),
           port,
           host,

@@ -191,7 +191,11 @@ export function BotComputerOverlay() {
       }
       remoteInputRef.current?.focus();
     } catch (err: any) {
-      showToast(`发送输入失败：${err?.message || "连接异常"}`);
+      showToast(
+        t("computer.remoteSendFailed", {
+          error: err?.message || t("computer.connectionError"),
+        })
+      );
     } finally {
       setSendingRemoteInput(false);
     }
@@ -212,7 +216,7 @@ export function BotComputerOverlay() {
       data-landscape-desktop={landscapeDesktop ? "true" : undefined}
       role="dialog"
       aria-modal="true"
-      aria-label={`${displayName} 的屏幕`}
+      aria-label={t("computer.screenAria", { name: displayName })}
       hidden={!screenOverlayOpen}
     >
       <button
@@ -240,7 +244,7 @@ export function BotComputerOverlay() {
             {dimsText}
           </span>
           <span id="toolbar-hint" className="sr-only">
-            {viewOnly ? "默认只读监看" : "人工接管模式"}
+            {viewOnly ? t("computer.hintViewOnly") : t("computer.hintTakeover")}
           </span>
 
           <div
@@ -255,7 +259,7 @@ export function BotComputerOverlay() {
               </div>
               <span className="connecting-dot dot-right" />
             </div>
-            <div className="connecting-label">连接中</div>
+            <div className="connecting-label">{t("computer.connecting")}</div>
           </div>
 
           <iframe
@@ -308,7 +312,7 @@ export function BotComputerOverlay() {
               />
             </svg>
             <span id="screen-status-label">
-              {viewOnly ? "仅观看" : "你正在独占控制"}
+              {viewOnly ? t("computer.viewOnly") : t("computer.takeoverExclusive")}
               {boundDisplay
                 ? ` · ${displayName} (${boundDisplay})`
                 : isGroup
@@ -320,7 +324,7 @@ export function BotComputerOverlay() {
           {multiDisplayEnabled && isGroup && groupMembers.length > 1 && (
             <select
               id="group-screen-member-select"
-              aria-label="切换群成员屏幕"
+              aria-label={t("computer.switchGroupScreenAria")}
               value={targetDisplayBotId || ""}
               onChange={(e) => {
                 setState({
@@ -367,7 +371,7 @@ export function BotComputerOverlay() {
               }).catch(() => {});
             }}
           >
-            取得控制权
+            {t("computer.takeoverBtn")}
           </button>
 
           <button
@@ -383,7 +387,7 @@ export function BotComputerOverlay() {
               }).catch(() => {});
             }}
           >
-            停止
+            {t("common.stop")}
           </button>
 
           <button
@@ -391,10 +395,10 @@ export function BotComputerOverlay() {
             type="button"
             className="screen-abort-btn"
             hidden={!isRunning}
-            title="终止当前任务"
+            title={t("computer.abortTaskTitle")}
             onClick={() => stopCurrentSessionTask()}
           >
-            终止任务
+            {t("computer.abortTask")}
           </button>
         </div>
       </div>
@@ -476,8 +480,8 @@ export function BotComputerOverlay() {
         id="screen-keyboard-btn"
         type="button"
         className={`screen-keyboard-btn${keyboardOpen ? " is-active" : ""}`}
-        title={keyboardOpen ? "收起远程键盘输入" : "弹出键盘向 Bot 电脑输入"}
-        aria-label={keyboardOpen ? "收起远程键盘输入" : "弹出键盘向 Bot 电脑输入"}
+        title={keyboardOpen ? t("computer.hideKeyboard") : t("computer.showKeyboard")}
+        aria-label={keyboardOpen ? t("computer.hideKeyboard") : t("computer.showKeyboard")}
         onClick={handleToggleKeyboard}
       >
         <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">

@@ -25,6 +25,7 @@ import {
 } from "../mobile-bridge.js";
 import { getState, setState } from "../state/store.js";
 import { apiJson } from "./api-client.js";
+import { getActiveLocale, tr } from "./i18n.js";
 
 const AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const COLD_START_CHECK_COOLDOWN_MS = 60 * 1000;
@@ -238,6 +239,7 @@ export async function refreshLocalUpdateMetadata() {
           activeWebBuild: localMeta.activeWebBuild,
           supportsCoreOta: localMeta.supportsCoreOta,
           activeCoreBuild: localMeta.activeCoreBuild || undefined,
+          locale: getActiveLocale(),
         })
       : prev.updateState.decision;
     return {
@@ -331,7 +333,7 @@ function synthesizeFromReleasesArray(releases: any[]): VersionManifest | null {
     generatedAt: String(top.published_at || new Date().toISOString()),
     releaseTag: tag,
     releaseUrl,
-    releaseNotes: String(top.body || "").trim() || `${tag} 发布版本`,
+    releaseNotes: String(top.body || "").trim() || tr("ota.releaseNotesFallback", { tag }),
     webBuild: `${ver}-release`,
     shells: {
       desktop: {
@@ -377,7 +379,7 @@ async function fetchGithubManifestAuthoritative(
     if (res && res.ok === false) {
       throw makeUpdaterError(
         String(res.code || "GITHUB_UNREACHABLE"),
-        String(res.error || "检查版本更新失败")
+        String(res.error || tr("ota.errCheckFailed"))
       );
     }
   }
@@ -417,7 +419,7 @@ async function fetchGithubManifestAuthoritative(
         if (synth) return synth;
         throw makeUpdaterError(
           "NO_PUBLISHED_RELEASE",
-          `GitHub 仓库 (${githubRepo}) 暂无已发布 Release`
+          tr("ota.errNoPublishedRelease", { repo: githubRepo })
         );
       }
     } catch (mobileErr: any) {
@@ -426,14 +428,11 @@ async function fetchGithubManifestAuthoritative(
       if (msg.includes("404")) {
         throw makeUpdaterError(
           "NO_PUBLISHED_RELEASE",
-          `GitHub 仓库 (${githubRepo}) 暂无公开 Release（尚未发布首个版本，或当前仓库为私有）`
+          tr("ota.errNoPublicRelease", { repo: githubRepo })
         );
       }
       if (msg.includes("403") || msg.includes("429")) {
-        throw makeUpdaterError(
-          "GITHUB_RATE_LIMITED",
-          "GitHub 匿名 API 请求已达当前网络每小时限额；首次发布公开 ota-channel Release 后将自动切换至零限流 CDN 通道"
-        );
+        throw makeUpdaterError("GITHUB_RATE_LIMITED", tr("ota.errGithubRateLimit"));
       }
     }
   }
@@ -456,7 +455,7 @@ async function fetchGithubManifestAuthoritative(
     if (proxyRes && proxyRes.ok === false) {
       throw makeUpdaterError(
         String(proxyRes.code || "GITHUB_UNREACHABLE"),
-        String(proxyRes.error || "检查版本更新失败")
+        String(proxyRes.error || tr("ota.errCheckFailed"))
       );
     }
   }
@@ -473,24 +472,21 @@ async function fetchGithubManifestAuthoritative(
     if (apiRes.status === 404) {
       throw makeUpdaterError(
         "NO_PUBLISHED_RELEASE",
-        `GitHub 仓库 (${githubRepo}) 暂无公开 Release（尚未发布首个版本，或当前仓库为私有）`
+        tr("ota.errNoPublicRelease", { repo: githubRepo })
       );
     }
     if (apiRes.status === 403 || apiRes.status === 429) {
-      throw makeUpdaterError(
-        "GITHUB_RATE_LIMITED",
-        "GitHub 匿名 API 请求已达当前网络每小时限额；首次发布公开 ota-channel Release 后将自动切换至零限流 CDN 通道"
-      );
+      throw makeUpdaterError("GITHUB_RATE_LIMITED", tr("ota.errGithubRateLimit"));
     }
     throw makeUpdaterError(
       "GITHUB_UNREACHABLE",
-      `GitHub 版本查询失败 (HTTP ${apiRes.status})`
+      tr("ota.errGithubHttp", { status: apiRes.status })
     );
   }
   const releases = (await apiRes.json()) as any[];
   const synth = synthesizeFromReleasesArray(releases);
   if (!synth) {
-    throw makeUpdaterError("NO_PUBLISHED_RELEASE", "GitHub 暂无可用版本记录");
+    throw makeUpdaterError("NO_PUBLISHED_RELEASE", tr("ota.errGithubEmpty"));
   }
   return synth;
 }
@@ -539,6 +535,7 @@ export async function checkForAppUpdates({
         activeWebBuild: localMeta.activeWebBuild,
         supportsCoreOta: localMeta.supportsCoreOta,
         activeCoreBuild: localMeta.activeCoreBuild || undefined,
+        locale: getActiveLocale(),
       };
       const decision = evaluateUpdateCompatibility(manifest, env);
       const connectedNodeStatus = evaluateConnectedNodeStatus(
@@ -569,7 +566,7 @@ export async function checkForAppUpdates({
           ...prev.updateState,
           checking: false,
           lastCheckedAt: Date.now(),
-          error: String(err?.message || "检测更新失败"),
+          error: String(err?.message || tr("ota.errCheckFailed")),
           errorCode: String(err?.code || "GITHUB_UNREACHABLE"),
         },
       }));
@@ -642,7 +639,7 @@ export async function applyAvailableOtaUpdate(): Promise<{
   }
 
   if (decision.status !== "ota-available" || (!decision.otaBundle && !decision.coreBundle)) {
-    throw new Error(decision.reason || "当前没有可用的热更新包");
+    throw new Error(decision.reason || tr("ota.errNoOtaBundle"));
   }
 
   const platform = st.localMeta?.platform || resolveCurrentPlatform();
@@ -662,8 +659,8 @@ export async function applyAvailableOtaUpdate(): Promise<{
         phase: "downloading",
         percent: 10,
         message: isCoreOta
-          ? "正在下载 TwinkleBot Core 运行时热更新包…"
-          : "正在从 GitHub Releases 准备热更新…",
+          ? tr("ota.downloadingCore")
+          : tr("ota.downloadingWeb"),
       },
     },
   }));
@@ -703,7 +700,7 @@ export async function applyAvailableOtaUpdate(): Promise<{
               activeRunCount,
               coreBuild: decision.coreBundle!.coreBuild,
               webBuild: decision.coreBundle!.webBuild,
-              message: `新版本已下载就绪；当前有 ${activeRunCount} 个 Bot 正在运行，空闲后将自动平滑切换`,
+              message: tr("ota.waitingIdle", { count: activeRunCount }),
             },
           },
         }));
@@ -742,7 +739,7 @@ export async function applyAvailableOtaUpdate(): Promise<{
         webBuild: bundle.webBuild,
       });
     } else {
-      throw new Error("当前运行环境不支持本地热更新包替换，请直接刷新页面");
+      throw new Error(tr("ota.errUnsupportedEnv"));
     }
   } catch (err: any) {
     setState((prev) => ({
@@ -751,7 +748,7 @@ export async function applyAvailableOtaUpdate(): Promise<{
         applying: false,
         coreSwitchInProgress: false,
         progress: null,
-        error: String(err?.message || "热更新失败"),
+        error: String(err?.message || tr("ota.errOtaFailed")),
       },
     }));
     throw err;
@@ -767,7 +764,7 @@ export async function applyAvailableOtaUpdate(): Promise<{
 
 export async function forceSwitchCoreOtaNow() {
   if (!window.twinklebotDesktop?.forceSwitchCoreOta) {
-    throw new Error("当前桌面端不支持强制切换 Core 运行时");
+    throw new Error(tr("ota.errForceSwitchUnsupported"));
   }
   attachDesktopOtaProgressListener();
   setState((prev) => ({
@@ -779,7 +776,7 @@ export async function forceSwitchCoreOtaNow() {
       progress: {
         phase: "applying",
         percent: 92,
-        message: "正在立即重启本地核心服务并切换新版本…",
+        message: tr("ota.forceSwitching"),
       },
     },
   }));
@@ -792,7 +789,7 @@ export async function forceSwitchCoreOtaNow() {
         applying: false,
         coreSwitchInProgress: false,
         progress: null,
-        error: String(err?.message || "强制切换失败"),
+        error: String(err?.message || tr("ota.errForceSwitchFailed")),
       },
     }));
     unsubDesktopProgress?.();
@@ -847,7 +844,7 @@ export async function downloadOrOpenFullShellUpdate() {
         progress: {
           phase: "downloading",
           percent: 15,
-          message: `正在从 GitHub 下载安装包 ${fileName || ""}…`,
+          message: tr("ota.downloadingInstaller", { fileName: fileName || "" }),
         },
       },
     }));

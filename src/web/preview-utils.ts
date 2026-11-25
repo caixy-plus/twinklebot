@@ -82,7 +82,12 @@ const SVG_START_RE = /^(?:<\?xml[^>]*\?>\s*)?<svg\b/i;
 /**
  * Determines whether a code snippet (from a code fence or raw block) is previewable HTML/HTM or SVG.
  */
-export function detectPreviewableMarkup(code = "", fenceLang = "") {
+export function detectPreviewableMarkup(
+  code = "",
+  fenceLang = "",
+  locale: "zh-CN" | "en" = "zh-CN"
+) {
+  const isEn = locale === "en";
   const trimmed = String(code || "").trim();
   const lang = String(fenceLang || "")
     .trim()
@@ -111,7 +116,7 @@ export function detectPreviewableMarkup(code = "", fenceLang = "") {
     return {
       previewable: true,
       kind: "svg",
-      badgeLabel: "SVG 预览",
+      badgeLabel: isEn ? "SVG Preview" : "SVG 预览",
       lang: "svg",
     };
   }
@@ -120,7 +125,13 @@ export function detectPreviewableMarkup(code = "", fenceLang = "") {
     return {
       previewable: true,
       kind: "html",
-      badgeLabel: lang === "htm" ? "HTM 预览" : "HTML 预览",
+      badgeLabel: isEn
+        ? lang === "htm"
+          ? "HTM Preview"
+          : "HTML Preview"
+        : lang === "htm"
+          ? "HTM 预览"
+          : "HTML 预览",
       lang: lang === "htm" ? "htm" : "html",
     };
   }
@@ -138,7 +149,13 @@ export function detectPreviewableMarkup(code = "", fenceLang = "") {
       return {
         previewable: true,
         kind: looksPureSvg ? "svg" : "html",
-        badgeLabel: looksPureSvg ? "SVG 预览" : "HTML 预览",
+        badgeLabel: isEn
+          ? looksPureSvg
+            ? "SVG Preview"
+            : "HTML Preview"
+          : looksPureSvg
+            ? "SVG 预览"
+            : "HTML 预览",
         lang: looksPureSvg ? "svg" : "html",
       };
     }

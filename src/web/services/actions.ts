@@ -5,6 +5,7 @@ import {
   type LanguagePreference,
 } from "/shared/i18n.js";
 import {
+  getActiveLocale,
   readStoredLanguagePreference,
   setLocalLanguageState,
   syncLanguageToDomAndStorage,
@@ -38,8 +39,8 @@ import {
 import {
   ACCOUNTS_STORAGE_KEY,
   buildBotComputerSelfHealPrompt,
+  getBotComputerInitPrompt,
   getFileManagerLabel,
-  PRESET_BOT_COMPUTER_INIT_PROMPT,
 } from "../state/constants.js";
 import {
   computeClientSessionSummary,
@@ -205,11 +206,11 @@ export function resolveConfirmDialog(confirmed: boolean) {
 }
 
 export function showConfirmDialog({
-  title = "确认操作",
+  title = tr("common.confirmAction"),
   message,
   detail = "",
-  confirmText = "确认",
-  cancelText = "取消",
+  confirmText = tr("common.confirm"),
+  cancelText = tr("common.cancel"),
   tone = "danger",
 }: ConfirmDialogOptions): Promise<boolean> {
   if (typeof document === "undefined") {
@@ -478,25 +479,26 @@ export function closeBotScreenOverlay() {
 
 export async function handleBotComputerCardActivate() {
   const s = getState();
+  const locale = getActiveLocale();
   const compState = s.computerStatus?.state || "ready";
   if (compState === "uncreated") {
     const adminBot = s.sessions.find((item) => item.isAdmin) || getPrimarySessionFromState(s);
     if (!adminBot) {
-      showToast("未找到管理员 Bot");
+      showToast(tr("actions.adminBotMissing"));
       return;
     }
     if (s.activeSessionId !== adminBot.id) {
       await selectSession(adminBot.id);
     }
-    await sendUserMessage(PRESET_BOT_COMPUTER_INIT_PROMPT);
+    await sendUserMessage(getBotComputerInitPrompt(locale));
     return;
   }
   if (compState === "creating") {
-    showToast("正在初始化 Bot 电脑环境，请稍候…");
+    showToast(tr("actions.computerCreating"));
     return;
   }
   if (compState === "unsupported") {
-    showToast(s.computerStatus?.detail || "当前平台暂不支持本地 Bot 电脑");
+    showToast(s.computerStatus?.detail || tr("actions.computerUnsupported"));
     return;
   }
   if (compState === "error" || s.computerStatus?.online === false) {
@@ -505,7 +507,7 @@ export async function handleBotComputerCardActivate() {
       if (s.activeSessionId !== adminBot.id) {
         await selectSession(adminBot.id);
       }
-      await sendUserMessage(buildBotComputerSelfHealPrompt(s.computerStatus));
+      await sendUserMessage(buildBotComputerSelfHealPrompt(s.computerStatus, locale));
       return;
     }
     openSettingsModal("computer");
@@ -551,7 +553,7 @@ export function resetActiveSessionViewState(sessionId: string | null, wasSameSes
     lastClusterTs: 0,
     autoScrollPinned: true,
     stepCount: 0,
-    lastRouteLabel: "自动调配",
+    lastRouteLabel: tr("actions.autoRouting"),
     lastRouteReason: "",
     lastRoutePlan: null,
     lastTierPath: "",
@@ -852,7 +854,11 @@ export async function selectSession(sessionId: string) {
         ? {}
         : {
             liveThinkingSummary: "",
-            streamItems: finalizeOrphanedInteractiveItems(prev.streamItems, "⏹ 上一轮操作已中断"),
+            streamItems: finalizeOrphanedInteractiveItems(
+              prev.streamItems,
+              tr("actions.previousTurnInterrupted"),
+              getActiveLocale()
+            ),
           }),
     }));
     syncDerivedAccent();
@@ -882,7 +888,11 @@ export async function selectSession(sessionId: string) {
         working = {
           ...working,
           liveThinkingSummary: "",
-          streamItems: finalizeOrphanedInteractiveItems(working.streamItems, "⏹ 上一轮操作已中断"),
+          streamItems: finalizeOrphanedInteractiveItems(
+            working.streamItems,
+            tr("actions.previousTurnInterrupted"),
+            getActiveLocale()
+          ),
         };
       }
       setState({
@@ -941,7 +951,11 @@ export async function selectSession(sessionId: string) {
       working = {
         ...working,
         liveThinkingSummary: "",
-        streamItems: finalizeOrphanedInteractiveItems(working.streamItems, "⏹ 上一轮操作已中断"),
+        streamItems: finalizeOrphanedInteractiveItems(
+          working.streamItems,
+          tr("actions.previousTurnInterrupted"),
+          getActiveLocale()
+        ),
       };
     }
     setState({
@@ -1006,14 +1020,14 @@ export function applySessionClearedUI(sessionId: string, updatedSession: any = n
 export async function clearSessionHistory(sessionId: string, { skipConfirm = false } = {}) {
   if (!sessionId) return false;
   const target = getState().sessions.find((s) => s.id === sessionId);
-  const label = target?.title || "当前会话";
+  const label = target?.title || tr("actions.currentSession");
   if (!skipConfirm) {
     const ok = await showConfirmDialog({
-      title: "清空对话记录",
-      message: `确定要清空「${label}」的所有对话记录吗？`,
-      detail: "Bot 人设、记忆、技能和配置将保留。",
-      confirmText: "确认清空",
-      cancelText: "取消",
+      title: tr("sidebar.ctxClear"),
+      message: tr("actions.clearConfirmMessage", { label }),
+      detail: tr("actions.clearConfirmDetail"),
+      confirmText: tr("actions.clearConfirmBtn"),
+      cancelText: tr("common.cancel"),
       tone: "danger",
     });
     if (!ok) return false;
@@ -1022,7 +1036,7 @@ export async function clearSessionHistory(sessionId: string, { skipConfirm = fal
     method: "POST",
   });
   applySessionClearedUI(sessionId, res?.session || null);
-  showToast(`已清空「${label}」对话记录`);
+  showToast(tr("actions.clearedToast", { label }));
   return true;
 }
 
@@ -1031,19 +1045,21 @@ export async function deleteSessionWithConfirm(sessionId: string) {
   const target = getState().sessions.find((s) => s.id === sessionId);
   if (!target) return false;
   if (target.isAdmin) {
-    showToast("管理员 Bot 严禁删除");
+    showToast(tr("actions.adminCannotDelete"));
     return false;
   }
-  const label = target.title && target.title !== "New Session" ? target.title : "新 Bot";
+  const label = target.title && target.title !== "New Session" ? target.title : tr("actions.newBotFallback");
   const isGroup = target.type === "group";
   const ok = await showConfirmDialog({
-    title: isGroup ? "删除群聊" : "删除 Bot",
-    message: `确定要删除${isGroup ? "群聊" : " Bot"}「${label}」吗？`,
+    title: isGroup ? tr("sidebar.ctxDeleteGroup") : tr("sidebar.ctxDelete"),
+    message: isGroup
+      ? tr("actions.deleteGroupConfirmMsg", { label })
+      : tr("actions.deleteBotConfirmMsg", { label }),
     detail: isGroup
-      ? "删除后将永久移除该协作群聊及其全部历史对话记录，成员 Bot 本身保留。"
-      : "删除后将永久移除该 Bot 及其人设、专属记忆和全部历史对话记录。",
-    confirmText: "确认删除",
-    cancelText: "取消",
+      ? tr("actions.deleteGroupConfirmDetail")
+      : tr("actions.deleteBotConfirmDetail"),
+    confirmText: tr("actions.deleteConfirmBtn"),
+    cancelText: tr("common.cancel"),
     tone: "danger",
   });
   if (!ok) return false;
@@ -1060,10 +1076,10 @@ export async function deleteSessionWithConfirm(sessionId: string) {
       }
     }
     syncDerivedAccent();
-    showToast(`已删除「${label}」`);
+    showToast(tr("actions.deletedToast", { label }));
     return true;
   } catch (err: any) {
-    showToast(`删除失败: ${err?.message || err}`);
+    showToast(tr("actions.deleteFailedToast", { error: err?.message || err }));
     return false;
   }
 }
@@ -1105,7 +1121,7 @@ export function applySessionRewoundUI(
 export async function uploadAndStageFiles(files: File[]) {
   for (const file of files) {
     if (file.size > 10 * 1024 * 1024) {
-      showToast(`${file.name} 超过 10MB 限制`);
+      showToast(tr("actions.fileTooLarge", { name: file.name }));
       continue;
     }
     const base64 = await new Promise<string>((resolve) => {
@@ -1175,7 +1191,7 @@ export async function sendUserMessage(rawText?: string) {
       (document.activeElement === msgInputEl || document.activeElement === sendBtnEl));
 
   if (!text && stagedAttachments.length === 0 && stagedQuotes.length === 0) {
-    showToast("请输入消息内容");
+    showToast(tr("actions.enterMessage"));
     msgInputEl?.focus();
     setState({ keepInputFocusedOnSend: false });
     return;
@@ -1192,11 +1208,11 @@ export async function sendUserMessage(rawText?: string) {
   }
 
   if (s.newChatBarOpen && s.newChatRecipients.length >= 2) {
-    const names = s.newChatRecipients.map((b) => b.title).join("、");
+    const names = s.newChatRecipients.map((b) => b.title).join(getActiveLocale() === "en" ? ", " : "、");
     const group = await apiJson("/api/sessions", {
       method: "POST",
       body: JSON.stringify({
-        title: `${names.slice(0, 22)} 协作群`,
+        title: tr("actions.groupDefaultTitle", { names: names.slice(0, 22) }),
         type: "group",
         memberBotIds: s.newChatRecipients.map((b) => b.id),
       }),
@@ -1341,7 +1357,7 @@ export async function sendUserMessage(rawText?: string) {
   } catch (err: any) {
     renderEventForActiveSession({
       type: "error",
-      message: err?.message || "发送失败",
+      message: err?.message || tr("actions.sendFailed"),
       clientOnly: true,
     });
   } finally {
@@ -1380,7 +1396,7 @@ export async function continueFromMaxSteps() {
     await apiJson(`/api/sessions/${activeSid}/messages`, {
       method: "POST",
       body: JSON.stringify({
-        text: "继续执行未完成的任务，请从当前进度接续完成。",
+        text: tr("actions.continueMaxStepsPrompt"),
       }),
     });
     scrollChatStreamToBottom({ guardMs: 400, settle: true });
@@ -1393,7 +1409,7 @@ export async function continueFromMaxSteps() {
         activeMap: nextMap,
       };
     });
-    showToast(`继续执行失败: ${err?.message || "请求失败"}`);
+    showToast(tr("actions.continueFailed", { error: err?.message || tr("actions.requestFailed") }));
   }
 }
 
@@ -1653,13 +1669,13 @@ export async function refreshSystemDiagnostics(showFeedback = false) {
     };
     if (showFeedback) {
       apply();
-      showToast("系统运行诊断已刷新");
+      showToast(tr("actions.diagnosticsRefreshed"));
     } else {
       runWhenSettingsScrollIdle("diagnostics", apply);
     }
   } catch {
     if (showFeedback && reqEpoch === getState().accountEpoch) {
-      showToast("诊断信息读取失败");
+      showToast(tr("actions.diagnosticsFailed"));
     }
   }
 }
@@ -1684,12 +1700,18 @@ export async function refreshAllLiveProviderBalances() {
     setState({ providerBilling: data });
     const failed = (data.results || []).filter((r: any) => !r.ok);
     if (failed.length > 0) {
-      showToast(`部分供应商刷新失败：${failed[0].error || "请检查密钥或网络"}`);
+      showToast(
+        tr("actions.billingPartialFailed", {
+          error: failed[0].error || tr("actions.billingCheckKeyOrNet"),
+        })
+      );
     } else {
-      showToast("✓ 已刷新全部实时余额");
+      showToast(tr("actions.billingRefreshedAll"));
     }
   } catch (err: any) {
-    showToast(`刷新失败：${err?.message || "请求异常"}`);
+    showToast(
+      tr("actions.refreshFailed", { error: err?.message || tr("actions.requestException") })
+    );
   }
 }
 
@@ -1879,7 +1901,7 @@ export async function refreshMcpSkillStatus(serverId = "kimi-cu", connect = fals
         [serverId]: {
           serverId,
           connected: false,
-          error: err?.message || "状态读取失败",
+          error: err?.message || tr("actions.mcpStatusFailed"),
         },
       },
     }));
@@ -1936,13 +1958,13 @@ export async function saveAccountsDirectory(nextState: any) {
 export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = false } = {}) {
   const label = acc.name || acc.baseUrl || acc.id;
   const ok = await showConfirmDialog({
-    title: "移除云端账号",
-    message: `确定要移除云端工作台「${label}」吗？`,
+    title: tr("actions.removeCloudTitle"),
+    message: tr("actions.removeCloudMsg", { label }),
     detail: acc.baseUrl
-      ? `节点地址：${acc.baseUrl}\n移除后若需重新连接，需再次配置服务地址与访问令牌。`
-      : "移除后若需重新连接，需再次配置服务地址与访问令牌。",
-    confirmText: "确认移除",
-    cancelText: "取消",
+      ? tr("actions.removeCloudDetailWithUrl", { url: acc.baseUrl })
+      : tr("actions.removeCloudDetail"),
+    confirmText: tr("actions.removeCloudConfirm"),
+    cancelText: tr("common.cancel"),
     tone: "danger",
   });
   if (!ok) return false;
@@ -1959,7 +1981,7 @@ export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = 
       await switchAccount(LOCAL_ACCOUNT_ID);
     }
   }
-  showToast(`已移除云端账号「${label}」`);
+  showToast(tr("actions.removedCloudToast", { label }));
   return true;
 }
 
@@ -1972,7 +1994,7 @@ export async function reloadWorkspaceForActiveAccount(epoch = getState().account
   } catch (err: any) {
     if (err?.code === "STALE_ACCOUNT_EPOCH") return;
     if (epoch !== getState().accountEpoch || getState().lanNodeOffline || isRemoteAccountOffline(getState())) return;
-    showToast(`配置加载失败: ${err.message}`);
+    showToast(tr("actions.configLoadFailed", { error: err.message }));
   }
 
   await refreshSettingsFromServer();
@@ -1992,8 +2014,7 @@ export async function reloadWorkspaceForActiveAccount(epoch = getState().account
         body: JSON.stringify({
           title: "Twinkle",
           avatar: { shape: "blob", color: "black" },
-          rolePrompt:
-            "TwinkleBot 主控协调智能体，可操控桌面、创建专职新 Bot、派发跨 Bot 交接消息及组建群聊。",
+          rolePrompt: tr("actions.primaryBotRolePrompt"),
         }),
       });
       sessions = [twinkle];
@@ -2017,7 +2038,7 @@ export async function reloadWorkspaceForActiveAccount(epoch = getState().account
   } catch (err: any) {
     if (err?.code === "STALE_ACCOUNT_EPOCH") return;
     if (epoch !== getState().accountEpoch || getState().lanNodeOffline || isRemoteAccountOffline(getState())) return;
-    showToast(`会话加载失败: ${err.message}`);
+    showToast(tr("actions.sessionsLoadFailed", { error: err.message }));
   }
 
   if (epoch !== getState().accountEpoch || getState().lanNodeOffline || isRemoteAccountOffline(getState())) return;
@@ -2047,14 +2068,14 @@ export async function refreshActiveAccountConnection(
     } else {
       await syncSessionsAndActiveOnReconnect(epoch);
     }
-    showToast(`已恢复连接：${accMeta.label}`);
+    showToast(tr("actions.reconnectedToast", { label: accMeta.label }));
     return { ok: true };
   } catch (err: any) {
     if (epoch !== getState().accountEpoch) return { ok: false };
     if (accMeta.type === "lan") {
       setState({ lanNodeOffline: true });
     }
-    return { ok: false, error: err?.message || "无法连接到账号服务端" };
+    return { ok: false, error: err?.message || tr("actions.accountServerUnreachable") };
   }
 }
 
@@ -2064,14 +2085,14 @@ export async function retryActiveLanConnection(epoch = getState().accountEpoch):
     if (epoch !== getState().accountEpoch) return false;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     markLanReachable();
-    showToast("已重新连接局域网电脑");
+    showToast(tr("actions.lanReconnectedToast"));
     await reloadWorkspaceForActiveAccount(epoch);
     return true;
   } catch {
     if (epoch !== getState().accountEpoch) return false;
     dismissLanOfflineModal();
     setState({ lanNodeOffline: true });
-    showToast("局域网电脑暂不可达，已停留在当前页");
+    showToast(tr("actions.lanUnreachableStayToast"));
     return false;
   }
 }
@@ -2158,7 +2179,15 @@ export async function switchAccount(accountId: string, opts: any = {}) {
   await reloadWorkspaceForActiveAccount(epoch);
   if (!opts.silent && epoch === getState().accountEpoch) {
     showToast(
-      `已切换至：${target.name || (isCloud ? "云端工作台" : isLan ? "局域网电脑" : "本地工作台")}`
+      tr("actions.switchedWorkspaceToast", {
+        label:
+          target.name ||
+          (isCloud
+            ? tr("sidebar.cloudWorkspace")
+            : isLan
+              ? tr("sidebar.lanComputer")
+              : tr("sidebar.localWorkspace")),
+      })
     );
   }
 }
@@ -2191,7 +2220,7 @@ export async function selectCloudHost(clientId: string) {
     onlineCloudHosts: Array.isArray(res.hosts) ? res.hosts : prev.onlineCloudHosts,
     selectedCloudHostId: res.selectedHostId || clientId,
   }));
-  showToast("已切换目标执行宿主机");
+  showToast(tr("actions.switchedHostToast"));
 }
 
 export async function scanAndRenderLanNodes() {
@@ -2219,7 +2248,7 @@ export async function initiateLanPairing(deviceInfo: any) {
     .trim()
     .replace(/\/+$/, "");
   if (!resolvedBaseUrl) {
-    showToast("未能识别该设备的局域网地址");
+    showToast(tr("actions.lanAddressMissing"));
     return;
   }
   const normalizedDev = {
@@ -2243,7 +2272,7 @@ export async function initiateLanPairing(deviceInfo: any) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.pairingId) {
-      throw new Error(data.error || "发起配对失败");
+      throw new Error(data.error || tr("actions.pairRequestFailed"));
     }
     setState({
       pendingPairingId: data.pairingId,
@@ -2254,7 +2283,7 @@ export async function initiateLanPairing(deviceInfo: any) {
       (document.getElementById("mobile-pair-code-input") as HTMLInputElement | null)?.focus();
     }, 60);
   } catch (err: any) {
-    showToast(`发起配对失败: ${err.message}`);
+    showToast(tr("actions.pairRequestErrorToast", { error: err.message }));
   }
 }
 
@@ -2266,7 +2295,7 @@ export async function submitLanPairingCode(code: string) {
   const cleanCode = String(code || "").trim();
   if (!/^\d{6}$/.test(cleanCode)) {
     setState({
-      mobilePairFeedback: { text: "请输入电脑端显示的 6 位数字配对码", kind: "error" },
+      mobilePairFeedback: { text: tr("actions.pairCodeInvalidFormat"), kind: "error" },
     });
     return;
   }
@@ -2283,7 +2312,7 @@ export async function submitLanPairingCode(code: string) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.deviceToken) {
-      throw new Error(data.error || "配对码校验失败");
+      throw new Error(data.error || tr("actions.pairVerifyFailed"));
     }
     const nextState = upsertLanAccount(getState().accountsState, {
       instanceId: data.instanceId || dev.instanceId,
@@ -2305,7 +2334,7 @@ export async function submitLanPairingCode(code: string) {
     }
   } catch (err: any) {
     setState({
-      mobilePairFeedback: { text: err?.message || "配对验证失败", kind: "error" },
+      mobilePairFeedback: { text: err?.message || tr("actions.pairVerifyError"), kind: "error" },
     });
   }
 }
@@ -2315,7 +2344,7 @@ export function toggleVoiceDictation() {
   if (typeof window === "undefined") return;
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRec) {
-    showToast("当前浏览器不支持原生语音识别");
+    showToast(tr("actions.voiceUnsupported"));
     return;
   }
   const s = getState();
@@ -2324,12 +2353,12 @@ export function toggleVoiceDictation() {
     return;
   }
   const rec = new SpeechRec();
-  rec.lang = "zh-CN";
+  rec.lang = getActiveLocale() === "en" ? "en-US" : "zh-CN";
   rec.interimResults = false;
   const sessionSeq = (runtimeRefs.voiceSessionSeq = (runtimeRefs.voiceSessionSeq || 0) + 1);
   runtimeRefs.speechRec = rec;
   setState({ isRecordingVoice: true });
-  showToast("正在聆听，请说话…");
+  showToast(tr("actions.voiceListening"));
 
   rec.onresult = (ev: any) => {
     if (sessionSeq !== runtimeRefs.voiceSessionSeq) return;
@@ -2370,13 +2399,18 @@ export async function openLocalFile(filePath: string, { reveal = false } = {}) {
   } catch (err: any) {
     const fmLabel = getFileManagerLabel(
       getState().computerStatus?.hostComputer?.platform ||
-        getState().diagnostics?.hostComputer?.platform
+        getState().diagnostics?.hostComputer?.platform,
+      getActiveLocale()
     );
-    showToast(`${reveal ? `打开${fmLabel}` : "打开文件"}失败: ${err.message}`);
+    showToast(
+      reveal
+        ? tr("actions.revealFailedToast", { label: fmLabel, error: err.message })
+        : tr("actions.openFileFailedToast", { error: err.message })
+    );
   }
 }
 
-export function openImageLightbox(url: string, alt = "图片预览") {
+export function openImageLightbox(url: string, alt = tr("actions.imagePreviewAlt")) {
   if (!url) return;
   setState({ imageLightbox: { open: true, url, alt } });
 }
@@ -2393,7 +2427,7 @@ export function openHtmlPreviewModal(params: {
       open: true,
       code: String(params.code || ""),
       kind: params.kind || "html",
-      badgeLabel: params.badgeLabel || "HTML 预览",
+      badgeLabel: params.badgeLabel || tr("actions.htmlPreviewBadge"),
       lang: params.lang || "html",
       canvasBg: params.canvasBg || "light",
       mode: "preview",

@@ -9,6 +9,19 @@
         document.querySelector('meta[name="color-scheme"]').content =
           localStorage.getItem("color-scheme") ?? "light dark";
       } catch {}
+      try {
+        var _tbPref = (localStorage.getItem("twinklebot.language") || "system").toLowerCase();
+        var _tbLocale =
+          _tbPref === "en" || _tbPref.indexOf("en-") === 0
+            ? "en"
+            : _tbPref === "zh" || _tbPref === "zh-cn" || _tbPref.indexOf("zh-") === 0
+              ? "zh-CN"
+              : (navigator.language || "").toLowerCase().indexOf("zh") === 0
+                ? "zh-CN"
+                : "en";
+        document.documentElement.lang = _tbLocale;
+        document.documentElement.dataset.locale = _tbLocale;
+      } catch {}
     </script>
     <title>TwinkleBot</title>
     <link rel="icon" type="image/png" href="/icon.png" />

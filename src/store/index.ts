@@ -820,29 +820,7 @@ export function createStore(dataDir: string) {
 
   function readVault(): any[] {
     if (!fs.existsSync(vaultFile)) {
-      return [
-        {
-          id: "v-1",
-          category: "contact",
-          title: "我的 Google 账号（Gmail 默认连接）",
-          subtitle: "you@example.com",
-          notes: "默认工作邮箱",
-        },
-        {
-          id: "v-2",
-          category: "contact",
-          title: "备用邮箱",
-          subtitle: "backup@example.com",
-          notes: "开发测试账号",
-        },
-        {
-          id: "v-3",
-          category: "contact",
-          title: "Me",
-          subtitle: "本地用户",
-          notes: "本地主操作人",
-        },
-      ];
+      return [];
     }
     const parsed = localCrypto.readEncryptedJsonFile<unknown>(vaultFile, []);
     return Array.isArray(parsed) ? parsed : [];

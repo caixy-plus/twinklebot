@@ -20,6 +20,7 @@ export interface BotComputerDisplayOptions {
   computerDisplays?: { bindings?: Record<string, string>; pool?: any } | null;
   activeSessionId?: string | null;
   detecting?: boolean;
+  locale?: "zh-CN" | "en";
 }
 
 export interface BotComputerStatusView {
@@ -54,6 +55,7 @@ export function resolveBotComputerStatusDisplay(
   computerStatus?: ComputerStatusPayload | null,
   opts: BotComputerDisplayOptions = {}
 ): BotComputerStatusView {
+  const isEn = opts.locale === "en";
   const compState = computerStatus?.state || "ready";
   const isCompOnline = computerStatus?.online !== false;
   const hasProbe =
@@ -69,8 +71,8 @@ export function resolveBotComputerStatusDisplay(
       computerStatus?.errorCode !== "unreachable"
   );
 
-  let cardStatusText = "检测中…";
-  let mobileSubText = "点击管理设备";
+  let cardStatusText = isEn ? "Checking…" : "检测中…";
+  let mobileSubText = isEn ? "Tap to manage devices" : "点击管理设备";
   let settingsStatusTone: "pending" | "ok" | "err" | "warn" = "pending";
   let settingsOfflineReason = "";
 
@@ -81,64 +83,91 @@ export function resolveBotComputerStatusDisplay(
   }
 
   if (compState === "uncreated") {
-    cardStatusText = "待创建 · 点击初始化";
-    mobileSubText = "待创建（点击跳转管理员 Bot 初始化）";
+    cardStatusText = isEn ? "Not initialized · Click to set up" : "待创建 · 点击初始化";
+    mobileSubText = isEn
+      ? "Not initialized (Tap to set up via Admin Bot)"
+      : "待创建（点击跳转管理员 Bot 初始化）";
     settingsStatusTone = hasProbe ? "warn" : "pending";
-    settingsOfflineReason = computerStatus?.detail || "尚未创建本地 Bot 电脑";
+    settingsOfflineReason =
+      computerStatus?.detail ||
+      (isEn ? "Local Bot Computer has not been created yet" : "尚未创建本地 Bot 电脑");
   } else if (compState === "creating") {
-    cardStatusText = "创建中…";
-    mobileSubText = "正在创建虚拟桌面环境…";
+    cardStatusText = isEn ? "Initializing…" : "创建中…";
+    mobileSubText = isEn
+      ? "Creating virtual desktop environment…"
+      : "正在创建虚拟桌面环境…";
     settingsStatusTone = "warn";
-    settingsOfflineReason = computerStatus?.detail || "正在初始化 Bot 电脑环境…";
+    settingsOfflineReason =
+      computerStatus?.detail ||
+      (isEn ? "Initializing Bot Computer environment…" : "正在初始化 Bot 电脑环境…");
   } else if (compState === "unsupported") {
-    cardStatusText = "暂不支持";
-    mobileSubText = "当前平台暂不支持";
+    cardStatusText = isEn ? "Unsupported" : "暂不支持";
+    mobileSubText = isEn ? "Unsupported on current platform" : "当前平台暂不支持";
     settingsStatusTone = "err";
-    settingsOfflineReason = computerStatus?.detail || "当前平台暂不支持本地容器";
+    settingsOfflineReason =
+      computerStatus?.detail ||
+      (isEn ? "Local container is not supported on this platform" : "当前平台暂不支持本地容器");
   } else if (isAuthMismatch) {
-    cardStatusText = "令牌未对齐 · 点击自检自愈";
-    mobileSubText = "认证异常（点击跳转管理员 Bot 自检自愈）";
+    cardStatusText = isEn ? "Token mismatch · Click to repair" : "令牌未对齐 · 点击自检自愈";
+    mobileSubText = isEn
+      ? "Auth mismatch (Tap to auto-repair via Admin Bot)"
+      : "认证异常（点击跳转管理员 Bot 自检自愈）";
     settingsStatusTone = "err";
-    settingsOfflineReason = "unauthorized · 容器执行器密钥不一致，可点击卡片交由主 Bot 自愈或点击下方「更新」";
+    settingsOfflineReason = isEn
+      ? "unauthorized · Container executor token mismatch; click card to auto-heal or click Refresh below"
+      : "unauthorized · 容器执行器密钥不一致，可点击卡片交由主 Bot 自愈或点击下方「更新」";
   } else if (compState === "error") {
-    cardStatusText = "状态异常 · 点击自检自愈";
-    mobileSubText = "状态异常（点击跳转管理员 Bot 自检自愈）";
+    cardStatusText = isEn ? "Error · Click to auto-repair" : "状态异常 · 点击自检自愈";
+    mobileSubText = isEn
+      ? "Error (Tap to auto-repair via Admin Bot)"
+      : "状态异常（点击跳转管理员 Bot 自检自愈）";
     settingsStatusTone = "err";
     settingsOfflineReason =
-      computerStatus?.error || computerStatus?.detail || "执行器未响应";
+      computerStatus?.error ||
+      computerStatus?.detail ||
+      (isEn ? "Executor not responding" : "执行器未响应");
   } else if (!isCompOnline) {
-    cardStatusText = "休眠中";
-    mobileSubText = "休眠中（点击跳转管理员 Bot 唤醒自检）";
+    cardStatusText = isEn ? "Hibernated" : "休眠中";
+    mobileSubText = isEn
+      ? "Hibernated (Tap to wake via Admin Bot)"
+      : "休眠中（点击跳转管理员 Bot 唤醒自检）";
     settingsStatusTone = "err";
     settingsOfflineReason =
-      computerStatus?.error || computerStatus?.detail || "执行器未响应";
+      computerStatus?.error ||
+      computerStatus?.detail ||
+      (isEn ? "Executor not responding" : "执行器未响应");
   } else if (opts.takeoverActive) {
-    cardStatusText = "你正在控制";
-    mobileSubText = "运行中 · 点击全屏查看";
+    cardStatusText = isEn ? "You are in control" : "你正在控制";
+    mobileSubText = isEn ? "Running · Tap for fullscreen" : "运行中 · 点击全屏查看";
     settingsStatusTone = "ok";
   } else if (opts.sessionStatus === "waiting_screen") {
-    cardStatusText = "排队等待空闲屏幕…";
-    mobileSubText = "排队等待空闲屏幕…";
+    cardStatusText = isEn ? "Waiting for free screen…" : "排队等待空闲屏幕…";
+    mobileSubText = isEn ? "Waiting for free screen…" : "排队等待空闲屏幕…";
     settingsStatusTone = "ok";
   } else if (
     computerStatus?.provider === "cloud-linux" &&
     !opts.anySessionRunning
   ) {
-    cardStatusText = "云端沙箱已就绪";
-    mobileSubText = "云端沙箱已就绪 · 点击全屏查看";
+    cardStatusText = isEn ? "Cloud sandbox ready" : "云端沙箱已就绪";
+    mobileSubText = isEn
+      ? "Cloud sandbox ready · Tap for fullscreen"
+      : "云端沙箱已就绪 · 点击全屏查看";
     settingsStatusTone = "ok";
   } else if (hasProbe) {
     const multiDisplayEnabled = Boolean(opts.multiDisplayEnabled);
     const pool = opts.computerDisplays?.pool;
     const queueHint =
       multiDisplayEnabled && pool && pool.queuedCount > 0
-        ? ` · 排队 ${pool.queuedCount}`
+        ? isEn
+          ? ` · Queued ${pool.queuedCount}`
+          : ` · 排队 ${pool.queuedCount}`
         : "";
-    cardStatusText = `运行中${queueHint}`;
-    mobileSubText = "运行中 · 点击全屏查看";
+    cardStatusText = isEn ? `Running${queueHint}` : `运行中${queueHint}`;
+    mobileSubText = isEn ? "Running · Tap for fullscreen" : "运行中 · 点击全屏查看";
     settingsStatusTone = "ok";
   } else {
-    settingsOfflineReason = computerStatus?.error || "执行器未响应";
+    settingsOfflineReason =
+      computerStatus?.error || (isEn ? "Executor not responding" : "执行器未响应");
   }
 
   return {

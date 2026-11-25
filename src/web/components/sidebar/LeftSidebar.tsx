@@ -29,7 +29,7 @@ import { SessionAvatar } from "../common/AvatarView.js";
 import { UiIcon } from "../common/Icon.js";
 import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
 import { getActiveAccountMeta } from "../../services/network-monitor.js";
-import { useI18n } from "../../services/i18n.js";
+import { useI18n, resolveLocalizedAccountName, resolveLocalizedProfileName } from "../../services/i18n.js";
 
 export function LeftSidebar({
   onToggleCompact,
@@ -59,7 +59,7 @@ export function LeftSidebar({
       : networkHealth.status;
   const mobileNodeIsOnline = effectiveNetStatus !== "offline" && !lanNodeOffline;
   const updateState = useStore((s) => s.updateState);
-  const { t } = useI18n();
+  const { locale, t, tStatus } = useI18n();
   const updateDecision = updateState?.decision;
   const hasVisibleUpdate = Boolean(
     updateDecision &&
@@ -67,8 +67,8 @@ export function LeftSidebar({
       computeUpdateDecisionKey(updateDecision) !== updateState?.dismissedVersionKey
   );
 
-  const profile = settings?.profile || { name: "本地用户", color: "slate" };
-  const profileName = String(profile.name || "本地用户").trim() || "本地用户";
+  const profile = settings?.profile || { name: "", color: "slate" };
+  const profileName = resolveLocalizedProfileName(profile.name, locale, t("sidebar.localUser"));
   const profileColor = String(profile.color || "slate");
   const profileInitial = Array.from(profileName)[0]?.toUpperCase() || "U";
 
@@ -155,9 +155,9 @@ export function LeftSidebar({
   const updateTriggerTitle =
     updateDecision?.status === "ota-available"
       ? updateDecision?.otaKind === "core"
-        ? "发现 Core 运行时热更新（免重装），点击一键更新"
-        : "发现纯前端热更新，点击一键更新"
-      : "发现新版本，点击查看更新";
+        ? t("sidebar.updateAvailableCore")
+        : t("sidebar.updateAvailableWeb")
+      : t("sidebar.updateAvailableGeneric");
 
   return (
     <aside className="sidebar-left" id="sidebar-left" aria-label="Bot">
@@ -172,8 +172,8 @@ export function LeftSidebar({
             id="compact-sidebar-btn"
             type="button"
             className="sidebar-icon-btn"
-            title="切换紧凑侧边栏"
-            aria-label="切换紧凑侧边栏"
+            title={t("sidebar.compactToggle")}
+            aria-label={t("sidebar.compactToggle")}
             onClick={onToggleCompact}
           >
             <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -185,8 +185,8 @@ export function LeftSidebar({
             id="open-search-modal-btn"
             type="button"
             className="sidebar-circle-btn"
-            title="搜索 (⌘K)"
-            aria-label="搜索"
+            title={t("sidebar.searchTooltip")}
+            aria-label={t("sidebar.searchAria")}
             onClick={() => {
               closeAllPopovers();
               setState({ searchModalOpen: true });
@@ -204,8 +204,8 @@ export function LeftSidebar({
             id="new-session-btn"
             type="button"
             className="sidebar-circle-btn"
-            title="新建对话 / Bot / 群聊"
-            aria-label="新建 Bot"
+            title={t("sidebar.newChat")}
+            aria-label={t("sidebar.newBot")}
             onClick={() => openNewChatBar(false)}
           >
             <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -220,8 +220,8 @@ export function LeftSidebar({
           id="mobile-settings-btn"
           type="button"
           className="mobile-circle-btn"
-          title="节点与设置"
-          aria-label="节点与设置"
+          title={t("sidebar.nodesAndSettings")}
+          aria-label={t("sidebar.nodesAndSettings")}
           onClick={() => {
             refreshUsageAndHealth();
             setState((prev) => ({
@@ -245,7 +245,7 @@ export function LeftSidebar({
               type="button"
               className="mobile-circle-btn mobile-update-btn"
               title={updateTriggerTitle}
-              aria-label="发现可用更新"
+              aria-label={t("sidebar.updateBadgeAria")}
               onClick={openUpdatesPanel}
             >
               <UiIcon name="cloud-download" size={18} />
@@ -255,8 +255,8 @@ export function LeftSidebar({
             id="mobile-new-bot-btn"
             type="button"
             className="mobile-circle-btn"
-            title="新建 Bot"
-            aria-label="新建 Bot"
+            title={t("sidebar.newBot")}
+            aria-label={t("sidebar.newBot")}
             onClick={() =>
               setState((prev) => ({
                 mobileSheets: { ...prev.mobileSheets, botEditorOpen: true },
@@ -281,12 +281,12 @@ export function LeftSidebar({
       <NetworkStatusBanner placement="mobile-list" />
 
       {/* Pinned Primary Bot (Nori) */}
-      <div className="pinned-bot-zone" aria-label="已置顶的 Bot">
+      <div className="pinned-bot-zone" aria-label={t("sidebar.pinnedZoneAria")}>
         <button
           id="pinned-primary-bot"
           type="button"
           className={`pinned-bot-card${isPinnedActive ? " is-active" : ""}`}
-          aria-label={`${pinnedLabel}, 主 Bot`}
+          aria-label={`${pinnedLabel}, ${t("sidebar.primaryBot")}`}
           onClick={() => {
             if (primarySession) {
               selectSession(primarySession.id);
@@ -309,7 +309,7 @@ export function LeftSidebar({
               primaryId={primarySessionId}
             />
           </div>
-          <span className="pinned-star-badge" title="主 Bot" aria-hidden="true">
+          <span className="pinned-star-badge" title={t("sidebar.primaryBot")} aria-hidden="true">
             <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path
                 d="M10 3.2L12.05 7.35L16.6 8.02L13.3 11.24L14.08 15.78L10 13.63L5.92 15.78L6.7 11.24L3.4 8.02L7.95 7.35L10 3.2Z"
@@ -328,7 +328,7 @@ export function LeftSidebar({
       <select
         id="session-select"
         className="sr-only"
-        aria-label="会话选择"
+        aria-label={t("sidebar.sessionSelectAria")}
         value={activeSessionId || ""}
         onChange={(e) => {
           if (e.target.value) selectSession(e.target.value);
@@ -344,13 +344,13 @@ export function LeftSidebar({
         id="session-search"
         type="search"
         className="sr-only"
-        aria-label="搜索会话"
+        aria-label={t("sidebar.sessionSearchAria")}
         readOnly
       />
-      <select id="model-select" className="sr-only" aria-label="自动路由模型" />
+      <select id="model-select" className="sr-only" aria-label={t("sidebar.autoRouteModelAria")} />
 
       {/* Scrollable Bot / Group List */}
-      <div id="session-list" className="session-list" role="listbox" aria-label="Bot 列表">
+      <div id="session-list" className="session-list" role="listbox" aria-label={t("sidebar.botListAria")}>
         {visibleSessions.map((s: any) => {
           const isActive = s.id === activeSessionId;
           const liveState = activeMap[s.id] || (isActive ? sessionStatus : s.status);
@@ -361,8 +361,8 @@ export function LeftSidebar({
           const rawSub =
             s.subtitle ||
             (s.type === "group"
-              ? `${(s.memberBotIds || []).length} 位成员协作群`
-              : s.rolePrompt || STATUS_LABELS[liveState || "idle"] || "就绪");
+              ? t("sidebar.groupMembersCount", { count: (s.memberBotIds || []).length })
+              : s.rolePrompt || (liveState ? tStatus(liveState) : t("sidebar.ready")));
           const cleanSub = String(rawSub)
             .replace(/\*\*|`+/g, "")
             .replace(/\s+/g, " ")
@@ -395,16 +395,16 @@ export function LeftSidebar({
               <div className="session-item-body">
                 <div className="session-item-row">
                   <span className="session-item-title">
-                    {s.title && s.title !== "New Session" ? s.title : "新 Bot"}
+                    {s.title && s.title !== "New Session" ? s.title : t("actions.newBotFallback")}
                   </span>
                   <span className="session-badges">
                     {isWorking && (
                       <span className="working-pill-badge">
-                        {STATUS_LABELS[liveState] || "工作中"}
+                        {liveState ? tStatus(liveState) : t("sidebar.workingFallback")}
                       </span>
                     )}
                     {!isActive && Number(s.unreadCount) > 0 && (
-                      <span className="unread-blue-dot" title={`${s.unreadCount} 条未读`} />
+                      <span className="unread-blue-dot" title={t("sidebar.unreadCountTitle", { count: s.unreadCount })} />
                     )}
                   </span>
                 </div>
@@ -420,8 +420,8 @@ export function LeftSidebar({
           id="mobile-tools-btn"
           type="button"
           className="mobile-circle-btn"
-          title="技能商店"
-          aria-label="技能商店"
+          title={t("sidebar.skillsStore")}
+          aria-label={t("sidebar.skillsStore")}
           onClick={() => {
             setState({ mobileReturnToSettingsSheet: false });
             openAppsModal("store");
@@ -443,8 +443,8 @@ export function LeftSidebar({
             id="mobile-search-input"
             type="search"
             className="mobile-search-input"
-            placeholder="搜索 Bot 或消息"
-            aria-label="搜索 Bot 或消息"
+            placeholder={t("sidebar.searchPlaceholder")}
+            aria-label={t("sidebar.searchPlaceholder")}
             autoComplete="off"
             value={mobileSearchQuery}
             onChange={(e) => setState({ mobileSearchQuery: e.target.value })}
@@ -453,13 +453,13 @@ export function LeftSidebar({
       </div>
 
       {/* Compact Sidebar Bottom Vertical Action Stack */}
-      <div className="compact-rail-footer" aria-label="紧凑侧边栏操作">
+      <div className="compact-rail-footer" aria-label={t("sidebar.compactActionsAria")}>
         <button
           id="compact-expand-btn"
           type="button"
           className="sidebar-icon-btn"
-          title="展开侧边栏"
-          aria-label="切换紧凑侧边栏"
+          title={t("sidebar.expandSidebar")}
+          aria-label={t("sidebar.compactToggle")}
           onClick={onToggleCompact}
         >
           <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -471,8 +471,8 @@ export function LeftSidebar({
           id="compact-new-btn"
           type="button"
           className="sidebar-icon-btn"
-          title="新建 Bot / 群聊"
-          aria-label="新建 Bot"
+          title={t("sidebar.newChat")}
+          aria-label={t("sidebar.newBot")}
           onClick={() => openNewChatBar(false)}
         >
           <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -483,8 +483,8 @@ export function LeftSidebar({
           id="compact-apps-btn"
           type="button"
           className="sidebar-icon-btn"
-          title="技能商店"
-          aria-label="技能"
+          title={t("sidebar.skillsStore")}
+          aria-label={t("sidebar.skillsAriaShort")}
           onClick={() => {
             setState({ mobileReturnToSettingsSheet: false });
             openAppsModal("store");
@@ -503,7 +503,7 @@ export function LeftSidebar({
             type="button"
             className="sidebar-icon-btn sidebar-update-btn"
             title={updateTriggerTitle}
-            aria-label="发现可用更新"
+            aria-label={t("sidebar.updateBadgeAria")}
             onClick={openUpdatesPanel}
           >
             <UiIcon name="cloud-download" size={16} />
@@ -514,8 +514,8 @@ export function LeftSidebar({
           type="button"
           className="user-avatar-circle has-update-anchor"
           data-profile-color={profileColor}
-          title={`${profileName} · 个人菜单`}
-          aria-label="打开个人菜单"
+          title={t("sidebar.profileMenuWithName", { name: profileName })}
+          aria-label={t("sidebar.openAccountMenu")}
           onClick={handleToggleAccountPopover}
         >
           {profileInitial}
@@ -529,7 +529,7 @@ export function LeftSidebar({
           id="account-menu-btn"
           type="button"
           className="user-profile-btn"
-          title="打开个人菜单"
+          title={t("sidebar.openAccountMenu")}
           onClick={handleToggleAccountPopover}
         >
           <span
@@ -550,8 +550,8 @@ export function LeftSidebar({
             id="connect-apps-btn"
             type="button"
             className="sidebar-icon-btn"
-            title="技能商店"
-            aria-label="技能"
+            title={t("sidebar.skillsStore")}
+            aria-label={t("sidebar.skillsAriaShort")}
             onClick={() => {
               setState({ mobileReturnToSettingsSheet: false });
               openAppsModal("store");
@@ -570,7 +570,7 @@ export function LeftSidebar({
               type="button"
               className="sidebar-icon-btn sidebar-update-btn"
               title={updateTriggerTitle}
-              aria-label="发现可用更新"
+              aria-label={t("sidebar.updateBadgeAria")}
               onClick={openUpdatesPanel}
             >
               <UiIcon name="cloud-download" size={17} />
@@ -583,19 +583,20 @@ export function LeftSidebar({
       <div
         id="account-popover"
         className="floating-menu account-popover"
-        aria-label="个人与工作台菜单"
+        aria-label={t("sidebar.accountPopoverAria")}
         hidden={openPopover !== "account"}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="account-popover-section-label">工作台账号</div>
+        <div className="account-popover-section-label">{t("sidebar.accountsHeading")}</div>
         <div
           id="account-list-section"
           className="account-list-section"
           role="group"
-          aria-label="账号切换列表"
+          aria-label={t("sidebar.accountSwitchAria")}
         >
           {accounts.map((acc: any) => {
             const isActiveAcc = acc.id === activeAccountId;
+            const accDisplayName = resolveLocalizedAccountName(acc, locale, acc.id);
             return (
               <div key={acc.id} className="account-switch-row">
                 <button
@@ -617,10 +618,12 @@ export function LeftSidebar({
                         className="inline-ui-icon"
                         size={14}
                       />
-                      {acc.name || acc.id}
+                      {accDisplayName}
                     </span>
                     <span className="account-switch-sub">
-                      {acc.type === "local" ? "本地工作台" : acc.baseUrl || "云端服务"}
+                      {acc.type === "local"
+                        ? t("sidebar.localWorkspace")
+                        : acc.baseUrl || t("sidebar.cloudServiceFallback")}
                     </span>
                   </span>
                   <span>
@@ -637,8 +640,8 @@ export function LeftSidebar({
                   <button
                     type="button"
                     className="account-remove-btn"
-                    title="移除云端账号"
-                    aria-label={`移除 ${acc.name}`}
+                    title={t("sidebar.removeCloudAccountTitle")}
+                    aria-label={t("sidebar.removeAccountAria", { name: accDisplayName })}
                     onClick={(e) => {
                       e.stopPropagation();
                       confirmAndRemoveCloudAccount(acc, { mobileFallback: false });
@@ -767,7 +770,7 @@ export function LeftSidebar({
                 strokeLinecap="round"
               />
             </svg>
-            <span>设置</span>
+            <span>{t("sidebar.settings")}</span>
           </span>
           <span className="menu-item-trailing">
             {hasVisibleUpdate ? (
@@ -778,7 +781,7 @@ export function LeftSidebar({
                   handleAccountAction("updates");
                 }}
               >
-                {updateDecision?.status === "ota-available" ? "有热更新" : "有新版本"}
+                {updateDecision?.status === "ota-available" ? t("sidebar.otaPill") : t("sidebar.newVersionPill")}
               </span>
             ) : (
               <kbd className="menu-kbd">⌘,</kbd>
@@ -797,7 +800,7 @@ export function LeftSidebar({
               <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                 <path d="M10 3.5V10M6.2 5.4A6.2 6.2 0 1 0 13.8 5.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
-              <span>退出 TwinkleBot</span>
+              <span>{t("sidebar.accountQuit")}</span>
             </span>
           </button>
         </div>
@@ -808,7 +811,7 @@ export function LeftSidebar({
         id="left-splitter"
         className="pane-splitter splitter-right"
         role="separator"
-        aria-label="调整侧边栏大小"
+        aria-label={t("sidebar.resizeLeftAria")}
         onMouseDown={onStartLeftResize}
       />
     </aside>
@@ -816,6 +819,7 @@ export function LeftSidebar({
 }
 
 export function SidebarContextMenu() {
+  const { t } = useI18n();
   const openPopover = useStore((s) => s.openPopover);
   const ctx = useStore((s) => s.sidebarContextMenu);
   const sessions = useStore((s) => s.sessions);
@@ -830,7 +834,7 @@ export function SidebarContextMenu() {
     if (!sid || !target) return;
 
     if (act === "pin") {
-      showToast("仅管理员 Bot 固定置顶于顶部");
+      showToast(t("sidebar.pinForbiddenToast"));
     } else if (act === "rename") {
       await selectSession(sid);
       setState({ inspectorOpen: true });
@@ -843,7 +847,7 @@ export function SidebarContextMenu() {
       const cloned = await apiJson(`/api/sessions/${sid}/clone`, { method: "POST" });
       upsertLocalSession(cloned);
       await selectSession(cloned.id);
-      showToast(`已创建副本「${cloned.title}」`);
+      showToast(t("sidebar.clonedToast", { title: cloned.title }));
     } else if (act === "clear") {
       await clearSessionHistory(sid);
     } else if (act === "delete") {
@@ -866,7 +870,7 @@ export function SidebarContextMenu() {
         hidden={true}
         onClick={() => handleAction("pin")}
       >
-        置顶 / 取消置顶
+        {t("sidebar.ctxPinToggle")}
       </button>
       <button
         type="button"
@@ -874,7 +878,7 @@ export function SidebarContextMenu() {
         data-ctx-action="rename"
         onClick={() => handleAction("rename")}
       >
-        重命名
+        {t("sidebar.ctxRename")}
       </button>
       <button
         type="button"
@@ -882,7 +886,7 @@ export function SidebarContextMenu() {
         data-ctx-action="clone"
         onClick={() => handleAction("clone")}
       >
-        创建副本
+        {t("sidebar.ctxDuplicate")}
       </button>
       <button
         type="button"
@@ -890,7 +894,7 @@ export function SidebarContextMenu() {
         data-ctx-action="clear"
         onClick={() => handleAction("clear")}
       >
-        清空对话记录
+        {t("sidebar.ctxClear")}
       </button>
       <div className="menu-divider" hidden={hideDelete} />
       <button
@@ -900,7 +904,7 @@ export function SidebarContextMenu() {
         hidden={hideDelete}
         onClick={() => handleAction("delete")}
       >
-        删除
+        {t("common.delete")}
       </button>
     </div>
   );

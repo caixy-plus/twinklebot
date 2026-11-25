@@ -285,3 +285,6 @@
   z-index: 90;
   pointer-events: none;
 }
+:root[data-locale="en"] .chat-stage.is-dragover::after {
+  content: "Drop to attach files or screenshots";
+}

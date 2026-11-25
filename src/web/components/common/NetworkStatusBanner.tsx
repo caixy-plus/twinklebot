@@ -30,13 +30,16 @@ export function NetworkStatusBanner({
   const accountsState = useStore((s) => s.accountsState);
   const [retrying, setRetrying] = useState(false);
   const [nowTs, setNowTs] = useState(() => Date.now());
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
 
-  const accMeta = getActiveAccountMeta({
-    accountsState,
-    networkHealth,
-    lanNodeOffline,
-  } as any);
+  const accMeta = getActiveAccountMeta(
+    {
+      accountsState,
+      networkHealth,
+      lanNodeOffline,
+    } as any,
+    locale
+  );
 
   const effectiveStatus =
     accMeta.type === "lan" && lanNodeOffline && networkHealth.status !== "recovered"

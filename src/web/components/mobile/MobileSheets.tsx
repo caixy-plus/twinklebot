@@ -3,6 +3,8 @@ import { LOCAL_ACCOUNT_ID } from "/accounts-store.js";
 import {
   BOT_COLORS,
   BOT_SHAPES,
+  getBotColorLabel,
+  getBotShapeLabel,
   resolveBotAvatar,
 } from "../../avatars.js";
 import { useAnimatedSheet } from "../../hooks/useAnimatedSheet.js";
@@ -29,7 +31,7 @@ import {
   computeUpdateDecisionKey,
   hasConnectedNodeCapability,
 } from "../../services/ota-updater.js";
-import { useI18n } from "../../services/i18n.js";
+import { useI18n, resolveLocalizedAccountName, resolveLocalizedProfileName } from "../../services/i18n.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import {
   formatBrowserAutomationModeLabel,
@@ -121,17 +123,26 @@ export function MobileSheets() {
   const activeAccId = accountsState?.activeAccountId || LOCAL_ACCOUNT_ID;
   const activeAcc = accounts.find((a: any) => a.id === activeAccId) || null;
   const isCloudMode = activeAcc?.type === "cloud" || config?.deployEnv === "cloud";
-  const displayNodeName =
-    activeAcc?.name || (activeAcc?.type === "cloud" ? "云端节点" : "未连接节点");
-  const profileName = settings?.profile?.name || displayNodeName || "U";
+  const displayNodeName = activeAcc
+    ? resolveLocalizedAccountName(
+        activeAcc,
+        locale,
+        activeAcc.type === "cloud" ? t("mobile.cloudNodeFallback") : t("mobile.nodeDisconnected")
+      )
+    : t("mobile.nodeDisconnected");
+  const profileName = resolveLocalizedProfileName(
+    settings?.profile?.name,
+    locale,
+    displayNodeName || "U"
+  );
   const initial = String(profileName).trim().charAt(0).toUpperCase() || "U";
 
   const nodeSubText =
     activeAcc?.type === "lan"
-      ? `局域网电脑 · ${activeAcc.baseUrl}`
+      ? t("mobile.lanNodeSub", { url: activeAcc.baseUrl })
       : activeAcc?.type === "cloud"
-        ? `云端服务器 · ${activeAcc.baseUrl}`
-        : "点击扫描局域网电脑或添加云端节点";
+        ? t("mobile.cloudNodeSub", { url: activeAcc.baseUrl })
+        : t("mobile.tapScanOrAddNode");
 
   const totalTok = Number(lastGlobalUsagePayload?.totalTokens) || 0;
   const estCny = Number(lastGlobalUsagePayload?.estimatedCostCny) || 0;
@@ -139,21 +150,27 @@ export function MobileSheets() {
 
   const policy = settings?.policy || {};
   const ruleCount = (policy.askRules?.length || 0) + (policy.allowRules?.length || 0);
-  const permSubText = `${
-    policy.autoAudit !== false ? "自动审查已开启" : "自动审查已关闭"
-  } · ${ruleCount} 条规则`;
+  const permSubText = t("mobile.permSubSummary", {
+    audit:
+      policy.autoAudit !== false ? t("mobile.autoAuditOn") : t("mobile.autoAuditOff"),
+    count: ruleCount,
+  });
 
-  const { mobileSubText: mobileCompSub } = resolveBotComputerStatusDisplay(computerStatus);
+  const { mobileSubText: mobileCompSub } = resolveBotComputerStatusDisplay(computerStatus, {
+    locale,
+  });
 
   const cloudHostOffline = isCloudMode && onlineCloudHosts.length === 0;
   const activeCloudHost =
     onlineCloudHosts.find((h: any) => h.clientId === selectedCloudHostId) ||
     onlineCloudHosts[0];
   const hostStatusBadgeText = cloudHostOffline
-    ? "宿主机离线/不可用"
+    ? t("mobile.hostOffline")
     : isCloudMode
-      ? `在线宿主机：${activeCloudHost?.hostname || "已连接"}`
-      : "本地电脑宿主机在线";
+      ? t("mobile.hostCloudOnline", {
+          name: activeCloudHost?.hostname || t("mobile.hostConnected"),
+        })
+      : t("mobile.hostLocalOnline");
 
   const memories = Array.isArray(activeSession?.memories) ? activeSession.memories : [];
   const activeMemCount = memories.filter((m: any) => m && m.enabled !== false).length;
@@ -168,7 +185,7 @@ export function MobileSheets() {
   const cloudAccounts = accounts.filter((a: any) => a.type === "cloud");
 
   const handleSaveMobileBot = async () => {
-    const title = mobileBotEditor.name.trim() || "新 Bot";
+    const title = mobileBotEditor.name.trim() || t("actions.newBotFallback");
     const rolePrompt = mobileBotEditor.rolePrompt.trim();
     const avatar = {
       shape: mobileBotEditor.shape,
@@ -182,7 +199,7 @@ export function MobileSheets() {
         });
         upsertLocalSession(updated);
         closeBotEditor();
-        showToast("Bot 信息已更新");
+        showToast(t("mobile.botUpdatedToast"));
       } else {
         const created = await apiJson("/api/sessions", {
           method: "POST",
@@ -196,14 +213,14 @@ export function MobileSheets() {
         }
       }
     } catch (err: any) {
-      showToast(`保存失败: ${err.message}`);
+      showToast(t("mobile.saveFailedToast", { error: err.message }));
     }
   };
 
   const handleManualPair = async () => {
     const raw = manualIp.trim();
     if (!raw) {
-      showToast("请输入局域网电脑 IP，例如 192.168.1.10");
+      showToast(t("mobile.enterLanIpToast"));
       return;
     }
     const clean = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
@@ -212,7 +229,7 @@ export function MobileSheets() {
       parsedUrl = new URL(clean);
       if (!parsedUrl.port) parsedUrl.port = "3230";
     } catch {
-      showToast("IP 地址格式无效");
+      showToast(t("mobile.invalidIpToast"));
       return;
     }
     const baseUrl = parsedUrl.origin;
@@ -250,7 +267,7 @@ export function MobileSheets() {
         className={`mobile-sheet is-tall${inspectorAnim.stateClass ? ` ${inspectorAnim.stateClass}` : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="Bot 能力面板"
+        aria-label={t("mobile.inspectorAria")}
         hidden={inspectorAnim.hidden}
         onClick={(e) => {
           if (e.target === e.currentTarget) closeInspector();
@@ -264,7 +281,7 @@ export function MobileSheets() {
           />
           <div className="mobile-sheet-header">
             <h2 className="mobile-sheet-title" id="mobile-inspector-title">
-              {activeSession?.title || "Bot 能力面板"}
+              {activeSession?.title || t("mobile.inspectorAria")}
             </h2>
             <button
               id="mobile-edit-bot-btn"
@@ -288,7 +305,7 @@ export function MobileSheets() {
                 }
               }}
             >
-              编辑 Bot
+              {t("mobile.botEditTitle")}
             </button>
           </div>
 
@@ -305,7 +322,7 @@ export function MobileSheets() {
                 }))
               }
             >
-              动态
+              {t("inspector.tabActivity")}
             </button>
             <button
               type="button"
@@ -320,7 +337,7 @@ export function MobileSheets() {
                 refreshLibrary();
               }}
             >
-              资料库
+              {t("inspector.tabLibrary")}
             </button>
           </div>
 
@@ -330,7 +347,7 @@ export function MobileSheets() {
             hidden={mobileSheets.inspectorTab !== "activity"}
           >
             <section className="mobile-inspector-section">
-              <div className="mobile-section-caption">电脑画面</div>
+              <div className="mobile-section-caption">{t("mobile.computerFeedCaption")}</div>
               <div className="mobile-grouped-card">
                 <button
                   id="mobile-bot-computer-open-btn"
@@ -342,7 +359,7 @@ export function MobileSheets() {
                   }}
                 >
                   <div>
-                    <div className="mobile-card-row-title">Bot 的电脑（沙箱桌面）</div>
+                    <div className="mobile-card-row-title">{t("mobile.botComputerSandboxTitle")}</div>
                     <div className="mobile-card-row-sub" id="mobile-bot-computer-sub">
                       {mobileCompSub}
                     </div>
@@ -365,7 +382,7 @@ export function MobileSheets() {
                   aria-disabled={cloudHostOffline ? "true" : "false"}
                 >
                   <div>
-                    <div className="mobile-card-row-title">你的电脑（宿主机）</div>
+                    <div className="mobile-card-row-title">{t("mobile.hostComputerTitle")}</div>
                     <div className="mobile-card-row-sub" id="mobile-host-status-badge">
                       {hostStatusBadgeText}
                     </div>
@@ -392,7 +409,11 @@ export function MobileSheets() {
                       onClick={() => selectCloudHost(h.clientId)}
                     >
                       <span>{h.hostname || h.clientId}</span>
-                      <span>{selectedCloudHostId === h.clientId ? "当前" : "切换"}</span>
+                      <span>
+                        {selectedCloudHostId === h.clientId
+                          ? t("common.current")
+                          : t("common.switch")}
+                      </span>
                     </button>
                   ))}
               </div>
@@ -400,7 +421,7 @@ export function MobileSheets() {
 
             <section className="mobile-inspector-section">
               <div className="mobile-sheet-header">
-                <span className="mobile-section-caption">职责与人设</span>
+                <span className="mobile-section-caption">{t("inspector.personaLabel")}</span>
                 <button
                   id="mobile-inspector-persona-save-btn"
                   type="button"
@@ -413,20 +434,20 @@ export function MobileSheets() {
                         body: JSON.stringify({ rolePrompt: personaDraft }),
                       });
                       upsertLocalSession(updated);
-                      showToast("已保存职责与人设");
+                      showToast(t("inspector.personaSaved"));
                     } catch (err: any) {
-                      showToast(`保存失败: ${err.message}`);
+                      showToast(t("mobile.saveFailedToast", { error: err.message }));
                     }
                   }}
                 >
-                  保存人设
+                  {t("mobile.savePersonaBtn")}
                 </button>
               </div>
               <textarea
                 id="mobile-inspector-persona-input"
                 className="persona-textarea"
                 rows={3}
-                placeholder="设置该 Bot 的专属职责与行为偏好…"
+                placeholder={t("mobile.personaPlaceholder")}
                 value={personaDraft}
                 onChange={(e) => setPersonaDraft(e.target.value)}
               />
@@ -481,7 +502,7 @@ export function MobileSheets() {
             <section className="mobile-inspector-section">
               <div className="mobile-sheet-header">
                 <span className="mobile-section-caption">
-                  专属记忆{" "}
+                  {t("inspector.memoryLabel")}{" "}
                   <span id="mobile-bot-memory-count-badge" className="section-sub-count">
                     {memCountBadge}
                   </span>
@@ -509,7 +530,7 @@ export function MobileSheets() {
                     });
                   }}
                 >
-                  + 新增
+                  {t("inspector.memoryAdd")}
                 </button>
               </div>
               <BotMemoriesList
@@ -520,7 +541,7 @@ export function MobileSheets() {
 
             <section className="mobile-inspector-section">
               <div className="mobile-sheet-header">
-                <span className="mobile-section-caption">即将进行</span>
+                <span className="mobile-section-caption">{t("inspector.schedulesLabel")}</span>
                 <button
                   id="mobile-new-schedule-btn"
                   type="button"
@@ -534,7 +555,7 @@ export function MobileSheets() {
                     });
                   }}
                 >
-                  + 新建
+                  {t("inspector.schedulesAdd")}
                 </button>
               </div>
               <SchedulesList listId="mobile-inspector-schedules-list" />
@@ -550,14 +571,14 @@ export function MobileSheets() {
               <div
                 className="library-filter-pills"
                 role="group"
-                aria-label="资料库类型"
+                aria-label={t("mobile.libraryTypeAria")}
                 style={{ marginBottom: 0 }}
               >
                 {(
                   [
-                    ["all", "全部"],
-                    ["media", "媒体"],
-                    ["file", "文件"],
+                    ["all", t("inspector.libraryAll")],
+                    ["media", t("inspector.libraryMedia")],
+                    ["file", t("inspector.libraryFiles")],
                   ] as const
                 ).map(([fKey, fLabel]) => (
                   <button
@@ -597,14 +618,14 @@ export function MobileSheets() {
                     strokeLinejoin="round"
                   />
                 </svg>
-                <span>刷新</span>
+                <span>{t("common.refresh")}</span>
               </button>
             </div>
             <div className="library-card">
               <LibraryItemsPanel
                 listId="mobile-inspector-library-list"
                 expandBtnId="mobile-library-expand-btn"
-                ariaLabel="移动端资料库列表"
+                ariaLabel={t("mobile.libraryListAria")}
               />
             </div>
           </div>
@@ -617,7 +638,7 @@ export function MobileSheets() {
         className={`mobile-sheet is-fullscreen${settingsAnim.stateClass ? ` ${settingsAnim.stateClass}` : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="设置与节点"
+        aria-label={t("mobile.settingsAria")}
         hidden={settingsAnim.hidden}
       >
         <div
@@ -633,8 +654,8 @@ export function MobileSheets() {
               id="mobile-settings-close-btn"
               type="button"
               className="mobile-circle-btn"
-              title="返回"
-              aria-label="返回"
+              title={t("common.back")}
+              aria-label={t("common.back")}
               onClick={closeSettings}
             >
               <UiIcon name="chevron-left" />
@@ -671,7 +692,7 @@ export function MobileSheets() {
                         {displayNodeName}
                       </>
                     ) : (
-                      "未连接节点"
+                      t("mobile.nodeDisconnected")
                     )}
                   </div>
                   <div className="mobile-card-row-sub" id="mobile-active-node-sub">
@@ -703,7 +724,7 @@ export function MobileSheets() {
               }}
             >
               <div>
-                <div className="mobile-card-row-title">用量与账单</div>
+                <div className="mobile-card-row-title">{t("settings.tabUsage")}</div>
                 <div className="mobile-card-row-sub" id="mobile-settings-usage-sub">
                   {usageSubText}
                 </div>
@@ -732,8 +753,8 @@ export function MobileSheets() {
               }}
             >
               <div>
-                <div className="mobile-card-row-title">保险库</div>
-                <div className="mobile-card-row-sub">管理常用登录备注与联系信息</div>
+                <div className="mobile-card-row-title">{t("settings.tabVault")}</div>
+                <div className="mobile-card-row-sub">{t("mobile.vaultSub")}</div>
               </div>
               <span className="menu-chevron" aria-hidden="true">
                 <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
@@ -759,7 +780,7 @@ export function MobileSheets() {
               }}
             >
               <div>
-                <div className="mobile-card-row-title">权限</div>
+                <div className="mobile-card-row-title">{t("settings.tabPermissions")}</div>
                 <div className="mobile-card-row-sub" id="mobile-settings-permissions-sub">
                   {permSubText}
                 </div>
@@ -788,8 +809,8 @@ export function MobileSheets() {
               }}
             >
               <div>
-                <div className="mobile-card-row-title">模型接入与路由</div>
-                <div className="mobile-card-row-sub">配置供应商与 3 档智能路由</div>
+                <div className="mobile-card-row-title">{t("settings.tabModels")}</div>
+                <div className="mobile-card-row-sub">{t("mobile.modelsSub")}</div>
               </div>
               <span className="menu-chevron" aria-hidden="true">
                 <svg className="icon-svg" viewBox="0 0 20 20" fill="none">
@@ -862,9 +883,9 @@ export function MobileSheets() {
               const nativeVer = updateState?.localMeta?.nativeVersion || "1.0.4";
               const guidanceText = hasVisibleUpdate
                 ? updateDecision?.status === "ota-available"
-                  ? "发现新热更新，点击一键生效"
-                  : "发现新版本，点击查看更新详情"
-                : "查看版本信息、检查更新与系统关于";
+                  ? t("mobile.otaAvailableGuide")
+                  : t("mobile.newVersionGuide")
+                : t("mobile.aboutSubDefault");
               return (
                 <button
                   id="mobile-settings-about-row"
@@ -881,18 +902,24 @@ export function MobileSheets() {
                   </div>
                   <div className="mobile-about-body">
                     <div className="mobile-card-row-title mobile-about-title-row">
-                      <span>关于 TwinkleBot</span>
+                      <span>{t("mobile.aboutTitle")}</span>
                       <span className="mobile-about-ver-pill">v{nativeVer}</span>
                       {hasVisibleUpdate && (
-                        <span className="settings-nav-update-dot" aria-label="有可用更新" />
+                        <span
+                          className="settings-nav-update-dot"
+                          aria-label={t("mobile.updateAvailableAria")}
+                        />
                       )}
                     </div>
                     <div className="mobile-about-guide">{guidanceText}</div>
                     <div className="mobile-card-row-sub" id="mobile-settings-about-sub">
                       {updateState?.connectedNodeStatus?.nodeOutdated
-                        ? `所连服务端 v${updateState.connectedNodeStatus.nodeVersion}（GitHub 最新 v${updateState.connectedNodeStatus.latestBackendVersion}）`
+                        ? t("mobile.aboutNodeOutdated", {
+                            nodeVer: updateState.connectedNodeStatus.nodeVersion,
+                            latestVer: updateState.connectedNodeStatus.latestBackendVersion,
+                          })
                         : `TwinkleBot v${nativeVer} · ${
-                            updateState?.localMeta?.activeWebBuild || "已是最新版本"
+                            updateState?.localMeta?.activeWebBuild || t("mobile.aboutUpToDate")
                           }`}
                     </div>
                   </div>
@@ -920,7 +947,7 @@ export function MobileSheets() {
         className={`mobile-sheet${nodeAnim.stateClass ? ` ${nodeAnim.stateClass}` : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="连接节点管理"
+        aria-label={t("mobile.nodeSheetAria")}
         hidden={nodeAnim.hidden}
         onClick={(e) => {
           if (e.target === e.currentTarget) closeNode();
@@ -929,11 +956,11 @@ export function MobileSheets() {
         <div ref={nodeAnim.panelRef} className="mobile-sheet-panel">
           <div className="mobile-sheet-handle" aria-hidden="true" {...nodeAnim.handleProps} />
           <div className="mobile-sheet-header is-centered">
-            <h2 className="mobile-sheet-title">连接节点切换</h2>
+            <h2 className="mobile-sheet-title">{t("mobile.nodeSwitchTitle")}</h2>
           </div>
 
           <div className="mobile-sheet-header">
-            <span className="mobile-section-caption">局域网电脑（自动发现）</span>
+            <span className="mobile-section-caption">{t("mobile.lanSectionTitle")}</span>
             <button
               id="mobile-lan-scan-btn"
               type="button"
@@ -961,7 +988,7 @@ export function MobileSheets() {
                   strokeLinejoin="round"
                 />
               </svg>
-              <span>扫描局域网</span>
+              <span>{t("mobile.lanScan")}</span>
             </button>
           </div>
 
@@ -969,9 +996,7 @@ export function MobileSheets() {
             {pairedLans.length === 0 && unpairedDiscovered.length === 0 ? (
               <div className="mobile-card-row">
                 <span className="mobile-card-row-sub">
-                  {lanScanning
-                    ? "正在扫描局域网中的 TwinkleBot 桌面端…"
-                    : "未发现局域网电脑，请确保处于同一 Wi-Fi 并点击右上角扫描"}
+                  {lanScanning ? t("mobile.lanScanningEmpty") : t("mobile.lanNoneEmpty")}
                 </span>
               </div>
             ) : (
@@ -991,14 +1016,16 @@ export function MobileSheets() {
                       <div>
                         <div className="mobile-card-row-title">
                           <span className="status-dot-inline is-ok" aria-hidden="true" />
-                          {acc.name || acc.hostname || "已配对电脑"}
+                          {acc.name || acc.hostname || t("mobile.pairedComputerFallback")}
                         </div>
-                        <div className="mobile-card-row-sub">{acc.baseUrl} · 已配对</div>
+                        <div className="mobile-card-row-sub">
+                          {t("mobile.pairedSub", { url: acc.baseUrl })}
+                        </div>
                       </div>
                       <span>
                         {isActive ? (
                           <>
-                            当前{" "}
+                            {t("common.current")}{" "}
                             <UiIcon
                               name="check"
                               className="inline-ui-icon inline-status-svg is-ok"
@@ -1007,7 +1034,7 @@ export function MobileSheets() {
                           </>
                         ) : (
                           <>
-                            切换{" "}
+                            {t("common.switch")}{" "}
                             <UiIcon
                               name="chevron-right"
                               className="inline-ui-icon"
@@ -1033,11 +1060,11 @@ export function MobileSheets() {
                         {dev.hostname || dev.host}
                       </div>
                       <div className="mobile-card-row-sub">
-                        {dev.baseUrl} · 点击输入配对码
+                        {t("mobile.tapPairCodeSub", { url: dev.baseUrl })}
                       </div>
                     </div>
                     <span>
-                      配对{" "}
+                      {t("mobile.pair")}{" "}
                       <UiIcon name="chevron-right" className="inline-ui-icon" size={13} />
                     </span>
                   </button>
@@ -1051,8 +1078,8 @@ export function MobileSheets() {
               id="mobile-lan-manual-ip-input"
               type="text"
               className="inline-text-input"
-              placeholder="局域网 IP（如 192.168.1.10:3230）"
-              aria-label="手动输入局域网电脑地址"
+              placeholder={t("mobile.lanManualPlaceholder")}
+              aria-label={t("gate.lanManualIpAria")}
               autoComplete="off"
               autoCapitalize="none"
               value={manualIp}
@@ -1064,12 +1091,12 @@ export function MobileSheets() {
               className="settings-pill-btn"
               onClick={handleManualPair}
             >
-              手动配对
+              {t("mobile.manualPairBtn")}
             </button>
           </div>
 
           <div className="mobile-sheet-header">
-            <span className="mobile-section-caption">云端服务器（手动添加）</span>
+            <span className="mobile-section-caption">{t("mobile.cloudSectionTitle")}</span>
             <button
               id="mobile-add-cloud-btn"
               type="button"
@@ -1092,16 +1119,14 @@ export function MobileSheets() {
                 });
               }}
             >
-              + 添加云端
+              {t("mobile.addCloudShort")}
             </button>
           </div>
 
           <div id="mobile-cloud-list" className="mobile-grouped-card">
             {cloudAccounts.length === 0 ? (
               <div className="mobile-card-row">
-                <span className="mobile-card-row-sub">
-                  暂未添加云端服务器，点击右上角「+ 添加云端」配置公网节点
-                </span>
+                <span className="mobile-card-row-sub">{t("mobile.cloudEmpty")}</span>
               </div>
             ) : (
               cloudAccounts.map((acc: any) => {
@@ -1143,7 +1168,9 @@ export function MobileSheets() {
                       <button
                         type="button"
                         className="account-remove-btn"
-                        aria-label={`移除 ${acc.name || acc.baseUrl}`}
+                        aria-label={t("sidebar.removeAccountAria", {
+                          name: acc.name || acc.baseUrl,
+                        })}
                         onClick={() =>
                           confirmAndRemoveCloudAccount(acc, { mobileFallback: true })
                         }
@@ -1165,13 +1192,15 @@ export function MobileSheets() {
           className="compact-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label="输入局域网配对码"
+          aria-label={t("mobile.pairModalAria")}
         >
-          <h3 className="compact-dialog-title">配对局域网电脑</h3>
+          <h3 className="compact-dialog-title">{t("mobile.pairModalTitle")}</h3>
           <p className="settings-row-sub" id="mobile-pair-target-name">
             {pendingPairingDevice
-              ? `配对至 ${pendingPairingDevice.hostname || pendingPairingDevice.host}：请输入电脑端显示的 6 位配对码`
-              : "请输入电脑端显示的 6 位配对码"}
+              ? t("gate.pairPromptWithHost", {
+                  host: pendingPairingDevice.hostname || pendingPairingDevice.host,
+                })
+              : t("mobile.pairModalPromptDefault")}
           </p>
           <input
             id="mobile-pair-code-input"
@@ -1182,7 +1211,7 @@ export function MobileSheets() {
             maxLength={6}
             className="inline-text-input"
             placeholder="000000"
-            aria-label="6 位数字配对码"
+            aria-label={t("gate.pairCodeInputAria")}
             value={pairCode}
             onChange={(e) => {
               const digits = String(e.target.value || "").replace(/\D+/g, "").slice(0, 6);
@@ -1213,7 +1242,7 @@ export function MobileSheets() {
               className="settings-pill-btn"
               onClick={() => setState({ mobilePairModalOpen: false })}
             >
-              取消
+              {t("common.cancel")}
             </button>
             <button
               id="mobile-pair-submit-btn"
@@ -1221,7 +1250,7 @@ export function MobileSheets() {
               className="settings-blue-pill"
               onClick={() => submitLanPairingCode(pairCode)}
             >
-              验证并连接
+              {t("mobile.pairVerify")}
             </button>
           </div>
         </div>
@@ -1242,15 +1271,15 @@ export function MobileSheets() {
           className="compact-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label="局域网连接断开"
+          aria-label={t("mobile.lanOfflineAria")}
         >
           <div className="compact-dialog-header">
-            <h3 className="compact-dialog-title">局域网电脑暂不可达</h3>
+            <h3 className="compact-dialog-title">{t("mobile.lanOfflineTitle")}</h3>
             <button
               id="mobile-lan-offline-close-btn"
               type="button"
               className="modal-close-btn"
-              aria-label="关闭"
+              aria-label={t("common.close")}
               disabled={lanRetrying}
               onClick={() => dismissLanOfflineModal()}
             >
@@ -1258,7 +1287,7 @@ export function MobileSheets() {
             </button>
           </div>
           <p className="settings-row-sub">
-            当前无法连接至局域网电脑，请检查是否处于同一 Wi-Fi 或切换至云端账号
+            {t("mobile.lanOfflineDesc")}
           </p>
           <div className="inline-form-actions">
             <button
@@ -1276,7 +1305,7 @@ export function MobileSheets() {
                 }
               }}
             >
-              {lanRetrying ? "正在重连..." : "留在此页重试"}
+              {lanRetrying ? t("mobile.lanRetrying") : t("mobile.lanRetryHere")}
             </button>
             <button
               id="mobile-lan-switch-cloud-btn"
@@ -1294,7 +1323,7 @@ export function MobileSheets() {
                 }
               }}
             >
-              一键切换至云端账号
+              {t("mobile.lanSwitchCloud")}
             </button>
           </div>
         </div>
@@ -1306,7 +1335,7 @@ export function MobileSheets() {
         className={`mobile-sheet is-fullscreen${botEditorAnim.stateClass ? ` ${botEditorAnim.stateClass}` : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="创建或编辑 Bot"
+        aria-label={t("mobile.botEditorAria")}
         hidden={botEditorAnim.hidden}
       >
         <div
@@ -1319,14 +1348,14 @@ export function MobileSheets() {
               id="mobile-bot-editor-close-btn"
               type="button"
               className="mobile-circle-btn"
-              title="返回"
-              aria-label="返回"
+              title={t("common.back")}
+              aria-label={t("common.back")}
               onClick={closeBotEditor}
             >
               <UiIcon name="chevron-left" />
             </button>
             <h2 className="mobile-sheet-title" id="mobile-bot-editor-title">
-              {isEditBot ? "编辑 Bot" : "创建新 Bot"}
+              {isEditBot ? t("mobile.botEditTitle") : t("mobile.botCreateTitle")}
             </h2>
             <button
               id="mobile-bot-done-btn"
@@ -1335,7 +1364,7 @@ export function MobileSheets() {
               hidden={!isEditBot}
               onClick={handleSaveMobileBot}
             >
-              完成
+              {t("common.done")}
             </button>
           </div>
 
@@ -1353,8 +1382,8 @@ export function MobileSheets() {
             type="text"
             className="mobile-bot-name-pill"
             maxLength={40}
-            placeholder="为 Bot 取个名字"
-            aria-label="Bot 名称"
+            placeholder={t("mobile.botNamePlaceholder")}
+            aria-label={t("inspector.botNameAria")}
             value={mobileBotEditor.name}
             onChange={(e) =>
               setState((prev) => ({
@@ -1367,8 +1396,8 @@ export function MobileSheets() {
             id="mobile-bot-role-input"
             type="text"
             className="inline-text-input"
-            placeholder="可选：填写专属职责或人设说明"
-            aria-label="Bot 职责说明"
+            placeholder={t("mobile.botRolePlaceholder")}
+            aria-label={t("mobile.botRoleAria")}
             value={mobileBotEditor.rolePrompt}
             onChange={(e) =>
               setState((prev) => ({
@@ -1381,14 +1410,14 @@ export function MobileSheets() {
             id="mobile-bot-shapes-grid"
             className="mobile-shapes-grid"
             role="group"
-            aria-label="Bot 形状"
+            aria-label={t("mobile.botShapeAria")}
           >
             {BOT_SHAPES.map((s) => (
               <button
                 key={s.key}
                 type="button"
                 className={`mobile-shape-btn${s.key === mobileBotEditor.shape ? " is-active" : ""}`}
-                aria-label={s.label}
+                aria-label={getBotShapeLabel(s.key, locale)}
                 onClick={() =>
                   setState((prev) => ({
                     mobileBotEditor: { ...prev.mobileBotEditor, shape: s.key },
@@ -1404,7 +1433,7 @@ export function MobileSheets() {
             id="mobile-bot-colors-grid"
             className="mobile-colors-grid"
             role="group"
-            aria-label="Bot 颜色"
+            aria-label={t("mobile.botColorAria")}
           >
             {BOT_COLORS.map((c) => (
               <button
@@ -1412,7 +1441,7 @@ export function MobileSheets() {
                 type="button"
                 className={`mobile-color-dot${c.key === mobileBotEditor.color ? " is-active" : ""}`}
                 style={{ background: c.swatch }}
-                aria-label={c.label}
+                aria-label={getBotColorLabel(c.key, locale)}
                 onClick={() =>
                   setState((prev) => ({
                     mobileBotEditor: { ...prev.mobileBotEditor, color: c.key },
@@ -1428,7 +1457,7 @@ export function MobileSheets() {
             className="mobile-primary-cta"
             onClick={handleSaveMobileBot}
           >
-            {isEditBot ? "保存修改" : "创建"}
+            {isEditBot ? t("mobile.saveChanges") : t("mobile.createBtn")}
           </button>
         </div>
       </div>

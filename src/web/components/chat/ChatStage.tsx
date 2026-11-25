@@ -105,13 +105,13 @@ export function ChatStage({
     activeSession &&
       (activeSession.isAdmin || (primarySessionId && activeSession.id === primarySessionId))
   );
+  const { locale, t, tStatus } = useI18n();
   const displayName =
     activeSession?.title && activeSession.title !== "New Session"
       ? activeSession.title
       : isPrimaryOrAdmin
         ? "Twinkle"
-        : "新 Bot";
-  const { t, tStatus } = useI18n();
+        : t("actions.newBotFallback");
   const statusKey = sessionStatus || "idle";
   const statusLabel = tStatus(statusKey) || STATUS_LABELS[statusKey] || statusKey;
   const busy = isSessionCurrentlyBusy(statusKey);
@@ -122,6 +122,7 @@ export function ChatStage({
     sessionUsageByModel,
     usage,
     lastObservedModel,
+    locale,
   });
 
   // New Chat Bar calculations
@@ -138,7 +139,7 @@ export function ChatStage({
     .slice(0, 9);
 
   const handleCreateSingleBot = async () => {
-    const title = qTrim || `新 Bot ${sessions.length}`;
+    const title = qTrim || t("chat.newBotWithIndex", { index: sessions.length });
     const av = parsePromptToAvatar(title);
     const created = await apiJson("/api/sessions", {
       method: "POST",
@@ -152,11 +153,11 @@ export function ChatStage({
 
   const handleCommitGroup = async () => {
     if (newChatRecipients.length < 2) return;
-    const names = newChatRecipients.map((b: any) => b.title).join("、");
+    const names = newChatRecipients.map((b: any) => b.title).join(locale === "en" ? ", " : "、");
     const group = await apiJson("/api/sessions", {
       method: "POST",
       body: JSON.stringify({
-        title: `${names.slice(0, 22)} 协作群`,
+        title: t("chat.groupTitleTemplate", { names: names.slice(0, 22) }),
         type: "group",
         memberBotIds: newChatRecipients.map((b: any) => b.id),
       }),
@@ -253,7 +254,7 @@ export function ChatStage({
     <main
       ref={chatStageRef}
       className={stageCls}
-      aria-label="对话窗口"
+      aria-label={t("chat.stageAria")}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -264,8 +265,8 @@ export function ChatStage({
           id="mobile-back-btn"
           type="button"
           className="mobile-circle-btn mobile-only"
-          title="返回列表"
-          aria-label="返回列表"
+          title={t("chat.backToList")}
+          aria-label={t("chat.backToList")}
           onClick={() => setState({ mobileView: "list" })}
         >
           <UiIcon name="chevron-left" />
@@ -276,8 +277,8 @@ export function ChatStage({
           id="header-bot-pill"
           type="button"
           className="stage-bot-pill"
-          title="查看对话详情"
-          aria-label="查看对话详情"
+          title={t("chat.viewInspector")}
+          aria-label={t("chat.viewInspector")}
           onClick={() => {
             if (isMobileViewport()) {
               refreshSchedules();
@@ -327,8 +328,8 @@ export function ChatStage({
             id="mobile-inspector-btn"
             type="button"
             className="mobile-circle-btn mobile-only"
-            title="更多操作"
-            aria-label="更多操作"
+            title={t("chat.moreActions")}
+            aria-label={t("chat.moreActions")}
             aria-expanded={openPopover === "mobile-more" ? "true" : "false"}
             onClick={(e) => {
               e.stopPropagation();
@@ -347,7 +348,7 @@ export function ChatStage({
           <div
             id="mobile-more-popover"
             className="floating-menu mobile-more-popover"
-            aria-label="更多操作"
+            aria-label={t("chat.moreActions")}
             hidden={openPopover !== "mobile-more"}
             onClick={(e) => e.stopPropagation()}
           >
@@ -379,7 +380,7 @@ export function ChatStage({
                 if (activeSessionId) clearSessionHistory(activeSessionId);
               }}
             >
-              <span className="menu-item-leading">清空会话</span>
+              <span className="menu-item-leading">{t("chat.clearSession")}</span>
             </button>
             <div className="menu-divider" hidden={Boolean(activeSession?.isAdmin)} />
             <button
@@ -397,7 +398,7 @@ export function ChatStage({
                 }
               }}
             >
-              <span className="menu-item-leading">删除 Bot</span>
+              <span className="menu-item-leading">{t("chat.deleteBot")}</span>
             </button>
           </div>
 
@@ -405,8 +406,8 @@ export function ChatStage({
             id="clear-session-btn"
             type="button"
             className="share-pill-btn clear-session-btn"
-            title="清空当前会话对话记录"
-            aria-label="清空当前会话对话记录"
+            title={t("chat.clearTooltip")}
+            aria-label={t("chat.clearTooltip")}
             onClick={() => {
               if (activeSessionId) clearSessionHistory(activeSessionId);
             }}
@@ -425,7 +426,7 @@ export function ChatStage({
                 strokeLinejoin="round"
               />
             </svg>
-            <span className="clear-session-label">清空</span>
+            <span className="clear-session-label">{t("chat.clearShort")}</span>
           </button>
 
           <button
@@ -439,13 +440,13 @@ export function ChatStage({
               if (nextOpen) setState({ openPopover: "share" });
             }}
           >
-            分享
+            {t("chat.shareBtn")}
           </button>
 
           <div
             id="share-popover"
             className="floating-menu share-popover"
-            aria-label="分享"
+            aria-label={t("chat.shareBtn")}
             hidden={openPopover !== "share"}
             onClick={(e) => e.stopPropagation()}
           >
@@ -461,7 +462,7 @@ export function ChatStage({
                 });
                 upsertLocalSession(cloned);
                 await selectSession(cloned.id);
-                showToast(`已克隆并打开「${cloned.title}」`);
+                showToast(t("chat.clonedToast", { title: cloned.title }));
               }}
             >
               <div className="share-card-icon" aria-hidden="true">
@@ -506,9 +507,9 @@ export function ChatStage({
                 </svg>
               </div>
               <div className="share-card-copy">
-                <div className="share-card-title">创建副本</div>
+                <div className="share-card-title">{t("chat.createCloneTitle")}</div>
                 <div className="share-card-sub" id="share-card-sub">
-                  克隆当前 Bot 并生成新实例
+                  {t("chat.createCloneSub")}
                 </div>
               </div>
             </button>
@@ -521,14 +522,14 @@ export function ChatStage({
       {/* iMessage-Style New Chat / Group Compose Bar (`收件人:`) */}
       <div id="new-chat-bar" className="new-chat-bar" hidden={!newChatBarOpen}>
         <div className="new-chat-bar-row">
-          <span className="new-chat-to-label">收件人：</span>
+          <span className="new-chat-to-label">{t("chat.newBarTo")}</span>
           <div id="new-chat-chips" className="new-chat-chips">
             {newChatRecipients.map((r: any, idx: number) => (
               <span key={r.id || idx} className="new-chat-chip">
                 <span>{r.title || "Bot"}</span>
                 <button
                   type="button"
-                  aria-label="移除收件人"
+                  aria-label={t("chat.removeRecipientAria")}
                   onClick={() =>
                     setState((prev) => ({
                       newChatRecipients: prev.newChatRecipients.filter(
@@ -547,7 +548,7 @@ export function ChatStage({
             id="new-chat-input"
             type="text"
             className="new-chat-input"
-            placeholder="搜索已有 Bot，或输入名称新建 Bot / 拉群..."
+            placeholder={t("chat.newBarInputPlaceholder")}
             autoComplete="off"
             value={newChatQuery}
             onChange={(e) => setState({ newChatQuery: e.target.value })}
@@ -560,13 +561,13 @@ export function ChatStage({
             hidden={newChatRecipients.length < 2}
             onClick={handleCommitGroup}
           >
-            创建群聊
+            {t("chat.createGroupBtn")}
           </button>
           <button
             id="new-chat-close-btn"
             type="button"
             className="new-chat-close-btn"
-            aria-label="关闭新建栏"
+            aria-label={t("chat.closeNewBarAria")}
             onClick={closeNewChatBar}
           >
             <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -580,7 +581,7 @@ export function ChatStage({
           </button>
         </div>
         <div id="new-chat-group-note" className="new-chat-group-note" hidden={!isMulti}>
-          群聊会消耗你更多的附带用量，因为每条消息都会由多个 Bot 分别处理
+          {t("chat.groupBillingNote")}
         </div>
         <div id="new-chat-dropdown" className="new-chat-dropdown" role="listbox">
           <button type="button" className="new-chat-row" onClick={handleCreateSingleBot}>
@@ -588,9 +589,9 @@ export function ChatStage({
               <UiIcon name="plus" size={16} />
             </span>
             <span className="new-chat-row-title">
-              {qTrim ? `创建新 Bot “${qTrim}”` : "创建新 Bot"}
+              {qTrim ? t("chat.createNamedBot", { name: qTrim }) : t("chat.newBarTitleSingle")}
             </span>
-            <span className="new-chat-row-sub">独立角色与专属职责</span>
+            <span className="new-chat-row-sub">{t("chat.newBotDesc")}</span>
           </button>
 
           {!newChatGroupMode && newChatRecipients.length === 0 && (
@@ -605,8 +606,8 @@ export function ChatStage({
               <span className="new-chat-row-icon" aria-hidden="true">
                 <UiIcon name="users" size={16} />
               </span>
-              <span className="new-chat-row-title">创建 Bot 群聊</span>
-              <span className="new-chat-row-sub">拉多位专职 Bot 协同讨论</span>
+              <span className="new-chat-row-title">{t("chat.createBotGroupTitle")}</span>
+              <span className="new-chat-row-sub">{t("chat.createBotGroupSub")}</span>
             </button>
           )}
 
@@ -637,7 +638,7 @@ export function ChatStage({
               </span>
               <span className="new-chat-row-title">{bot.title || "Bot"}</span>
               <span className="new-chat-row-sub">
-                {isMulti ? "点击加入群聊" : bot.rolePrompt || "跳转对话"}
+                {isMulti ? t("chat.clickJoinGroup") : bot.rolePrompt || t("chat.jumpToChat")}
               </span>
               <span className="kbd-hint">⌘{idx + 1}</span>
             </button>
@@ -671,9 +672,8 @@ export function ChatStage({
             <div className="empty-state-title">{displayName}</div>
             <div className="empty-state-sub">
               {activeSession?.type === "group"
-                ? "群内多位 Bot 已就绪，直接发消息、引用回复或输入 @ 点名协同讨论。"
-                : activeSession?.rolePrompt ||
-                  "像和同事发消息一样交谈，支持引用回复、划词引用与操控电脑。"}
+                ? t("chat.emptyGroupSub")
+                : activeSession?.rolePrompt || t("chat.emptyBotSub")}
             </div>
           </div>
         ) : (
@@ -682,7 +682,7 @@ export function ChatStage({
               case "unread_divider":
                 return (
                   <div key={item.id} className="unread-divider">
-                    新消息
+                    {t("chat.unreadDivider")}
                   </div>
                 );
               case "date_divider":
@@ -712,7 +712,7 @@ export function ChatStage({
                     <div key={item.id} className="confirm-card max-steps-card" role="status">
                       <div className="confirm-header max-steps-header">
                         <UiIcon name="alert-triangle" className="inline-ui-icon" size={14} />
-                        <span>已达单轮步数上限</span>
+                        <span>{t("chat.maxStepsTitle")}</span>
                       </div>
                       <div className="max-steps-body">{item.text}</div>
                       {!hasFollowUp ? (
@@ -723,11 +723,11 @@ export function ChatStage({
                             disabled={busy}
                             onClick={() => void continueFromMaxSteps()}
                           >
-                            {busy ? "继续执行中…" : "继续执行"}
+                            {busy ? t("chat.maxStepsContinuing") : t("chat.maxStepsContinue")}
                           </button>
                         </div>
                       ) : (
-                        <div className="max-steps-continued-hint">已接续执行</div>
+                        <div className="max-steps-continued-hint">{t("chat.maxStepsContinued")}</div>
                       )}
                     </div>
                   );
@@ -735,14 +735,15 @@ export function ChatStage({
                 return (
                   <div key={item.id} className="route-notice-pill" role="status">
                     <UiIcon name="lightbulb" className="inline-ui-icon" size={14} />
-                    {item.text || "本轮费用已接近预算上限"}
+                    {item.text || t("ssr.budgetNearCap")}
                   </div>
                 );
               }
               case "error": {
                 const formatted = formatErrorNotice(
                   item.message || "",
-                  t("card.errorFallback")
+                  t("card.errorFallback"),
+                  locale
                 );
                 return (
                   <div key={item.id} className="error-card" role="alert">
@@ -791,7 +792,7 @@ export function ChatStage({
         id="scroll-bottom-btn"
         type="button"
         className="scroll-bottom-btn"
-        aria-label="回到底部"
+        aria-label={t("chat.scrollBottom")}
         hidden={autoScrollPinned}
         onClick={() => {
           if (isMobileViewport()) {
@@ -819,7 +820,7 @@ export function ChatStage({
             strokeLinejoin="round"
           />
         </svg>
-        <span id="scroll-bottom-label">回到底部</span>
+        <span id="scroll-bottom-label">{t("chat.scrollBottom")}</span>
       </button>
 
       {/* Highlight-to-Quote Floating Selection Toolbar */}
@@ -827,7 +828,7 @@ export function ChatStage({
         id="selection-quote-toolbar"
         className="selection-quote-toolbar"
         role="toolbar"
-        aria-label="选中文本操作"
+        aria-label={t("chat.selectionToolbarAria")}
         hidden={!selectionToolbar.open}
         style={
           selectionToolbar.open
@@ -870,7 +871,7 @@ export function ChatStage({
             <rect x="5" y="10.4" width="3.1" height="3.2" rx="0.8" stroke="currentColor" strokeWidth="1.45" />
             <rect x="11.4" y="10.4" width="3.1" height="3.2" rx="0.8" stroke="currentColor" strokeWidth="1.45" />
           </svg>
-          <span>引用</span>
+          <span>{t("chat.quoteBtn")}</span>
         </button>
         <span className="selection-tool-sep" aria-hidden="true" />
         <button
@@ -882,7 +883,7 @@ export function ChatStage({
               navigator.clipboard?.writeText(selectionToolbar.snippet);
               window.getSelection()?.removeAllRanges();
               setState({ selectionToolbar: { open: false, x: 0, y: 0, snippet: "" } });
-              showToast("已复制选中内容");
+              showToast(t("chat.copiedSelectionToast"));
             }
           }}
         >
@@ -900,7 +901,7 @@ export function ChatStage({
               strokeLinecap="round"
             />
           </svg>
-          <span>复制</span>
+          <span>{t("common.copy")}</span>
         </button>
       </div>
 
@@ -911,19 +912,19 @@ export function ChatStage({
           <span />
           <span />
         </span>
-        <span id="typing-indicator-text">{displayName} 正在输入…</span>
+        <span id="typing-indicator-text">{t("chat.typingIndicator", { name: displayName })}</span>
       </div>
 
       {/* Bottom Unified Composer Pill */}
       <Composer composerWrapRef={composerWrapRef} />
 
-      {/* Bot-to-Bot Exchange Slide-up Drawer (`Bot 交流记录`) */}
+      {/* Bot-to-Bot Exchange Slide-up Drawer */}
       <div
         id="bot-exchange-sheet"
         className={`bot-exchange-sheet${exchangeAnim.stateClass ? ` ${exchangeAnim.stateClass}` : ""}`}
         role="dialog"
         aria-modal="true"
-        aria-label="Bot 交流记录"
+        aria-label={t("chat.botExchangeTitle")}
         hidden={exchangeAnim.hidden}
       >
         <div
@@ -964,7 +965,7 @@ export function ChatStage({
               type="button"
               className="modal-close-btn"
               style={{ position: "static" }}
-              aria-label="关闭"
+              aria-label={t("common.close")}
               onClick={() =>
                 setState((prev) => ({
                   botExchangeSheet: { ...prev.botExchangeSheet, open: false },
@@ -987,7 +988,7 @@ export function ChatStage({
                 <div className="msg-speaker-header">
                   <AvatarNode avatar={m.fromAvatar || { shape: "blob", color: "black" }} />
                   <span>
-                    {m.fromBotName} → {m.toBotName} · {formatClockTime(m.at)}
+                    {m.fromBotName} → {m.toBotName} · {formatClockTime(m.at, locale)}
                   </span>
                 </div>
                 <div className="msg-bubble bot-bubble">
@@ -999,13 +1000,13 @@ export function ChatStage({
         </div>
       </div>
 
-      {/* Technical Execution Trace Drawer (`执行轨迹与当前会话模型消耗`) */}
+      {/* Technical Execution Trace Drawer */}
       <div
         id="trace-drawer-sheet"
         className="bot-exchange-sheet trace-drawer-sheet"
         role="dialog"
         aria-modal="true"
-        aria-label="执行轨迹与工具日志"
+        aria-label={t("chat.traceDrawerAria")}
         hidden={!traceDrawerOpen}
       >
         <div
@@ -1016,9 +1017,9 @@ export function ChatStage({
         <div className="exchange-sheet-panel trace-drawer-panel">
           <div className="exchange-sheet-header">
             <div className="exchange-participants-bar">
-              <span>执行轨迹与模型消耗</span>
+              <span>{t("chat.traceDrawerTitle")}</span>
               <span className="route-mini-tag" id="trace-drawer-count-badge">
-                {stepCount} 步
+                {t("chat.traceStepsCount", { count: stepCount })}
               </span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -1032,7 +1033,7 @@ export function ChatStage({
                   openSettingsModal("usage");
                 }}
               >
-                <span>全局用量与账单</span>
+                <span>{t("chat.globalUsageBtn")}</span>
                 <svg
                   className="icon-svg inline-ui-icon"
                   viewBox="0 0 20 20"
@@ -1053,7 +1054,7 @@ export function ChatStage({
                 type="button"
                 className="modal-close-btn"
                 style={{ position: "static" }}
-                aria-label="关闭"
+                aria-label={t("common.close")}
                 onClick={() => setState({ traceDrawerOpen: false })}
               >
                 <svg className="icon-svg" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -1077,9 +1078,15 @@ export function ChatStage({
               <div
                 key={m.model}
                 className="session-model-chip"
-                title={`${m.label}：输入 ${m.inputTokens.toLocaleString()} · 输出 ${m.outputTokens.toLocaleString()}${
-                  m.thoughtTokens > 0 ? `（含思考 ${m.thoughtTokens.toLocaleString()}）` : ""
-                }`}
+                title={t("chat.modelChipTitle", {
+                  label: m.label,
+                  input: m.inputTokens.toLocaleString(),
+                  output: m.outputTokens.toLocaleString(),
+                  thought:
+                    m.thoughtTokens > 0
+                      ? t("chat.modelChipThought", { thought: m.thoughtTokens.toLocaleString() })
+                      : "",
+                })}
               >
                 <span className={`model-accent-dot model-accent-${m.accent}`} />
                 <strong>{m.shortLabel}</strong>

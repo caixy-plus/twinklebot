@@ -14,6 +14,7 @@ import {
   showToast,
 } from "../../services/actions.js";
 import { apiFetch, apiUrl } from "../../services/api-client.js";
+import { useI18n } from "../../services/i18n.js";
 import {
   describeFileExtension,
   formatFileBuildTime,
@@ -23,6 +24,7 @@ import { UiIcon } from "../common/Icon.js";
 import { MarkupPreviewCard } from "./MarkupPreviewCard.js";
 
 function InlineTokens({ tokens }: { tokens: any[] }) {
+  const { t } = useI18n();
   return (
     <>
       {tokens.map((tok, idx) => {
@@ -86,7 +88,7 @@ function InlineTokens({ tokens }: { tokens: any[] }) {
               key={idx}
               type="button"
               className="msg-md-link msg-file-inline-link"
-              title={`点击打开本地文件: ${tok.path}`}
+              title={t("chat.openLocalFileTitle", { path: tok.path })}
               onClick={() => openLocalFile(tok.path)}
             >
               <span className="msg-file-inline-icon">
@@ -114,6 +116,7 @@ function InlineFormatted({ text }: { text: string }) {
 }
 
 function CodeBlock({ code, langLabel = "code" }: { code: string; langLabel?: string }) {
+  const { t } = useI18n();
   const label = langLabel || "code";
   return (
     <div className="msg-code-block">
@@ -126,16 +129,16 @@ function CodeBlock({ code, langLabel = "code" }: { code: string; langLabel?: str
             try {
               await navigator.clipboard.writeText(code);
             } catch {}
-            showToast("代码已复制");
+            showToast(t("chat.codeCopied"));
           }}
         >
-          复制
+          {t("common.copy")}
         </button>
       </div>
       <pre
         className="msg-code-pre"
         role="region"
-        aria-label={`${langLabel || "代码"} 代码片段`}
+        aria-label={t("chat.codeSnippetAria", { label: langLabel || t("chat.codeFallbackLabel") })}
         tabIndex={0}
       >
         <code className={langLabel ? `language-${langLabel}` : undefined}>{code}</code>
@@ -145,10 +148,11 @@ function CodeBlock({ code, langLabel = "code" }: { code: string; langLabel?: str
 }
 
 function TableBlock({ block }: { block: any }) {
+  const { t } = useI18n();
   return (
     <div className="msg-table-wrap">
       <div className="msg-table-toolbar">
-        <span className="msg-table-meta">表格 · {block.rows.length} 行</span>
+        <span className="msg-table-meta">{t("chat.tableMeta", { rows: block.rows.length })}</span>
         <button
           type="button"
           className="msg-code-copy-btn msg-table-copy-btn"
@@ -156,10 +160,10 @@ function TableBlock({ block }: { block: any }) {
             try {
               await navigator.clipboard.writeText(block.tsv || block.raw || "");
             } catch {}
-            showToast("表格已复制");
+            showToast(t("chat.tableCopied"));
           }}
         >
-          复制表格
+          {t("chat.copyTable")}
         </button>
       </div>
       <div className="msg-table-scroll">
@@ -244,6 +248,7 @@ function ListItemView({ item }: { item: any }) {
 }
 
 function AsyncSvgAttachment({ name, url }: { name: string; url: string }) {
+  const { t } = useI18n();
   const [svgText, setSvgText] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -273,7 +278,7 @@ function AsyncSvgAttachment({ name, url }: { name: string; url: string }) {
     <MarkupPreviewCard
       code={svgText}
       kind="svg"
-      badgeLabel="SVG 预览"
+      badgeLabel={t("card.previewSvgBadge")}
       lang="svg"
       sourceLabel={name}
       downloadUrl={`${url}${sep}download=1&name=${encodeURIComponent(name)}`}
@@ -282,8 +287,9 @@ function AsyncSvgAttachment({ name, url }: { name: string; url: string }) {
 }
 
 function FileAttachmentCard({ name, filePath }: { name: string; filePath: string }) {
-  const info = describeFileExtension(name || filePath);
-  const fullName = name || filePath?.split("/").pop() || "文件附件";
+  const { locale, t } = useI18n();
+  const info = describeFileExtension(name || filePath, locale);
+  const fullName = name || filePath?.split("/").pop() || t("chat.fileAttachmentFallback");
   const [subText, setSubText] = useState(info.kind);
   const [disabledReason, setDisabledReason] = useState<string | null>(null);
   const [markupText, setMarkupText] = useState<string | null>(null);
@@ -291,6 +297,7 @@ function FileAttachmentCard({ name, filePath }: { name: string; filePath: string
   const isPreviewableFile = /\.(?:html?|xhtml|svg)$/i.test(name || "");
 
   useEffect(() => {
+    setSubText(info.kind);
     if (!filePath) return;
     let cancelled = false;
     apiFetch(`/api/files/meta?path=${encodeURIComponent(filePath)}`)
@@ -298,8 +305,8 @@ function FileAttachmentCard({ name, filePath }: { name: string; filePath: string
       .then((m) => {
         if (cancelled || !m || !m.ok) return;
         if (!m.exists) {
-          setSubText(`${info.kind} · 原路径文件不存在`);
-          setDisabledReason("原路径文件不存在");
+          setSubText(t("chat.fileMissingKind", { kind: info.kind }));
+          setDisabledReason(t("chat.fileMissingReason"));
           return;
         }
         const sizeLabel = formatFileBytes(m.size);
@@ -307,7 +314,7 @@ function FileAttachmentCard({ name, filePath }: { name: string; filePath: string
         const subParts = [info.kind, sizeLabel, timeLabel].filter(Boolean);
         setSubText(subParts.join(" · "));
         if (!m.inWorkspace) {
-          setDisabledReason("文件不在可下载工作区目录内");
+          setDisabledReason(t("chat.fileNotInWorkspace"));
         }
       })
       .catch(() => {});
@@ -324,7 +331,7 @@ function FileAttachmentCard({ name, filePath }: { name: string; filePath: string
     return () => {
       cancelled = true;
     };
-  }, [filePath, info.kind, isPreviewableFile]);
+  }, [filePath, info.kind, isPreviewableFile, locale]);
 
   const dlHref = apiUrl(
     `/api/workspace/file?path=${encodeURIComponent(filePath)}&download=1&name=${encodeURIComponent(name || "")}`
@@ -345,7 +352,7 @@ function FileAttachmentCard({ name, filePath }: { name: string; filePath: string
         <div className="msg-file-actions">
           <a
             className={`msg-file-btn is-primary${disabledReason ? " is-disabled" : ""}`}
-            title={disabledReason || "下载到本地"}
+            title={disabledReason || t("chat.downloadToLocal")}
             aria-disabled={disabledReason ? "true" : undefined}
             href={disabledReason ? undefined : dlHref}
             download={name || ""}
@@ -353,11 +360,11 @@ function FileAttachmentCard({ name, filePath }: { name: string; filePath: string
               e.stopPropagation();
               if (disabledReason) {
                 e.preventDefault();
-                showToast(disabledReason || "当前文件暂不可下载");
+                showToast(disabledReason || t("chat.fileUnavailableDownload"));
               }
             }}
           >
-            下载
+            {t("card.previewDownload")}
           </a>
         </div>
       </div>
@@ -365,7 +372,13 @@ function FileAttachmentCard({ name, filePath }: { name: string; filePath: string
         <MarkupPreviewCard
           code={markupText}
           kind={isSvgFile ? "svg" : "html"}
-          badgeLabel={isSvgFile ? "SVG 预览" : isHtmFile ? "HTM 预览" : "HTML 预览"}
+          badgeLabel={
+            isSvgFile
+              ? t("card.previewSvgBadge")
+              : isHtmFile
+                ? t("card.previewHtmBadge")
+                : t("card.previewHtmlBadge")
+          }
           lang={isSvgFile ? "svg" : isHtmFile ? "htm" : "html"}
           sourceLabel={name}
         />
@@ -375,7 +388,8 @@ function FileAttachmentCard({ name, filePath }: { name: string; filePath: string
 }
 
 function ProseSegment({ text }: { text: string }) {
-  const blocks = parseMarkdownBlocks(text);
+  const { locale, t } = useI18n();
+  const blocks = parseMarkdownBlocks(text, locale);
   const rendered: ReactNode[] = [];
   let mediaBatch: Array<{ name: string; url: string }> = [];
 
@@ -420,7 +434,7 @@ function ProseSegment({ text }: { text: string }) {
 
   blocks.forEach((block: any, idx: number) => {
     if (block.type === "attachment_image") {
-      const attName = block.name || "AI 生成图片";
+      const attName = block.name || t("chat.aiGeneratedImage");
       const attUrl = apiUrl(block.url);
       const dedupKey = normalizeMediaKey(block.url || attUrl);
       if (dedupKey && seenImageUrls.has(dedupKey)) {
@@ -507,12 +521,13 @@ function ProseSegment({ text }: { text: string }) {
 }
 
 export function MarkdownRenderer({ text }: { text: string }) {
+  const { locale, t } = useI18n();
   const segments = extractMessageSegments(text);
   return (
     <>
       {segments.map((seg: any, idx: number) => {
         if (seg.type === "fence") {
-          const meta = detectPreviewableMarkup(seg.code, seg.lang);
+          const meta = detectPreviewableMarkup(seg.code, seg.lang, locale);
           if (meta.previewable) {
             return (
               <MarkupPreviewCard
@@ -534,13 +549,13 @@ export function MarkdownRenderer({ text }: { text: string }) {
               kind={seg.kind}
               badgeLabel={
                 seg.kind === "svg"
-                  ? "SVG 预览"
+                  ? t("card.previewSvgBadge")
                   : seg.lang === "htm"
-                    ? "HTM 预览"
-                    : "HTML 预览"
+                    ? t("card.previewHtmBadge")
+                    : t("card.previewHtmlBadge")
               }
               lang={seg.lang || (seg.kind === "svg" ? "svg" : "html")}
-              sourceLabel="纯代码片段"
+              sourceLabel={t("card.previewRawSource")}
             />
           );
         }
