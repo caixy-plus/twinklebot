@@ -3,6 +3,10 @@ import { runTask, createControl } from "./loop.js";
 import { createBotScopedExecutorClient } from "./executor-client.js";
 import { resolveBotWorkspaceRoot } from "../lib/bot-workspace.js";
 import {
+  formatChannelSourceHeader,
+  sanitizeChannelMeta,
+} from "../lib/channel-integrations.js";
+import {
   createScreenLeasePool,
   getHostScreenPoolBudget,
   resolveConfiguredMaxScreens,
@@ -254,6 +258,10 @@ export function createRunner({
           : {}),
       };
     }
+    const cleanChannelMeta = sanitizeChannelMeta(userMeta?.channelMeta);
+    if (cleanChannelMeta) {
+      cleanMeta.channelMeta = cleanChannelMeta;
+    }
     return cleanMeta;
   }
 
@@ -399,8 +407,16 @@ export function createRunner({
 
       const eventsSoFar = store?.readEvents?.(groupSession.id) || [];
       let enrichedUserText = userText;
+      const sourcePrefixParts: string[] = [];
+      const chHeader = formatChannelSourceHeader(userMeta?.channelMeta);
+      if (chHeader) sourcePrefixParts.push(chHeader);
       if (userMeta?.replyTo?.snippet) {
-        enrichedUserText = `[Replying to ${userMeta.replyTo.author || "message"}: "${userMeta.replyTo.snippet}"]\n${enrichedUserText}`;
+        sourcePrefixParts.push(
+          `[Replying to ${userMeta.replyTo.author || "message"}: "${userMeta.replyTo.snippet}"]`
+        );
+      }
+      if (sourcePrefixParts.length > 0) {
+        enrichedUserText = `${sourcePrefixParts.join("\n")}\n${enrichedUserText}`;
       }
       const groupPrompt = buildGroupPromptContext(eventsSoFar, enrichedUserText);
 
@@ -436,6 +452,9 @@ export function createRunner({
           executor: speakerExecutor,
           mcpManager: sharedMcpManager,
           hostBridge: runnerApi.hostBridge || null,
+          getChannelStatus: runnerApi.getChannelStatus || null,
+          channelPairingActions: runnerApi.channelPairingActions || null,
+          channelConfigActions: runnerApi.channelConfigActions || null,
           store,
           config,
           emit,
@@ -596,6 +615,9 @@ export function createRunner({
               ? {
                   mcpManager: sharedMcpManager,
                   hostBridge: runnerApi.hostBridge || null,
+                  getChannelStatus: runnerApi.getChannelStatus || null,
+                  channelPairingActions: runnerApi.channelPairingActions || null,
+                  channelConfigActions: runnerApi.channelConfigActions || null,
                   autoRoute: true,
                   smartRouter: true,
                   enableBotTools: true,
@@ -806,6 +828,9 @@ export function createRunner({
     getScreenPoolBudget: () => hostScreenBudget,
     mcpManager: sharedMcpManager,
     hostBridge: null as any,
+    getChannelStatus: null as (() => Record<string, any>) | null,
+    channelPairingActions: null as Record<string, any> | null,
+    channelConfigActions: null as Record<string, any> | null,
   };
   return runnerApi;
 }

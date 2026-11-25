@@ -282,11 +282,13 @@ export async function handleSkillsRoutes(
               if (purgeCredentials) {
                 const curCh = normalizeChannelsAuthStore(ctx.store?.readChannelsAuth?.() || {});
                 if (skillId === "telegram-bot") {
+                  curCh.telegramAccounts = [];
                   curCh["telegram-bot"] = normalizeTelegramChannelConfig({});
                 } else if (skillId === "feishu-bot") {
+                  curCh.feishuAccounts = [];
                   curCh["feishu-bot"] = normalizeFeishuChannelConfig({});
                 }
-                ctx.store?.writeChannelsAuth?.(curCh);
+                ctx.store?.writeChannelsAuth?.(normalizeChannelsAuthStore(curCh));
               }
             }
             ctx.broadcastSkillsUpdated();

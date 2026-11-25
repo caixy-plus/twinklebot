@@ -12,6 +12,7 @@ import {
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
+import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
 import {
   getDefaultKimiCuConfig,
   resolveHostPlatformHint,
@@ -219,18 +220,47 @@ export function SkillsStoreModal() {
   );
   const mcpServerId = detailSkill?.mcpServerId || detailSkillId || "kimi-cu";
 
-  // Channel integration editor state (#13)
+  // Channel integration multi-bot & pairing editor state (#13)
   const channelEntry = isChannelSkillDetail
     ? (settings?.channelIntegrations as any)?.[detailSkillId] || null
     : null;
-  const channelCfg = channelEntry?.config || {};
-  const channelRt = channelEntry?.runtime || {};
-  const [chEnabled, setChEnabled] = useState(false);
-  const [chMode, setChMode] = useState("polling");
+  const supportsMultiBotChannels =
+    hasConnectedNodeCapability("channel-multi-bot-pairing-v1") ||
+    Array.isArray(channelEntry?.accounts);
+  const channelAccounts: any[] = isChannelSkillDetail
+    ? Array.isArray(channelEntry?.accounts)
+      ? channelEntry.accounts
+      : channelEntry?.config?.configured || channelEntry?.runtime?.status
+        ? [
+            {
+              id: detailSkillId === "feishu-bot" ? "fs_default" : "tg_default",
+              config: channelEntry.config || {},
+              runtime: channelEntry.runtime || {},
+              webhookPath: channelEntry.webhookPath,
+            },
+          ]
+        : []
+    : [];
+  const [editingChannelAcctId, setEditingChannelAcctId] = useState<string | null>(null);
+  const [channelEditorOpen, setChannelEditorOpen] = useState(false);
+  const chEditorTarget =
+    editingChannelAcctId !== null
+      ? channelAccounts.find((a: any) => a.id === editingChannelAcctId) || null
+      : null;
+  const channelCfg =
+    chEditorTarget?.config || (!supportsMultiBotChannels ? channelEntry?.config || {} : {});
+  const channelRt =
+    chEditorTarget?.runtime || (!supportsMultiBotChannels ? channelEntry?.runtime || {} : {});
+  const [chLabel, setChLabel] = useState("");
+  const [chEnabled, setChEnabled] = useState(true);
+  const [chMode, setChMode] = useState("websocket");
   const [chTargetBotId, setChTargetBotId] = useState("");
+  const [chRequirePairing, setChRequirePairing] = useState(true);
   const [chWhitelist, setChWhitelist] = useState("");
   const [chApprovalMode, setChApprovalMode] = useState("channel_and_app");
   const [chTgToken, setChTgToken] = useState("");
+  const [chTgProxy, setChTgProxy] = useState("");
+  const [chClearTgProxy, setChClearTgProxy] = useState(false);
   const [chTgSecret, setChTgSecret] = useState("");
   const [chClearTgSecret, setChClearTgSecret] = useState(false);
   const [chFsDomain, setChFsDomain] = useState("feishu");
@@ -240,40 +270,132 @@ export function SkillsStoreModal() {
   const [chFsEncryptKey, setChFsEncryptKey] = useState("");
   const [chClearFsVerify, setChClearFsVerify] = useState(false);
   const [chClearFsEncrypt, setChClearFsEncrypt] = useState(false);
-  const [chBusy, setChBusy] = useState<"save" | "test" | null>(null);
+  const [chBusy, setChBusy] = useState<"save" | "test" | "delete" | null>(null);
+  const [chTestingAccountId, setChTestingAccountId] = useState<string | null>(null);
+  const [chConfirmDeleteId, setChConfirmDeleteId] = useState<string | null>(null);
   const [chFeedback, setChFeedback] = useState<{ text: string; kind: "info" | "success" | "error" }>({
     text: "",
     kind: "info",
   });
+  const [chListFeedback, setChListFeedback] = useState<{ text: string; kind: "info" | "success" | "error" }>({
+    text: "",
+    kind: "info",
+  });
+  const [chPairings, setChPairings] = useState<{ pending: any[]; approved: any[] }>({
+    pending: [],
+    approved: [],
+  });
+  const [chPairingsBusyKey, setChPairingsBusyKey] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!isChannelSkillDetail) return;
-    setChEnabled(
-      !channelCfg.configured && !channelCfg.updatedAt ? true : Boolean(channelCfg.enabled)
-    );
-    setChMode(
-      channelCfg.connectionMode ||
-        (detailSkillId === "feishu-bot" ? "websocket" : "polling")
-    );
-    setChTargetBotId(String(channelCfg.defaultSessionId || ""));
+  const loadChannelFormFromAccount = (acct: any | null, skillId: string) => {
+    const cfg = acct?.config || {};
+    setChLabel(String(cfg.label || ""));
+    setChEnabled(!cfg.configured && !cfg.updatedAt ? true : Boolean(cfg.enabled));
+    setChMode(cfg.connectionMode || (skillId === "feishu-bot" ? "websocket" : "polling"));
+    setChTargetBotId(String(cfg.defaultSessionId || ""));
+    setChRequirePairing(cfg.requirePairing !== undefined ? Boolean(cfg.requirePairing) : true);
     setChWhitelist(
-      Array.isArray(channelCfg.allowedSenderIds)
-        ? channelCfg.allowedSenderIds.join(", ")
-        : ""
+      Array.isArray(cfg.allowedSenderIds) ? cfg.allowedSenderIds.join(", ") : ""
     );
-    setChApprovalMode(channelCfg.approvalMode || "channel_and_app");
+    setChApprovalMode(cfg.approvalMode || "channel_and_app");
     setChTgToken("");
+    setChTgProxy(String(cfg.proxy || ""));
+    setChClearTgProxy(false);
     setChTgSecret("");
     setChClearTgSecret(false);
-    setChFsDomain(channelCfg.domain || "feishu");
-    setChFsAppId(String(channelCfg.appId || ""));
+    setChFsDomain(cfg.domain || "feishu");
+    setChFsAppId(String(cfg.appId || ""));
     setChFsAppSecret("");
     setChFsVerifyToken("");
     setChFsEncryptKey("");
     setChClearFsVerify(false);
     setChClearFsEncrypt(false);
+  };
+
+  const refreshChannelPairingsFromServer = async () => {
+    if (!supportsMultiBotChannels) return;
+    try {
+      const res = await apiJson("/api/integrations/channels", { method: "GET" });
+      if (res?.channels?.pairings) {
+        setChPairings({
+          pending: Array.isArray(res.channels.pairings.pending)
+            ? res.channels.pairings.pending
+            : [],
+          approved: Array.isArray(res.channels.pairings.approved)
+            ? res.channels.pairings.approved
+            : [],
+        });
+      }
+    } catch {
+      // ignore transient network errors on background refresh
+    }
+  };
+
+  useEffect(() => {
+    if (!appsModalOpen || !isChannelSkillDetail || !detailSkillId) return;
+    const entry = (settings?.channelIntegrations as any)?.[detailSkillId];
+    const accts: any[] = Array.isArray(entry?.accounts)
+      ? entry.accounts
+      : entry?.config?.configured || entry?.runtime?.status
+        ? [
+            {
+              id: detailSkillId === "feishu-bot" ? "fs_default" : "tg_default",
+              config: entry.config || {},
+              runtime: entry.runtime || {},
+            },
+          ]
+        : [];
+    setChConfirmDeleteId(null);
+    setChListFeedback({ text: "", kind: "info" });
     setChFeedback({ text: "", kind: "info" });
-  }, [appsModalOpen, detailSkillId, skillsView, channelCfg.updatedAt]);
+    if (accts.length === 0) {
+      setEditingChannelAcctId(null);
+      setChannelEditorOpen(true);
+      loadChannelFormFromAccount(null, detailSkillId);
+    } else {
+      setEditingChannelAcctId(null);
+      setChannelEditorOpen(false);
+      loadChannelFormFromAccount(accts[0], detailSkillId);
+    }
+  }, [appsModalOpen, detailSkillId, skillsView]);
+
+  useEffect(() => {
+    if (!appsModalOpen || !isChannelSkillDetail || !supportsMultiBotChannels) return;
+    void refreshChannelPairingsFromServer();
+  }, [appsModalOpen, isChannelSkillDetail, detailSkillId, supportsMultiBotChannels]);
+
+  const livePairings: { pending: any[]; approved: any[] } =
+    (settings?.channelIntegrations as any)?.pairings || chPairings;
+
+  const getChannelPendingCount = (skillId: string, skill?: any): number => {
+    const entry = (settings?.channelIntegrations as any)?.[skillId];
+    if (typeof entry?.pendingPairingCount === "number") {
+      return entry.pendingPairingCount;
+    }
+    if (typeof skill?.pendingPairingCount === "number") {
+      return skill.pendingPairingCount;
+    }
+    const accts: any[] = Array.isArray(entry?.accounts) ? entry.accounts : [];
+    if (accts.length > 0) {
+      return accts.reduce(
+        (sum, a) =>
+          sum + (Array.isArray(a?.config?.pendingPairings) ? a.config.pendingPairings.length : 0),
+        0
+      );
+    }
+    return (livePairings?.pending || []).filter((p: any) => p?.channel === skillId).length;
+  };
+
+  const renderChannelPendingBadge = (skillId: string, skill?: any) => {
+    if (skillId !== "feishu-bot" && skillId !== "telegram-bot") return null;
+    const count = getChannelPendingCount(skillId, skill);
+    if (count <= 0) return null;
+    return (
+      <span className="channel-pending-pill">
+        {t("channel.pendingBadge", { count })}
+      </span>
+    );
+  };
   const [mcpJsonText, setMcpJsonText] = useState(() =>
     formatMcpServersJson(settings?.mcpServers, mcpServerId, hostPlatform)
   );
@@ -609,24 +731,40 @@ export function SkillsStoreModal() {
       return `手动添加启用 · ${skill?.desc || ""}`;
     }
     const entry = (settings?.channelIntegrations as any)?.[skill.id];
+    const accts: any[] = Array.isArray(entry?.accounts) ? entry.accounts : [];
+    const pendingCount = getChannelPendingCount(skill.id, skill);
+    const pendingText = pendingCount > 0 ? ` · ${t("channel.pendingBadge", { count: pendingCount })}` : "";
+    if (accts.length > 0) {
+      const onlineCount = accts.filter(
+        (a) => a?.runtime?.status === "connected" || a?.runtime?.status === "webhook_ready"
+      ).length;
+      const errAcct = accts.find((a) => a?.runtime?.status === "error" && a?.runtime?.lastError);
+      if (onlineCount > 0) {
+        return `${t("channel.multiBotCountSubtitle", { count: accts.length })}（${onlineCount} 在线）${pendingText} · ${skill.desc}`;
+      }
+      if (errAcct) {
+        return `${t("channel.multiBotCountSubtitle", { count: accts.length })} · ${errAcct.runtime.lastError}${pendingText}`;
+      }
+      return `${t("channel.multiBotCountSubtitle", { count: accts.length })}${pendingText} · 点击「配置」管理`;
+    }
     const cfg = entry?.config;
     const rt = entry?.runtime;
     if (rt?.status === "connected") {
-      return `${t("channel.statusConnected")}${rt.botName ? ` · ${rt.botName}` : ""} · ${skill.desc}`;
+      return `${t("channel.statusConnected")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${skill.desc}`;
     }
     if (rt?.status === "connecting") {
-      return `${t("channel.statusConnecting")}${rt.botName ? ` · ${rt.botName}` : ""} · ${skill.desc}`;
+      return `${t("channel.statusConnecting")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${skill.desc}`;
     }
     if (rt?.status === "webhook_ready") {
-      return `${t("channel.statusReady")}${rt.botName ? ` · ${rt.botName}` : ""} · ${skill.desc}`;
+      return `${t("channel.statusReady")}${rt.botName ? ` · ${rt.botName}` : ""}${pendingText} · ${skill.desc}`;
     }
     if (rt?.status === "error" && rt.lastError) {
-      return `${rt.lastError}`;
+      return `${rt.lastError}${pendingText}`;
     }
     if (cfg?.configured) {
       return cfg.enabled ? `${t("channel.statusStopped")} · 点击「配置」检查连接` : `已保存凭据（未启用） · 点击「配置」开启`;
     }
-    return `待配置凭据与白名单 · ${skill.desc}`;
+    return `待配置凭据与配对规则 · ${skill.desc}`;
   };
 
   const platformSkillSubtitle = (skill: any) => {
@@ -2008,7 +2146,10 @@ export function SkillsStoreModal() {
                             <SkillIconGraphic skillId={s.id} rawIcon={s.icon} />
                           </div>
                           <div className="skill-row-info">
-                            <div className="skill-row-name">{s.name}</div>
+                            <div className="skill-row-name">
+                              {s.name}
+                              {renderChannelPendingBadge(s.id, s)}
+                            </div>
                             <div className="skill-row-desc">{platformSkillSubtitle(s)}</div>
                           </div>
                           {s.removable ? (
@@ -2320,7 +2461,10 @@ export function SkillsStoreModal() {
                         <SkillIconGraphic skillId={s.id} rawIcon={s.icon} />
                       </div>
                       <div className="skill-row-info">
-                        <div className="skill-row-name">{s.name}</div>
+                        <div className="skill-row-name">
+                          {s.name}
+                          {renderChannelPendingBadge(s.id, s)}
+                        </div>
                         <div className="skill-row-desc">
                           {s.category === "platform"
                             ? platformSkillSubtitle(s)
@@ -2403,6 +2547,7 @@ export function SkillsStoreModal() {
             <div className="skill-detail-heading">
               <h2 className="apps-modal-title" id="skill-detail-title" tabIndex={-1}>
                 {detailSkill?.name || "QQ 邮箱"}
+                {detailSkill?.id && renderChannelPendingBadge(detailSkill.id, detailSkill)}
               </h2>
               <div className="skill-row-desc" id="skill-detail-sub">
                 {detailSkill
@@ -2620,448 +2765,1231 @@ export function SkillsStoreModal() {
             {(!mailEditorOpen || !editingMailAccountId) &&
               renderMailFormEditorShell(false, showMailCreateForm)}
 
-            {/* Chat Channel Skill Config Panel (Feishu / Telegram) (#13) */}
-            {isChannelSkillDetail && (
-              <section
-                id="channel-skill-config-panel"
-                className="mcp-skill-config-panel"
-                aria-label={detailSkill?.name || "对话渠道配置"}
-              >
-                <div className="mcp-status-card">
-                  <div className="mcp-status-head">
-                    <span className="mcp-status-title">
-                      {detailSkillId === "feishu-bot" ? "飞书机器人（Feishu / Lark）" : "Telegram Bot"}
-                    </span>
-                    <span
-                      id="channel-status-badge"
-                      className={`mcp-status-badge${
-                        channelRt.status === "connected" || channelRt.status === "webhook_ready"
-                          ? " is-online"
-                          : channelRt.status === "error"
-                            ? " is-offline"
-                            : ""
-                      }`}
-                    >
-                      {channelRt.status === "connected"
-                        ? t("channel.statusConnected")
-                        : channelRt.status === "connecting"
-                          ? t("channel.statusConnecting")
-                          : channelRt.status === "webhook_ready"
-                            ? t("channel.statusReady")
-                            : channelRt.status === "error"
-                              ? channelRt.lastError || t("common.offline")
-                              : t("channel.statusStopped")}
-                    </span>
-                  </div>
-                  {channelRt.botName && (
-                    <div className="mcp-status-detail">Bot: {channelRt.botName}</div>
-                  )}
-                </div>
+            {/* Chat Channel Skill Config Panel (Feishu / Telegram Multi-Bot + Pairing) (#13) */}
+            {isChannelSkillDetail &&
+              (() => {
+                const originFallback =
+                  typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:3230";
+                const resolvedOrigin = activeBaseUrl || originFallback;
 
-                <form
-                  id="channel-config-form"
-                  className="mail-config-form"
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    if (!detailSkillId) return;
-                    setChBusy("save");
-                    setChFeedback({ text: "", kind: "info" });
+                const getChannelStatusMeta = (rt: any) => {
+                  if (rt?.status === "connected") {
+                    return { label: t("channel.statusConnected"), cls: " is-online" };
+                  }
+                  if (rt?.status === "connecting") {
+                    return { label: t("channel.statusConnecting"), cls: "" };
+                  }
+                  if (rt?.status === "webhook_ready") {
+                    return { label: t("channel.statusReady"), cls: " is-online" };
+                  }
+                  if (rt?.status === "error") {
+                    return { label: rt?.lastError || t("common.offline"), cls: " is-offline" };
+                  }
+                  return { label: t("channel.statusStopped"), cls: "" };
+                };
+
+                const resolveTargetBotTitle = (sessionId?: string | null) => {
+                  const sid = String(sessionId || "").trim();
+                  if (!sid) return t("channel.targetBotAdmin");
+                  const found = (sessions || []).find((s: any) => s && s.id === sid);
+                  return found?.title || sid;
+                };
+
+                const applyChannelApiResult = (res: any) => {
+                  if (res?.settings) {
+                    setState((prev) => ({ settings: { ...prev.settings, ...res.settings } }));
+                  }
+                  if (res?.channels?.pairings) {
+                    setChPairings({
+                      pending: Array.isArray(res.channels.pairings.pending)
+                        ? res.channels.pairings.pending
+                        : [],
+                      approved: Array.isArray(res.channels.pairings.approved)
+                        ? res.channels.pairings.approved
+                        : [],
+                    });
+                  }
+                };
+
+                const startEditingChannelAccount = (acct: any) => {
+                  if (!detailSkillId) return;
+                  if (channelEditorOpen && editingChannelAcctId === acct.id) {
+                    setChannelEditorOpen(false);
+                    setEditingChannelAcctId(null);
+                    setChConfirmDeleteId(null);
+                    return;
+                  }
+                  setEditingChannelAcctId(acct.id);
+                  setChannelEditorOpen(true);
+                  setChConfirmDeleteId(null);
+                  loadChannelFormFromAccount(acct, detailSkillId);
+                  setChFeedback({ text: "", kind: "info" });
+                };
+
+                const startCreateChannelAccount = () => {
+                  if (!detailSkillId) return;
+                  setEditingChannelAcctId(null);
+                  setChannelEditorOpen(true);
+                  setChConfirmDeleteId(null);
+                  loadChannelFormFromAccount(null, detailSkillId);
+                  setChFeedback({ text: "", kind: "info" });
+                };
+
+                const runChannelTest = async (explicitAcct?: any) => {
+                  if (!detailSkillId) return;
+                  if (explicitAcct) {
+                    setChTestingAccountId(explicitAcct.id);
+                    setChListFeedback({ text: t("common.testing"), kind: "info" });
                     try {
-                      const payload =
-                        detailSkillId === "telegram-bot"
-                          ? {
-                              enabled: chEnabled,
-                              connectionMode: chMode,
-                              botToken: chTgToken.trim() || undefined,
-                              webhookSecret: chTgSecret.trim() || undefined,
-                              ...(chClearTgSecret && !chTgSecret.trim()
-                                ? { clearWebhookSecret: true }
-                                : {}),
-                              defaultSessionId: chTargetBotId,
-                              allowedSenderIds: chWhitelist,
-                              approvalMode: chApprovalMode,
-                            }
-                          : {
-                              enabled: chEnabled,
-                              connectionMode: chMode,
-                              domain: chFsDomain,
-                              appId: chFsAppId.trim(),
-                              appSecret: chFsAppSecret.trim() || undefined,
-                              verificationToken: chFsVerifyToken.trim() || undefined,
-                              encryptKey: chFsEncryptKey.trim() || undefined,
-                              ...(chClearFsVerify && !chFsVerifyToken.trim()
-                                ? { clearVerificationToken: true }
-                                : {}),
-                              ...(chClearFsEncrypt && !chFsEncryptKey.trim()
-                                ? { clearEncryptKey: true }
-                                : {}),
-                              defaultSessionId: chTargetBotId,
-                              allowedSenderIds: chWhitelist,
-                              approvalMode: chApprovalMode,
-                            };
-                      const res = await apiJson(
-                        `/api/integrations/channels/${encodeURIComponent(detailSkillId)}`,
-                        {
-                          method: "POST",
-                          body: JSON.stringify(payload),
-                        }
-                      );
-                      if (res?.settings) {
-                        setState((prev) => ({ settings: { ...prev.settings, ...res.settings } }));
-                      }
-                      setChTgToken("");
-                      setChTgSecret("");
-                      setChClearTgSecret(false);
-                      setChFsAppSecret("");
-                      setChFsVerifyToken("");
-                      setChFsEncryptKey("");
-                      setChClearFsVerify(false);
-                      setChClearFsEncrypt(false);
-                      setChFeedback({ text: `✓ ${t("channel.savedToast")}`, kind: "success" });
-                      showToast(t("channel.savedToast"));
+                      const url = supportsMultiBotChannels
+                        ? `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/accounts/${encodeURIComponent(explicitAcct.id)}/test`
+                        : `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/test`;
+                      const res = await apiJson(url, {
+                        method: "POST",
+                        body: JSON.stringify({}),
+                      });
+                      const nameLabel =
+                        explicitAcct?.config?.label || res?.botName || detailSkillId;
+                      setChListFeedback({
+                        text: res?.warning
+                          ? `⚠️ ${nameLabel} · ${res.warning}`
+                          : `✓ ${nameLabel}`,
+                        kind: "success",
+                      });
                     } catch (err: any) {
-                      setChFeedback({
-                        text: `❌ ${err?.message || "Save failed"}`,
+                      setChListFeedback({
+                        text: `❌ ${err?.message || "Test failed"}`,
                         kind: "error",
                       });
                     } finally {
-                      setChBusy(null);
+                      setChTestingAccountId(null);
                     }
-                  }}
-                >
-                  <label
-                    className="mail-checkbox-row"
-                    style={{ display: "flex", alignItems: "center", gap: "8px" }}
-                  >
-                    <input
-                      id="channel-enabled-toggle"
-                      type="checkbox"
-                      checked={chEnabled}
-                      onChange={(e) => setChEnabled(e.target.checked)}
-                    />
-                    <span>{t("channel.enabled")}</span>
-                  </label>
+                    return;
+                  }
 
-                  <div className="mail-field">
-                    <label htmlFor="channel-mode-select">{t("channel.connectionMode")}</label>
-                    <select
-                      id="channel-mode-select"
-                      className="inline-text-input"
-                      value={chMode}
-                      onChange={(e) => setChMode(e.target.value)}
-                    >
-                      {detailSkillId === "telegram-bot" ? (
-                        <>
-                          <option value="polling">{t("channel.modePolling")}</option>
-                          <option value="webhook">{t("channel.modeWebhook")}</option>
-                        </>
-                      ) : (
-                        <>
-                          <option value="websocket">{t("channel.modeWebsocket")}</option>
-                          <option value="webhook">{t("channel.modeWebhook")}</option>
-                        </>
-                      )}
-                    </select>
-                    {chMode === "webhook" && (
-                      <span
-                        className="mail-field-hint"
-                        style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
-                      >
-                        {t("channel.webhookUrlHint", {
-                          url: `${activeBaseUrl || (typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:3230")}${
-                            detailSkillId === "telegram-bot"
-                              ? "/api/channels/telegram/webhook"
-                              : "/api/channels/feishu/webhook"
-                          }`,
-                        })}
-                      </span>
-                    )}
-                  </div>
-
-                  {detailSkillId === "telegram-bot" ? (
-                    <>
-                      <div className="mail-field">
-                        <label htmlFor="channel-tg-token-input">{t("channel.telegramToken")}</label>
-                        <input
-                          id="channel-tg-token-input"
-                          type="password"
-                          className="inline-text-input"
-                          autoComplete="off"
-                          placeholder={
-                            channelCfg.hasBotToken
-                              ? t("channel.secretSavedPlaceholder")
-                              : "123456:ABC-DEF..."
+                  setChBusy("test");
+                  setChFeedback({ text: t("common.testing"), kind: "info" });
+                  try {
+                    const cleanProxy =
+                      chTgProxy.trim() && !chTgProxy.includes("••••")
+                        ? chTgProxy.trim()
+                        : undefined;
+                    const testBody =
+                      detailSkillId === "telegram-bot"
+                        ? {
+                            isNew: !editingChannelAcctId,
+                            botToken: chTgToken.trim() || undefined,
+                            proxy: cleanProxy,
+                            ...(chClearTgProxy && !cleanProxy ? { clearProxy: true } : {}),
                           }
-                          value={chTgToken}
-                          onChange={(e) => setChTgToken(e.target.value)}
-                        />
-                      </div>
-                      {chMode === "webhook" && (
-                        <div className="mail-field">
-                          <label htmlFor="channel-tg-secret-input">{t("channel.telegramSecret")}</label>
-                          <input
-                            id="channel-tg-secret-input"
-                            type="password"
-                            className="inline-text-input"
-                            autoComplete="off"
-                            placeholder={
-                              channelCfg.hasWebhookSecret && !chClearTgSecret
-                                ? t("channel.secretSavedPlaceholder")
-                                : "X-Telegram-Bot-Api-Secret-Token"
-                            }
-                            value={chTgSecret}
-                            onChange={(e) => {
-                              setChTgSecret(e.target.value);
-                              if (e.target.value) setChClearTgSecret(false);
+                        : {
+                            isNew: !editingChannelAcctId,
+                            domain: chFsDomain,
+                            connectionMode: chMode,
+                            appId: chFsAppId.trim() || undefined,
+                            appSecret: chFsAppSecret.trim() || undefined,
+                          };
+                    const url =
+                      editingChannelAcctId && supportsMultiBotChannels
+                        ? `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/accounts/${encodeURIComponent(editingChannelAcctId)}/test`
+                        : `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/test`;
+                    const res = await apiJson(url, {
+                      method: "POST",
+                      body: JSON.stringify(testBody),
+                    });
+                    setChFeedback({
+                      text: res?.warning
+                        ? `⚠️ ${res.botName || detailSkillId} · ${res.warning}`
+                        : `✓ ${res?.botName || detailSkillId}`,
+                      kind: "success",
+                    });
+                  } catch (err: any) {
+                    setChFeedback({
+                      text: `❌ ${err?.message || "Test failed"}`,
+                      kind: "error",
+                    });
+                  } finally {
+                    setChBusy(null);
+                  }
+                };
+
+                const runChannelFormSubmit = async (e: FormEvent) => {
+                  e.preventDefault();
+                  if (!detailSkillId) return;
+                  setChBusy("save");
+                  setChFeedback({ text: "", kind: "info" });
+                  try {
+                    const cleanProxy =
+                      chTgProxy.trim() && !chTgProxy.includes("••••")
+                        ? chTgProxy.trim()
+                        : undefined;
+                    const basePayload = {
+                      label: chLabel.trim() || undefined,
+                      enabled: chEnabled,
+                      connectionMode: chMode,
+                      defaultSessionId: chTargetBotId,
+                      requirePairing: chRequirePairing,
+                      allowedSenderIds: chWhitelist,
+                      approvalMode: chApprovalMode,
+                    };
+                    const payload =
+                      detailSkillId === "telegram-bot"
+                        ? {
+                            ...basePayload,
+                            botToken: chTgToken.trim() || undefined,
+                            proxy: cleanProxy,
+                            ...(chClearTgProxy && !cleanProxy ? { clearProxy: true } : {}),
+                            webhookSecret: chTgSecret.trim() || undefined,
+                            ...(chClearTgSecret && !chTgSecret.trim()
+                              ? { clearWebhookSecret: true }
+                              : {}),
+                          }
+                        : {
+                            ...basePayload,
+                            domain: chFsDomain,
+                            appId: chFsAppId.trim(),
+                            appSecret: chFsAppSecret.trim() || undefined,
+                            verificationToken: chFsVerifyToken.trim() || undefined,
+                            encryptKey: chFsEncryptKey.trim() || undefined,
+                            ...(chClearFsVerify && !chFsVerifyToken.trim()
+                              ? { clearVerificationToken: true }
+                              : {}),
+                            ...(chClearFsEncrypt && !chFsEncryptKey.trim()
+                              ? { clearEncryptKey: true }
+                              : {}),
+                          };
+
+                    const isCreating = supportsMultiBotChannels && !editingChannelAcctId;
+                    const url = supportsMultiBotChannels
+                      ? editingChannelAcctId
+                        ? `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/accounts/${encodeURIComponent(editingChannelAcctId)}`
+                        : `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/accounts`
+                      : `/api/integrations/channels/${encodeURIComponent(detailSkillId)}`;
+                    const method =
+                      supportsMultiBotChannels && editingChannelAcctId ? "PATCH" : "POST";
+
+                    const res = await apiJson(url, {
+                      method,
+                      body: JSON.stringify(payload),
+                    });
+                    applyChannelApiResult(res);
+                    setChTgToken("");
+                    setChTgSecret("");
+                    setChClearTgSecret(false);
+                    setChClearTgProxy(false);
+                    setChFsAppSecret("");
+                    setChFsVerifyToken("");
+                    setChFsEncryptKey("");
+                    setChClearFsVerify(false);
+                    setChClearFsEncrypt(false);
+
+                    const savedAccounts: any[] = Array.isArray(res?.channels?.[detailSkillId]?.accounts)
+                      ? res.channels[detailSkillId].accounts
+                      : [];
+                    const savedTargetId = editingChannelAcctId || res?.accountId;
+                    const savedAcct = savedTargetId
+                      ? savedAccounts.find((a) => a.id === savedTargetId)
+                      : null;
+                    if (savedAcct?.config?.proxy !== undefined) {
+                      setChTgProxy(String(savedAcct.config.proxy || ""));
+                    } else if (chClearTgProxy && !cleanProxy) {
+                      setChTgProxy("");
+                    }
+
+                    if (isCreating) {
+                      setChannelEditorOpen(false);
+                      setEditingChannelAcctId(null);
+                      setChListFeedback({ text: `✓ ${t("channel.savedToast")}`, kind: "success" });
+                    } else {
+                      setChFeedback({ text: `✓ ${t("channel.savedToast")}`, kind: "success" });
+                    }
+                    showToast(t("channel.savedToast"));
+                  } catch (err: any) {
+                    setChFeedback({
+                      text: `❌ ${err?.message || "Save failed"}`,
+                      kind: "error",
+                    });
+                  } finally {
+                    setChBusy(null);
+                  }
+                };
+
+                const runChannelDelete = async (accountId: string) => {
+                  if (!detailSkillId) return;
+                  setChBusy("delete");
+                  setChFeedback({ text: "", kind: "info" });
+                  try {
+                    const res = await apiJson(
+                      `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/accounts/${encodeURIComponent(accountId)}`,
+                      { method: "DELETE" }
+                    );
+                    applyChannelApiResult(res);
+                    setEditingChannelAcctId(null);
+                    setChannelEditorOpen(false);
+                    setChConfirmDeleteId(null);
+                    setChListFeedback({ text: "✓ 已删除机器人实例", kind: "success" });
+                  } catch (err: any) {
+                    setChFeedback({
+                      text: `❌ ${err?.message || "Delete failed"}`,
+                      kind: "error",
+                    });
+                  } finally {
+                    setChBusy(null);
+                  }
+                };
+
+                const runPairingAction = async (
+                  busyKey: string,
+                  url: string,
+                  method: "POST" | "DELETE",
+                  body: Record<string, any>,
+                  successText: string
+                ) => {
+                  setChPairingsBusyKey(busyKey);
+                  setChListFeedback({ text: "", kind: "info" });
+                  try {
+                    const res = await apiJson(url, {
+                      method,
+                      body: JSON.stringify(body),
+                    });
+                    applyChannelApiResult(res);
+                    if (!res?.channels?.pairings) {
+                      await refreshChannelPairingsFromServer();
+                    }
+                    setChListFeedback({ text: `✓ ${successText}`, kind: "success" });
+                    showToast(successText);
+                  } catch (err: any) {
+                    setChListFeedback({
+                      text: `❌ ${err?.message || "Operation failed"}`,
+                      kind: "error",
+                    });
+                  } finally {
+                    setChPairingsBusyKey(null);
+                  }
+                };
+
+                const renderChannelFormEditorShell = (isInline: boolean, visible: boolean) => {
+                  if (!visible) return null;
+                  const editingStatus = getChannelStatusMeta(channelRt);
+                  const editBotDisplay =
+                    chLabel ||
+                    channelRt.botName ||
+                    chFsAppId ||
+                    (detailSkillId === "feishu-bot" ? "飞书机器人" : "Telegram Bot");
+                  const webhookPath =
+                    chEditorTarget?.webhookPath ||
+                    (detailSkillId === "telegram-bot"
+                      ? "/api/channels/telegram/webhook"
+                      : "/api/channels/feishu/webhook");
+
+                  return (
+                    <div className="mail-form-editor-shell" style={isInline ? { marginTop: "10px" } : undefined}>
+                      <div className="mail-editor-mode-bar">
+                        <span className="mail-editor-mode-label">
+                          {editingChannelAcctId
+                            ? t("channel.editBot", { name: editBotDisplay })
+                            : t("channel.newBotHeader")}
+                        </span>
+                        {channelAccounts.length > 0 && (
+                          <button
+                            type="button"
+                            className="mail-acct-btn"
+                            onClick={() => {
+                              setChannelEditorOpen(false);
+                              setEditingChannelAcctId(null);
+                              setChConfirmDeleteId(null);
                             }}
-                          />
-                          {channelCfg.hasWebhookSecret && !chEnabled && (
-                            <label
-                              className="mail-checkbox-row"
-                              style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px", fontSize: "12px" }}
+                          >
+                            {t("channel.cancelEdit")}
+                          </button>
+                        )}
+                      </div>
+
+                      {editingChannelAcctId && (
+                        <div className="mcp-status-card" style={{ marginBottom: "8px" }}>
+                          <div className="mcp-status-head">
+                            <span className="mcp-status-title">{editBotDisplay}</span>
+                            <span
+                              id="channel-status-badge"
+                              className={`mcp-status-badge${editingStatus.cls}`}
                             >
-                              <input
-                                type="checkbox"
-                                checked={chClearTgSecret}
-                                onChange={(e) => setChClearTgSecret(e.target.checked)}
-                              />
-                              <span>保存时清除已配置的 Webhook Secret</span>
-                            </label>
+                              {editingStatus.label}
+                            </span>
+                          </div>
+                          {channelRt.botName && (
+                            <div className="mcp-status-detail">Bot: {channelRt.botName}</div>
+                          )}
+                          {channelRt.lastEventAt && (
+                            <div id="channel-last-event" className="mcp-status-detail">
+                              {t("channel.lastEventAt", {
+                                time: new Date(channelRt.lastEventAt).toLocaleString(),
+                              })}
+                            </div>
+                          )}
+                          {channelRt.lastSendError && (
+                            <div
+                              id="channel-send-error-banner"
+                              className="mail-feedback-box is-error channel-runtime-alert"
+                              role="alert"
+                            >
+                              <div>
+                                <strong>{t("channel.sendErrorTitle")}</strong>
+                                <div>{channelRt.lastSendError}</div>
+                              </div>
+                            </div>
                           )}
                         </div>
                       )}
-                    </>
-                  ) : (
-                    <>
-                      <div className="mail-form-grid-two">
+
+                      <form
+                        id="channel-config-form"
+                        className="mail-config-form"
+                        onSubmit={runChannelFormSubmit}
+                      >
                         <div className="mail-field">
-                          <label htmlFor="channel-fs-domain-select">{t("channel.feishuDomain")}</label>
-                          <select
-                            id="channel-fs-domain-select"
-                            className="inline-text-input"
-                            value={chFsDomain}
-                            onChange={(e) => setChFsDomain(e.target.value)}
-                          >
-                            <option value="feishu">飞书中国 (open.feishu.cn)</option>
-                            <option value="lark">Lark International (open.larksuite.com)</option>
-                          </select>
-                        </div>
-                        <div className="mail-field">
-                          <label htmlFor="channel-fs-appid-input">{t("channel.feishuAppId")}</label>
+                          <label htmlFor="channel-label-input">{t("channel.botLabel")}</label>
                           <input
-                            id="channel-fs-appid-input"
+                            id="channel-label-input"
                             type="text"
                             className="inline-text-input"
-                            placeholder="cli_a1b2c3d4..."
-                            value={chFsAppId}
-                            onChange={(e) => setChFsAppId(e.target.value)}
+                            placeholder={t("channel.botLabelPlaceholder")}
+                            value={chLabel}
+                            onChange={(e) => setChLabel(e.target.value)}
                           />
                         </div>
-                      </div>
-                      <div className="mail-field">
-                        <label htmlFor="channel-fs-secret-input">{t("channel.feishuAppSecret")}</label>
-                        <input
-                          id="channel-fs-secret-input"
-                          type="password"
-                          className="inline-text-input"
-                          autoComplete="off"
-                          placeholder={
-                            channelCfg.hasAppSecret
-                              ? t("channel.secretSavedPlaceholder")
-                              : "App Secret"
-                          }
-                          value={chFsAppSecret}
-                          onChange={(e) => setChFsAppSecret(e.target.value)}
-                        />
-                      </div>
-                      {chMode === "webhook" && (
-                        <div className="mail-form-grid-two">
-                          <div className="mail-field">
-                            <label htmlFor="channel-fs-verify-input">{t("channel.feishuVerifyToken")}</label>
-                            <input
-                              id="channel-fs-verify-input"
-                              type="password"
-                              className="inline-text-input"
-                              autoComplete="off"
-                              placeholder={
-                                channelCfg.hasVerificationToken && !chClearFsVerify
-                                  ? t("channel.secretSavedPlaceholder")
-                                  : "Verification Token"
-                              }
-                              value={chFsVerifyToken}
-                              onChange={(e) => {
-                                setChFsVerifyToken(e.target.value);
-                                if (e.target.value) setChClearFsVerify(false);
-                              }}
-                            />
-                            {channelCfg.hasVerificationToken && !chEnabled && (
-                              <label
-                                className="mail-checkbox-row"
-                                style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px", fontSize: "12px" }}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={chClearFsVerify}
-                                  onChange={(e) => setChClearFsVerify(e.target.checked)}
-                                />
-                                <span>保存时清除已配置的 Verification Token</span>
-                              </label>
+
+                        <label
+                          className="mail-checkbox-row"
+                          style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                        >
+                          <input
+                            id="channel-enabled-toggle"
+                            type="checkbox"
+                            checked={chEnabled}
+                            onChange={(e) => setChEnabled(e.target.checked)}
+                          />
+                          <span>{t("channel.enabled")}</span>
+                        </label>
+
+                        <div className="mail-field">
+                          <label htmlFor="channel-mode-select">{t("channel.connectionMode")}</label>
+                          <select
+                            id="channel-mode-select"
+                            className="inline-text-input"
+                            value={chMode}
+                            onChange={(e) => setChMode(e.target.value)}
+                          >
+                            {detailSkillId === "telegram-bot" ? (
+                              <>
+                                <option value="polling">{t("channel.modePolling")}</option>
+                                <option value="webhook">{t("channel.modeWebhook")}</option>
+                              </>
+                            ) : (
+                              <>
+                                <option value="websocket">{t("channel.modeWebsocket")}</option>
+                                <option value="webhook">{t("channel.modeWebhook")}</option>
+                              </>
                             )}
-                          </div>
-                          <div className="mail-field">
-                            <label htmlFor="channel-fs-encrypt-input">{t("channel.feishuEncryptKey")}</label>
-                            <input
-                              id="channel-fs-encrypt-input"
-                              type="password"
-                              className="inline-text-input"
-                              autoComplete="off"
-                              placeholder={
-                                channelCfg.hasEncryptKey && !chClearFsEncrypt
-                                  ? t("channel.secretSavedPlaceholder")
-                                  : "Encrypt Key"
-                              }
-                              value={chFsEncryptKey}
-                              onChange={(e) => {
-                                setChFsEncryptKey(e.target.value);
-                                if (e.target.value) setChClearFsEncrypt(false);
-                              }}
-                            />
-                            {channelCfg.hasEncryptKey && (
-                              <label
-                                className="mail-checkbox-row"
-                                style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px", fontSize: "12px" }}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={chClearFsEncrypt}
-                                  onChange={(e) => setChClearFsEncrypt(e.target.checked)}
-                                />
-                                <span>保存时清除已配置的 Encrypt Key</span>
-                              </label>
-                            )}
-                          </div>
+                          </select>
+                          {chMode === "webhook" && (
+                            <span
+                              className="mail-field-hint"
+                              style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
+                            >
+                              {t("channel.webhookUrlHint", {
+                                url: `${resolvedOrigin}${webhookPath}`,
+                              })}
+                            </span>
+                          )}
                         </div>
-                      )}
-                    </>
-                  )}
 
-                  <div className="mail-field">
-                    <label htmlFor="channel-default-session-select">{t("channel.targetBot")}</label>
-                    <select
-                      id="channel-default-session-select"
-                      className="inline-text-input"
-                      value={chTargetBotId}
-                      onChange={(e) => setChTargetBotId(e.target.value)}
-                    >
-                      <option value="">{t("channel.targetBotAdmin")}</option>
-                      {(sessions || [])
-                        .filter((s: any) => s && s.id)
-                        .map((s: any) => (
-                          <option key={s.id} value={s.id}>
-                            {s.title || s.id}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
+                        {detailSkillId === "telegram-bot" ? (
+                          <>
+                            <div className="mail-field">
+                              <label htmlFor="channel-tg-token-input">
+                                {t("channel.telegramToken")}
+                              </label>
+                              <input
+                                id="channel-tg-token-input"
+                                type="password"
+                                className="inline-text-input"
+                                autoComplete="off"
+                                placeholder={
+                                  channelCfg.hasBotToken
+                                    ? t("channel.secretSavedPlaceholder")
+                                    : "123456:ABC-DEF..."
+                                }
+                                value={chTgToken}
+                                onChange={(e) => setChTgToken(e.target.value)}
+                              />
+                            </div>
+                            {supportsMultiBotChannels && (
+                              <div className="mail-field">
+                                <label htmlFor="channel-tg-proxy-input">
+                                  {t("channel.telegramProxy")}
+                                </label>
+                                <input
+                                  id="channel-tg-proxy-input"
+                                  type="text"
+                                  className="inline-text-input"
+                                  autoComplete="off"
+                                  placeholder={t("channel.telegramProxyPlaceholder")}
+                                  value={chTgProxy}
+                                  onChange={(e) => {
+                                    setChTgProxy(e.target.value);
+                                    if (e.target.value) setChClearTgProxy(false);
+                                  }}
+                                />
+                                {channelCfg.hasProxy && (
+                                  <label
+                                    className="mail-checkbox-row"
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: "6px",
+                                      marginTop: "4px",
+                                      fontSize: "12px",
+                                    }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={chClearTgProxy}
+                                      onChange={(e) => setChClearTgProxy(e.target.checked)}
+                                    />
+                                    <span>{t("channel.proxyClearHint")}</span>
+                                  </label>
+                                )}
+                              </div>
+                            )}
+                            {chMode === "webhook" && (
+                              <div className="mail-field">
+                                <label htmlFor="channel-tg-secret-input">
+                                  {t("channel.telegramSecret")}
+                                </label>
+                                <input
+                                  id="channel-tg-secret-input"
+                                  type="password"
+                                  className="inline-text-input"
+                                  autoComplete="off"
+                                  placeholder={
+                                    channelCfg.hasWebhookSecret && !chClearTgSecret
+                                      ? t("channel.secretSavedPlaceholder")
+                                      : "X-Telegram-Bot-Api-Secret-Token"
+                                  }
+                                  value={chTgSecret}
+                                  onChange={(e) => {
+                                    setChTgSecret(e.target.value);
+                                    if (e.target.value) setChClearTgSecret(false);
+                                  }}
+                                />
+                                {channelCfg.hasWebhookSecret && !chEnabled && (
+                                  <label
+                                    className="mail-checkbox-row"
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: "6px",
+                                      marginTop: "4px",
+                                      fontSize: "12px",
+                                    }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={chClearTgSecret}
+                                      onChange={(e) => setChClearTgSecret(e.target.checked)}
+                                    />
+                                    <span>保存时清除已配置的 Webhook Secret</span>
+                                  </label>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <div className="mail-form-grid-two">
+                              <div className="mail-field">
+                                <label htmlFor="channel-fs-domain-select">
+                                  {t("channel.feishuDomain")}
+                                </label>
+                                <select
+                                  id="channel-fs-domain-select"
+                                  className="inline-text-input"
+                                  value={chFsDomain}
+                                  onChange={(e) => setChFsDomain(e.target.value)}
+                                >
+                                  <option value="feishu">飞书中国 (open.feishu.cn)</option>
+                                  <option value="lark">Lark International (open.larksuite.com)</option>
+                                </select>
+                              </div>
+                              <div className="mail-field">
+                                <label htmlFor="channel-fs-appid-input">
+                                  {t("channel.feishuAppId")}
+                                </label>
+                                <input
+                                  id="channel-fs-appid-input"
+                                  type="text"
+                                  className="inline-text-input"
+                                  placeholder="cli_a1b2c3d4..."
+                                  value={chFsAppId}
+                                  onChange={(e) => setChFsAppId(e.target.value)}
+                                />
+                              </div>
+                            </div>
+                            <div className="mail-field">
+                              <label htmlFor="channel-fs-secret-input">
+                                {t("channel.feishuAppSecret")}
+                              </label>
+                              <input
+                                id="channel-fs-secret-input"
+                                type="password"
+                                className="inline-text-input"
+                                autoComplete="off"
+                                placeholder={
+                                  channelCfg.hasAppSecret
+                                    ? t("channel.secretSavedPlaceholder")
+                                    : "App Secret"
+                                }
+                                value={chFsAppSecret}
+                                onChange={(e) => setChFsAppSecret(e.target.value)}
+                              />
+                            </div>
+                            {chMode === "webhook" && (
+                              <div className="mail-form-grid-two">
+                                <div className="mail-field">
+                                  <label htmlFor="channel-fs-verify-input">
+                                    {t("channel.feishuVerifyToken")}
+                                  </label>
+                                  <input
+                                    id="channel-fs-verify-input"
+                                    type="password"
+                                    className="inline-text-input"
+                                    autoComplete="off"
+                                    placeholder={
+                                      channelCfg.hasVerificationToken && !chClearFsVerify
+                                        ? t("channel.secretSavedPlaceholder")
+                                        : "Verification Token"
+                                    }
+                                    value={chFsVerifyToken}
+                                    onChange={(e) => {
+                                      setChFsVerifyToken(e.target.value);
+                                      if (e.target.value) setChClearFsVerify(false);
+                                    }}
+                                  />
+                                  {channelCfg.hasVerificationToken && !chEnabled && (
+                                    <label
+                                      className="mail-checkbox-row"
+                                      style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: "6px",
+                                        marginTop: "4px",
+                                        fontSize: "12px",
+                                      }}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={chClearFsVerify}
+                                        onChange={(e) => setChClearFsVerify(e.target.checked)}
+                                      />
+                                      <span>保存时清除已配置的 Verification Token</span>
+                                    </label>
+                                  )}
+                                </div>
+                                <div className="mail-field">
+                                  <label htmlFor="channel-fs-encrypt-input">
+                                    {t("channel.feishuEncryptKey")}
+                                  </label>
+                                  <input
+                                    id="channel-fs-encrypt-input"
+                                    type="password"
+                                    className="inline-text-input"
+                                    autoComplete="off"
+                                    placeholder={
+                                      channelCfg.hasEncryptKey && !chClearFsEncrypt
+                                        ? t("channel.secretSavedPlaceholder")
+                                        : "Encrypt Key"
+                                    }
+                                    value={chFsEncryptKey}
+                                    onChange={(e) => {
+                                      setChFsEncryptKey(e.target.value);
+                                      if (e.target.value) setChClearFsEncrypt(false);
+                                    }}
+                                  />
+                                  {channelCfg.hasEncryptKey && (
+                                    <label
+                                      className="mail-checkbox-row"
+                                      style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: "6px",
+                                        marginTop: "4px",
+                                        fontSize: "12px",
+                                      }}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={chClearFsEncrypt}
+                                        onChange={(e) => setChClearFsEncrypt(e.target.checked)}
+                                      />
+                                      <span>保存时清除已配置的 Encrypt Key</span>
+                                    </label>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        )}
 
-                  <div className="mail-field">
-                    <label htmlFor="channel-allowed-senders-input">{t("channel.whitelistLabel")}</label>
-                    <input
-                      id="channel-allowed-senders-input"
-                      type="text"
-                      className="inline-text-input"
-                      placeholder={t("channel.whitelistPlaceholder")}
-                      value={chWhitelist}
-                      onChange={(e) => setChWhitelist(e.target.value)}
-                    />
-                  </div>
+                        <div className="mail-field">
+                          <label htmlFor="channel-default-session-select">
+                            {t("channel.targetBot")}
+                          </label>
+                          <select
+                            id="channel-default-session-select"
+                            className="inline-text-input"
+                            value={chTargetBotId}
+                            onChange={(e) => setChTargetBotId(e.target.value)}
+                          >
+                            <option value="">{t("channel.targetBotAdmin")}</option>
+                            {(sessions || [])
+                              .filter((s: any) => s && s.id)
+                              .map((s: any) => (
+                                <option key={s.id} value={s.id}>
+                                  {s.title || s.id}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
 
-                  <div className="mail-field">
-                    <label htmlFor="channel-approval-mode-select">{t("channel.approvalMode")}</label>
-                    <select
-                      id="channel-approval-mode-select"
-                      className="inline-text-input"
-                      value={chApprovalMode}
-                      onChange={(e) => setChApprovalMode(e.target.value)}
-                    >
-                      <option value="channel_and_app">{t("channel.approvalBoth")}</option>
-                      <option value="app_only">{t("channel.approvalAppOnly")}</option>
-                    </select>
-                  </div>
+                        {supportsMultiBotChannels && (
+                          <div className="mail-field">
+                            <label
+                              className="mail-checkbox-row"
+                              style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                            >
+                              <input
+                                id="channel-require-pairing-toggle"
+                                type="checkbox"
+                                checked={chRequirePairing}
+                                onChange={(e) => setChRequirePairing(e.target.checked)}
+                              />
+                              <span>{t("channel.requirePairing")}</span>
+                            </label>
+                            <span className="mail-field-hint">
+                              {t("channel.requirePairingHint")}
+                            </span>
+                          </div>
+                        )}
 
-                  <div
-                    id="channel-config-feedback"
-                    className={`mail-feedback-box${
-                      chFeedback.kind === "success"
-                        ? " is-success"
-                        : chFeedback.kind === "error"
-                          ? " is-error"
-                          : ""
-                    }`}
-                    role="status"
-                    aria-live="polite"
-                    hidden={!chFeedback.text}
-                  >
-                    <StatusText text={chFeedback.text} />
-                  </div>
-
-                  <div className="mail-form-actions">
-                    <button
-                      id="channel-test-btn"
-                      type="button"
-                      className="settings-pill-btn"
-                      disabled={Boolean(chBusy)}
-                      onClick={async () => {
-                        if (!detailSkillId) return;
-                        setChBusy("test");
-                        setChFeedback({ text: t("common.testing"), kind: "info" });
-                        try {
-                          const testBody =
-                            detailSkillId === "telegram-bot"
-                              ? { botToken: chTgToken.trim() || undefined }
-                              : {
-                                  domain: chFsDomain,
-                                  connectionMode: chMode,
-                                  appId: chFsAppId.trim() || undefined,
-                                  appSecret: chFsAppSecret.trim() || undefined,
-                                };
-                          const res = await apiJson(
-                            `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/test`,
-                            {
-                              method: "POST",
-                              body: JSON.stringify(testBody),
+                        <div className="mail-field">
+                          <label htmlFor="channel-allowed-senders-input">
+                            {chRequirePairing && supportsMultiBotChannels
+                              ? t("channel.whitelistOptionalLabel")
+                              : t("channel.whitelistLabel")}
+                          </label>
+                          <input
+                            id="channel-allowed-senders-input"
+                            type="text"
+                            className="inline-text-input"
+                            placeholder={t("channel.whitelistPlaceholder")}
+                            value={chWhitelist}
+                            onChange={(e) => setChWhitelist(e.target.value)}
+                          />
+                          {(() => {
+                            const rejectedSender = channelRt.lastRejectedSender;
+                            const savedWhitelist: string[] = Array.isArray(
+                              channelCfg.allowedSenderIds
+                            )
+                              ? channelCfg.allowedSenderIds
+                              : [];
+                            const showQuickAdd = Boolean(
+                              rejectedSender?.senderId &&
+                                !savedWhitelist.includes(rejectedSender.senderId)
+                            );
+                            if (showQuickAdd && rejectedSender) {
+                              return (
+                                <div
+                                  id="channel-rejected-sender-banner"
+                                  className="channel-rejected-banner"
+                                  role="status"
+                                >
+                                  <span>
+                                    {t("channel.rejectedSenderHint", {
+                                      senderId: rejectedSender.senderId,
+                                      chatId: rejectedSender.chatId,
+                                    })}
+                                  </span>
+                                  <button
+                                    id="channel-quick-whitelist-btn"
+                                    type="button"
+                                    className="settings-pill-btn"
+                                    disabled={Boolean(chBusy)}
+                                    onClick={async () => {
+                                      if (!detailSkillId) return;
+                                      const existingTokens = chWhitelist
+                                        .split(/[\s,;，；]+/)
+                                        .map((s) => s.trim())
+                                        .filter(Boolean);
+                                      const merged = Array.from(
+                                        new Set([...existingTokens, rejectedSender.senderId])
+                                      );
+                                      setChWhitelist(merged.join(", "));
+                                      setChBusy("save");
+                                      setChFeedback({ text: "", kind: "info" });
+                                      try {
+                                        const url =
+                                          editingChannelAcctId && supportsMultiBotChannels
+                                            ? `/api/integrations/channels/${encodeURIComponent(detailSkillId)}/accounts/${encodeURIComponent(editingChannelAcctId)}`
+                                            : `/api/integrations/channels/${encodeURIComponent(detailSkillId)}`;
+                                        const method =
+                                          editingChannelAcctId && supportsMultiBotChannels
+                                            ? "PATCH"
+                                            : "POST";
+                                        const res = await apiJson(url, {
+                                          method,
+                                          body: JSON.stringify({ allowedSenderIds: merged }),
+                                        });
+                                        applyChannelApiResult(res);
+                                        setChFeedback({
+                                          text: `✓ ${t("channel.savedToast")}`,
+                                          kind: "success",
+                                        });
+                                        showToast(t("channel.savedToast"));
+                                      } catch (err: any) {
+                                        setChFeedback({
+                                          text: `❌ ${err?.message || "Save failed"}`,
+                                          kind: "error",
+                                        });
+                                      } finally {
+                                        setChBusy(null);
+                                      }
+                                    }}
+                                  >
+                                    {t("channel.quickAddWhitelist")}
+                                  </button>
+                                </div>
+                              );
                             }
-                          );
-                          setChFeedback({
-                            text: res.warning
-                              ? `⚠️ ${res.botName || detailSkillId} · ${res.warning}`
-                              : `✓ ${res.botName || detailSkillId}`,
-                            kind: "success",
-                          });
-                        } catch (err: any) {
-                          setChFeedback({
-                            text: `❌ ${err?.message || "Test failed"}`,
-                            kind: "error",
-                          });
-                        } finally {
-                          setChBusy(null);
-                        }
-                      }}
+                            if (
+                              chEnabled &&
+                              !chRequirePairing &&
+                              !chWhitelist.trim() &&
+                              !rejectedSender
+                            ) {
+                              return (
+                                <div className="mcp-status-detail">
+                                  {t("channel.whitelistEmptyWarn")}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
+
+                        <div className="mail-field">
+                          <label htmlFor="channel-approval-mode-select">
+                            {t("channel.approvalMode")}
+                          </label>
+                          <select
+                            id="channel-approval-mode-select"
+                            className="inline-text-input"
+                            value={chApprovalMode}
+                            onChange={(e) => setChApprovalMode(e.target.value)}
+                          >
+                            <option value="channel_and_app">{t("channel.approvalBoth")}</option>
+                            <option value="app_only">{t("channel.approvalAppOnly")}</option>
+                          </select>
+                        </div>
+
+                        <div
+                          id="channel-config-feedback"
+                          className={`mail-feedback-box${
+                            chFeedback.kind === "success"
+                              ? " is-success"
+                              : chFeedback.kind === "error"
+                                ? " is-error"
+                                : ""
+                          }`}
+                          role="status"
+                          aria-live="polite"
+                          hidden={!chFeedback.text}
+                        >
+                          <StatusText text={chFeedback.text} />
+                        </div>
+
+                        <div className="mail-form-actions">
+                          {editingChannelAcctId &&
+                            supportsMultiBotChannels &&
+                            (chConfirmDeleteId === editingChannelAcctId ? (
+                              <span style={{ display: "inline-flex", gap: "6px", marginRight: "auto" }}>
+                                <button
+                                  id="channel-delete-confirm-btn"
+                                  type="button"
+                                  className="mail-acct-btn is-danger"
+                                  disabled={Boolean(chBusy)}
+                                  onClick={() => runChannelDelete(editingChannelAcctId)}
+                                >
+                                  {t("channel.deleteBotConfirm")}
+                                </button>
+                                <button
+                                  id="channel-delete-cancel-btn"
+                                  type="button"
+                                  className="mail-acct-btn"
+                                  disabled={Boolean(chBusy)}
+                                  onClick={() => setChConfirmDeleteId(null)}
+                                >
+                                  {t("channel.cancelDelete")}
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                id="channel-delete-btn"
+                                type="button"
+                                className="mail-acct-btn is-danger"
+                                style={{ marginRight: "auto" }}
+                                disabled={Boolean(chBusy)}
+                                onClick={() => setChConfirmDeleteId(editingChannelAcctId)}
+                              >
+                                {t("channel.deleteBotBtn")}
+                              </button>
+                            ))}
+
+                          <button
+                            id="channel-test-btn"
+                            type="button"
+                            className="settings-pill-btn"
+                            disabled={Boolean(chBusy)}
+                            onClick={() => runChannelTest()}
+                          >
+                            {chBusy === "test" ? t("common.testing") : t("common.testConnection")}
+                          </button>
+                          <button
+                            id="channel-save-btn"
+                            type="submit"
+                            className="settings-blue-pill"
+                            disabled={Boolean(chBusy)}
+                          >
+                            {chBusy === "save" ? t("common.saving") : t("common.save")}
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  );
+                };
+
+                const channelPending = (livePairings?.pending || []).filter(
+                  (p: any) => p?.channel === detailSkillId
+                );
+                const channelApproved = (livePairings?.approved || []).filter(
+                  (a: any) => a?.channel === detailSkillId
+                );
+                const showCreateForm = channelEditorOpen || channelAccounts.length === 0;
+
+                return (
+                  <section
+                    id="channel-skill-config-panel"
+                    className="mcp-skill-config-panel"
+                    aria-label={detailSkill?.name || "对话渠道配置"}
+                  >
+                    <div
+                      id="channel-list-feedback"
+                      className={`mail-feedback-box${
+                        chListFeedback.kind === "success"
+                          ? " is-success"
+                          : chListFeedback.kind === "error"
+                            ? " is-error"
+                            : ""
+                      }`}
+                      role="status"
+                      aria-live="polite"
+                      hidden={!chListFeedback.text}
                     >
-                      {chBusy === "test" ? t("common.testing") : t("common.testConnection")}
-                    </button>
-                    <button
-                      id="channel-save-btn"
-                      type="submit"
-                      className="settings-blue-pill"
-                      disabled={Boolean(chBusy)}
-                    >
-                      {chBusy === "save" ? t("common.saving") : t("common.save")}
-                    </button>
-                  </div>
-                </form>
-              </section>
-            )}
+                      <StatusText text={chListFeedback.text} />
+                    </div>
+
+                    {channelAccounts.length > 0 && (
+                      <section className="mail-accounts-section" aria-label="机器人实例列表">
+                        <div className="mail-accounts-list">
+                          {channelAccounts.map((acct: any) => {
+                            const cfg = acct?.config || {};
+                            const rt = acct?.runtime || {};
+                            const st = getChannelStatusMeta(rt);
+                            const isEditingThis =
+                              channelEditorOpen && editingChannelAcctId === acct.id;
+                            const acctTitle =
+                              cfg.label ||
+                              rt.botName ||
+                              cfg.appId ||
+                              (detailSkillId === "feishu-bot" ? "飞书机器人" : "Telegram Bot");
+                            const targetLabel = resolveTargetBotTitle(cfg.defaultSessionId);
+                            const whitelistCount = Array.isArray(cfg.allowedSenderIds)
+                              ? cfg.allowedSenderIds.length
+                              : 0;
+                            const approvedCount = Array.isArray(cfg.approvedChats)
+                              ? cfg.approvedChats.length
+                              : 0;
+                            return (
+                              <div
+                                key={acct.id}
+                                className={`mail-account-card${isEditingThis ? " is-editing" : ""}`}
+                              >
+                                <div className="mail-account-head">
+                                  <div className="mail-account-main">
+                                    <div className="mail-account-meta">
+                                      <div className="mail-account-title-row">
+                                        <span className="mail-account-name">{acctTitle}</span>
+                                        <span className={`mcp-status-badge${st.cls}`}>
+                                          {st.label}
+                                        </span>
+                                      </div>
+                                      <div className="mail-account-sub">
+                                        {cfg.connectionMode ||
+                                          (detailSkillId === "feishu-bot" ? "websocket" : "polling")}
+                                        {` · 路由至：${targetLabel}`}
+                                        {cfg.requirePairing !== false ? " · 配对码开启" : " · 仅白名单"}
+                                        {approvedCount > 0 ? ` · 已批准 ${approvedCount}` : ""}
+                                        {whitelistCount > 0 ? ` · 白名单 ${whitelistCount}` : ""}
+                                      </div>
+                                      {rt.lastEventAt && (
+                                        <div className="mail-account-sub">
+                                          {t("channel.lastEventAt", {
+                                            time: new Date(rt.lastEventAt).toLocaleString(),
+                                          })}
+                                        </div>
+                                      )}
+                                      {rt.lastSendError && (
+                                        <div
+                                          className="mail-feedback-box is-error channel-runtime-alert"
+                                          role="alert"
+                                        >
+                                          <div>
+                                            <strong>{t("channel.sendErrorTitle")}</strong>
+                                            <div>{rt.lastSendError}</div>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="mail-account-actions">
+                                    <button
+                                      type="button"
+                                      className="mail-acct-btn"
+                                      disabled={chTestingAccountId === acct.id}
+                                      onClick={() => runChannelTest(acct)}
+                                    >
+                                      {chTestingAccountId === acct.id ? "测试中…" : "测试"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`mail-acct-btn${isEditingThis ? " is-active" : ""}`}
+                                      aria-expanded={isEditingThis}
+                                      onClick={() => startEditingChannelAccount(acct)}
+                                    >
+                                      {isEditingThis ? "收起" : "编辑"}
+                                    </button>
+                                  </div>
+                                </div>
+                                {isEditingThis && renderChannelFormEditorShell(true, true)}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    )}
+
+                    {supportsMultiBotChannels && (
+                      <button
+                        id="start-new-channel-btn"
+                        type="button"
+                        className="skills-add-account-btn"
+                        onClick={startCreateChannelAccount}
+                      >
+                        {detailSkillId === "feishu-bot"
+                          ? t("channel.addFeishuBot")
+                          : t("channel.addTelegramBot")}
+                      </button>
+                    )}
+
+                    {(!channelEditorOpen || !editingChannelAcctId) &&
+                      renderChannelFormEditorShell(false, showCreateForm)}
+
+                    {supportsMultiBotChannels && (
+                      <section
+                        id="channel-pairing-panel"
+                        className="channel-pairing-panel"
+                        aria-label={t("channel.pairingPendingTitle")}
+                      >
+                        <div className="channel-pairing-tip">{t("channel.pairingBotTip")}</div>
+
+                        <div className="channel-pairing-group">
+                          <h4 className="channel-pairing-group-title">
+                            <span>{t("channel.pairingPendingTitle")}</span>
+                            {channelPending.length > 0 && (
+                              <span className="channel-pending-pill">{channelPending.length}</span>
+                            )}
+                          </h4>
+                          {channelPending.length === 0 ? (
+                            <div id="channel-pairing-pending-list" className="channel-pairing-empty">
+                              {t("channel.pairingPendingEmpty")}
+                            </div>
+                          ) : (
+                            <div id="channel-pairing-pending-list" className="channel-pairing-table">
+                              {channelPending.map((p: any) => {
+                                const busyKey = `pending:${p.code}`;
+                                return (
+                                  <div key={p.code} className="channel-pairing-row">
+                                    <div className="channel-pairing-row-main">
+                                      <div className="channel-pairing-row-head">
+                                        <span className="channel-pairing-code">{p.code}</span>
+                                        <span className="mail-account-name">
+                                          {p.senderName || p.senderId || p.chatId}
+                                        </span>
+                                        <span className="mail-default-badge">
+                                          {p.accountLabel || p.accountId}
+                                        </span>
+                                      </div>
+                                      <div className="channel-pairing-meta">
+                                        chatId: {p.chatId} · 路由至：{resolveTargetBotTitle(p.defaultSessionId)}
+                                      </div>
+                                    </div>
+                                    <div className="mail-account-actions">
+                                      <button
+                                        type="button"
+                                        className="mail-acct-btn is-primary"
+                                        data-pairing-approve={p.code}
+                                        disabled={chPairingsBusyKey === busyKey}
+                                        onClick={() =>
+                                          runPairingAction(
+                                            busyKey,
+                                            "/api/integrations/channels/pairings/approve",
+                                            "POST",
+                                            { code: p.code },
+                                            `已放行配对码 ${p.code}`
+                                          )
+                                        }
+                                      >
+                                        {t("channel.pairingApprove")}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="mail-acct-btn is-danger"
+                                        data-pairing-reject={p.code}
+                                        disabled={chPairingsBusyKey === busyKey}
+                                        onClick={() =>
+                                          runPairingAction(
+                                            busyKey,
+                                            "/api/integrations/channels/pairings/reject",
+                                            "POST",
+                                            { code: p.code },
+                                            `已拒绝配对码 ${p.code}`
+                                          )
+                                        }
+                                      >
+                                        {t("channel.pairingReject")}
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="channel-pairing-group">
+                          <h4 className="channel-pairing-group-title">
+                            <span>{t("channel.pairingApprovedTitle")}</span>
+                          </h4>
+                          {channelApproved.length === 0 ? (
+                            <div id="channel-pairing-approved-list" className="channel-pairing-empty">
+                              {t("channel.pairingApprovedEmpty")}
+                            </div>
+                          ) : (
+                            <div id="channel-pairing-approved-list" className="channel-pairing-table">
+                              {channelApproved.map((a: any) => {
+                                const key = `${a.channel}:${a.accountId}:${a.chatId}`;
+                                const enabled = a.enabled !== false;
+                                return (
+                                  <div key={key} className="channel-pairing-row">
+                                    <div className="channel-pairing-row-main">
+                                      <div className="channel-pairing-row-head">
+                                        <span
+                                          className={`channel-state-pill ${
+                                            enabled ? "is-enabled" : "is-suspended"
+                                          }`}
+                                        >
+                                          {enabled
+                                            ? t("channel.pairingStateEnabled")
+                                            : t("channel.pairingStateSuspended")}
+                                        </span>
+                                        <span className="mail-account-name">
+                                          {a.senderName || a.senderId || a.chatId}
+                                        </span>
+                                        <span className="mail-default-badge">
+                                          {a.accountLabel || a.accountId}
+                                        </span>
+                                      </div>
+                                      <div className="channel-pairing-meta">
+                                        chatId: {a.chatId} · 路由至：{resolveTargetBotTitle(a.defaultSessionId)}
+                                      </div>
+                                    </div>
+                                    <div className="mail-account-actions">
+                                      <button
+                                        type="button"
+                                        className="mail-acct-btn"
+                                        disabled={chPairingsBusyKey === key}
+                                        onClick={() =>
+                                          runPairingAction(
+                                            key,
+                                            "/api/integrations/channels/pairings/toggle",
+                                            "POST",
+                                            {
+                                              channel: a.channel,
+                                              accountId: a.accountId,
+                                              chatId: a.chatId,
+                                              enabled: !enabled,
+                                            },
+                                            enabled
+                                              ? `已暂停会话 ${a.chatId}`
+                                              : `已恢复会话 ${a.chatId}`
+                                          )
+                                        }
+                                      >
+                                        {enabled
+                                          ? t("channel.pairingSuspend")
+                                          : t("channel.pairingResume")}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="mail-acct-btn is-danger"
+                                        disabled={chPairingsBusyKey === key}
+                                        onClick={() =>
+                                          runPairingAction(
+                                            key,
+                                            "/api/integrations/channels/pairings/approved",
+                                            "DELETE",
+                                            {
+                                              channel: a.channel,
+                                              accountId: a.accountId,
+                                              chatId: a.chatId,
+                                            },
+                                            `已删除已批准会话 ${a.chatId}`
+                                          )
+                                        }
+                                      >
+                                        {t("channel.pairingDelete")}
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      </section>
+                    )}
+                  </section>
+                );
+              })()}
 
             {/* MCP Skill Config Panel */}
             <section

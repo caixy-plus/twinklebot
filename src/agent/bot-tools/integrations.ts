@@ -37,6 +37,11 @@ import {
   inferMailServerPreset,
 } from "../../shared/skills-catalog.js";
 import {
+  parseWhitelistIds,
+  summarizeChannelStatusForBot,
+} from "../../lib/channel-integrations.js";
+import { resolveBotByRef } from "./collab-tools.js";
+import {
   upsertMailAccount,
   findMailAccount,
   setDefaultMailAccount,
@@ -254,6 +259,10 @@ export async function handleIntegrationBotTool(
     model,
     executor,
     fetchImpl,
+    getChannelStatus,
+    channelPairingActions,
+    channelConfigActions,
+    userMeta,
     config = {},
     senderSessionId,
     senderBot,
@@ -572,6 +581,9 @@ export async function handleIntegrationBotTool(
     case "skill_list": {
       const installed = getInstalledSkillIds(store);
       const { accounts } = normalizeMailAuthStore(store.readMailAuth?.() || {});
+      const channelStatus = summarizeChannelStatusForBot(
+        typeof getChannelStatus === "function" ? getChannelStatus() : null
+      );
       return {
         ok: true,
         platform: PLATFORM_SKILLS.map((s) => {
@@ -588,6 +600,7 @@ export async function handleIntegrationBotTool(
               : isInstalled
                 ? "已添加"
                 : "未添加（需在技能商店手动添加）",
+            ...(channelStatus[s.id] ? { channel: channelStatus[s.id] } : {}),
           };
         }),
         office: OFFICE_SKILLS.map((s) => {
@@ -602,6 +615,130 @@ export async function handleIntegrationBotTool(
           };
         }),
       };
+    }
+
+    case "channel_pairing_manage": {
+      const action = String(args.action || "").trim();
+      const installed = getInstalledSkillIds(store);
+      if (!installed.includes("feishu-bot") && !installed.includes("telegram-bot")) {
+        return { ok: false, error: SKILL_NOT_ADDED_ERROR };
+      }
+      if (!channelPairingActions) {
+        return { ok: false, error: "当前运行时未挂载渠道配对管理器" };
+      }
+      const mutating = action !== "list";
+      if (mutating && userMeta?.channelMeta) {
+        return {
+          ok: false,
+          error:
+            "出于安全限制，配对审批与访问控制仅允许在 TwinkleBot App 内由主人操作，不能通过外部飞书/Telegram 对话触发。",
+        };
+      }
+
+      const selfBotId = senderBot?.id || senderSessionId || "";
+      const callerIsAdmin = Boolean(
+        senderBot?.isAdmin || (selfBotId && store?.getSession?.(selfBotId)?.isAdmin)
+      );
+
+      if (action === "list") {
+        const channelFilter =
+          args.channel === "feishu-bot" || args.channel === "telegram-bot"
+            ? args.channel
+            : undefined;
+        const accountFilter = args.account_id ? String(args.account_id).trim() : undefined;
+        const listed = channelPairingActions.listPairings?.({
+          ...(channelFilter ? { channel: channelFilter } : {}),
+          ...(accountFilter ? { accountId: accountFilter } : {}),
+        }) || { pending: [], approved: [] };
+        return {
+          ok: true,
+          action: "list",
+          pending: listed.pending || [],
+          approved: listed.approved || [],
+        };
+      }
+
+      if (action === "approve" || action === "reject") {
+        const code = String(args.code || "").trim();
+        if (!code) {
+          return { ok: false, error: `${action} 操作需要提供 6 位配对码 code` };
+        }
+        const curList = channelPairingActions.listPairings?.() || { pending: [] };
+        const matchedPending = (curList.pending || []).find(
+          (p: any) => String(p.code || "").trim() === code
+        );
+        if (
+          matchedPending &&
+          !callerIsAdmin &&
+          matchedPending.defaultSessionId !== selfBotId
+        ) {
+          return {
+            ok: false,
+            error:
+              "权限不足：该配对码对应的机器人未绑定到当前 Bot，请在管理员 Bot（Nori）或绑定该机器人的 Bot 中审批，或前往技能商店操作。",
+          };
+        }
+        const res =
+          action === "approve"
+            ? channelPairingActions.approvePairing?.(code, { notifyChat: true })
+            : channelPairingActions.rejectPairing?.(code);
+        if (!res?.ok) {
+          return { ok: false, error: res?.error || `配对码 ${code} 操作失败` };
+        }
+        broadcastGlobal?.({ type: "skills_updated" });
+        return { ok: true, action, ...res };
+      }
+
+      if (action === "suspend" || action === "resume" || action === "delete") {
+        const channelId =
+          args.channel === "feishu-bot" || args.channel === "telegram-bot"
+            ? args.channel
+            : "";
+        const chatId = String(args.chat_id || "").trim();
+        const accountId = String(args.account_id || "").trim();
+        if (!channelId || !chatId) {
+          return {
+            ok: false,
+            error: `${action} 操作需要提供 channel ('feishu-bot' | 'telegram-bot') 和 chat_id`,
+          };
+        }
+        if (!callerIsAdmin) {
+          const curStatus = summarizeChannelStatusForBot(
+            typeof getChannelStatus === "function" ? getChannelStatus() : null
+          );
+          const accts: any[] = curStatus?.[channelId]?.accounts || [];
+          const targetAcct = accountId
+            ? accts.find((a) => a.id === accountId)
+            : accts.find((a) =>
+                (a.approvedChats || []).some(
+                  (c: any) => c.chatId === chatId || c.senderId === chatId
+                )
+              );
+          if (!targetAcct || targetAcct.defaultSessionId !== selfBotId) {
+            return {
+              ok: false,
+              error:
+                "权限不足：仅管理员 Bot 或该渠道绑定的目标 Bot 可管理此会话授权。",
+            };
+          }
+        }
+        const res =
+          action === "delete"
+            ? channelPairingActions.deleteApproval?.(channelId, accountId, chatId)
+            : channelPairingActions.setApprovalEnabled?.(
+                channelId,
+                accountId,
+                chatId,
+                action === "resume"
+              );
+        if (!res?.ok) {
+          return { ok: false, error: res?.error || "操作失败" };
+        }
+        broadcastGlobal?.({ type: "skills_updated" });
+        return { ok: true, action, channel: channelId, accountId, chatId, ...res };
+      }
+
+      return { ok: false, error: `未知 channel_pairing_manage 操作: ${action}` };
     }
 
     case "custom_skill_manage": {
@@ -946,6 +1083,500 @@ export async function handleIntegrationBotTool(
         created: result.created,
         account: slimMailAccount(result.record),
         ...(result.inboxStats ? { inbox: result.inboxStats } : {}),
+      };
+    }
+
+    case "skill_configure_channel": {
+      const action = String(args.action || "").trim();
+      const rawStatus =
+        typeof getChannelStatus === "function" ? getChannelStatus() : null;
+      const summaryMap = summarizeChannelStatusForBot(rawStatus);
+      const sessions = store?.listSessions?.() || [];
+      const resolveSessionLabel = (sid?: string | null) => {
+        const clean = String(sid || "").trim();
+        if (!clean) return "主管理员 Bot（Nori）";
+        const found = sessions.find((s: any) => s && s.id === clean);
+        return found?.title || clean;
+      };
+
+      const getConfiguredAccounts = (cid: "feishu-bot" | "telegram-bot"): any[] => {
+        const rawEntry = rawStatus?.[cid];
+        const summaryEntry = summaryMap?.[cid];
+        const summaryAccounts: any[] = Array.isArray(summaryEntry?.accounts)
+          ? summaryEntry.accounts
+          : [];
+        if (Array.isArray(rawEntry?.accounts)) {
+          if (rawEntry.accounts.length === 0) return [];
+          const realIds = new Set(rawEntry.accounts.map((a: any) => String(a?.id || "")));
+          return summaryAccounts.filter((a: any) => realIds.has(String(a?.id || "")));
+        }
+        return summaryEntry?.configured ? summaryAccounts : [];
+      };
+
+      if (action === "list") {
+        const enrichAccounts = (cid: "feishu-bot" | "telegram-bot") =>
+          getConfiguredAccounts(cid).map((a: any) => ({
+            ...a,
+            targetBotTitle: resolveSessionLabel(a.defaultSessionId),
+          }));
+        return {
+          ok: true,
+          action: "list",
+          "feishu-bot": summaryMap?.["feishu-bot"]
+            ? {
+                ...summaryMap["feishu-bot"],
+                accounts: enrichAccounts("feishu-bot"),
+              }
+            : null,
+          "telegram-bot": summaryMap?.["telegram-bot"]
+            ? {
+                ...summaryMap["telegram-bot"],
+                accounts: enrichAccounts("telegram-bot"),
+              }
+            : null,
+        };
+      }
+
+      if (userMeta?.channelMeta) {
+        return {
+          ok: false,
+          error:
+            "出于安全限制，飞书/Telegram 渠道凭据、白名单与路由配置仅允许在 TwinkleBot App 内由主人操作，禁止从外部聊天渠道修改。",
+        };
+      }
+
+      if (!channelConfigActions) {
+        return { ok: false, error: "当前运行时未挂载渠道配置控制器" };
+      }
+
+      const selfBotId = senderBot?.id || senderSessionId || "";
+      const callerIsAdmin = Boolean(
+        senderBot?.isAdmin || (selfBotId && store?.getSession?.(selfBotId)?.isAdmin)
+      );
+
+      // Infer platform when omitted
+      let channelId: "feishu-bot" | "telegram-bot" | "" =
+        args.channel === "feishu-bot" || args.channel === "telegram-bot"
+          ? args.channel
+          : "";
+      if (!channelId) {
+        if (
+          args.app_id ||
+          args.app_secret ||
+          args.domain ||
+          args.verification_token ||
+          args.encrypt_key
+        ) {
+          channelId = "feishu-bot";
+        } else if (args.bot_token || args.proxy || args.webhook_secret || args.clear_proxy) {
+          channelId = "telegram-bot";
+        } else if (args.account_id) {
+          const needle = String(args.account_id).trim().toLowerCase();
+          const fsMatches = getConfiguredAccounts("feishu-bot").some(
+            (a: any) =>
+              a.id === args.account_id ||
+              String(a.label || "").toLowerCase() === needle ||
+              String(a.appId || "").toLowerCase() === needle
+          );
+          const tgMatches = getConfiguredAccounts("telegram-bot").some(
+            (a: any) =>
+              a.id === args.account_id ||
+              String(a.label || "").toLowerCase() === needle
+          );
+          if (fsMatches && !tgMatches) channelId = "feishu-bot";
+          else if (tgMatches && !fsMatches) channelId = "telegram-bot";
+        }
+      }
+      if (!channelId) {
+        return {
+          ok: false,
+          error: "请指定 channel（'feishu-bot' 或 'telegram-bot'）",
+        };
+      }
+
+      const existingAccounts: any[] = getConfiguredAccounts(channelId);
+      const accountSelector = String(args.account_id || "").trim();
+      let targetAcct: any = null;
+      if (accountSelector) {
+        const lower = accountSelector.toLowerCase();
+        targetAcct =
+          existingAccounts.find((a) => a.id === accountSelector) ||
+          existingAccounts.find((a) => String(a.appId || "") === accountSelector) ||
+          existingAccounts.find((a) => String(a.label || "").toLowerCase() === lower) ||
+          null;
+        if (!targetAcct) {
+          return {
+            ok: false,
+            error: `未在 ${channelId} 中找到匹配的机器人实例「${accountSelector}」`,
+          };
+        }
+      } else if (!args.create_new) {
+        if (args.app_id && channelId === "feishu-bot") {
+          targetAcct =
+            existingAccounts.find((a) => a.appId === String(args.app_id).trim()) ||
+            (existingAccounts.length === 1 ? existingAccounts[0] : null);
+        } else if (existingAccounts.length === 1) {
+          targetAcct = existingAccounts[0];
+        } else if (existingAccounts.length > 1) {
+          return {
+            ok: false,
+            error: `${channelId} 当前已配置 ${existingAccounts.length} 个机器人，请通过 account_id 指定目标实例，或传入 create_new=true 新增：${existingAccounts
+              .map((a) => `${a.label || a.appId || a.id}(${a.id})`)
+              .join("、")}`,
+          };
+        }
+      }
+
+      const checkManagePermission = (isCreate: boolean, reroutingOther: boolean) => {
+        if (callerIsAdmin) return null;
+        if (isCreate || !targetAcct || targetAcct.defaultSessionId !== selfBotId) {
+          return "权限不足：仅管理员 Bot（Nori）可新增、删除或跨 Bot 修改渠道配置；专职 Bot 仅可管理已绑定到自身的机器人实例。";
+        }
+        if (reroutingOther) {
+          return "权限不足：非管理员 Bot 不能把渠道消息改路由给其他 Bot。";
+        }
+        return null;
+      };
+
+      if (action === "delete") {
+        if (!targetAcct) {
+          return { ok: false, error: "未找到要删除的机器人实例，请提供 account_id" };
+        }
+        const permErr = checkManagePermission(false, false);
+        if (permErr) return { ok: false, error: permErr };
+        const delRes = channelConfigActions.deleteAccount?.(channelId, targetAcct.id);
+        if (!delRes?.ok) {
+          return { ok: false, error: delRes?.error || "删除机器人实例失败" };
+        }
+        return {
+          ok: true,
+          action: "delete",
+          channel: channelId,
+          deletedAccountId: targetAcct.id,
+        };
+      }
+
+      if (action === "reconnect") {
+        const permErr = checkManagePermission(false, false);
+        if (permErr) return { ok: false, error: permErr };
+        channelConfigActions.reconnectAccount?.(channelId, targetAcct?.id);
+        await new Promise((r) => setTimeout(r, 250));
+        const afterMap = summarizeChannelStatusForBot(
+          typeof getChannelStatus === "function" ? getChannelStatus() : null
+        );
+        const updatedAcct =
+          afterMap?.[channelId]?.accounts?.find((a: any) => a.id === targetAcct?.id) ||
+          afterMap?.[channelId]?.accounts?.[0] ||
+          null;
+        return {
+          ok: true,
+          action: "reconnect",
+          channel: channelId,
+          account: updatedAcct,
+        };
+      }
+
+      if (action === "test") {
+        const testRes = await channelConfigActions.testChannel?.(
+          channelId,
+          {},
+          targetAcct?.id
+        );
+        if (!testRes) return { ok: false, error: "连通性测试未返回结果" };
+        return {
+          ok: Boolean(testRes.ok),
+          action: "test",
+          channel: channelId,
+          accountId: targetAcct?.id || null,
+          ...testRes,
+        };
+      }
+
+      const computeNextWhitelist = (baseList: string[] = []): string[] | undefined => {
+        const hasReplace = args.allowed_sender_ids !== undefined;
+        const hasAdd = Array.isArray(args.add_allowed_sender_ids) && args.add_allowed_sender_ids.length > 0;
+        const hasRemove =
+          Array.isArray(args.remove_allowed_sender_ids) &&
+          args.remove_allowed_sender_ids.length > 0;
+        if (!hasReplace && !hasAdd && !hasRemove) return undefined;
+
+        let next = hasReplace
+          ? parseWhitelistIds(args.allowed_sender_ids)
+          : [...baseList];
+        if (hasAdd) {
+          const toAdd = parseWhitelistIds(args.add_allowed_sender_ids);
+          next = Array.from(new Set([...next, ...toAdd]));
+        }
+        if (hasRemove) {
+          const rmSet = new Set(parseWhitelistIds(args.remove_allowed_sender_ids));
+          next = next.filter((id) => !rmSet.has(id));
+        }
+        return next;
+      };
+
+      if (action === "whitelist") {
+        if (!targetAcct) {
+          return {
+            ok: false,
+            error: `尚未配置 ${channelId} 机器人实例，请先使用 action='upsert' 配置后再管理白名单。`,
+          };
+        }
+        const permErr = checkManagePermission(false, false);
+        if (permErr) return { ok: false, error: permErr };
+        const nextWhitelist = computeNextWhitelist(targetAcct.allowedSenderIds || []);
+        if (!nextWhitelist) {
+          return {
+            ok: false,
+            error:
+              "请提供 add_allowed_sender_ids、remove_allowed_sender_ids 或 allowed_sender_ids。",
+          };
+        }
+        const saved = channelConfigActions.upsertAccount?.(
+          channelId,
+          { allowedSenderIds: nextWhitelist },
+          { accountId: targetAcct.id }
+        );
+        if (!saved?.ok) {
+          return { ok: false, error: saved?.error || "更新白名单失败" };
+        }
+        const afterMap = summarizeChannelStatusForBot(
+          typeof getChannelStatus === "function" ? getChannelStatus() : null
+        );
+        const updatedAcct =
+          afterMap?.[channelId]?.accounts?.find((a: any) => a.id === targetAcct.id) || null;
+        return {
+          ok: true,
+          action: "whitelist",
+          channel: channelId,
+          accountId: targetAcct.id,
+          allowedSenderIds: nextWhitelist,
+          account: updatedAcct,
+        };
+      }
+
+      if (action !== "upsert") {
+        return { ok: false, error: `未知的 skill_configure_channel action: ${action}` };
+      }
+
+      // Resolve target Bot routing if supplied
+      let resolvedTargetSessionId: string | undefined;
+      if (args.target_bot !== undefined) {
+        const rawRef = String(args.target_bot || "").trim();
+        if (!rawRef || rawRef === "admin" || rawRef === "管理员") {
+          const adminBot = sessions.find((s: any) => s?.isAdmin);
+          resolvedTargetSessionId = adminBot?.id || "";
+        } else {
+          const matchedBot = resolveBotByRef(sessions, rawRef);
+          if (!matchedBot) {
+            return {
+              ok: false,
+              error: `未找到目标 Bot「${rawRef}」。当前可用 Bot：${sessions
+                .map((s: any) => s.title || s.id)
+                .join("、")}`,
+            };
+          }
+          resolvedTargetSessionId = matchedBot.id;
+        }
+      }
+
+      const reroutingOther = Boolean(
+        resolvedTargetSessionId !== undefined && resolvedTargetSessionId !== selfBotId
+      );
+      const permErr = checkManagePermission(!targetAcct, reroutingOther);
+      if (permErr) return { ok: false, error: permErr };
+
+      // Ensure store skill is marked installed seamlessly
+      channelConfigActions.ensureInstalled?.(channelId);
+
+      // Handle interactive encrypted credential card when adding a NEW bot without secret
+      let appSecret = args.app_secret !== undefined ? String(args.app_secret).trim() : "";
+      let botToken = args.bot_token !== undefined ? String(args.bot_token).trim() : "";
+      let usedCard = false;
+      const appIdTrimmed = args.app_id !== undefined ? String(args.app_id).trim() : "";
+
+      if (channelId === "feishu-bot" && !targetAcct) {
+        if (!appIdTrimmed) {
+          return {
+            ok: false,
+            error: "新增飞书机器人需要提供 app_id（如 cli_xxx）",
+          };
+        }
+        if (!appSecret) {
+          if (!control?.requestChoice) {
+            return {
+              ok: false,
+              error: "请在 TwinkleBot App 对话中通过安全卡片输入 App Secret",
+            };
+          }
+          const serviceTitle = `飞书机器人 · ${appIdTrimmed}`;
+          const credPromise = control.requestChoice(callId);
+          emit?.({
+            type: "credential_request",
+            callId,
+            service: serviceTitle,
+            label:
+              "请输入该飞书应用的 App Secret（来自飞书开放平台 → 凭据与基础信息），仅加密保存在本机，不会出现在聊天记录中。",
+            fieldType: "password",
+            hideVaultCheckbox: true,
+          });
+          emit?.({ type: "status", status: "awaiting_choice" });
+          const credRes = await credPromise;
+          if (credRes === null || control.stopped) {
+            emit?.({ type: "choice_superseded", callId });
+            return { ok: false, error: "App Secret 输入已取消" };
+          }
+          appSecret = String(
+            typeof credRes === "object" && credRes !== null ? credRes.value || "" : credRes || ""
+          ).trim();
+          usedCard = true;
+          if (!appSecret) {
+            emit?.({
+              type: "credential_resolved",
+              callId,
+              service: serviceTitle,
+              submitted: false,
+              resolvedText: `✕ 已跳过 ${serviceTitle} 的 App Secret 输入`,
+            });
+            emit?.({ type: "status", status: "running" });
+            return { ok: false, error: "用户跳过了 App Secret 输入，配置未保存" };
+          }
+        }
+      } else if (channelId === "telegram-bot" && !targetAcct && !botToken) {
+        if (!control?.requestChoice) {
+          return {
+            ok: false,
+            error: "请在 TwinkleBot App 对话中通过安全卡片输入 Telegram Bot Token",
+          };
+        }
+        const serviceTitle = args.label
+          ? `Telegram 机器人 · ${String(args.label).trim()}`
+          : "Telegram 机器人";
+        const credPromise = control.requestChoice(callId);
+        emit?.({
+          type: "credential_request",
+          callId,
+          service: serviceTitle,
+          label:
+            "请输入来自 @BotFather 的 Telegram Bot Token，仅加密保存在本机，不会出现在聊天记录中。",
+          fieldType: "password",
+          hideVaultCheckbox: true,
+        });
+        emit?.({ type: "status", status: "awaiting_choice" });
+        const credRes = await credPromise;
+        if (credRes === null || control.stopped) {
+          emit?.({ type: "choice_superseded", callId });
+          return { ok: false, error: "Bot Token 输入已取消" };
+        }
+        botToken = String(
+          typeof credRes === "object" && credRes !== null ? credRes.value || "" : credRes || ""
+        ).trim();
+        usedCard = true;
+        if (!botToken) {
+          emit?.({
+            type: "credential_resolved",
+            callId,
+            service: serviceTitle,
+            submitted: false,
+            resolvedText: `✕ 已跳过 ${serviceTitle} 的 Bot Token 输入`,
+          });
+          emit?.({ type: "status", status: "running" });
+          return { ok: false, error: "用户跳过了 Bot Token 输入，配置未保存" };
+        }
+      }
+
+      const body: Record<string, any> = {};
+      if (args.label !== undefined) body.label = String(args.label);
+      if (args.enabled !== undefined) body.enabled = Boolean(args.enabled);
+      else if (!targetAcct) body.enabled = true;
+      if (args.connection_mode !== undefined) body.connectionMode = args.connection_mode;
+      else if (!targetAcct) {
+        body.connectionMode = channelId === "feishu-bot" ? "websocket" : "polling";
+      }
+      if (channelId === "feishu-bot") {
+        if (args.domain !== undefined) body.domain = args.domain;
+        if (appIdTrimmed) body.appId = appIdTrimmed;
+        if (appSecret) body.appSecret = appSecret;
+        if (args.verification_token !== undefined) {
+          body.verificationToken = args.verification_token;
+        }
+        if (args.encrypt_key !== undefined) body.encryptKey = args.encrypt_key;
+      } else {
+        if (botToken) body.botToken = botToken;
+        if (args.webhook_secret !== undefined) body.webhookSecret = args.webhook_secret;
+        if (args.proxy !== undefined) body.proxy = args.proxy;
+        if (args.clear_proxy === true) body.clearProxy = true;
+      }
+      if (resolvedTargetSessionId !== undefined) {
+        body.defaultSessionId = resolvedTargetSessionId;
+      }
+      if (args.require_pairing !== undefined) {
+        body.requirePairing = Boolean(args.require_pairing);
+      }
+      const nextWhitelist = computeNextWhitelist(targetAcct?.allowedSenderIds || []);
+      if (nextWhitelist !== undefined) {
+        body.allowedSenderIds = nextWhitelist;
+      }
+      if (args.approval_mode !== undefined) {
+        body.approvalMode = args.approval_mode;
+      }
+
+      const saved = channelConfigActions.upsertAccount?.(
+        channelId,
+        body,
+        { accountId: targetAcct?.id, createNew: Boolean(args.create_new) }
+      );
+
+      if (usedCard) {
+        const cardTitle =
+          channelId === "feishu-bot"
+            ? `飞书机器人 · ${appIdTrimmed}`
+            : args.label
+              ? `Telegram 机器人 · ${String(args.label).trim()}`
+              : "Telegram 机器人";
+        emit?.({
+          type: "credential_resolved",
+          callId,
+          service: cardTitle,
+          submitted: true,
+          resolvedText: saved?.ok
+            ? `🔒 已保存 ${cardTitle}`
+            : `⚠️ ${cardTitle} 保存未通过`,
+        });
+        emit?.({ type: "status", status: "running" });
+      }
+
+      if (!saved?.ok) {
+        return { ok: false, error: saved?.error || "保存渠道配置失败" };
+      }
+
+      let testResult: any = null;
+      if (args.auto_test !== false && body.enabled !== false) {
+        await new Promise((r) => setTimeout(r, 250));
+        try {
+          testResult = await channelConfigActions.testChannel?.(
+            channelId,
+            {},
+            saved.accountId
+          );
+        } catch (err: any) {
+          testResult = { ok: false, error: err?.message || String(err) };
+        }
+      }
+
+      const afterMap = summarizeChannelStatusForBot(
+        typeof getChannelStatus === "function" ? getChannelStatus() : null
+      );
+      const savedAcct =
+        afterMap?.[channelId]?.accounts?.find((a: any) => a.id === saved.accountId) || null;
+      return {
+        ok: true,
+        action: "upsert",
+        created: !targetAcct,
+        channel: channelId,
+        accountId: saved.accountId,
+        targetBotTitle: resolveSessionLabel(savedAcct?.defaultSessionId),
+        account: savedAcct,
+        ...(testResult ? { testResult } : {}),
       };
     }
 

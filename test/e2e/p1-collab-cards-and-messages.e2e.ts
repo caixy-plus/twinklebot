@@ -1056,6 +1056,59 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       );
       assert.equal((await fetch(`${ws.baseUrl}/api/schedules/${uiSch.id}`, { method: "DELETE" })).status, 200);
 
+      // Verify schedule-cron-v1 capability + Cron UI validation/live preview + API 400 guard
+      const cronDiag: any = await (await fetch(`${ws.baseUrl}/api/system/diagnostics`)).json();
+      assert.ok(
+        Array.isArray(cronDiag.apiCapabilities) &&
+          cronDiag.apiCapabilities.includes("schedule-cron-v1"),
+        "Diagnostics must advertise schedule-cron-v1 capability"
+      );
+
+      const badCronPost = await fetch(`${ws.baseUrl}/api/schedules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: inspBot.id,
+          title: "非法Cron",
+          prompt: "noop",
+          repeat: "cron",
+          cron: "bad-cron",
+        }),
+      });
+      assert.equal(badCronPost.status, 400);
+
+      await chrome!.click("#new-schedule-btn");
+      await chrome!.waitFor(`!document.querySelector('#schedule-modal-backdrop')?.hidden`, 4000);
+      await chrome!.fill("#sched-title-input", "Cron每3天任务");
+      await chrome!.fill("#sched-prompt-input", "每3天执行检查");
+      await chrome!.selectOption("#sched-repeat-select", "cron");
+      await chrome!.waitFor(`Boolean(document.querySelector('#sched-cron-input'))`, 4000);
+      await chrome!.fill("#sched-cron-input", "99 * * *");
+      await chrome!.click("#save-sched-modal-btn");
+      await chrome!.waitFor(
+        `!document.querySelector('#sched-cron-error')?.hidden &&
+         document.querySelector('#sched-cron-input')?.getAttribute('aria-invalid') === 'true' &&
+         !document.querySelector('#schedule-modal-backdrop')?.hidden`,
+        4000
+      );
+      await chrome!.fill("#sched-cron-input", "0 10 */3 * *");
+      await chrome!.waitFor(
+        `document.querySelector('#sched-cron-preview')?.textContent?.includes('每 3 天 10:00') &&
+         document.querySelector('#sched-cron-preview')?.textContent?.includes('下次执行：')`,
+        4000
+      );
+      await chrome!.click("#save-sched-modal-btn");
+      await chrome!.waitFor(`document.querySelector('#schedule-modal-backdrop')?.hidden`, 5000);
+      await chrome!.waitFor(
+        `document.querySelector('#upcoming-schedules-list')?.textContent?.includes('0 10 */3 * *')`,
+        5000
+      );
+      const listAfterCron: any = await (await fetch(`${ws.baseUrl}/api/schedules`)).json();
+      const cronUiItem = (listAfterCron.schedules || []).find((x: any) => x.title === "Cron每3天任务");
+      assert.equal(cronUiItem?.repeat, "cron");
+      assert.equal(cronUiItem?.cron, "0 10 */3 * *");
+      assert.equal((await fetch(`${ws.baseUrl}/api/schedules/${cronUiItem.id}`, { method: "DELETE" })).status, 200);
+
       // Create an already-due 'once' schedule -> scheduler ticks every 120ms and fires it automatically!
       const schedRes = await fetch(`${ws.baseUrl}/api/schedules`, {
         method: "POST",

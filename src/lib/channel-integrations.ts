@@ -1,4 +1,8 @@
 import crypto from "node:crypto";
+import http from "node:http";
+import https from "node:https";
+import net from "node:net";
+import tls from "node:tls";
 import * as lark from "@larksuiteoapi/node-sdk";
 import { Api as GrammyApi } from "grammy";
 import { isSafePublicWebUrl } from "./web-search.js";
@@ -9,19 +13,45 @@ export type TelegramConnectionMode = "polling" | "webhook";
 export type FeishuConnectionMode = "websocket" | "webhook";
 export type FeishuDomain = "feishu" | "lark";
 
-export interface TelegramChannelConfig {
+export interface ChannelPendingPairing {
+  code: string;
+  chatId: string;
+  senderId: string;
+  senderName?: string;
+  createdAt: string;
+}
+
+export interface ChannelApprovedChat {
+  chatId: string;
+  senderId?: string;
+  senderName?: string;
+  approvedAt: string;
+  enabled: boolean;
+}
+
+export interface TelegramChannelAccount {
+  id: string;
+  label: string;
   enabled: boolean;
   connectionMode: TelegramConnectionMode;
   botToken: string;
   webhookSecret: string;
   apiBaseUrl: string;
+  proxy: string;
   defaultSessionId: string;
+  requirePairing: boolean;
   allowedSenderIds: string[];
+  approvedChats: ChannelApprovedChat[];
+  pendingPairings: ChannelPendingPairing[];
   approvalMode: ChannelApprovalMode;
   updatedAt?: string;
 }
 
-export interface FeishuChannelConfig {
+export type TelegramChannelConfig = TelegramChannelAccount;
+
+export interface FeishuChannelAccount {
+  id: string;
+  label: string;
   enabled: boolean;
   connectionMode: FeishuConnectionMode;
   domain: FeishuDomain;
@@ -31,19 +61,48 @@ export interface FeishuChannelConfig {
   verificationToken: string;
   encryptKey: string;
   defaultSessionId: string;
+  requirePairing: boolean;
   allowedSenderIds: string[];
+  approvedChats: ChannelApprovedChat[];
+  pendingPairings: ChannelPendingPairing[];
   approvalMode: ChannelApprovalMode;
   updatedAt?: string;
 }
 
+export type FeishuChannelConfig = FeishuChannelAccount;
+
 export interface ChannelsAuthStore {
-  "telegram-bot": TelegramChannelConfig;
-  "feishu-bot": FeishuChannelConfig;
+  "telegram-bot": TelegramChannelAccount;
+  "feishu-bot": FeishuChannelAccount;
+  telegramAccounts: TelegramChannelAccount[];
+  feishuAccounts: FeishuChannelAccount[];
+  _tgMirrorSig?: string;
+  _fsMirrorSig?: string;
 }
 
 export const DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org";
 export const DEFAULT_FEISHU_API_BASE = "https://open.feishu.cn";
 export const DEFAULT_LARK_API_BASE = "https://open.larksuite.com";
+export const DEFAULT_FEISHU_ACCOUNT_ID = "fs_default";
+export const DEFAULT_TELEGRAM_ACCOUNT_ID = "tg_default";
+
+export const FEISHU_REACTION_TYPING = "Typing";
+export const FEISHU_REACTION_FAILURE = "CrossMark";
+export const TG_REACTION_TYPING = "👀";
+export const TG_REACTION_FAILURE = "❌";
+
+export function createChannelAccountId(channel: ChannelSkillId): string {
+  const prefix = channel === "feishu-bot" ? "fs" : "tg";
+  return `${prefix}_${crypto.randomBytes(4).toString("hex")}`;
+}
+
+export function sanitizeAccountId(raw: unknown, fallback: string): string {
+  const cleaned = String(raw || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 64);
+  return cleaned || fallback;
+}
 
 export function timingSafeEqualStr(a: string, b: string): boolean {
   if (!a || !b) return false;
@@ -102,15 +161,125 @@ export function sanitizeChannelApiBaseUrl(raw: unknown, fallback = ""): string {
   return fallback;
 }
 
+export function sanitizeTelegramProxyUrl(raw: unknown, fallback = ""): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  try {
+    const u = new URL(s);
+    const proto = u.protocol.toLowerCase();
+    if (
+      proto !== "http:" &&
+      proto !== "https:" &&
+      proto !== "socks5:" &&
+      proto !== "socks5h:"
+    ) {
+      return fallback;
+    }
+    if (!u.hostname) return fallback;
+    u.pathname = "";
+    u.search = "";
+    u.hash = "";
+    return u.toString().replace(/\/+$/, "");
+  } catch {
+    return fallback;
+  }
+}
+
+export function redactProxyUrlForDisplay(proxyUrl: string): string {
+  const clean = String(proxyUrl || "").trim();
+  if (!clean) return "";
+  try {
+    const u = new URL(clean);
+    if (!u.username && !u.password) {
+      return `${u.protocol}//${u.host}`;
+    }
+    const user = decodeURIComponent(u.username || "");
+    const auth = u.password ? `${user}:••••@` : `${user}@`;
+    return `${u.protocol}//${auth}${u.host}`;
+  } catch {
+    return "";
+  }
+}
+
+function normalizePendingPairings(raw: unknown): ChannelPendingPairing[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChannelPendingPairing[] = [];
+  const seenCodes = new Set<string>();
+  const seenChats = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const code = String((item as any).code || "").trim();
+    const chatId = String((item as any).chatId || "").trim().slice(0, 128);
+    if (!code || !chatId || seenCodes.has(code) || seenChats.has(chatId)) continue;
+    seenCodes.add(code);
+    seenChats.add(chatId);
+    const senderId = String((item as any).senderId || chatId).trim().slice(0, 128);
+    const senderName = String((item as any).senderName || "").trim().slice(0, 128);
+    const createdAt =
+      typeof (item as any).createdAt === "string" && (item as any).createdAt
+        ? (item as any).createdAt
+        : new Date().toISOString();
+    out.push({
+      code,
+      chatId,
+      senderId,
+      ...(senderName && senderName !== senderId ? { senderName } : {}),
+      createdAt,
+    });
+  }
+  return out;
+}
+
+function normalizeApprovedChats(raw: unknown): ChannelApprovedChat[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChannelApprovedChat[] = [];
+  const seenChats = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const chatId = String((item as any).chatId || "").trim().slice(0, 128);
+    if (!chatId || seenChats.has(chatId)) continue;
+    seenChats.add(chatId);
+    const senderId = String((item as any).senderId || "").trim().slice(0, 128);
+    const senderName = String((item as any).senderName || "").trim().slice(0, 128);
+    const approvedAt =
+      typeof (item as any).approvedAt === "string" && (item as any).approvedAt
+        ? (item as any).approvedAt
+        : new Date().toISOString();
+    out.push({
+      chatId,
+      ...(senderId ? { senderId } : {}),
+      ...(senderName ? { senderName } : {}),
+      approvedAt,
+      enabled: (item as any).enabled !== false,
+    });
+  }
+  return out;
+}
+
 export function normalizeTelegramChannelConfig(
   raw: unknown,
-  existing?: Partial<TelegramChannelConfig>
-): TelegramChannelConfig {
+  existing?: Partial<TelegramChannelAccount>
+): TelegramChannelAccount {
   const src = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as any) : {};
   const prev = existing || {};
   const incomingToken = cleanSecretInput(src.botToken);
   const incomingSecret = cleanSecretInput(src.webhookSecret);
+  const proxyRaw =
+    src.clearProxy === true
+      ? ""
+      : src.proxy !== undefined
+        ? src.proxy
+        : prev.proxy;
+  const sanitizedProxy =
+    typeof proxyRaw === "string" && proxyRaw.includes("••••") && prev.proxy
+      ? String(prev.proxy)
+      : sanitizeTelegramProxyUrl(proxyRaw, String(prev.proxy || ""));
   return {
+    id: sanitizeAccountId(src.id !== undefined ? src.id : prev.id, DEFAULT_TELEGRAM_ACCOUNT_ID),
+    label:
+      typeof src.label === "string"
+        ? src.label.trim().slice(0, 80)
+        : String(prev.label || ""),
     enabled:
       typeof src.enabled === "boolean" ? src.enabled : Boolean(prev.enabled),
     connectionMode:
@@ -131,14 +300,29 @@ export function normalizeTelegramChannelConfig(
       src.apiBaseUrl !== undefined ? src.apiBaseUrl : prev.apiBaseUrl,
       DEFAULT_TELEGRAM_API_BASE
     ),
+    proxy: sanitizedProxy,
     defaultSessionId:
       typeof src.defaultSessionId === "string"
         ? src.defaultSessionId.trim().slice(0, 128)
         : String(prev.defaultSessionId || ""),
+    requirePairing:
+      typeof src.requirePairing === "boolean"
+        ? src.requirePairing
+        : typeof prev.requirePairing === "boolean"
+          ? prev.requirePairing
+          : true,
     allowedSenderIds:
       src.allowedSenderIds !== undefined
         ? parseWhitelistIds(src.allowedSenderIds)
         : parseWhitelistIds(prev.allowedSenderIds),
+    approvedChats:
+      src.approvedChats !== undefined
+        ? normalizeApprovedChats(src.approvedChats)
+        : normalizeApprovedChats(prev.approvedChats),
+    pendingPairings:
+      src.pendingPairings !== undefined
+        ? normalizePendingPairings(src.pendingPairings)
+        : normalizePendingPairings(prev.pendingPairings),
     approvalMode:
       src.approvalMode === "app_only" || src.approvalMode === "channel_and_app"
         ? src.approvalMode
@@ -154,8 +338,8 @@ export function normalizeTelegramChannelConfig(
 
 export function normalizeFeishuChannelConfig(
   raw: unknown,
-  existing?: Partial<FeishuChannelConfig>
-): FeishuChannelConfig {
+  existing?: Partial<FeishuChannelAccount>
+): FeishuChannelAccount {
   const src = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as any) : {};
   const prev = existing || {};
   const domain: FeishuDomain =
@@ -168,6 +352,11 @@ export function normalizeFeishuChannelConfig(
   const incomingVerify = cleanSecretInput(src.verificationToken);
   const incomingEncrypt = cleanSecretInput(src.encryptKey);
   return {
+    id: sanitizeAccountId(src.id !== undefined ? src.id : prev.id, DEFAULT_FEISHU_ACCOUNT_ID),
+    label:
+      typeof src.label === "string"
+        ? src.label.trim().slice(0, 80)
+        : String(prev.label || ""),
     enabled:
       typeof src.enabled === "boolean" ? src.enabled : Boolean(prev.enabled),
     connectionMode:
@@ -201,10 +390,24 @@ export function normalizeFeishuChannelConfig(
       typeof src.defaultSessionId === "string"
         ? src.defaultSessionId.trim().slice(0, 128)
         : String(prev.defaultSessionId || ""),
+    requirePairing:
+      typeof src.requirePairing === "boolean"
+        ? src.requirePairing
+        : typeof prev.requirePairing === "boolean"
+          ? prev.requirePairing
+          : true,
     allowedSenderIds:
       src.allowedSenderIds !== undefined
         ? parseWhitelistIds(src.allowedSenderIds)
         : parseWhitelistIds(prev.allowedSenderIds),
+    approvedChats:
+      src.approvedChats !== undefined
+        ? normalizeApprovedChats(src.approvedChats)
+        : normalizeApprovedChats(prev.approvedChats),
+    pendingPairings:
+      src.pendingPairings !== undefined
+        ? normalizePendingPairings(src.pendingPairings)
+        : normalizePendingPairings(prev.pendingPairings),
     approvalMode:
       src.approvalMode === "app_only" || src.approvalMode === "channel_and_app"
         ? src.approvalMode
@@ -218,31 +421,161 @@ export function normalizeFeishuChannelConfig(
   };
 }
 
+function mirrorSignature(obj: unknown): string {
+  try {
+    return crypto
+      .createHash("sha256")
+      .update(JSON.stringify(obj || {}), "utf8")
+      .digest("hex")
+      .slice(0, 12);
+  } catch {
+    return "";
+  }
+}
+
+function hasMeaningfulLegacyTelegramData(raw: any): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  return Boolean(
+    raw.enabled ||
+      raw.botToken ||
+      raw.webhookSecret ||
+      raw.proxy ||
+      raw.defaultSessionId ||
+      (Array.isArray(raw.allowedSenderIds) && raw.allowedSenderIds.length > 0) ||
+      (Array.isArray(raw.approvedChats) && raw.approvedChats.length > 0) ||
+      (Array.isArray(raw.pendingPairings) && raw.pendingPairings.length > 0) ||
+      raw.updatedAt
+  );
+}
+
+function hasMeaningfulLegacyFeishuData(raw: any): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  return Boolean(
+    raw.enabled ||
+      raw.appId ||
+      raw.appSecret ||
+      raw.verificationToken ||
+      raw.encryptKey ||
+      raw.defaultSessionId ||
+      (Array.isArray(raw.allowedSenderIds) && raw.allowedSenderIds.length > 0) ||
+      (Array.isArray(raw.approvedChats) && raw.approvedChats.length > 0) ||
+      (Array.isArray(raw.pendingPairings) && raw.pendingPairings.length > 0) ||
+      raw.updatedAt
+  );
+}
+
 export function normalizeChannelsAuthStore(raw: unknown): ChannelsAuthStore {
   const src = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as any) : {};
+
+  let telegramAccounts: TelegramChannelAccount[];
+  if (Array.isArray(src.telegramAccounts)) {
+    const seen = new Set<string>();
+    telegramAccounts = [];
+    for (const item of src.telegramAccounts) {
+      const acct = normalizeTelegramChannelConfig(item);
+      if (seen.has(acct.id)) continue;
+      seen.add(acct.id);
+      telegramAccounts.push(acct);
+    }
+    if (
+      telegramAccounts.length > 0 &&
+      src["telegram-bot"] &&
+      typeof src["telegram-bot"] === "object" &&
+      typeof src._tgMirrorSig === "string"
+    ) {
+      const normalizedLegacy = normalizeTelegramChannelConfig(src["telegram-bot"], {
+        id: telegramAccounts[0].id,
+      });
+      if (
+        mirrorSignature(normalizedLegacy) !== src._tgMirrorSig &&
+        mirrorSignature(telegramAccounts[0]) === src._tgMirrorSig
+      ) {
+        telegramAccounts[0] = normalizedLegacy;
+      }
+    }
+  } else if (hasMeaningfulLegacyTelegramData(src["telegram-bot"])) {
+    telegramAccounts = [
+      normalizeTelegramChannelConfig(src["telegram-bot"], { id: DEFAULT_TELEGRAM_ACCOUNT_ID }),
+    ];
+  } else {
+    telegramAccounts = [];
+  }
+
+  let feishuAccounts: FeishuChannelAccount[];
+  if (Array.isArray(src.feishuAccounts)) {
+    const seen = new Set<string>();
+    feishuAccounts = [];
+    for (const item of src.feishuAccounts) {
+      const acct = normalizeFeishuChannelConfig(item);
+      if (seen.has(acct.id)) continue;
+      seen.add(acct.id);
+      feishuAccounts.push(acct);
+    }
+    if (
+      feishuAccounts.length > 0 &&
+      src["feishu-bot"] &&
+      typeof src["feishu-bot"] === "object" &&
+      typeof src._fsMirrorSig === "string"
+    ) {
+      const normalizedLegacy = normalizeFeishuChannelConfig(src["feishu-bot"], {
+        id: feishuAccounts[0].id,
+      });
+      if (
+        mirrorSignature(normalizedLegacy) !== src._fsMirrorSig &&
+        mirrorSignature(feishuAccounts[0]) === src._fsMirrorSig
+      ) {
+        feishuAccounts[0] = normalizedLegacy;
+      }
+    }
+  } else if (hasMeaningfulLegacyFeishuData(src["feishu-bot"])) {
+    feishuAccounts = [
+      normalizeFeishuChannelConfig(src["feishu-bot"], { id: DEFAULT_FEISHU_ACCOUNT_ID }),
+    ];
+  } else {
+    feishuAccounts = [];
+  }
+
+  const primaryTg =
+    telegramAccounts[0] || normalizeTelegramChannelConfig({ id: DEFAULT_TELEGRAM_ACCOUNT_ID });
+  const primaryFs =
+    feishuAccounts[0] || normalizeFeishuChannelConfig({ id: DEFAULT_FEISHU_ACCOUNT_ID });
+
   return {
-    "telegram-bot": normalizeTelegramChannelConfig(src["telegram-bot"]),
-    "feishu-bot": normalizeFeishuChannelConfig(src["feishu-bot"]),
+    "telegram-bot": primaryTg,
+    "feishu-bot": primaryFs,
+    telegramAccounts,
+    feishuAccounts,
+    _tgMirrorSig: mirrorSignature(primaryTg),
+    _fsMirrorSig: mirrorSignature(primaryFs),
   };
 }
 
-export function sanitizeTelegramChannelConfig(cfg: TelegramChannelConfig) {
+export function sanitizeTelegramChannelConfig(cfg: TelegramChannelAccount) {
   return {
+    id: cfg.id,
+    label: cfg.label,
     enabled: cfg.enabled,
     connectionMode: cfg.connectionMode,
     hasBotToken: Boolean(cfg.botToken),
     hasWebhookSecret: Boolean(cfg.webhookSecret),
     apiBaseUrl: cfg.apiBaseUrl,
+    proxy: redactProxyUrlForDisplay(cfg.proxy),
+    hasProxy: Boolean(cfg.proxy),
     defaultSessionId: cfg.defaultSessionId,
+    requirePairing: cfg.requirePairing !== false,
     allowedSenderIds: [...cfg.allowedSenderIds],
+    approvedChats: cfg.approvedChats.map((c) => ({ ...c })),
+    pendingPairings: cfg.pendingPairings.map((p) => ({ ...p })),
     approvalMode: cfg.approvalMode,
     configured: Boolean(cfg.botToken),
     updatedAt: cfg.updatedAt || null,
   };
 }
 
-export function sanitizeFeishuChannelConfig(cfg: FeishuChannelConfig) {
+export function sanitizeFeishuChannelConfig(cfg: FeishuChannelAccount) {
   return {
+    id: cfg.id,
+    label: cfg.label,
     enabled: cfg.enabled,
     connectionMode: cfg.connectionMode,
     domain: cfg.domain,
@@ -252,11 +585,188 @@ export function sanitizeFeishuChannelConfig(cfg: FeishuChannelConfig) {
     hasVerificationToken: Boolean(cfg.verificationToken),
     hasEncryptKey: Boolean(cfg.encryptKey),
     defaultSessionId: cfg.defaultSessionId,
+    requirePairing: cfg.requirePairing !== false,
     allowedSenderIds: [...cfg.allowedSenderIds],
+    approvedChats: cfg.approvedChats.map((c) => ({ ...c })),
+    pendingPairings: cfg.pendingPairings.map((p) => ({ ...p })),
     approvalMode: cfg.approvalMode,
     configured: Boolean(cfg.appId && cfg.appSecret),
     updatedAt: cfg.updatedAt || null,
   };
+}
+
+export interface SanitizedChannelMeta {
+  channel: ChannelSkillId;
+  accountId?: string;
+  accountLabel?: string;
+  chatId?: string;
+  senderId?: string;
+  senderName?: string;
+}
+
+export function sanitizeChannelMeta(raw: unknown): SanitizedChannelMeta | null {
+  if (!raw || typeof raw !== "object") return null;
+  const cm = raw as Record<string, any>;
+  if (cm.channel !== "feishu-bot" && cm.channel !== "telegram-bot") return null;
+  const trimCap = (val: unknown, maxLen: number): string | undefined => {
+    const s = String(val ?? "").trim();
+    return s ? s.slice(0, maxLen) : undefined;
+  };
+  const accountId = trimCap(cm.accountId, 64);
+  const accountLabel = trimCap(cm.accountLabel, 80);
+  const chatId = trimCap(cm.chatId, 120);
+  const senderId = trimCap(cm.senderId, 120);
+  const senderName = trimCap(cm.senderName, 80);
+  return {
+    channel: cm.channel,
+    ...(accountId ? { accountId } : {}),
+    ...(accountLabel ? { accountLabel } : {}),
+    ...(chatId ? { chatId } : {}),
+    ...(senderId ? { senderId } : {}),
+    ...(senderName ? { senderName } : {}),
+  };
+}
+
+export function formatChannelSourceHeader(channelMeta: unknown): string {
+  const cm = sanitizeChannelMeta(channelMeta);
+  if (!cm) return "";
+  const platformName = cm.channel === "feishu-bot" ? "飞书机器人" : "Telegram 机器人";
+  const botLabel = cm.accountLabel ? `「${cm.accountLabel}」` : "";
+  const senderLabel =
+    cm.senderName && cm.senderId && cm.senderName !== cm.senderId
+      ? `${cm.senderName} (${cm.senderId})`
+      : cm.senderName || cm.senderId || cm.chatId || "未知用户";
+  return `[消息来源：${platformName}${botLabel} · 发送者：${senderLabel}]`;
+}
+
+function summarizeSingleAccountForBot(
+  id: ChannelSkillId,
+  cfg: Record<string, any>,
+  rt: Record<string, any>
+) {
+  const allowedSenderIds = Array.isArray(cfg.allowedSenderIds)
+    ? cfg.allowedSenderIds.map((v: any) => String(v))
+    : [];
+  const approvedChats = Array.isArray(cfg.approvedChats)
+    ? cfg.approvedChats.map((c: any) => ({
+        chatId: String(c.chatId || ""),
+        ...(c.senderId ? { senderId: String(c.senderId) } : {}),
+        ...(c.senderName ? { senderName: String(c.senderName) } : {}),
+        approvedAt: String(c.approvedAt || ""),
+        enabled: c.enabled !== false,
+      }))
+    : [];
+  const pendingPairings = Array.isArray(cfg.pendingPairings)
+    ? cfg.pendingPairings.map((p: any) => ({
+        code: String(p.code || ""),
+        chatId: String(p.chatId || ""),
+        senderId: String(p.senderId || ""),
+        ...(p.senderName ? { senderName: String(p.senderName) } : {}),
+        createdAt: String(p.createdAt || ""),
+      }))
+    : [];
+  const rawRejected =
+    rt.lastRejectedSender && typeof rt.lastRejectedSender === "object"
+      ? {
+          senderId: String(rt.lastRejectedSender.senderId || ""),
+          chatId: String(rt.lastRejectedSender.chatId || ""),
+          ...(rt.lastRejectedSender.senderName
+            ? { senderName: String(rt.lastRejectedSender.senderName) }
+            : {}),
+          at: String(rt.lastRejectedSender.at || ""),
+        }
+      : null;
+  return {
+    id: String(cfg.id || ""),
+    label: String(cfg.label || ""),
+    configured: Boolean(cfg.configured),
+    enabled: Boolean(cfg.enabled),
+    connectionMode: String(cfg.connectionMode || rt.mode || ""),
+    ...(id === "feishu-bot"
+      ? {
+          domain: String(cfg.domain || "feishu"),
+          appId: String(cfg.appId || ""),
+        }
+      : {}),
+    defaultSessionId: String(cfg.defaultSessionId || ""),
+    requirePairing: cfg.requirePairing !== false,
+    allowedSenderIds,
+    allowedSenderCount: allowedSenderIds.length,
+    approvedChats,
+    pendingPairings,
+    connected: Boolean(rt.connected),
+    status: String(rt.status || "stopped"),
+    botName: String(rt.botName || ""),
+    lastEventAt: rt.lastEventAt ? String(rt.lastEventAt) : null,
+    lastError: rt.lastError ? String(rt.lastError) : null,
+    lastSendError: rt.lastSendError ? String(rt.lastSendError) : null,
+    lastRejectedSender: rawRejected,
+  };
+}
+
+export function summarizeChannelStatusForBot(
+  rawStatus: Record<string, any> | null | undefined
+): Record<string, any> {
+  if (!rawStatus || typeof rawStatus !== "object") return {};
+  const out: Record<string, any> = {};
+  for (const id of ["feishu-bot", "telegram-bot"] as const) {
+    const entry = rawStatus[id];
+    if (!entry || typeof entry !== "object") continue;
+    const rawAccounts = Array.isArray(entry.accounts) && entry.accounts.length > 0
+      ? entry.accounts
+      : [{ config: entry.config, runtime: entry.runtime }];
+    const accounts = rawAccounts.map((a: any) =>
+      summarizeSingleAccountForBot(
+        id,
+        a?.config && typeof a.config === "object" ? a.config : {},
+        a?.runtime && typeof a.runtime === "object" ? a.runtime : {}
+      )
+    );
+    const primary = accounts[0] || summarizeSingleAccountForBot(id, {}, {});
+    const pendingPairingCount = accounts.reduce(
+      (sum: number, a: any) => sum + (a.pendingPairings?.length || 0),
+      0
+    );
+    out[id] = {
+      ...primary,
+      configured: accounts.some((a: any) => a.configured),
+      connected: accounts.some((a: any) => a.connected),
+      accountCount: accounts.length,
+      pendingPairingCount,
+      accounts,
+    };
+  }
+  return out;
+}
+
+export function generatePairingCode(existingCodes: Set<string> = new Set()): string {
+  for (let i = 0; i < 64; i++) {
+    const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+    if (!existingCodes.has(code)) return code;
+  }
+  return String(Date.now() % 1_000_000).padStart(6, "0");
+}
+
+export function checkChatAuthorization(
+  acct: Pick<FeishuChannelAccount, "approvedChats" | "allowedSenderIds">,
+  senderId: string,
+  chatId: string
+): "approved" | "suspended" | "unapproved" {
+  const cleanChat = String(chatId || "").trim();
+  const cleanSender = String(senderId || "").trim();
+  const approvedList = Array.isArray(acct.approvedChats) ? acct.approvedChats : [];
+  const matched = approvedList.find(
+    (c) =>
+      (cleanChat && c.chatId === cleanChat) ||
+      (cleanSender && (c.chatId === cleanSender || c.senderId === cleanSender))
+  );
+  if (matched) {
+    return matched.enabled !== false ? "approved" : "suspended";
+  }
+  if (isSenderAllowed(acct.allowedSenderIds || [], [cleanSender, cleanChat])) {
+    return "approved";
+  }
+  return "unapproved";
 }
 
 export function resolveFeishuApiBase(cfg: Pick<FeishuChannelConfig, "domain" | "apiBaseUrl">): string {
@@ -343,14 +853,385 @@ export function createLarkClient(
   });
 }
 
+function readSocketBytes(
+  socket: net.Socket,
+  predicate: (buf: Buffer) => boolean,
+  signal?: AbortSignal | null,
+  timeoutMs = 15_000
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let acc: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let settled = false;
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("error", onErr);
+      socket.off("close", onClose);
+      signal?.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
+    };
+    const finishErr = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+    const onData = (chunk: Buffer) => {
+      acc = Buffer.concat([acc, chunk]);
+      if (predicate(acc)) {
+        settled = true;
+        cleanup();
+        resolve(acc);
+      }
+    };
+    const onErr = (err: Error) => finishErr(err);
+    const onClose = () => finishErr(new Error("Proxy socket closed unexpectedly"));
+    const onAbort = () => {
+      try {
+        socket.destroy();
+      } catch {}
+      finishErr(new Error("Aborted"));
+    };
+    const timer = setTimeout(() => {
+      try {
+        socket.destroy();
+      } catch {}
+      finishErr(new Error("Proxy handshake timed out"));
+    }, timeoutMs);
+    timer.unref?.();
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    socket.on("data", onData);
+    socket.once("error", onErr);
+    socket.once("close", onClose);
+  });
+}
+
+function readExactBytes(
+  socket: net.Socket,
+  count: number,
+  signal?: AbortSignal | null
+): Promise<{ data: Buffer; extra: Buffer }> {
+  return readSocketBytes(socket, (b) => b.length >= count, signal).then((buf) => ({
+    data: buf.subarray(0, count),
+    extra: buf.subarray(count),
+  }));
+}
+
+async function openProxyTunnel(
+  proxy: URL,
+  targetHost: string,
+  targetPort: number,
+  signal?: AbortSignal | null
+): Promise<net.Socket> {
+  const proto = proxy.protocol.toLowerCase();
+  const proxyHost = proxy.hostname.replace(/^\[|\]$/g, "");
+  const defaultPort = proto === "https:" ? 443 : proto === "http:" ? 80 : 1080;
+  const proxyPort = Number(proxy.port || defaultPort);
+
+  const socket: net.Socket =
+    proto === "https:"
+      ? tls.connect({ host: proxyHost, port: proxyPort, servername: proxyHost })
+      : net.connect({ host: proxyHost, port: proxyPort });
+
+  await new Promise<void>((resolve, reject) => {
+    const onErr = (err: Error) => {
+      socket.off("connect", onReady);
+      socket.off("secureConnect", onReady);
+      signal?.removeEventListener("abort", onAbort);
+      reject(err);
+    };
+    const onReady = () => {
+      socket.off("error", onErr);
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = () => {
+      try {
+        socket.destroy();
+      } catch {}
+      onErr(new Error("Aborted"));
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    socket.once("error", onErr);
+    socket.once(proto === "https:" ? "secureConnect" : "connect", onReady);
+  });
+
+  const user = decodeURIComponent(proxy.username || "");
+  const pass = decodeURIComponent(proxy.password || "");
+
+  if (proto === "socks5:" || proto === "socks5h:") {
+    const hasAuth = Boolean(user || pass);
+    socket.write(
+      hasAuth ? Buffer.from([0x05, 0x02, 0x00, 0x02]) : Buffer.from([0x05, 0x01, 0x00])
+    );
+    const greet = await readExactBytes(socket, 2, signal);
+    if (greet.data[0] !== 0x05) {
+      socket.destroy();
+      throw new Error("Invalid SOCKS5 greeting version");
+    }
+    const authMethod = greet.data[1];
+    if (authMethod === 0x02) {
+      const uBuf = Buffer.from(user, "utf8").subarray(0, 255);
+      const pBuf = Buffer.from(pass, "utf8").subarray(0, 255);
+      socket.write(
+        Buffer.concat([
+          Buffer.from([0x01, uBuf.length]),
+          uBuf,
+          Buffer.from([pBuf.length]),
+          pBuf,
+        ])
+      );
+      const authRes = await readExactBytes(socket, 2, signal);
+      if (authRes.data[1] !== 0x00) {
+        socket.destroy();
+        throw new Error("SOCKS5 username/password authentication failed");
+      }
+    } else if (authMethod !== 0x00) {
+      socket.destroy();
+      throw new Error(`Unsupported SOCKS5 auth method: ${authMethod}`);
+    }
+
+    const hostBuf = Buffer.from(targetHost, "utf8");
+    if (hostBuf.length > 255) {
+      socket.destroy();
+      throw new Error("Target hostname exceeds SOCKS5 limit");
+    }
+    const portBuf = Buffer.allocUnsafe(2);
+    portBuf.writeUInt16BE(targetPort, 0);
+    socket.write(
+      Buffer.concat([
+        Buffer.from([0x05, 0x01, 0x00, 0x03, hostBuf.length]),
+        hostBuf,
+        portBuf,
+      ])
+    );
+
+    const head = await readSocketBytes(
+      socket,
+      (buf) => {
+        if (buf.length < 4) return false;
+        const atyp = buf[3];
+        if (atyp === 0x01) return buf.length >= 10;
+        if (atyp === 0x04) return buf.length >= 22;
+        if (atyp === 0x03) {
+          if (buf.length < 5) return false;
+          return buf.length >= 7 + buf[4];
+        }
+        return true;
+      },
+      signal
+    );
+    if (head[1] !== 0x00) {
+      socket.destroy();
+      throw new Error(`SOCKS5 CONNECT failed (reply ${head[1]})`);
+    }
+    const atyp = head[3];
+    const replyLen =
+      atyp === 0x01 ? 10 : atyp === 0x04 ? 22 : atyp === 0x03 ? 7 + head[4] : 4;
+    const extra = head.subarray(replyLen);
+    if (extra.length > 0) socket.unshift(extra);
+    return socket;
+  }
+
+  // HTTP/HTTPS CONNECT tunnel
+  const connectTarget = `${targetHost}:${targetPort}`;
+  const headerLines = [
+    `CONNECT ${connectTarget} HTTP/1.1`,
+    `Host: ${connectTarget}`,
+  ];
+  if (user || pass) {
+    const creds = Buffer.from(`${user}:${pass}`, "utf8").toString("base64");
+    headerLines.push(`Proxy-Authorization: Basic ${creds}`);
+  }
+  headerLines.push("Connection: keep-alive", "", "");
+  socket.write(headerLines.join("\r\n"));
+
+  const headerBuf = await readSocketBytes(
+    socket,
+    (buf) => buf.indexOf("\r\n\r\n") !== -1,
+    signal
+  );
+  const splitIdx = headerBuf.indexOf("\r\n\r\n");
+  const statusLine = headerBuf.subarray(0, splitIdx).toString("latin1").split("\r\n")[0] || "";
+  const statusMatch = statusLine.match(/^HTTP\/\d\.\d\s+(\d{3})/i);
+  const code = statusMatch ? Number(statusMatch[1]) : 0;
+  if (code < 200 || code >= 300) {
+    socket.destroy();
+    throw new Error(`Proxy CONNECT failed (${statusLine || "unknown response"})`);
+  }
+  const extra = headerBuf.subarray(splitIdx + 4);
+  if (extra.length > 0) socket.unshift(extra);
+  return socket;
+}
+
+export function createProxiedFetch(
+  proxyUrl: string,
+  baseFetch: typeof fetch = fetch
+): typeof fetch {
+  const cleanProxy = sanitizeTelegramProxyUrl(proxyUrl);
+  if (!cleanProxy) return baseFetch;
+  const parsedProxy = new URL(cleanProxy);
+
+  return (async (input: any, init?: RequestInit): Promise<Response> => {
+    const req = new Request(input, init);
+    const targetUrl = new URL(req.url);
+    if (targetUrl.protocol !== "https:" && targetUrl.protocol !== "http:") {
+      throw new Error(`Unsupported target protocol: ${targetUrl.protocol}`);
+    }
+    const targetHost = targetUrl.hostname.replace(/^\[|\]$/g, "");
+    const targetPort = Number(targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80));
+    const method = (req.method || "GET").toUpperCase();
+    const bodyBuf =
+      method !== "GET" && method !== "HEAD" && req.body
+        ? Buffer.from(await req.arrayBuffer())
+        : undefined;
+
+    const reqHeaders: Record<string, string> = {};
+    req.headers.forEach((value, key) => {
+      reqHeaders[key] = value;
+    });
+    if (bodyBuf && !reqHeaders["content-length"]) {
+      reqHeaders["content-length"] = String(bodyBuf.length);
+    }
+
+    const proxyProto = parsedProxy.protocol.toLowerCase();
+    const isDirectHttpProxy =
+      (proxyProto === "http:" || proxyProto === "https:") && targetUrl.protocol === "http:";
+
+    if (isDirectHttpProxy) {
+      const proxyHost = parsedProxy.hostname.replace(/^\[|\]$/g, "");
+      const proxyPort = Number(parsedProxy.port || (proxyProto === "https:" ? 443 : 80));
+      const user = decodeURIComponent(parsedProxy.username || "");
+      const pass = decodeURIComponent(parsedProxy.password || "");
+      const headers = {
+        ...reqHeaders,
+        host: targetUrl.host,
+        ...(user || pass
+          ? {
+              "proxy-authorization": `Basic ${Buffer.from(`${user}:${pass}`, "utf8").toString("base64")}`,
+            }
+          : {}),
+      };
+      const transport = proxyProto === "https:" ? https : http;
+      return await new Promise<Response>((resolve, reject) => {
+        const clientReq = transport.request(
+          {
+            hostname: proxyHost,
+            port: proxyPort,
+            method,
+            path: targetUrl.toString(),
+            headers,
+            agent: false,
+            signal: init?.signal || undefined,
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () => {
+              const status = res.statusCode || 200;
+              const buf = Buffer.concat(chunks);
+              const outHeaders = new Headers();
+              for (const [k, v] of Object.entries(res.headers)) {
+                if (Array.isArray(v)) {
+                  for (const item of v) outHeaders.append(k, item);
+                } else if (v !== undefined) {
+                  outHeaders.set(k, v);
+                }
+              }
+              const bodyAllowed = status !== 204 && status !== 304 && status !== 205;
+              resolve(
+                new Response(bodyAllowed ? buf : null, {
+                  status,
+                  statusText: res.statusMessage || "",
+                  headers: outHeaders,
+                })
+              );
+            });
+            res.on("error", reject);
+          }
+        );
+        clientReq.on("error", reject);
+        if (bodyBuf) clientReq.write(bodyBuf);
+        clientReq.end();
+      });
+    }
+
+    const tunnel = await openProxyTunnel(parsedProxy, targetHost, targetPort, init?.signal);
+    const wrappedStream: net.Socket =
+      targetUrl.protocol === "https:"
+        ? tls.connect({ socket: tunnel, servername: targetHost })
+        : tunnel;
+
+    const transport = targetUrl.protocol === "https:" ? https : http;
+    return await new Promise<Response>((resolve, reject) => {
+      const clientReq = transport.request(
+        {
+          hostname: targetHost,
+          port: targetPort,
+          method,
+          path: `${targetUrl.pathname}${targetUrl.search}`,
+          headers: reqHeaders,
+          agent: false,
+          createConnection: () => wrappedStream,
+          signal: init?.signal || undefined,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (c: Buffer) => chunks.push(c));
+          res.on("end", () => {
+            const status = res.statusCode || 200;
+            const buf = Buffer.concat(chunks);
+            const outHeaders = new Headers();
+            for (const [k, v] of Object.entries(res.headers)) {
+              if (Array.isArray(v)) {
+                for (const item of v) outHeaders.append(k, item);
+              } else if (v !== undefined) {
+                outHeaders.set(k, v);
+              }
+            }
+            const bodyAllowed = status !== 204 && status !== 304 && status !== 205;
+            resolve(
+              new Response(bodyAllowed ? buf : null, {
+                status,
+                statusText: res.statusMessage || "",
+                headers: outHeaders,
+              })
+            );
+          });
+          res.on("error", reject);
+        }
+      );
+      clientReq.on("error", reject);
+      if (bodyBuf) clientReq.write(bodyBuf);
+      clientReq.end();
+    });
+  }) as typeof fetch;
+}
+
+export function createTelegramFetch(
+  cfg: Partial<Pick<TelegramChannelConfig, "proxy">>,
+  fetchImpl: typeof fetch = fetch
+): typeof fetch {
+  if (fetchImpl !== fetch) return fetchImpl;
+  return cfg.proxy ? createProxiedFetch(cfg.proxy, fetchImpl) : fetchImpl;
+}
+
 export function createTelegramApi(
-  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl">,
+  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl"> & { proxy?: string },
   fetchImpl: typeof fetch = fetch
 ): GrammyApi {
   const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
+  const resolvedFetch = createTelegramFetch(cfg, fetchImpl);
   return new GrammyApi(cfg.botToken, {
     apiRoot: base,
-    fetch: fetchImpl as any,
+    fetch: resolvedFetch as any,
     baseFetchConfig: {},
   });
 }
@@ -616,11 +1497,96 @@ export function decodeFeishuPbFrame(buf: Buffer): FeishuPbFrame {
 
 export interface ParsedInboundChannelMessage {
   channel: ChannelSkillId;
+  accountId?: string;
   eventId: string;
+  messageId?: string;
+  chatType?: string;
   chatId: string;
   senderId: string;
   senderName: string;
   text: string;
+}
+
+function renderFeishuPostParagraph(elements: unknown): string {
+  if (!Array.isArray(elements)) return "";
+  const parts: string[] = [];
+  for (const el of elements) {
+    if (!el || typeof el !== "object") continue;
+    const node = el as Record<string, any>;
+    const tag = String(node.tag || "").toLowerCase();
+    if (tag === "text") {
+      if (typeof node.text === "string") parts.push(node.text);
+    } else if (tag === "a") {
+      const label = typeof node.text === "string" ? node.text : "";
+      const href = typeof node.href === "string" ? node.href : "";
+      if (label && href && !label.includes(href)) {
+        parts.push(`${label} (${href})`);
+      } else {
+        parts.push(label || href);
+      }
+    } else if (tag === "at") {
+      const uname = String(node.user_name || node.user_id || "").trim();
+      if (uname) parts.push(`@${uname}`);
+    } else if (tag === "code_block" || tag === "code") {
+      const codeText = String(node.text || node.content || "");
+      if (codeText) parts.push(codeText);
+    }
+  }
+  return parts.join("");
+}
+
+export function extractFeishuMessageText(
+  contentRaw: unknown,
+  messageType = "text"
+): string {
+  if (typeof contentRaw !== "string") return "";
+  const rawTrimmed = contentRaw.trim();
+  if (!rawTrimmed) return "";
+  let text = "";
+  try {
+    const parsed = JSON.parse(rawTrimmed);
+    if (typeof parsed === "string") {
+      text = parsed;
+    } else if (parsed && typeof parsed === "object") {
+      if (typeof parsed.text === "string" && messageType !== "post") {
+        text = parsed.text;
+      } else {
+        const directPost =
+          typeof parsed.title === "string" || Array.isArray(parsed.content)
+            ? parsed
+            : null;
+        const localized =
+          directPost ||
+          parsed.zh_cn ||
+          parsed.en_us ||
+          parsed.ja_jp ||
+          Object.values(parsed).find(
+            (v: any) =>
+              v &&
+              typeof v === "object" &&
+              (typeof v.title === "string" || Array.isArray(v.content))
+          );
+        if (localized && typeof localized === "object") {
+          const lines: string[] = [];
+          if (typeof (localized as any).title === "string" && (localized as any).title.trim()) {
+            lines.push((localized as any).title.trim());
+          }
+          if (Array.isArray((localized as any).content)) {
+            for (const para of (localized as any).content) {
+              const line = renderFeishuPostParagraph(para).trim();
+              if (line) lines.push(line);
+            }
+          }
+          text = lines.join("\n");
+        } else if (typeof parsed.text === "string") {
+          text = parsed.text;
+        }
+      }
+    }
+  } catch {
+    text = rawTrimmed;
+  }
+  return String(text || "").replace(/@_user_\d+\s*/g, "").trim();
 }
 
 export function parseTelegramUpdate(update: any): ParsedInboundChannelMessage | null {
@@ -638,9 +1604,17 @@ export function parseTelegramUpdate(update: any): ParsedInboundChannelMessage | 
   const senderName =
     [firstName, lastName].filter(Boolean).join(" ") || username || senderId;
   const eventId = `tg:${update.update_id ?? msg.message_id ?? Date.now()}`;
+  const messageId =
+    msg.message_id !== undefined && msg.message_id !== null
+      ? String(msg.message_id)
+      : undefined;
+  const chatType =
+    typeof msg.chat?.type === "string" && msg.chat.type ? msg.chat.type : undefined;
   return {
     channel: "telegram-bot",
     eventId,
+    ...(messageId ? { messageId } : {}),
+    ...(chatType ? { chatType } : {}),
     chatId,
     senderId,
     senderName,
@@ -703,25 +1677,22 @@ export function parseFeishuWebhookPayload(
   ).trim();
   if (!chatId) return { kind: "ignore" };
 
-  let text = "";
-  if (typeof msg.content === "string") {
-    try {
-      const parsed = JSON.parse(msg.content);
-      text = String(parsed?.text || "").trim();
-    } catch {
-      text = msg.content.trim();
-    }
-  }
-  // Strip Feishu @mention placeholders like @_user_1
-  text = text.replace(/@_user_\d+\s*/g, "").trim();
+  const messageType = String(msg.message_type || msg.msg_type || "text").trim();
+  const text = extractFeishuMessageText(msg.content, messageType);
   if (!text) return { kind: "ignore" };
 
   const eventId = `fs:${String(payload.header?.event_id || msg.message_id || Date.now())}`;
+  const messageId =
+    typeof msg.message_id === "string" && msg.message_id ? msg.message_id : undefined;
+  const chatType =
+    typeof msg.chat_type === "string" && msg.chat_type ? msg.chat_type : undefined;
   return {
     kind: "message",
     message: {
       channel: "feishu-bot",
       eventId,
+      ...(messageId ? { messageId } : {}),
+      ...(chatType ? { chatType } : {}),
       chatId,
       senderId,
       senderName: senderId,
@@ -744,22 +1715,20 @@ export function parseFeishuSdkMessageEvent(data: any): ParsedInboundChannelMessa
   ).trim();
   if (!chatId) return null;
 
-  let text = "";
-  if (typeof msg.content === "string") {
-    try {
-      const parsed = JSON.parse(msg.content);
-      text = String(parsed?.text || "").trim();
-    } catch {
-      text = msg.content.trim();
-    }
-  }
-  text = text.replace(/@_user_\d+\s*/g, "").trim();
+  const messageType = String(msg.message_type || msg.msg_type || "text").trim();
+  const text = extractFeishuMessageText(msg.content, messageType);
   if (!text) return null;
 
   const eventId = `fs:${String(data.event_id || msg.message_id || Date.now())}`;
+  const messageId =
+    typeof msg.message_id === "string" && msg.message_id ? msg.message_id : undefined;
+  const chatType =
+    typeof msg.chat_type === "string" && msg.chat_type ? msg.chat_type : undefined;
   return {
     channel: "feishu-bot",
     eventId,
+    ...(messageId ? { messageId } : {}),
+    ...(chatType ? { chatType } : {}),
     chatId,
     senderId,
     senderName: senderId,
@@ -768,7 +1737,7 @@ export function parseFeishuSdkMessageEvent(data: any): ParsedInboundChannelMessa
 }
 
 export async function testTelegramChannel(
-  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl">,
+  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl"> & { proxy?: string },
   fetchImpl: typeof fetch = fetch
 ): Promise<{ ok: boolean; botId?: number; botUsername?: string; botName?: string; error?: string }> {
   if (!cfg.botToken) {
@@ -792,7 +1761,7 @@ export async function testTelegramChannel(
 }
 
 export async function sendTelegramMessage(
-  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl">,
+  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl"> & { proxy?: string },
   chatId: string,
   text: string,
   fetchImpl: typeof fetch = fetch
@@ -802,6 +1771,27 @@ export async function sendTelegramMessage(
   const chunks = chunkChannelText(text, 3900);
   for (const chunk of chunks) {
     await api.sendMessage(chatId, chunk);
+  }
+}
+
+export async function setTelegramMessageReaction(
+  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl"> & { proxy?: string },
+  chatId: string,
+  messageId: string,
+  emoji: string | null,
+  fetchImpl: typeof fetch = fetch
+): Promise<void> {
+  const numMsg = Number(messageId);
+  if (!cfg.botToken || !chatId || !Number.isFinite(numMsg) || numMsg <= 0) return;
+  try {
+    const api = createTelegramApi(cfg, fetchImpl);
+    await api.setMessageReaction(
+      chatId,
+      numMsg,
+      emoji ? [{ type: "emoji", emoji: emoji as any }] : []
+    );
+  } catch {
+    // Best-effort reaction: never fail a turn if reaction permission is missing or unsupported
   }
 }
 
@@ -1003,5 +1993,46 @@ export async function sendFeishuMessage(
       err.feishuCode = Number(data.code);
       throw err;
     }
+  }
+}
+
+export async function addFeishuMessageReaction(
+  cfg: Pick<FeishuChannelConfig, "appId" | "appSecret" | "domain" | "apiBaseUrl">,
+  messageId: string,
+  emojiType = FEISHU_REACTION_TYPING,
+  fetchImpl: typeof fetch = fetch,
+  clientOverride?: lark.Client
+): Promise<string | null> {
+  if (!cfg.appId || !cfg.appSecret || !messageId) return null;
+  try {
+    const client = clientOverride || createLarkClient(cfg, fetchImpl);
+    const res = await client.im.v1.messageReaction.create({
+      path: { message_id: messageId },
+      data: { reaction_type: { emoji_type: emojiType } },
+    });
+    if (res?.code === 0 && res?.data?.reaction_id) {
+      return String(res.data.reaction_id);
+    }
+  } catch {
+    // Best-effort reaction: never fail a turn if reaction scope or token is unavailable
+  }
+  return null;
+}
+
+export async function deleteFeishuMessageReaction(
+  cfg: Pick<FeishuChannelConfig, "appId" | "appSecret" | "domain" | "apiBaseUrl">,
+  messageId: string,
+  reactionId: string,
+  fetchImpl: typeof fetch = fetch,
+  clientOverride?: lark.Client
+): Promise<void> {
+  if (!cfg.appId || !cfg.appSecret || !messageId || !reactionId) return;
+  try {
+    const client = clientOverride || createLarkClient(cfg, fetchImpl);
+    await client.im.v1.messageReaction.delete({
+      path: { message_id: messageId, reaction_id: reactionId },
+    });
+  } catch {
+    // Best-effort cleanup
   }
 }

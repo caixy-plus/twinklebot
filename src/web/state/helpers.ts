@@ -853,17 +853,23 @@ export function formatErrorNotice(
       ? `${text.slice(0, ERROR_SUMMARY_MAX_CHARS - 1).trimEnd()}…`
       : text;
 
-  const jsonStart = raw.indexOf("{");
-  if (jsonStart !== -1 && raw.includes("}")) {
+  const objIdx = raw.indexOf("{");
+  const arrIdx = raw.indexOf("[");
+  const jsonStart =
+    objIdx === -1 ? arrIdx : arrIdx === -1 ? objIdx : Math.min(objIdx, arrIdx);
+  if (jsonStart !== -1 && (raw.includes("}") || raw.includes("]"))) {
     const jsonCandidate = raw.slice(jsonStart);
     try {
       const parsed = JSON.parse(jsonCandidate);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const target = Array.isArray(parsed)
+        ? parsed.find((item) => item && typeof item === "object")
+        : parsed;
+      if (target && typeof target === "object" && !Array.isArray(target)) {
         const nestedMsg =
-          typeof parsed?.error?.message === "string"
-            ? parsed.error.message.trim()
-            : typeof parsed?.message === "string"
-              ? parsed.message.trim()
+          typeof target?.error?.message === "string"
+            ? target.error.message.trim()
+            : typeof target?.message === "string"
+              ? target.message.trim()
               : "";
         const prefix = raw
           .slice(0, jsonStart)

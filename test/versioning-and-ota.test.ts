@@ -273,6 +273,8 @@ test("evaluateUpdateCompatibility decouples Desktop/Android/iOS shells, selects 
     "local-browser-automation-v1",
     "i18n-v1",
     "channel-integrations-v1",
+    "channel-multi-bot-pairing-v1",
+    "schedule-cron-v1",
     "swarm-v2",
   ]);
   // v1.2.0 baseline features stay 100% enabled on LAN 1.2.0 while 1.3.0-only feature gracefully gates!

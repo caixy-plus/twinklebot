@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { upsertCloudAccount } from "/accounts-store.js";
+import {
+  CRON_PRESETS,
+  describeCronExpression,
+  getNextCronDates,
+  parseCronExpression,
+} from "/shared/cron.js";
 import { buildPreviewSrcdoc } from "../../preview-utils.js";
 import {
   openBotScreenOverlay,
@@ -13,6 +19,7 @@ import {
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson } from "../../services/api-client.js";
+import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
 import { BG_MODES } from "../../state/constants.js";
 import {
   formatClockTime,
@@ -50,6 +57,7 @@ export function SecondaryModals() {
   const htmlPreviewModal = useStore((s) => s.htmlPreviewModal);
   const cloudAccountModal = useStore((s) => s.cloudAccountModal);
   const desktopPairingModal = useStore((s) => s.desktopPairingModal);
+  const diagnostics = useStore((s) => s.diagnostics);
   const sessions = useStore((s) => s.sessions);
   const primarySessionId = useStore((s) => s.primarySessionId);
   const activeSessionId = useStore((s) => s.activeSessionId);
@@ -66,9 +74,20 @@ export function SecondaryModals() {
   const [schedRepeat, setSchedRepeat] = useState("daily");
   const [schedLabel, setSchedLabel] = useState("每天 10:00");
   const [schedPrompt, setSchedPrompt] = useState("");
+  const [schedCron, setSchedCron] = useState("0 10 */3 * *");
+  const [schedCronTouched, setSchedCronTouched] = useState(false);
+  const [schedLabelManual, setSchedLabelManual] = useState(false);
+  const schedCronInputRef = useRef<HTMLInputElement | null>(null);
+
+  const supportsCronSchedules =
+    !Array.isArray(diagnostics?.apiCapabilities) ||
+    diagnostics.apiCapabilities.length === 0 ||
+    hasConnectedNodeCapability("schedule-cron-v1") ||
+    schedRepeat === "cron";
 
   useEffect(() => {
     if (!scheduleModalOpen) return;
+    setSchedCronTouched(false);
     if (editingScheduleId) {
       const target = schedules.find((s: any) => s.id === editingScheduleId);
       if (target) {
@@ -76,6 +95,8 @@ export function SecondaryModals() {
         setSchedRepeat(String(target.repeat || "daily"));
         setSchedLabel(String(target.scheduleLabel || "每天 10:00"));
         setSchedPrompt(String(target.prompt || ""));
+        setSchedCron(String(target.cron || "0 10 */3 * *"));
+        setSchedLabelManual(Boolean(target.scheduleLabel));
         return;
       }
     }
@@ -83,6 +104,8 @@ export function SecondaryModals() {
     setSchedRepeat("daily");
     setSchedLabel("每天 10:00");
     setSchedPrompt("");
+    setSchedCron("0 10 */3 * *");
+    setSchedLabelManual(false);
   }, [scheduleModalOpen, editingScheduleId]);
 
   const htmlPreviewDialogRef = useRef<HTMLDialogElement | null>(null);
@@ -181,7 +204,22 @@ export function SecondaryModals() {
   const handleSaveSchedule = async () => {
     const title = schedTitle.trim();
     const prompt = schedPrompt.trim();
-    const scheduleLabel = schedLabel.trim() || "每天 10:00";
+    let cronPayload: string | undefined;
+    if (schedRepeat === "cron") {
+      const parsedCron = parseCronExpression(schedCron);
+      if (!parsedCron.ok) {
+        setSchedCronTouched(true);
+        schedCronInputRef.current?.focus();
+        showToast(parsedCron.error);
+        return;
+      }
+      cronPayload = parsedCron.normalized;
+    }
+    const scheduleLabel =
+      schedLabel.trim() ||
+      (schedRepeat === "cron" && cronPayload
+        ? describeCronExpression(cronPayload)
+        : "每天 10:00");
     if (!title || !prompt || (!editingScheduleId && !activeSessionId)) {
       showToast("请填写任务名称与执行指令");
       return;
@@ -199,6 +237,7 @@ export function SecondaryModals() {
           prompt,
           repeat: schedRepeat,
           scheduleLabel,
+          ...(cronPayload ? { cron: cronPayload } : {}),
           ...(nextRunAt ? { nextRunAt } : {}),
         }),
       });
@@ -211,12 +250,15 @@ export function SecondaryModals() {
           prompt,
           repeat: schedRepeat,
           scheduleLabel,
+          ...(cronPayload ? { cron: cronPayload } : {}),
           ...(nextRunAt ? { nextRunAt } : {}),
         }),
       });
     }
     setSchedTitle("");
     setSchedPrompt("");
+    setSchedCron("0 10 */3 * *");
+    setSchedCronTouched(false);
     setState({ scheduleModalOpen: false, editingScheduleId: null });
     refreshSchedules();
     showToast(editingScheduleId ? "例行任务已更新" : "例行任务已创建");
@@ -545,10 +587,35 @@ export function SecondaryModals() {
               id="sched-repeat-select"
               className="inline-text-input"
               value={schedRepeat}
-              onChange={(e) => setSchedRepeat(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSchedRepeat(next);
+                if (next === "cron") {
+                  const seed = schedCron.trim() || "0 10 */3 * *";
+                  if (!schedCron.trim()) setSchedCron(seed);
+                  setSchedCronTouched(false);
+                  if (!schedLabelManual) {
+                    setSchedLabel(describeCronExpression(seed));
+                  }
+                } else if (!schedLabelManual) {
+                  setSchedLabel(
+                    next === "hourly"
+                      ? "每小时"
+                      : next === "weekly"
+                        ? "每周 10:00"
+                        : next === "once"
+                          ? "单次执行"
+                          : "每天 10:00"
+                  );
+                }
+              }}
             >
               <option value="daily">每天执行</option>
               <option value="hourly">每小时执行</option>
+              <option value="weekly">每周执行</option>
+              {supportsCronSchedules && (
+                <option value="cron">Cron 表达式（自定义周期）</option>
+              )}
               <option value="once">仅执行一次（1分钟后测试）</option>
             </select>
             <input
@@ -557,9 +624,103 @@ export function SecondaryModals() {
               className="inline-text-input"
               value={schedLabel}
               placeholder="时间标签"
-              onChange={(e) => setSchedLabel(e.target.value)}
+              onChange={(e) => {
+                setSchedLabelManual(Boolean(e.target.value.trim()));
+                setSchedLabel(e.target.value);
+              }}
             />
           </div>
+          {schedRepeat === "cron" &&
+            (() => {
+              const cronRes = parseCronExpression(schedCron);
+              const showCronError = schedCronTouched && !cronRes.ok;
+              const nextDates = cronRes.ok ? getNextCronDates(schedCron, 3) : [];
+              const fmtPreviewDate = (d: Date) => {
+                const mo = String(d.getMonth() + 1).padStart(2, "0");
+                const da = String(d.getDate()).padStart(2, "0");
+                const hh = String(d.getHours()).padStart(2, "0");
+                const mm = String(d.getMinutes()).padStart(2, "0");
+                return `${mo}/${da} ${hh}:${mm}`;
+              };
+              return (
+                <div className="sched-cron-panel">
+                  <span id="sched-cron-hint" className="sched-cron-hint">
+                    5 段 Cron（分 时 日 月 周），支持 */n、a-b、逗号与 @daily/@weekly
+                  </span>
+                  <input
+                    ref={schedCronInputRef}
+                    id="sched-cron-input"
+                    type="text"
+                    className={`inline-text-input sched-cron-input${showCronError ? " is-invalid" : ""}`}
+                    placeholder="例如：0 10 */3 * *（每3天 10:00）"
+                    value={schedCron}
+                    aria-label="Cron 表达式"
+                    aria-invalid={showCronError ? "true" : "false"}
+                    aria-describedby={
+                      showCronError ? "sched-cron-hint sched-cron-error" : "sched-cron-hint"
+                    }
+                    data-error="sched-cron-error"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSchedCron(val);
+                      if (!schedLabelManual) {
+                        const parsed = parseCronExpression(val);
+                        if (parsed.ok) {
+                          setSchedLabel(describeCronExpression(val));
+                        }
+                      }
+                    }}
+                    onBlur={() => setSchedCronTouched(true)}
+                  />
+                  <div
+                    id="sched-cron-error"
+                    className="sched-cron-error"
+                    hidden={!showCronError}
+                  >
+                    <span role="img" aria-label="错误">
+                      ⚠
+                    </span>{" "}
+                    {!cronRes.ok ? cronRes.error : ""}
+                  </div>
+                  <div className="sched-cron-presets" aria-label="常用 Cron 预设">
+                    {CRON_PRESETS.map((p) => (
+                      <button
+                        key={p.expr}
+                        type="button"
+                        className={`sched-cron-preset-btn${
+                          cronRes.ok && cronRes.normalized === p.expr ? " is-active" : ""
+                        }`}
+                        onClick={() => {
+                          setSchedCron(p.expr);
+                          setSchedCronTouched(false);
+                          if (!schedLabelManual) {
+                            setSchedLabel(describeCronExpression(p.expr));
+                          }
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                  {cronRes.ok && (
+                    <div
+                      id="sched-cron-preview"
+                      className="sched-cron-preview"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <span>✓ {describeCronExpression(schedCron)}</span>
+                      {nextDates.length > 0 && (
+                        <span>
+                          {" · 下次执行："}
+                          {nextDates.map(fmtPreviewDate).join(" · ")}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           <textarea
             id="sched-prompt-input"
             className="inline-textarea"

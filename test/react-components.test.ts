@@ -311,6 +311,15 @@ test("MessageGroup, MarkdownRenderer, MarkupPreviewCard, and InteractiveCards re
   assert.ok(metaErrHtml.includes("402 API error occurred（模型供应商账户余额不足或额度已用尽）"));
   assert.ok(metaErrHtml.includes('class="error-card-details"'));
   assert.ok(metaErrHtml.includes("httpMeta"));
+
+  const arrayErrHtml = ssr.renderStreamItemToStaticMarkup({
+    kind: "error",
+    id: "err-arr-402",
+    message:
+      '402: [{"error":{"code":402,"message":"Your prepayment credits are depleted.","status":"RESOURCE_EXHAUSTED"}}]',
+  });
+  assert.ok(arrayErrHtml.includes("402：Your prepayment credits are depleted."));
+  assert.ok(arrayErrHtml.includes('class="error-card-details"'));
 });
 
 test("Native <dialog> elements, Settings 7 tabs, Skills Store 3 views, and App shell data attributes", async () => {

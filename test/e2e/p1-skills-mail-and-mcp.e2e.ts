@@ -1095,6 +1095,267 @@ test("P1 Suite 5: Skills Store, Custom SKILL.md, Multi-Account Mail (IMAP/POP3/S
         })
       ).json();
       assert.equal(fsChallenge.challenge, "chal-123");
+
+      // 7. Multi-Bot Channels + 6-Digit Pairing + Conversational Config + Capability Gate ("channel-multi-bot-pairing-v1")
+      const diagCapRes: any = await (await fetch(`${ws.baseUrl}/api/system/diagnostics`)).json();
+      assert.ok(
+        Array.isArray(diagCapRes.apiCapabilities) &&
+          diagCapRes.apiCapabilities.includes("channel-multi-bot-pairing-v1"),
+        "Diagnostics must advertise channel-multi-bot-pairing-v1 capability"
+      );
+
+      const chAfterLegacy: any = await (await fetch(`${ws.baseUrl}/api/integrations/channels`)).json();
+      const tgAcctId = chAfterLegacy.channels?.["telegram-bot"]?.accounts?.[0]?.id || "tg_default";
+      const tgAcctHookBad = await fetch(`${ws.baseUrl}/api/channels/telegram/webhook/${tgAcctId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "wrong" },
+        body: JSON.stringify({ update_id: 2 }),
+      });
+      assert.equal(tgAcctHookBad.status, 401);
+
+      const fsCreate2: any = await (
+        await fetch(`${ws.baseUrl}/api/integrations/channels/feishu-bot/accounts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            label: "E2E 飞书助手2",
+            enabled: true,
+            connectionMode: "webhook",
+            appId: "cli_e2e_2",
+            appSecret: "sec_e2e_2",
+            verificationToken: "vtok_e2e_2",
+            defaultSessionId: mcpBot.id,
+            requirePairing: true,
+            allowedSenderIds: [],
+          }),
+        })
+      ).json();
+      assert.equal(fsCreate2.ok, true);
+      const fsAcct2 = fsCreate2.accountId;
+      assert.ok(fsAcct2);
+      assert.equal(fsCreate2.channels["feishu-bot"].accounts.length, 2);
+
+      const fsPatch2: any = await (
+        await fetch(`${ws.baseUrl}/api/integrations/channels/feishu-bot/accounts/${fsAcct2}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label: "E2E 飞书助手2-更新" }),
+        })
+      ).json();
+      assert.equal(fsPatch2.ok, true);
+      assert.equal(
+        fsPatch2.channels["feishu-bot"].accounts.find((a: any) => a.id === fsAcct2)?.config?.label,
+        "E2E 飞书助手2-更新"
+      );
+
+      const fsTestAcct2 = await fetch(
+        `${ws.baseUrl}/api/integrations/channels/feishu-bot/accounts/${fsAcct2}/test`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      );
+      assert.ok(fsTestAcct2.status === 200 || fsTestAcct2.status === 400);
+
+      // Account-scoped Feishu webhook verification + pairing code 1 (reject path)
+      const fsAcctChallenge: any = await (
+        await fetch(`${ws.baseUrl}/api/channels/feishu/webhook/${fsAcct2}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "url_verification", token: "vtok_e2e_2", challenge: "chal-acct-2" }),
+        })
+      ).json();
+      assert.equal(fsAcctChallenge.challenge, "chal-acct-2");
+
+      await fetch(`${ws.baseUrl}/api/channels/feishu/webhook/${fsAcct2}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          schema: "2.0",
+          header: { event_id: "e2e_ev_pair_1", event_type: "im.message.receive_v1", token: "vtok_e2e_2" },
+          event: {
+            sender: { sender_id: { open_id: "ou_e2e_stranger_1" } },
+            message: {
+              message_id: "om_e2e_p1",
+              chat_id: "oc_e2e_pair_1",
+              message_type: "text",
+              content: JSON.stringify({ text: "请求配对1" }),
+            },
+          },
+        }),
+      });
+      const pairList1: any = await (await fetch(`${ws.baseUrl}/api/integrations/channels/pairings`)).json();
+      assert.equal(pairList1.ok, true);
+      const pending1 = (pairList1.pending || []).find((p: any) => p.accountId === fsAcct2 && p.chatId === "oc_e2e_pair_1");
+      assert.match(pending1?.code || "", /^\d{6}$/);
+
+      const rejectRes: any = await (
+        await fetch(`${ws.baseUrl}/api/integrations/channels/pairings/reject`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: pending1.code }),
+        })
+      ).json();
+      assert.equal(rejectRes.ok, true);
+
+      // Pairing code 2 -> approve via App-side Bot tool (channel_pairing_manage)
+      await fetch(`${ws.baseUrl}/api/channels/feishu/webhook/${fsAcct2}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          schema: "2.0",
+          header: { event_id: "e2e_ev_pair_2", event_type: "im.message.receive_v1", token: "vtok_e2e_2" },
+          event: {
+            sender: { sender_id: { open_id: "ou_e2e_stranger_2" } },
+            message: {
+              message_id: "om_e2e_p2",
+              chat_id: "oc_e2e_pair_2",
+              message_type: "text",
+              content: JSON.stringify({ text: "请求配对2" }),
+            },
+          },
+        }),
+      });
+      const pairList2: any = await (await fetch(`${ws.baseUrl}/api/integrations/channels/pairings`)).json();
+      const pending2 = (pairList2.pending || []).find((p: any) => p.accountId === fsAcct2 && p.chatId === "oc_e2e_pair_2");
+      assert.match(pending2?.code || "", /^\d{6}$/);
+
+      let pairStep = 0;
+      let toolApproveOutput = "";
+      ws.mockLlm.setHandler(async ({ body }) => {
+        if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "配对审批" };
+        const s = JSON.stringify(body?.messages || "");
+        pairStep += 1;
+        if (pairStep === 1) {
+          return {
+            toolCalls: [
+              {
+                id: "pm-1",
+                name: "channel_pairing_manage",
+                args: { action: "approve", code: pending2.code },
+              },
+            ],
+          };
+        }
+        toolApproveOutput = s;
+        return { text: `已放行配对码 ${pending2.code}` };
+      });
+      await fetch(`${ws.baseUrl}/api/sessions/${mcpBot.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: `请审批飞书配对码 ${pending2.code}` }),
+      });
+      await ws.waitUntil(() => !ws.runner.isSessionBusy(mcpBot.id), 10_000, "channel_pairing_manage turn completes");
+      ws.mockLlm.setHandler(undefined);
+      assert.ok(toolApproveOutput.includes("oc_e2e_pair_2"));
+
+      // Conversational channel config tool (`skill_configure_channel`) bound to `mcpBot`
+      let cfgStep = 0;
+      let toolCfgOutput = "";
+      ws.mockLlm.setHandler(async ({ body }) => {
+        if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "渠道配置" };
+        const s = JSON.stringify(body?.messages || "");
+        cfgStep += 1;
+        if (cfgStep === 1) {
+          return {
+            toolCalls: [
+              {
+                id: "cc-1",
+                name: "skill_configure_channel",
+                args: {
+                  action: "whitelist",
+                  channel: "feishu-bot",
+                  account_id: fsAcct2,
+                  add_allowed_sender_ids: ["ou_e2e_added_via_tool"],
+                },
+              },
+            ],
+          };
+        }
+        toolCfgOutput = s;
+        return { text: "已把 ou_e2e_added_via_tool 加入飞书白名单" };
+      });
+      await fetch(`${ws.baseUrl}/api/sessions/${mcpBot.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "把 ou_e2e_added_via_tool 加入飞书白名单" }),
+      });
+      await ws.waitUntil(() => !ws.runner.isSessionBusy(mcpBot.id), 10_000, "skill_configure_channel turn completes");
+      ws.mockLlm.setHandler(undefined);
+      assert.ok(toolCfgOutput.includes("ou_e2e_added_via_tool"));
+      const chAfterCfgTool: any = await (await fetch(`${ws.baseUrl}/api/integrations/channels`)).json();
+      const acct2AfterCfg = (chAfterCfgTool.channels?.["feishu-bot"]?.accounts || []).find(
+        (a: any) => a.id === fsAcct2
+      );
+      assert.ok(acct2AfterCfg?.config?.allowedSenderIds?.includes("ou_e2e_added_via_tool"));
+
+      // Pairing code 3 -> approve / toggle / delete via HTTP
+      await fetch(`${ws.baseUrl}/api/channels/feishu/webhook/${fsAcct2}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          schema: "2.0",
+          header: { event_id: "e2e_ev_pair_3", event_type: "im.message.receive_v1", token: "vtok_e2e_2" },
+          event: {
+            sender: { sender_id: { open_id: "ou_e2e_stranger_3" } },
+            message: {
+              message_id: "om_e2e_p3",
+              chat_id: "oc_e2e_pair_3",
+              message_type: "text",
+              content: JSON.stringify({ text: "请求配对3" }),
+            },
+          },
+        }),
+      });
+      const pairList3: any = await (await fetch(`${ws.baseUrl}/api/integrations/channels/pairings`)).json();
+      const pending3 = (pairList3.pending || []).find((p: any) => p.accountId === fsAcct2 && p.chatId === "oc_e2e_pair_3");
+      assert.match(pending3?.code || "", /^\d{6}$/);
+
+      const httpApproveRes: any = await (
+        await fetch(`${ws.baseUrl}/api/integrations/channels/pairings/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: pending3.code }),
+        })
+      ).json();
+      assert.equal(httpApproveRes.ok, true);
+
+      const toggleOff: any = await (
+        await fetch(`${ws.baseUrl}/api/integrations/channels/pairings/toggle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: "feishu-bot",
+            accountId: fsAcct2,
+            chatId: "oc_e2e_pair_3",
+            enabled: false,
+          }),
+        })
+      ).json();
+      assert.equal(toggleOff.ok, true);
+      assert.equal(toggleOff.enabled, false);
+
+      const delApprovedRes: any = await (
+        await fetch(`${ws.baseUrl}/api/integrations/channels/pairings/approved`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channel: "feishu-bot",
+            accountId: fsAcct2,
+            chatId: "oc_e2e_pair_3",
+          }),
+        })
+      ).json();
+      assert.equal(delApprovedRes.ok, true);
+
+      const delAcct2Res: any = await (
+        await fetch(`${ws.baseUrl}/api/integrations/channels/feishu-bot/accounts/${fsAcct2}`, {
+          method: "DELETE",
+        })
+      ).json();
+      assert.equal(delAcct2Res.ok, true);
+      assert.equal(delAcct2Res.channels["feishu-bot"].accounts.length, 1);
     },
     { getChrome: () => chrome }
   );

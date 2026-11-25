@@ -56,6 +56,14 @@ export type StreamItem =
       replyTo?: { seq?: number | null; author?: string; botId?: string | null; snippet?: string } | null;
       quotes?: string[];
       clientSource?: { deviceKind: "mobile" | "desktop"; platform?: string } | null;
+      channelMeta?: {
+        channel: "feishu-bot" | "telegram-bot";
+        accountId?: string;
+        accountLabel?: string;
+        chatId?: string;
+        senderId?: string;
+        senderName?: string;
+      } | null;
       interim?: boolean;
     }
   | {
@@ -1070,6 +1078,12 @@ export function reduceSessionEvent(
             typeof evt.clientSource === "object" &&
             (evt.clientSource.deviceKind === "mobile" || evt.clientSource.deviceKind === "desktop")
               ? evt.clientSource
+              : null,
+          channelMeta:
+            evt.channelMeta &&
+            typeof evt.channelMeta === "object" &&
+            (evt.channelMeta.channel === "feishu-bot" || evt.channelMeta.channel === "telegram-bot")
+              ? evt.channelMeta
               : null,
         },
       ];

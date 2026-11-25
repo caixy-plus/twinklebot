@@ -10,6 +10,10 @@ import {
 import { resolveEffectiveLocale } from "../shared/i18n.js";
 import { getDefaultLocalChromeManager } from "../lib/local-chrome-cdp.js";
 import {
+  formatChannelSourceHeader,
+  sanitizeChannelMeta,
+} from "../lib/channel-integrations.js";
+import {
   HOST_TOOL_DECLARATIONS,
   isHostTool,
   runHostTool,
@@ -454,6 +458,9 @@ async function runTaskInner({
     executor,
     mcpManager = null,
     hostBridge = null,
+    getChannelStatus = null,
+    channelPairingActions = null,
+    channelConfigActions = null,
     store,
     config = {},
     emit = () => {},
@@ -529,6 +536,10 @@ async function runTaskInner({
           ? { platform: String(userMeta.clientSource.platform).slice(0, 32) }
           : {}),
       };
+    }
+    const cleanChannelMeta = sanitizeChannelMeta(userMeta?.channelMeta);
+    if (cleanChannelMeta) {
+      cleanMeta.channelMeta = cleanChannelMeta;
     }
     emit({ type: "user", text: userText, ...cleanMeta });
     try {
@@ -733,6 +744,10 @@ async function runTaskInner({
       let out = String(rawText || "");
       if (!meta || typeof meta !== "object") return out;
       const prefixParts: string[] = [];
+      const channelHeader = formatChannelSourceHeader(meta.channelMeta);
+      if (channelHeader) {
+        prefixParts.push(channelHeader);
+      }
       if (meta.replyTo?.snippet) {
         prefixParts.push(
           `[Replying to (${meta.replyTo.author || "message"}): "${meta.replyTo.snippet}"]`
@@ -1924,6 +1939,10 @@ async function runTaskInner({
             model,
             executor,
             mcpManager,
+            getChannelStatus,
+            channelPairingActions,
+            channelConfigActions,
+            userMeta,
             config: promptConfig,
             userText: latestUserText,
             activeLlmModel: requestedModel,

@@ -1,4 +1,5 @@
 import { isMobileViewport } from "../../mobile-ui.js";
+import { describeCronExpression } from "/shared/cron.js";
 import {
   openBotScreenOverlay,
   openImageLightbox,
@@ -204,7 +205,17 @@ export function SchedulesList({ listId }: { listId: string }) {
                 }}
               >
                 <div className="upcoming-title">{item.title}</div>
-                <div className="upcoming-sub">{item.scheduleLabel || "定时执行"}</div>
+                <div className="upcoming-sub">
+                  <span>
+                    {item.scheduleLabel ||
+                      (item.cron ? describeCronExpression(item.cron) : "定时执行")}
+                  </span>
+                  {item.cron && (
+                    <code className="upcoming-cron-badge" title={`Cron: ${item.cron}`}>
+                      {item.cron}
+                    </code>
+                  )}
+                </div>
               </div>
               <label className="ios-switch">
                 <input

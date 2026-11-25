@@ -14,6 +14,8 @@ export const CURRENT_API_CAPABILITIES = [
   "local-browser-automation-v1",
   "i18n-v1",
   "channel-integrations-v1",
+  "channel-multi-bot-pairing-v1",
+  "schedule-cron-v1",
 ] as const;
 
 export const DEFAULT_GITHUB_OWNER = "caixy-plus";

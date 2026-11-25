@@ -8,6 +8,7 @@ import {
 } from "../src/agent/providers/registry.js";
 import {
   createGeminiDriver,
+  normalizeGeminiApiError,
   sanitizeInputForGemini,
 } from "../src/agent/providers/gemini-driver.js";
 import {
@@ -923,4 +924,107 @@ test("openai compat driver drops unanswered thought+tool_call turns, sanitizes b
   const sentAssistants = payloads[0].messages.filter((m: any) => m.role === "assistant");
   assert.equal(sentAssistants.length, 2);
   assert.ok(sentAssistants.every((m: any) => typeof m.reasoning_content === "string"));
+});
+
+test("normalizeGeminiApiError unwraps array-wrapped err.body from opaque @google/genai httpMeta errors", async () => {
+  // 1. Real Google AI Studio 402 array-wrapped JSON error swallowed by @google/genai
+  const opaque402: any = new Error('402 API error occurred: {"httpMeta":{"response":{},"request":{}}}');
+  opaque402.name = "APIError";
+  opaque402.status = 402;
+  opaque402.statusCode = 402;
+  opaque402.error = { httpMeta: { response: {}, request: {} } };
+  opaque402.body = JSON.stringify([
+    {
+      error: {
+        code: 402,
+        message: "Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing.",
+        status: "RESOURCE_EXHAUSTED",
+      },
+    },
+  ]);
+
+  const driver402 = createGeminiDriver({
+    apiKey: "test-key",
+    client: {
+      interactions: {
+        async create() {
+          throw opaque402;
+        },
+      },
+    },
+  });
+
+  await assert.rejects(
+    driver402.nextTurn({
+      model: "gemini-4-hydrogen",
+      systemInstruction: "sys",
+      input: [userStep("hi")],
+    }),
+    (err: any) => {
+      assert.equal(err.status, 402);
+      assert.equal(err.statusCode, 402);
+      assert.equal(err.apiStatus, "RESOURCE_EXHAUSTED");
+      assert.match(
+        err.message,
+        /^Gemini API error \(402 RESOURCE_EXHAUSTED\): Your prepayment credits are depleted\./
+      );
+      assert.equal(err.message.includes("httpMeta"), false);
+      return true;
+    }
+  );
+
+  // 2. Array-wrapped 400 invalid thought signature in err.cause.body still triggers automatic thought-stripping recovery
+  let attempts = 0;
+  const recoveringDriver = createGeminiDriver({
+    apiKey: "test-key",
+    client: {
+      interactions: {
+        async create() {
+          attempts++;
+          if (attempts === 1) {
+            const opaque400: any = new Error('400 API error occurred: {"httpMeta":{"response":{},"request":{}}}');
+            opaque400.status = 400;
+            opaque400.cause = {
+              statusCode: 400,
+              body: JSON.stringify([
+                { error: { code: 400, message: "Invalid thought signature in history", status: "INVALID_ARGUMENT" } },
+              ]),
+            };
+            throw opaque400;
+          }
+          return {
+            status: "completed",
+            steps: [{ type: "model_output", content: [{ type: "text", text: "recovered" }] }],
+            usage: { total_input_tokens: 10, total_output_tokens: 5 },
+          };
+        },
+      },
+    },
+  });
+
+  const recovered = await recoveringDriver.nextTurn({
+    model: "gemini-4-hydrogen",
+    systemInstruction: "sys",
+    input: [
+      userStep("first"),
+      { type: "thought", text: "signed", signature: "bad-sig" },
+      { type: "model_output", content: [{ type: "text", text: "ok" }] },
+      userStep("second"),
+    ],
+  });
+  assert.equal(attempts, 2);
+  assert.equal(recovered.text, "recovered");
+
+  // 3. Plain HTML upstream body falls back to readable stripped text when SDK message is opaque httpMeta
+  const html502: any = new Error('502 API error occurred: {"httpMeta":{"response":{},"request":{}}}');
+  html502.status = 502;
+  html502.body = "<html><body><h1>502 Bad Gateway</h1><p>Upstream timeout</p></body></html>";
+  const normalized502: any = normalizeGeminiApiError(html502);
+  assert.equal(normalized502.status, 502);
+  assert.match(normalized502.message, /^Gemini API error \(502\): 502 Bad Gateway Upstream timeout$/);
+
+  // 4. AbortError passes through untouched
+  const abortErr = new Error("aborted");
+  abortErr.name = "AbortError";
+  assert.equal(normalizeGeminiApiError(abortErr), abortErr);
 });

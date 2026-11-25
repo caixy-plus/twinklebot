@@ -220,7 +220,19 @@ export function MessageGroup({
       className={`msg-group ${isUser ? "is-user" : "is-bot"}${isActionsOpen ? " is-actions-open" : ""}`}
       data-seq={item.seq !== undefined ? String(item.seq) : undefined}
       data-client-source={isUser && item.clientSource?.deviceKind ? item.clientSource.deviceKind : undefined}
+      data-channel-source={isUser && item.channelMeta?.channel ? item.channelMeta.channel : undefined}
     >
+      {isUser && item.channelMeta && (
+        <div
+          className="msg-channel-source-tag"
+          title={item.channelMeta.senderId || item.channelMeta.chatId || undefined}
+        >
+          <span>
+            {item.channelMeta.channel === "feishu-bot" ? "来自飞书" : "来自 Telegram"}
+            {item.channelMeta.accountLabel ? ` · ${item.channelMeta.accountLabel}` : ""}
+          </span>
+        </div>
+      )}
       {!isUser && isGroup && item.botName && (
         <div className="msg-speaker-header">
           <AvatarNode avatar={resolvedSpeakerAvatar} />

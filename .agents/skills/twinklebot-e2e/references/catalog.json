@@ -395,6 +395,7 @@
         "src/agent/prompt-loader.ts",
         "src/agent/prompts/*.md",
         "src/agent/scheduler.ts",
+        "src/shared/cron.ts",
         "src/lib/file-attachments.ts",
         "src/lib/ws-server.ts",
         "src/server/routes/media-files.ts",
@@ -502,7 +503,7 @@
           "priority": "P1",
           "featureTier": "F2",
           "difficulty": "D2",
-          "title": "右侧人设保存、Bot 专属记忆 UI 启停开关注入/剥离 Prompt、例行定时任务 UI 弹窗 CRUD 与到期自动唤醒执行",
+          "title": "右侧人设保存、Bot 专属记忆 UI 启停开关注入/剥离 Prompt、例行定时任务 UI 弹窗 CRUD(含 5 段 Cron 表达式校验/实时预览/schedule-cron-v1)与到期自动唤醒执行",
           "module": "RightInspector / Memories / Scheduler"
         }
       ]
@@ -584,8 +585,8 @@
           "priority": "P1",
           "featureTier": "F2",
           "difficulty": "D2",
-          "title": "KimiCU / MCP 全面板 UI 与安全闭环(PI-013)：未安装检测态、JSON配置错误校验、保存并重连、重新握手、工具芯片、截图回传、env脱敏与反自控",
-          "module": "MCP Client & UI (kimi-cu)"
+          "title": "KimiCU / MCP 全面板与多实例对话渠道(飞书/TG + 6位配对码 + 对话式配置)闭环：MCP配置重连/env脱敏/反自控、多Bot渠道CRUD/Webhook隔离、skill_configure_channel、channel-multi-bot-pairing-v1 与配对审批流",
+          "module": "MCP Client & Multi-Bot Channels"
         }
       ]
     },

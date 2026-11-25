@@ -76,14 +76,14 @@
 | **P1** | `P1-MSG-03` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Attachments & File Delivery | 三入口附件上传(选文件/粘贴图片/舞台拖拽) + 筹码移除 + FileAttachmentCard 下载与缺失置灰 |
 | **P1** | `P1-MSG-04` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | HTML/SVG Sandboxed Preview | MarkupPreviewCard HTML/SVG 实时沙盒预览、无 allow-same-origin 隔离与全屏三档视口切换 |
 | **P1** | `P1-SYNC-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Realtime Transport / Multi-Tab Sync | 双桌面标签页实时同步 & 首连 /ws 失败自动降级 SSE(/api/events) + billing_updated 通道取证 |
-| **P1** | `P1-INSP-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | RightInspector / Memories / Scheduler | 右侧人设保存、Bot 专属记忆 UI 启停开关注入/剥离 Prompt、例行定时任务 UI 弹窗 CRUD 与到期自动唤醒执行 |
+| **P1** | `P1-INSP-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | RightInspector / Memories / Scheduler | 右侧人设保存、Bot 专属记忆 UI 启停开关注入/剥离 Prompt、例行定时任务 UI 弹窗 CRUD(含 5 段 Cron 表达式校验/实时预览/schedule-cron-v1)与到期自动唤醒执行 |
 | **P1** | `P1-SKILL-01` | `F2×D1` | `test/e2e/p1-skills-mail-and-mcp.e2e.ts` | Skills Store | 技能商店搜索/空搜索态/分类筛选/已添加入口/内置常驻标签禁删(400)、遮罩关闭与一键创建「邮箱管家」模板 Bot |
 | **P1** | `P1-SKILL-02` | `F2×D1` | `test/e2e/p1-skills-mail-and-mcp.e2e.ts` | Custom Skills | 自定义 SKILL.md 全 UI 生命周期(新建/校验/YAML预览/搜索/启停开关/内联编辑重命名/删除确认)与 Agent custom_skill_manage 全动作 |
 | **P1** | `P1-SKILL-03` | `F2×D2` | `test/e2e/p1-skills-mail-and-mcp.e2e.ts` | Mail Integration (Custom Mail) | 通用邮箱表单全交互(域名预设/手动改Host保护/密码显隐/协议端口联动/测试/发自测信/两级返回) + Agent 查账号/收读/草稿确认发信 |
 | **P1** | `P1-SKILL-04` | `F2×D2` | `test/e2e/p1-skills-mail-and-mcp.e2e.ts` | Mail Multi-Account & Diagnostics | 多邮箱账号全流程(PI-013)：新增第2账号、设为默认、单账号测试成功/认证失败诊断、内联编辑留空保密、POP3收读、删除单账号与兼容路由 |
 | **P1** | `P1-SKILL-05` | `F2×D2` | `test/e2e/p1-skills-mail-and-mcp.e2e.ts` | QQ Mail UI & Conversational Config | QQ邮箱专用表单(PI-013：16位授权码提示/短码校验/显隐/高级协议切换) + 对话式 skill_configure_mail 全动作与缺密凭据卡脱敏 |
 | **P1** | `P1-SKILL-06` | `F2×D2` | `test/e2e/p1-skills-mail-and-mcp.e2e.ts` | Skill Uninstall & Credential Cleanup | 技能安装/卸载确认 UI(PI-013)：商店添加、管理页/详情页移除取消、卸载保留加密凭据与勾选清除凭据边界 |
-| **P1** | `P1-SKILL-07` | `F2×D2` | `test/e2e/p1-skills-mail-and-mcp.e2e.ts` | MCP Client & UI (kimi-cu) | KimiCU / MCP 全面板 UI 与安全闭环(PI-013)：未安装检测态、JSON配置错误校验、保存并重连、重新握手、工具芯片、截图回传、env脱敏与反自控 |
+| **P1** | `P1-SKILL-07` | `F2×D2` | `test/e2e/p1-skills-mail-and-mcp.e2e.ts` | MCP Client & Multi-Bot Channels | KimiCU / MCP 全面板与多实例对话渠道(飞书/TG + 6位配对码 + 对话式配置)闭环：MCP配置重连/env脱敏/反自控、多Bot渠道CRUD/Webhook隔离、skill_configure_channel、channel-multi-bot-pairing-v1 与配对审批流 |
 | **P1** | `P1-ROUTE-01` | `F2×D2` | `test/e2e/p1-routing-billing-and-mobile.e2e.ts` | Providers & Failover Router | 多供应商 UI/API CRUD(含 PATCH/测速/启停/4档绑定/删除重平衡/vertex 400) + 429(冷却)/404(永久屏蔽)自动无感故障转移 |
 | **P1** | `P1-ROUTE-02` | `F2×D2` | `test/e2e/p1-routing-billing-and-mobile.e2e.ts` | Smart Router v2 | 智能路由 UI(开关/三档模式/预算上限)、关闭 smartRouter 退回规则、route_escalate(think/visual + cap=2 封顶)与 route-stats 落盘 |
 | **P1** | `P1-ROUTE-03` | `F2×D2` | `test/e2e/p1-routing-billing-and-mobile.e2e.ts` | Image Generation & SVG Fallback | AI 生图(API + Live Agent generate_image 自动嵌入 & SVG 降级) + /api/images/convert 全格式(png/jpg/webp/pdf/dataBase64/越权403/422) |

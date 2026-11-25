@@ -107,6 +107,143 @@ function isGeminiInvalidArgumentError(err: unknown): boolean {
   );
 }
 
+function extractErrorDetailsFromPayload(payload: unknown): {
+  code?: number;
+  status?: string;
+  message?: string;
+} | null {
+  if (!payload) return null;
+  let parsed: any = payload;
+  if (typeof payload === "string") {
+    const trimmed = payload.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        return null;
+      }
+    } else {
+      return null;
+    }
+  }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const errObj = item.error && typeof item.error === "object" ? item.error : item;
+    const msg =
+      typeof errObj.message === "string"
+        ? errObj.message.trim()
+        : typeof errObj.detail === "string"
+          ? errObj.detail.trim()
+          : "";
+    const statusText = typeof errObj.status === "string" ? errObj.status.trim() : "";
+    const rawCode = Number(errObj.code);
+    const code = Number.isFinite(rawCode) && rawCode > 0 ? rawCode : undefined;
+    if (msg) {
+      return {
+        ...(code !== undefined ? { code } : {}),
+        ...(statusText ? { status: statusText } : {}),
+        message: msg,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Unwraps real upstream error messages hidden on `err.body` / `err.cause.body`
+ * when `@google/genai` receives array-wrapped JSON errors (e.g. `[{"error": {...}}]`)
+ * or non-standard bodies and falls back to `API error occurred: {"httpMeta":{...}}`.
+ */
+export function normalizeGeminiApiError(err: unknown): unknown {
+  if (!err || typeof err !== "object") return err;
+  const anyErr = err as Record<string, any>;
+  if (anyErr.name === "AbortError") return err;
+
+  const origMsg = typeof anyErr.message === "string" ? anyErr.message.trim() : "";
+  const rawStatus = Number(
+    anyErr.status ??
+      anyErr.statusCode ??
+      anyErr.cause?.status ??
+      anyErr.cause?.statusCode ??
+      anyErr.rawResponse?.status ??
+      0
+  );
+  const httpStatus = Number.isFinite(rawStatus) && rawStatus > 0 ? rawStatus : undefined;
+
+  const candidates: unknown[] = [anyErr.body, anyErr.cause?.body];
+  if (
+    anyErr.error &&
+    typeof anyErr.error === "object" &&
+    !("httpMeta" in anyErr.error && Object.keys(anyErr.error).length === 1)
+  ) {
+    candidates.push(anyErr.error);
+  }
+  if (anyErr.cause?.error && typeof anyErr.cause.error === "object") {
+    candidates.push(anyErr.cause.error);
+  }
+
+  let extracted: { code?: number; status?: string; message?: string } | null = null;
+  for (const cand of candidates) {
+    extracted = extractErrorDetailsFromPayload(cand);
+    if (extracted?.message) break;
+  }
+
+  const hasOpaqueHttpMetaMsg =
+    /API error occurred/i.test(origMsg) && /httpMeta/i.test(origMsg);
+
+  if (!extracted?.message && hasOpaqueHttpMetaMsg) {
+    const rawText = [anyErr.body, anyErr.cause?.body]
+      .find((b): b is string => typeof b === "string" && b.trim().length > 0)
+      ?.trim();
+    if (rawText) {
+      const cleaned = rawText
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 300);
+      if (cleaned) {
+        extracted = { message: cleaned };
+      }
+    }
+  }
+
+  if (!extracted?.message) {
+    return err;
+  }
+
+  if (!hasOpaqueHttpMetaMsg && origMsg && origMsg.includes(extracted.message)) {
+    return err;
+  }
+
+  const effectiveCode = httpStatus ?? extracted.code;
+  const tagParts = [
+    effectiveCode !== undefined ? String(effectiveCode) : "",
+    extracted.status || "",
+  ].filter(Boolean);
+  const formattedMsg =
+    tagParts.length > 0
+      ? `Gemini API error (${tagParts.join(" ")}): ${extracted.message}`
+      : `Gemini API error: ${extracted.message}`;
+
+  const wrapped: any = new Error(formattedMsg, { cause: err });
+  wrapped.name =
+    typeof anyErr.name === "string" && anyErr.name ? anyErr.name : "GeminiApiError";
+  if (effectiveCode !== undefined) {
+    wrapped.status = effectiveCode;
+    wrapped.statusCode = effectiveCode;
+  }
+  if (extracted.status) wrapped.apiStatus = extracted.status;
+  if (anyErr.code !== undefined) wrapped.code = anyErr.code;
+  if (anyErr.body !== undefined) wrapped.body = anyErr.body;
+  else if (anyErr.cause?.body !== undefined) wrapped.body = anyErr.cause.body;
+  if (anyErr.headers !== undefined) wrapped.headers = anyErr.headers;
+  if (anyErr.contentType !== undefined) wrapped.contentType = anyErr.contentType;
+  if (anyErr.rawResponse !== undefined) wrapped.rawResponse = anyErr.rawResponse;
+  return wrapped;
+}
+
 function normalizeTextParts(content: any): any[] {
   if (typeof content === "string") {
     return content ? [{ type: "text", text: content }] : [];
@@ -474,18 +611,22 @@ export function createGeminiDriver({
   const isCustomClient = Boolean(client);
 
   async function invokeCreate(params: any, signal?: AbortSignal, perCallTimeoutMs = 0) {
-    if (!isCustomClient && perCallTimeoutMs > 0 && typeof AbortSignal?.timeout === "function") {
-      const timeoutSig = AbortSignal.timeout(perCallTimeoutMs);
-      const combined =
-        signal && typeof AbortSignal?.any === "function"
-          ? AbortSignal.any([signal, timeoutSig])
-          : timeoutSig;
-      return aiClient.interactions.create(params, { signal: combined });
+    try {
+      if (!isCustomClient && perCallTimeoutMs > 0 && typeof AbortSignal?.timeout === "function") {
+        const timeoutSig = AbortSignal.timeout(perCallTimeoutMs);
+        const combined =
+          signal && typeof AbortSignal?.any === "function"
+            ? AbortSignal.any([signal, timeoutSig])
+            : timeoutSig;
+        return await aiClient.interactions.create(params, { signal: combined });
+      }
+      if (signal) {
+        return await aiClient.interactions.create(params, { signal });
+      }
+      return await aiClient.interactions.create(params);
+    } catch (err) {
+      throw normalizeGeminiApiError(err);
     }
-    if (signal) {
-      return aiClient.interactions.create(params, { signal });
-    }
-    return aiClient.interactions.create(params);
   }
 
   return {

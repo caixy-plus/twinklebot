@@ -6,6 +6,7 @@ import { inferImageMimeType } from "../model.js";
 import { registerEphemeralSecret } from "../tools.js";
 import { findDuplicateMemory, hasExplicitMemoryIntent } from "../memory-extractor.js";
 import { computeInitialNextRun } from "../scheduler.js";
+import { describeCronExpression, parseCronExpression } from "../../shared/cron.js";
 import { buildSessionCostSummary } from "../pricing.js";
 import { updateBotComputer } from "../../lib/bot-computer-updater.js";
 import {
@@ -45,6 +46,7 @@ import {
 } from "../../lib/mail-accounts.js";
 import { MAX_BOT_HOPS, getInstalledSkillIds } from "./declarations.js";
 import { resolveBotByRef } from "./collab-tools.js";
+import { summarizeChannelStatusForBot } from "../../lib/channel-integrations.js";
 
 export const UNHANDLED_BOT_TOOL = Symbol.for("twinklebot.unhandled_bot_tool");
 
@@ -74,6 +76,7 @@ export async function handleSystemBotTool(
     model,
     executor,
     fetchImpl,
+    getChannelStatus,
     config = {},
     senderSessionId,
     senderBot,
@@ -361,6 +364,7 @@ export async function handleSystemBotTool(
           title: s.title || "",
           scheduleLabel: s.scheduleLabel || "每天 10:00",
           repeat: s.repeat || "daily",
+          ...(s.cron ? { cron: s.cron } : {}),
           prompt: s.prompt || "",
           nextRunAt: s.nextRunAt || null,
           lastRunAt: s.lastRunAt || null,
@@ -417,19 +421,33 @@ export async function handleSystemBotTool(
             error: "创建例行任务需要提供 title（任务名称）与 prompt（到点执行的指令）",
           };
         }
-        const repeat = ["daily", "hourly", "weekly", "once"].includes(args.repeat)
+        const rawCron = typeof args.cron === "string" ? args.cron.trim() : "";
+        const validRepeats = ["daily", "hourly", "weekly", "cron", "once"];
+        const repeat = validRepeats.includes(args.repeat)
           ? args.repeat
-          : "daily";
+          : rawCron
+            ? "cron"
+            : "daily";
+        let normalizedCron = "";
+        if (repeat === "cron") {
+          const parsedCron = parseCronExpression(rawCron);
+          if (!parsedCron.ok) {
+            return { ok: false, error: parsedCron.error };
+          }
+          normalizedCron = parsedCron.normalized;
+        }
         const defaultLabel =
-          repeat === "hourly"
-            ? "每小时"
-            : repeat === "weekly"
-              ? `每周 ${args.time || "10:00"}`
-              : repeat === "once"
-                ? args.time
-                  ? `单次 ${args.time}`
-                  : "单次执行"
-                : `每天 ${args.time || "10:00"}`;
+          repeat === "cron"
+            ? describeCronExpression(normalizedCron)
+            : repeat === "hourly"
+              ? "每小时"
+              : repeat === "weekly"
+                ? `每周 ${args.time || "10:00"}`
+                : repeat === "once"
+                  ? args.time
+                    ? `单次 ${args.time}`
+                    : "单次执行"
+                  : `每天 ${args.time || "10:00"}`;
         const scheduleLabel =
           String(args.schedule_label || "").trim() || defaultLabel;
         const nextRunAt = computeInitialNextRun({
@@ -437,6 +455,7 @@ export async function handleSystemBotTool(
           scheduleLabel,
           time: args.time,
           delayMinutes: args.delay_minutes,
+          cron: normalizedCron,
         });
 
         const item = {
@@ -445,6 +464,7 @@ export async function handleSystemBotTool(
           title,
           scheduleLabel,
           repeat,
+          ...(repeat === "cron" ? { cron: normalizedCron } : {}),
           prompt,
           nextRunAt,
           enabled: args.enabled !== false,
@@ -495,32 +515,50 @@ export async function handleSystemBotTool(
           };
         }
 
-        const nextRepeat = ["daily", "hourly", "weekly", "once"].includes(args.repeat)
+        const validRepeats = ["daily", "hourly", "weekly", "cron", "once"];
+        const hasCronArg = typeof args.cron === "string" && args.cron.trim().length > 0;
+        const nextRepeat = validRepeats.includes(args.repeat)
           ? args.repeat
-          : prev.repeat || "daily";
+          : hasCronArg
+            ? "cron"
+            : prev.repeat || "daily";
+        let normalizedCron = "";
+        if (nextRepeat === "cron") {
+          const rawCron = String(args.cron !== undefined ? args.cron : prev.cron || "").trim();
+          const parsedCron = parseCronExpression(rawCron);
+          if (!parsedCron.ok) {
+            return { ok: false, error: parsedCron.error };
+          }
+          normalizedCron = parsedCron.normalized;
+        }
         const nextLabel =
           args.schedule_label !== undefined
-            ? String(args.schedule_label).trim() || prev.scheduleLabel
-            : args.time
-              ? nextRepeat === "daily"
-                ? `每天 ${args.time}`
-                : `${prev.scheduleLabel || ""}`
-              : prev.scheduleLabel;
+            ? String(args.schedule_label).trim() ||
+              (nextRepeat === "cron" ? describeCronExpression(normalizedCron) : prev.scheduleLabel)
+            : nextRepeat === "cron" && (args.cron !== undefined || prev.repeat !== "cron")
+              ? describeCronExpression(normalizedCron)
+              : args.time
+                ? nextRepeat === "daily"
+                  ? `每天 ${args.time}`
+                  : `${prev.scheduleLabel || ""}`
+                : prev.scheduleLabel;
         const shouldRecomputeNextRun =
           args.time !== undefined ||
           args.delay_minutes !== undefined ||
           args.schedule_label !== undefined ||
-          args.repeat !== undefined;
+          args.repeat !== undefined ||
+          args.cron !== undefined;
         const nextRunAt = shouldRecomputeNextRun
           ? computeInitialNextRun({
               repeat: nextRepeat,
               scheduleLabel: nextLabel,
               time: args.time,
               delayMinutes: args.delay_minutes,
+              cron: normalizedCron,
             })
           : prev.nextRunAt;
 
-        const updated = {
+        const updated: Record<string, any> = {
           ...prev,
           ...(args.title ? { title: String(args.title).trim() } : {}),
           ...(args.prompt ? { prompt: String(args.prompt).trim() } : {}),
@@ -529,6 +567,11 @@ export async function handleSystemBotTool(
           nextRunAt,
           ...(args.enabled !== undefined ? { enabled: Boolean(args.enabled) } : {}),
         };
+        if (nextRepeat === "cron") {
+          updated.cron = normalizedCron;
+        } else {
+          delete updated.cron;
+        }
         allSchedules[idx] = updated;
         persistSchedules(allSchedules);
         return {
@@ -967,6 +1010,10 @@ export async function handleSystemBotTool(
             })
           : null;
 
+        const channels = summarizeChannelStatusForBot(
+          typeof getChannelStatus === "function" ? getChannelStatus() : null
+        );
+
         return {
           ok: true,
           action: "status",
@@ -986,6 +1033,7 @@ export async function handleSystemBotTool(
             addedInSkillsStore: installedSkills.includes("kimi-cu"),
             ...(mcpStatus ? { mcpStatus } : {}),
           },
+          channels,
           sessionUsage: usageSummary,
         };
       }

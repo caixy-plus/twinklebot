@@ -262,6 +262,63 @@ export function createServer({
     fetchImpl: billingFetchImpl || fetch,
     onStateChange: () => broadcastSkillsUpdated(),
   });
+  if (runner && typeof runner === "object") {
+    runner.getChannelStatus = () => channelManager.getStatusPayload();
+    runner.channelPairingActions = {
+      listPairings: (filter?: any) => channelManager.listPairings(filter),
+      approvePairing: (code: string, opts?: any) => channelManager.approvePairing(code, opts),
+      rejectPairing: (code: string) => channelManager.rejectPairing(code),
+      setApprovalEnabled: (
+        channelId: any,
+        accountId: string,
+        chatId: string,
+        enabled: boolean
+      ) => channelManager.setApprovalEnabled(channelId, accountId, chatId, enabled),
+      deleteApproval: (channelId: any, accountId: string, chatId: string) =>
+        channelManager.deleteApproval(channelId, accountId, chatId),
+    };
+    runner.channelConfigActions = {
+      ensureInstalled: (channelId: "feishu-bot" | "telegram-bot") => {
+        const current = getInstalledSkills();
+        if (!current.includes(channelId)) {
+          const next = Array.from(new Set([...current, channelId]));
+          store?.writeSettings?.({ installedSkills: next });
+          channelManager.syncFromStore();
+          broadcastSkillsUpdated();
+        }
+        return { ok: true };
+      },
+      upsertAccount: (
+        channelId: "feishu-bot" | "telegram-bot",
+        body: Record<string, any>,
+        optsOrId?: string | { accountId?: string; createNew?: boolean }
+      ) => {
+        const opts =
+          typeof optsOrId === "string"
+            ? { accountId: optsOrId }
+            : optsOrId && typeof optsOrId === "object"
+              ? optsOrId
+              : {};
+        const res = channelManager.upsertAccount(channelId, body, opts);
+        broadcastSkillsUpdated();
+        return res;
+      },
+      deleteAccount: (channelId: "feishu-bot" | "telegram-bot", accountId: string) => {
+        const res = channelManager.deleteAccount(channelId, accountId);
+        broadcastSkillsUpdated();
+        return res;
+      },
+      testChannel: (
+        channelId: "feishu-bot" | "telegram-bot",
+        overrides?: Record<string, any>,
+        accountId?: string
+      ) => channelManager.testChannel(channelId, overrides, accountId),
+      reconnectAccount: (channelId: "feishu-bot" | "telegram-bot", accountId?: string) => {
+        channelManager.reconnectAccount(channelId, accountId);
+        broadcastSkillsUpdated();
+      },
+    };
+  }
 
   function broadcastSkillsUpdated() {
     try {
@@ -285,22 +342,56 @@ export function createServer({
       platform: PLATFORM_SKILLS.map((s) => {
         const isBuiltin = s.builtin !== false;
         const chEntry = channelStatus[s.id];
+        const chAccounts: any[] = Array.isArray(chEntry?.accounts) ? chEntry.accounts : [];
+        const configured = chEntry
+          ? chAccounts.length > 0
+            ? chAccounts.some((a) => Boolean(a?.config?.configured))
+            : Boolean(chEntry.config?.configured)
+          : false;
+        const connected = chEntry
+          ? chAccounts.length > 0
+            ? chAccounts.some((a) => Boolean(a?.runtime?.connected))
+            : Boolean(chEntry.runtime?.connected)
+          : false;
+        const accountCount = chEntry
+          ? chAccounts.length > 0
+            ? chAccounts.filter((a) => Boolean(a?.config?.configured)).length
+            : chEntry.config?.configured
+              ? 1
+              : 0
+          : 0;
+        const hasAnySaved = (cfg: any) =>
+          Boolean(
+            cfg?.configured ||
+              cfg?.hasWebhookSecret ||
+              cfg?.hasVerificationToken ||
+              cfg?.hasEncryptKey
+          );
+        const savedAccountCount = chEntry
+          ? chAccounts.length > 0
+            ? chAccounts.filter((a) => hasAnySaved(a?.config)).length
+            : hasAnySaved(chEntry.config)
+              ? 1
+              : 0
+          : 0;
+        const pendingPairingCount = chEntry
+          ? chAccounts.reduce(
+              (sum, a) =>
+                sum + (Array.isArray(a?.config?.pendingPairings) ? a.config.pendingPairings.length : 0),
+              0
+            )
+          : 0;
         return {
           ...s,
           installed: isBuiltin ? true : installed.includes(s.id),
           removable: !isBuiltin,
           ...(chEntry
             ? {
-                configured: Boolean(chEntry.config?.configured),
-                connected: Boolean(chEntry.runtime?.connected),
-                accountCount: chEntry.config?.configured ? 1 : 0,
-                savedAccountCount:
-                  chEntry.config?.configured ||
-                  chEntry.config?.hasWebhookSecret ||
-                  chEntry.config?.hasVerificationToken ||
-                  chEntry.config?.hasEncryptKey
-                    ? 1
-                    : 0,
+                configured,
+                connected,
+                accountCount,
+                savedAccountCount,
+                pendingPairingCount,
               }
             : {}),
         };

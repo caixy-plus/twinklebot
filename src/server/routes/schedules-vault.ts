@@ -21,6 +21,7 @@ import {
   sendJson,
 } from "../http-utils.js";
 import { computeInitialNextRun } from "../../agent/scheduler.js";
+import { describeCronExpression, parseCronExpression } from "../../shared/cron.js";
 
 export async function handleSchedulesVaultRoutes(
   req: http.IncomingMessage,
@@ -72,14 +73,26 @@ export async function handleSchedulesVaultRoutes(
               });
             }
             const list = ctx.store?.readSchedules?.() || [];
-            const repeat = body.repeat || "daily";
-            const scheduleLabel = body.scheduleLabel || "每天 10:00";
+            const rawCron = typeof body.cron === "string" ? body.cron.trim() : "";
+            const repeat = body.repeat || (rawCron ? "cron" : "daily");
+            let normalizedCron = "";
+            if (repeat === "cron") {
+              const parsed = parseCronExpression(rawCron);
+              if (!parsed.ok) {
+                return sendJson(res, 400, { error: parsed.error });
+              }
+              normalizedCron = parsed.normalized;
+            }
+            const scheduleLabel =
+              String(body.scheduleLabel || "").trim() ||
+              (repeat === "cron" ? describeCronExpression(normalizedCron) : "每天 10:00");
             const item = {
               id: crypto.randomUUID(),
               sessionId: body.sessionId,
               title: String(body.title).trim(),
               scheduleLabel,
               repeat,
+              ...(repeat === "cron" ? { cron: normalizedCron } : {}),
               prompt: String(body.prompt).trim(),
               nextRunAt:
                 body.nextRunAt ||
@@ -88,6 +101,7 @@ export async function handleSchedulesVaultRoutes(
                   scheduleLabel,
                   time: body.time,
                   delayMinutes: body.delayMinutes,
+                  cron: normalizedCron,
                 }),
               enabled: body.enabled !== false,
               createdAt: new Date().toISOString(),
@@ -117,7 +131,71 @@ export async function handleSchedulesVaultRoutes(
             } catch {
               return sendJson(res, 400, { error: "invalid json" });
             }
-            list[idx] = { ...list[idx], ...body, id: sid };
+            const prev = list[idx];
+            const nextRepeat = String(
+              body?.repeat !== undefined ? body.repeat : body?.cron ? "cron" : prev.repeat || "daily"
+            ).trim();
+            let normalizedCron = "";
+            if (nextRepeat === "cron") {
+              const rawCron = String(
+                body?.cron !== undefined ? body.cron : prev.cron || ""
+              ).trim();
+              const parsed = parseCronExpression(rawCron);
+              if (!parsed.ok) {
+                return sendJson(res, 400, { error: parsed.error });
+              }
+              normalizedCron = parsed.normalized;
+            }
+            const nextLabel =
+              body?.scheduleLabel !== undefined
+                ? String(body.scheduleLabel).trim() ||
+                  (nextRepeat === "cron"
+                    ? describeCronExpression(normalizedCron)
+                    : prev.scheduleLabel || "每天 10:00")
+                : nextRepeat === "cron" &&
+                    (body?.cron !== undefined || prev.repeat !== "cron") &&
+                    (!prev.scheduleLabel || prev.scheduleLabel === "每天 10:00")
+                  ? describeCronExpression(normalizedCron)
+                  : prev.scheduleLabel;
+            const prevNextMs = prev.nextRunAt ? Date.parse(prev.nextRunAt) : NaN;
+            const enablingStale =
+              body?.enabled === true &&
+              prev.enabled === false &&
+              (Number.isNaN(prevNextMs) || prevNextMs <= Date.now());
+            const timingChanged =
+              body?.repeat !== undefined ||
+              body?.cron !== undefined ||
+              body?.scheduleLabel !== undefined ||
+              body?.time !== undefined ||
+              body?.delayMinutes !== undefined ||
+              enablingStale;
+            const nextRunAt =
+              body?.nextRunAt !== undefined
+                ? body.nextRunAt
+                : timingChanged
+                  ? computeInitialNextRun({
+                      repeat: nextRepeat,
+                      scheduleLabel: nextLabel,
+                      time: body?.time,
+                      delayMinutes: body?.delayMinutes,
+                      cron: normalizedCron,
+                    })
+                  : prev.nextRunAt;
+
+            const updated: Record<string, any> = {
+              ...prev,
+              ...body,
+              id: sid,
+              repeat: nextRepeat,
+              scheduleLabel: nextLabel,
+              nextRunAt,
+            };
+            if (nextRepeat === "cron") {
+              updated.cron = normalizedCron;
+            } else {
+              delete updated.cron;
+            }
+            list[idx] = updated;
             ctx.store?.writeSchedules?.(list);
             ctx.runner?.broadcastGlobal?.({
               type: "schedules_updated",

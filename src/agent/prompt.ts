@@ -42,7 +42,7 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
     const schedLines = botSchedules
       .map(
         (s: any) =>
-          `- [${s.enabled !== false ? "enabled" : "paused"}] ${s.title} (${s.scheduleLabel || s.repeat || "daily"}, ID: \`${s.id}\`): ${s.prompt}`
+          `- [${s.enabled !== false ? "enabled" : "paused"}] ${s.title} (${s.scheduleLabel || s.repeat || "daily"}${s.cron ? `, cron: ${s.cron}` : ""}, ID: \`${s.id}\`): ${s.prompt}`
       )
       .join("\n");
     sections.push(

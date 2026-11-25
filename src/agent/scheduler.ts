@@ -1,3 +1,5 @@
+import { getNextCronDate, parseCronExpression } from "../shared/cron.js";
+
 export function extractHourMinute(text = ""): { hour: number; minute: number } | null {
   const m = String(text || "").match(/(?:^|\D)([01]?\d|2[0-3]):([0-5]\d)(?:\D|$)/);
   if (!m) return null;
@@ -10,17 +12,28 @@ export function computeInitialNextRun(
     scheduleLabel = "",
     time = "",
     delayMinutes,
+    cron = "",
   }: {
     repeat?: string;
     scheduleLabel?: string;
     time?: string;
     delayMinutes?: number;
+    cron?: string;
   } = {},
   fromDate = new Date()
 ): string {
   const delayNum = Number(delayMinutes);
   if (delayMinutes != null && Number.isFinite(delayNum) && delayNum > 0) {
     return new Date(fromDate.getTime() + delayNum * 60_000).toISOString();
+  }
+
+  const rawCron = String(cron || "").trim();
+  if ((repeat === "cron" || rawCron) && rawCron) {
+    const parsed = parseCronExpression(rawCron);
+    if (parsed.ok) {
+      const next = getNextCronDate(parsed.normalized, fromDate);
+      if (next) return next.toISOString();
+    }
   }
 
   const rawTime = String(time || "").trim();
@@ -62,8 +75,13 @@ export function computeInitialNextRun(
 export function computeNextRun(
   repeat: string,
   fromDate = new Date(),
-  scheduleLabel = ""
+  scheduleLabel = "",
+  cron = ""
 ): string | null {
+  if (repeat === "cron" && cron) {
+    const nextCron = getNextCronDate(cron, fromDate);
+    return nextCron ? nextCron.toISOString() : null;
+  }
   const next = new Date(fromDate.getTime());
   const hm = extractHourMinute(scheduleLabel);
   if (repeat === "hourly") {
@@ -129,7 +147,8 @@ export function createScheduler({
         const nextIso = computeNextRun(
           item.repeat,
           new Date(now),
-          item.scheduleLabel
+          item.scheduleLabel,
+          item.cron
         );
         if (nextIso) {
           item.nextRunAt = nextIso;
