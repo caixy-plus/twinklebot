@@ -52,6 +52,14 @@ test("Android manifest and network security config allow LAN cleartext & multica
   assert.ok(qrPluginJava.includes('@CapacitorPlugin'));
   assert.ok(qrPluginJava.includes('name = "QrScanner"'));
   assert.ok(qrPluginJava.includes("ScanOptions"));
+  assert.ok(qrPluginJava.includes("PortraitCaptureActivity.class"));
+  assert.ok(manifest.includes(".PortraitCaptureActivity"));
+
+  const portraitActivityJava = fs.readFileSync(
+    path.join(ROOT, "android/app/src/main/java/com/twinklebot/mobile/PortraitCaptureActivity.java"),
+    "utf8"
+  );
+  assert.ok(portraitActivityJava.includes("extends CaptureActivity"));
 
   const mainActivityJava = fs.readFileSync(
     path.join(ROOT, "android/app/src/main/java/com/twinklebot/mobile/MainActivity.java"),

@@ -56,6 +56,7 @@ public class QrScannerPlugin extends Plugin {
     private void launchScanner(PluginCall call) {
         String prompt = call.getString("prompt", "");
         ScanOptions options = new ScanOptions();
+        options.setCaptureActivity(PortraitCaptureActivity.class);
         options.setDesiredBarcodeFormats(ScanOptions.QR_CODE);
         options.setBeepEnabled(false);
         options.setOrientationLocked(true);
