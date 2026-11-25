@@ -1,3 +1,5 @@
+import { t as translateKey } from "/shared/i18n.js";
+import { isMobileAppTarget } from "../mobile-bridge.js";
 import { isMobileViewport } from "../mobile-ui.js";
 import {
   createInitialNetworkHealth,
@@ -10,10 +12,9 @@ import {
 import {
   getActiveLocale,
   resolveLocalizedAccountName,
-  tr,
 } from "./i18n.js";
 
-export type ActiveAccountKind = "local" | "lan" | "cloud";
+export type ActiveAccountKind = "local" | "lan" | "cloud" | "none";
 
 const RECOVERED_VISIBLE_MS = 2500;
 const RECOVERED_COOLDOWN_MS = 15_000;
@@ -48,6 +49,10 @@ export function clearNetworkMonitorTimers() {
   consecutiveHttpFailures = 0;
 }
 
+export function isMobileAccountEnvironment(s: AppState = getState()): boolean {
+  return Boolean(s?.isMobileClient) || isMobileAppTarget();
+}
+
 export function getActiveAccountMeta(
   s: AppState = getState(),
   localeOverride?: "zh-CN" | "en"
@@ -57,26 +62,53 @@ export function getActiveAccountMeta(
   hasOtherAccounts: boolean;
 } {
   const accounts = Array.isArray(s.accountsState?.accounts) ? s.accountsState.accounts : [];
-  const activeAcc = accounts.find((a) => a.id === s.accountsState?.activeAccountId);
+  const isMobileEnv = isMobileAccountEnvironment(s);
+  const activeAcc = accounts.find((a) => a.id === s.accountsState?.activeAccountId) || null;
   const rawType = activeAcc?.type;
   const type: ActiveAccountKind =
-    rawType === "cloud" ? "cloud" : rawType === "lan" ? "lan" : "local";
+    rawType === "cloud"
+      ? "cloud"
+      : rawType === "lan"
+        ? "lan"
+        : rawType === "local"
+          ? isMobileEnv
+            ? "none"
+            : "local"
+          : isMobileEnv
+            ? "none"
+            : "local";
 
   const locale = localeOverride || getActiveLocale();
-  const label = resolveLocalizedAccountName(
-    activeAcc ? { ...activeAcc, type } : { type },
-    locale,
-    locale === "en"
-      ? type === "cloud"
-        ? "Cloud Account"
-        : "Local Account"
-      : tr(type === "cloud" ? "net.cloudAccount" : "net.localAccount")
-  );
+  const fallbackLabel =
+    type === "cloud"
+      ? translateKey("net.cloudAccount", locale)
+      : type === "lan"
+        ? translateKey("gate.lanWorkspaceLabel", locale)
+        : type === "none"
+          ? translateKey("mobile.nodeDisconnected", locale)
+          : translateKey("net.localAccount", locale);
+
+  const label =
+    type === "none"
+      ? fallbackLabel
+      : resolveLocalizedAccountName(
+          activeAcc ? { ...activeAcc, type } : { type },
+          locale,
+          fallbackLabel
+        );
+
+  const visibleAccounts = isMobileEnv
+    ? accounts.filter((a) => a && a.type !== "local")
+    : accounts;
+  const hasOtherAccounts =
+    activeAcc && !(isMobileEnv && activeAcc.type === "local")
+      ? visibleAccounts.some((a) => a.id !== activeAcc.id)
+      : visibleAccounts.length > 0;
 
   return {
     type,
     label,
-    hasOtherAccounts: accounts.length > 1,
+    hasOtherAccounts,
   };
 }
 
@@ -96,7 +128,21 @@ export function isRemoteAccountOffline(s: AppState = getState()): boolean {
 
 export function shouldShowAccountDisconnectedGate(s: AppState = getState()): boolean {
   if (s.updateState?.coreSwitchInProgress) return false;
-  return isRemoteAccountOffline(s);
+  const isMobileEnv = isMobileAccountEnvironment(s);
+  const meta = getActiveAccountMeta(s);
+  if (isMobileEnv && !isRemoteAccountType(meta.type)) {
+    return true;
+  }
+  if (isRemoteAccountOffline(s)) return true;
+  if (
+    typeof window !== "undefined" &&
+    isMobileViewport() &&
+    !/^(127\.0\.0\.1|localhost|::1|\[::1\])$/i.test(window.location.hostname || "") &&
+    (s.networkHealth?.status === "offline" || Boolean(s.networkHealth?.browserOffline))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function getNetworkThresholds(mobile = isMobileViewport()) {
@@ -466,7 +512,36 @@ export function dismissWeakNetworkBanner() {
   }
 }
 
+export function markActiveAccountOffline(reason = "unreachable") {
+  if (getState().updateState?.coreSwitchInProgress) return;
+  const meta = getActiveAccountMeta();
+  const browserOff = typeof navigator !== "undefined" && navigator.onLine === false;
+  clearNetworkMonitorTimers();
+  patchNetworkHealth({
+    status: "offline",
+    transport: "none",
+    nextRetryAt: null,
+    browserOffline: browserOff,
+    reason: browserOff ? "browser_offline" : reason,
+  });
+  if (meta.type === "lan") {
+    setState({ lanNodeOffline: true });
+  }
+}
+
 export function resetNetworkHealthForAccountSwitch() {
   clearNetworkMonitorTimers();
-  setState({ networkHealth: createInitialNetworkHealth() });
+  const browserOff = typeof navigator !== "undefined" && navigator.onLine === false;
+  const base = createInitialNetworkHealth();
+  setState({
+    networkHealth: browserOff
+      ? {
+          ...base,
+          status: "offline",
+          browserOffline: true,
+          reason: "browser_offline",
+          updatedAt: Date.now(),
+        }
+      : base,
+  });
 }

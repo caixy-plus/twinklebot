@@ -354,3 +354,83 @@ test("Issue #4: silent reconnects, weak->online settling, and rapid recovery coo
     "Late pre-recovery HTTP timeouts must not pop AccountDisconnectedGate while WS pong is fresh"
   );
 });
+
+test("Mobile client never exposes local account, locks gate on unconfigured/offline/502/401, and probes before unlocking", async (t) => {
+  const ssr = await import(pathToFileURL(SSR_BUNDLE_PATH).href);
+  const prevFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = prevFetch;
+    ssr.clearNetworkMonitorTimers();
+    ssr.disconnectRealtimeTransport();
+  });
+
+  // 1. Mobile with empty accounts -> gate locked in setup mode without any local account
+  const emptyMobileHtml = ssr.renderAppToStaticMarkup({
+    isMobileClient: true,
+    accountsState: { activeAccountId: "", accounts: [] },
+  });
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+  assert.ok(emptyMobileHtml.includes('data-account-gate-open="true"'));
+  assert.ok(emptyMobileHtml.includes('data-account-gate-mode="setup"'));
+  assert.equal(emptyMobileHtml.includes('data-account-gate-switch-id="local"'), false);
+
+  // 2. Mobile offline with ghost local entry in state -> local never appears in gate switch list
+  const mobileWithGhostLocalHtml = ssr.renderAppToStaticMarkup({
+    isMobileClient: true,
+    accountsState: {
+      activeAccountId: "lan-1",
+      accounts: [
+        { id: "local", type: "local", name: "本地账号", baseUrl: "" },
+        { id: "lan-1", type: "lan", name: "办公室 Mac", baseUrl: "http://192.168.1.10:3230" },
+        { id: "cloud-1", type: "cloud", name: "云端主账号", baseUrl: "https://cloud.example.com" },
+      ],
+    },
+    lanNodeOffline: true,
+  });
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+  assert.equal(mobileWithGhostLocalHtml.includes('data-account-gate-switch-id="local"'), false);
+  assert.equal(mobileWithGhostLocalHtml.includes("本地账号 · 始终可用"), false);
+  assert.ok(mobileWithGhostLocalHtml.includes('data-account-gate-switch-id="cloud-1"'));
+
+  // 3. Probe-before-unlock: switching from gate to an unreachable account keeps gate locked
+  globalThis.fetch = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as any;
+  const switchFail = await ssr.switchAccountFromGate("cloud-1");
+  assert.equal(switchFail.ok, false);
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+  assert.equal(ssr.getState().accountsState.activeAccountId, "lan-1");
+
+  // 4. Gateway 502 and remote 401 mark mobile remote account offline instead of reporting ok
+  ssr.resetStoreForTest({
+    isMobileClient: true,
+    accountsState: {
+      activeAccountId: "cloud-1",
+      accounts: [
+        { id: "cloud-1", type: "cloud", name: "云端主账号", baseUrl: "https://cloud.example.com" },
+      ],
+    },
+    activeBaseUrl: "https://cloud.example.com",
+    accountEpoch: 40,
+  });
+  globalThis.fetch = (async () => new Response("Bad Gateway", { status: 502 })) as any;
+  await ssr.apiFetch("/api/system/health");
+  assert.equal(ssr.getState().networkHealth.status, "offline");
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+
+  ssr.resetStoreForTest({
+    isMobileClient: true,
+    accountsState: {
+      activeAccountId: "cloud-1",
+      accounts: [
+        { id: "cloud-1", type: "cloud", name: "云端主账号", baseUrl: "https://cloud.example.com" },
+      ],
+    },
+    activeBaseUrl: "https://cloud.example.com",
+    accountEpoch: 41,
+  });
+  globalThis.fetch = (async () => new Response("Unauthorized", { status: 401 })) as any;
+  await ssr.apiFetch("/api/system/health");
+  assert.equal(ssr.getState().networkHealth.status, "offline");
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+});

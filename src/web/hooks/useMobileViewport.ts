@@ -80,6 +80,10 @@ export function useMobileViewport(chatStageRef: RefObject<HTMLElement | null>) {
       // the disconnected workspace; if inline LAN pairing is open, close pairing first,
       // otherwise minimize the app cleanly.
       if (shouldShowAccountDisconnectedGate(s)) {
+        if (s.confirmDialog.open) {
+          resolveConfirmDialog(false);
+          return;
+        }
         if (s.mobilePairModalOpen) {
           setState({ mobilePairModalOpen: false });
           return;

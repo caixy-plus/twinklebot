@@ -407,12 +407,21 @@ function scheduleTransportReconnect(epoch: number, reason: string) {
 export function disconnectRealtimeTransport() {
   setRealtimeConnectedMarker(false);
   clearHeartbeatTimers();
+  if (runtimeRefs.wsConnectTimeoutTimer) {
+    clearTimeout(runtimeRefs.wsConnectTimeoutTimer);
+    runtimeRefs.wsConnectTimeoutTimer = null;
+  }
+  if (runtimeRefs.sseConnectTimeoutTimer) {
+    clearTimeout(runtimeRefs.sseConnectTimeoutTimer);
+    runtimeRefs.sseConnectTimeoutTimer = null;
+  }
   if (runtimeRefs.wsReconnectTimer) {
     clearTimeout(runtimeRefs.wsReconnectTimer);
     runtimeRefs.wsReconnectTimer = null;
   }
   if (runtimeRefs.wsSocket) {
     try {
+      runtimeRefs.wsSocket.onopen = null;
       runtimeRefs.wsSocket.onclose = null;
       runtimeRefs.wsSocket.onerror = null;
       runtimeRefs.wsSocket.onmessage = null;
@@ -422,6 +431,9 @@ export function disconnectRealtimeTransport() {
   }
   if (runtimeRefs.eventSource) {
     try {
+      runtimeRefs.eventSource.onopen = null;
+      runtimeRefs.eventSource.onmessage = null;
+      runtimeRefs.eventSource.onerror = null;
       runtimeRefs.eventSource.close();
     } catch {}
     runtimeRefs.eventSource = null;
@@ -434,6 +446,10 @@ export function connectGlobalSse(epoch = getState().accountEpoch) {
     return;
   }
   const cur = getState();
+  if (runtimeRefs.sseConnectTimeoutTimer) {
+    clearTimeout(runtimeRefs.sseConnectTimeoutTimer);
+    runtimeRefs.sseConnectTimeoutTimer = null;
+  }
   if (runtimeRefs.eventSource) {
     try {
       runtimeRefs.eventSource.close();
@@ -451,7 +467,26 @@ export function connectGlobalSse(epoch = getState().accountEpoch) {
   const es = new EventSource(sseUrl);
   runtimeRefs.eventSource = es;
   let sseOpened = false;
+  const connectTimeoutMs = getActiveAccountMeta().type === "lan" ? 5000 : 8000;
+  runtimeRefs.sseConnectTimeoutTimer = setTimeout(() => {
+    runtimeRefs.sseConnectTimeoutTimer = null;
+    if (sseOpened || epoch !== getState().accountEpoch || runtimeRefs.eventSource !== es) return;
+    try {
+      es.onopen = null;
+      es.onmessage = null;
+      es.onerror = null;
+      es.close();
+    } catch {}
+    if (runtimeRefs.eventSource === es) runtimeRefs.eventSource = null;
+    setRealtimeConnectedMarker(false);
+    scheduleTransportReconnect(epoch, "sse_connect_timeout");
+  }, connectTimeoutMs);
+
   es.onopen = () => {
+    if (runtimeRefs.sseConnectTimeoutTimer) {
+      clearTimeout(runtimeRefs.sseConnectTimeoutTimer);
+      runtimeRefs.sseConnectTimeoutTimer = null;
+    }
     if (epoch !== getState().accountEpoch) {
       es.close();
       return;
@@ -479,6 +514,10 @@ export function connectGlobalSse(epoch = getState().accountEpoch) {
     } catch {}
   };
   es.onerror = () => {
+    if (runtimeRefs.sseConnectTimeoutTimer) {
+      clearTimeout(runtimeRefs.sseConnectTimeoutTimer);
+      runtimeRefs.sseConnectTimeoutTimer = null;
+    }
     if (epoch !== getState().accountEpoch) {
       try {
         es.close();
@@ -572,8 +611,29 @@ export function connectRealtimeTransport() {
     const ws = new WebSocket(u.toString());
     runtimeRefs.wsSocket = ws;
     let openedOnce = false;
+    const connectTimeoutMs = getActiveAccountMeta().type === "lan" ? 5000 : 8000;
+    runtimeRefs.wsConnectTimeoutTimer = setTimeout(() => {
+      runtimeRefs.wsConnectTimeoutTimer = null;
+      if (openedOnce || epoch !== getState().accountEpoch || runtimeRefs.wsSocket !== ws) return;
+      try {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        ws.close();
+      } catch {}
+      if (runtimeRefs.wsSocket === ws) runtimeRefs.wsSocket = null;
+      setRealtimeConnectedMarker(false);
+      if (!runtimeRefs.eventSource) {
+        connectGlobalSse(epoch);
+      }
+    }, connectTimeoutMs);
 
     ws.onopen = () => {
+      if (runtimeRefs.wsConnectTimeoutTimer) {
+        clearTimeout(runtimeRefs.wsConnectTimeoutTimer);
+        runtimeRefs.wsConnectTimeoutTimer = null;
+      }
       if (epoch !== getState().accountEpoch) {
         ws.close();
         return;
@@ -646,12 +706,20 @@ export function connectRealtimeTransport() {
     };
 
     ws.onerror = () => {
+      if (runtimeRefs.wsConnectTimeoutTimer) {
+        clearTimeout(runtimeRefs.wsConnectTimeoutTimer);
+        runtimeRefs.wsConnectTimeoutTimer = null;
+      }
       if (!openedOnce && epoch === getState().accountEpoch && !runtimeRefs.eventSource) {
         connectGlobalSse(epoch);
       }
     };
 
     ws.onclose = () => {
+      if (runtimeRefs.wsConnectTimeoutTimer) {
+        clearTimeout(runtimeRefs.wsConnectTimeoutTimer);
+        runtimeRefs.wsConnectTimeoutTimer = null;
+      }
       if (epoch !== getState().accountEpoch) return;
       clearHeartbeatTimers();
       runtimeRefs.wsSocket = null;

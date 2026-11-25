@@ -85,8 +85,12 @@ import {
   getNetworkThresholds,
   handleBrowserOnlineChange,
   inspectNavigatorConnectionHint,
+  isMobileAccountEnvironment,
   isRemoteAccountOffline,
+  isRemoteAccountType,
+  markActiveAccountOffline,
   resetNetworkHealthForAccountSwitch,
+  shouldShowAccountDisconnectedGate,
 } from "./network-monitor.js";
 import {
   checkForAppUpdates,
@@ -2007,15 +2011,21 @@ async function isDesktopSelfTarget(
   return false;
 }
 
+function getAccountsStoreOptions() {
+  return { allowLocal: !isMobileAccountEnvironment(getState()) };
+}
+
 export async function loadAccountsDirectory() {
   const s = getState();
-  const fallbackLocal = isMobileAppTarget()
-    ? ""
-    : s.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "");
+  const storeOpts = getAccountsStoreOptions();
+  const fallbackLocal =
+    storeOpts.allowLocal === false
+      ? ""
+      : s.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "");
   if (typeof window !== "undefined" && window.twinklebotDesktop?.loadAccounts) {
     try {
       const loaded = await window.twinklebotDesktop.loadAccounts();
-      const next = normalizeAccountsState(loaded, fallbackLocal);
+      const next = normalizeAccountsState(loaded, fallbackLocal, storeOpts);
       setState({ accountsState: next });
       return next;
     } catch {}
@@ -2027,22 +2037,24 @@ export async function loadAccountsDirectory() {
   } catch {
     raw = null;
   }
-  const next = normalizeAccountsState(raw, fallbackLocal);
+  const next = normalizeAccountsState(raw, fallbackLocal, storeOpts);
   setState({ accountsState: next });
   return next;
 }
 
 export async function saveAccountsDirectory(nextState: any) {
   const s = getState();
-  const fallbackLocal = isMobileAppTarget()
-    ? ""
-    : s.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "");
-  let normalized = normalizeAccountsState(nextState, fallbackLocal);
+  const storeOpts = getAccountsStoreOptions();
+  const fallbackLocal =
+    storeOpts.allowLocal === false
+      ? ""
+      : s.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "");
+  let normalized = normalizeAccountsState(nextState, fallbackLocal, storeOpts);
   setState({ accountsState: normalized });
   if (typeof window !== "undefined" && window.twinklebotDesktop?.saveAccounts) {
     try {
       const saved = await window.twinklebotDesktop.saveAccounts(normalized);
-      normalized = normalizeAccountsState(saved, fallbackLocal);
+      normalized = normalizeAccountsState(saved, fallbackLocal, storeOpts);
       setState({ accountsState: normalized });
       return normalized;
     } catch {}
@@ -2060,7 +2072,7 @@ export async function saveAccountsDirectory(nextState: any) {
 export async function syncBackendAccountsDirectory(
   opts: { toastForAccountName?: string; removedId?: string } = {}
 ) {
-  if (isMobileAppTarget()) return null;
+  if (isMobileAccountEnvironment(getState())) return null;
   const s = getState();
   const localBase = String(
     s.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "")
@@ -2146,10 +2158,11 @@ export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = 
   });
   if (!ok) return false;
   const curState = getState();
+  const storeOpts = getAccountsStoreOptions();
   const wasActive = acc.id === curState.accountsState.activeAccountId;
-  const next = removeCloudAccount(curState.accountsState, acc.id);
+  const next = removeCloudAccount(curState.accountsState, acc.id, storeOpts);
   await saveAccountsDirectory(next);
-  if (!isMobileAppTarget()) {
+  if (storeOpts.allowLocal !== false) {
     const localBase = String(
       curState.localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "")
     ).replace(/\/+$/, "");
@@ -2161,7 +2174,41 @@ export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = 
     }
   }
   if (wasActive) {
-    if (mobileFallback) {
+    if (storeOpts.allowLocal === false) {
+      if (next.accounts.length > 0) {
+        await switchAccount(next.accounts[0].id);
+      } else {
+        if (runtimeRefs.accountAbortController) {
+          try {
+            runtimeRefs.accountAbortController.abort();
+          } catch {}
+        }
+        disconnectRealtimeTransport();
+        resetNetworkHealthForAccountSwitch();
+        setState((prev) => ({
+          accountEpoch: prev.accountEpoch + 1,
+          activeBaseUrl: "",
+          activeWsUrl: "",
+          activeAuthToken: "",
+          sessions: [],
+          activeMap: {},
+          activeSessionId: null,
+          diagnostics: null,
+          onlineCloudHosts: [],
+          selectedCloudHostId: null,
+          lanNodeOffline: false,
+          lanOfflineModalShown: false,
+          lanOfflineDismissed: false,
+          mobileSheets: {
+            ...prev.mobileSheets,
+            inspectorOpen: false,
+            settingsOpen: false,
+            nodeOpen: false,
+            botEditorOpen: false,
+          },
+        }));
+      }
+    } else if (mobileFallback) {
       if (next.accounts.length > 1) {
         await switchAccount(next.accounts[1].id);
       }
@@ -2169,7 +2216,7 @@ export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = 
       await switchAccount(LOCAL_ACCOUNT_ID);
     }
   }
-  showToast(tr("actions.removedCloudToast", { label }));
+  showToast(isLan ? tr("actions.removedLanToast", { label }) : tr("actions.removedCloudToast", { label }));
   return true;
 }
 
@@ -2179,6 +2226,7 @@ export async function importRemoteAccountFromInput(input: {
   name?: string;
   accountId?: string;
   switchAfter?: boolean;
+  requireReachable?: boolean;
 }) {
   const parsed = parseRelayInvite(input.rawUrlOrInvite);
   const targetUrl = normalizeBaseUrl(parsed?.relayUrl || input.rawUrlOrInvite);
@@ -2192,9 +2240,20 @@ export async function importRemoteAccountFromInput(input: {
     throw new Error(tr("actions.selfConnectForbidden"));
   }
 
+  if (input.requireReachable && typeof navigator !== "undefined" && navigator.onLine === false) {
+    throw new Error(tr("gate.stillOfflineError"));
+  }
+
   const probe = await probeRemoteNodeIdentity(targetUrl, targetToken, { timeoutMs: 4500 });
   if (await isDesktopSelfTarget(targetUrl, probe.instanceId || parsed?.instanceId || "")) {
     throw new Error(tr("actions.selfConnectForbidden"));
+  }
+
+  if (input.requireReachable && !probe.ok) {
+    if (probe.status === 401 || probe.status === 403) {
+      throw new Error(tr("gate.authFailedError", { name: targetName || targetUrl }));
+    }
+    throw new Error(probe.error || tr("actions.accountServerUnreachable"));
   }
 
   const isRemoteLocal = probe.ok
@@ -2202,17 +2261,22 @@ export async function importRemoteAccountFromInput(input: {
     : parsed?.deployEnv === "local";
 
   const curAccounts = getState().accountsState;
+  const storeOpts = getAccountsStoreOptions();
   // All remote / scanned accounts are added cleanly as Cloud Accounts (server deployEnv is tracked internally via nodeDeployEnv).
-  const nextState = upsertCloudAccount(curAccounts, {
-    id: input.accountId || "",
-    baseUrl: targetUrl,
-    authToken: targetToken,
-    name: targetName || probe.hostname || parsed?.hostname || "",
-    instanceId: probe.instanceId || parsed?.instanceId || "",
-    hostname: probe.hostname || parsed?.hostname || "",
-    platform: probe.platform || parsed?.platform || "",
-    nodeDeployEnv: isRemoteLocal ? "local" : "cloud",
-  });
+  const nextState = upsertCloudAccount(
+    curAccounts,
+    {
+      id: input.accountId || "",
+      baseUrl: targetUrl,
+      authToken: targetToken,
+      name: targetName || probe.hostname || parsed?.hostname || "",
+      instanceId: probe.instanceId || parsed?.instanceId || "",
+      hostname: probe.hostname || parsed?.hostname || "",
+      platform: probe.platform || parsed?.platform || "",
+      nodeDeployEnv: isRemoteLocal ? "local" : "cloud",
+    },
+    storeOpts
+  );
 
   const saved = await saveAccountsDirectory(nextState);
   const resolvedId =
@@ -2298,13 +2362,23 @@ export async function generateRelayTemplates(params: Record<string, any>) {
 }
 
 export async function reloadWorkspaceForActiveAccount(epoch = getState().accountEpoch) {
+  const isMobEnv = isMobileAccountEnvironment(getState());
+  const activeMeta = getActiveAccountMeta(getState());
   try {
-    const config = await apiJson("/api/config");
+    const config = await apiJson("/api/config", {
+      ...(isMobEnv && isRemoteAccountType(activeMeta.type)
+        ? { timeoutMs: activeMeta.type === "lan" ? 3000 : 5000, suppressLanOfflineModal: true }
+        : {}),
+    });
     if (epoch !== getState().accountEpoch) return;
     setState({ config });
     setNovncMode(true);
   } catch (err: any) {
     if (err?.code === "STALE_ACCOUNT_EPOCH") return;
+    if (isMobEnv && isRemoteAccountType(activeMeta.type) && epoch === getState().accountEpoch) {
+      markActiveAccountOffline("config_handshake_failed");
+      return;
+    }
     if (epoch !== getState().accountEpoch || getState().lanNodeOffline || isRemoteAccountOffline(getState())) return;
     showToast(tr("actions.configLoadFailed", { error: err.message }));
   }
@@ -2409,11 +2483,99 @@ export async function retryActiveLanConnection(epoch = getState().accountEpoch):
   }
 }
 
-export async function switchAccount(accountId: string, opts: any = {}) {
+export async function switchAccountFromGate(
+  accountId: string
+): Promise<{ ok: boolean; error?: string }> {
   const s = getState();
   const accounts = s.accountsState?.accounts || [];
-  const target = accounts.find((a) => a.id === accountId) || accounts[0];
-  if (!target) return;
+  const target = accounts.find((a) => a.id === accountId);
+  if (!target) {
+    return { ok: false, error: tr("actions.accountServerUnreachable") };
+  }
+  const targetLabel =
+    target.name || target.hostname || target.baseUrl || tr("gate.targetAccountFallback");
+
+  if (target.type === "local" && !isMobileAccountEnvironment(s)) {
+    await switchAccount(target.id);
+    return { ok: true };
+  }
+
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return { ok: false, error: tr("gate.stillOfflineError") };
+  }
+
+  const probeUrl = target.baseUrl || target.relayUrl || "";
+  if (!probeUrl) {
+    return {
+      ok: false,
+      error: tr("gate.switchUnreachableError", {
+        name: targetLabel,
+        reason: tr("actions.accountServerUnreachable"),
+      }),
+    };
+  }
+
+  const probe = await probeRemoteNodeIdentity(probeUrl, target.authToken || "", {
+    timeoutMs: target.type === "lan" ? 3500 : 5000,
+  });
+
+  if (!probe.ok) {
+    if (probe.status === 401 || probe.status === 403) {
+      return {
+        ok: false,
+        error: tr("gate.authFailedError", { name: targetLabel }),
+      };
+    }
+    return {
+      ok: false,
+      error: tr("gate.switchUnreachableError", {
+        name: targetLabel,
+        reason: probe.error || tr("actions.accountServerUnreachable"),
+      }),
+    };
+  }
+
+  await switchAccount(target.id);
+  if (shouldShowAccountDisconnectedGate(getState())) {
+    return {
+      ok: false,
+      error: tr("gate.stillUnreachableError", { label: targetLabel }),
+    };
+  }
+  return { ok: true };
+}
+
+export async function switchAccount(accountId: string, opts: any = {}) {
+  const s = getState();
+  const storeOpts = getAccountsStoreOptions();
+  const isMobEnv = storeOpts.allowLocal === false;
+  const accounts = (s.accountsState?.accounts || []).filter(
+    (a) => !(isMobEnv && a.type === "local")
+  );
+  const target = accounts.find((a) => a.id === accountId) || accounts[0] || null;
+  if (!target) {
+    if (isMobEnv) {
+      if (runtimeRefs.accountAbortController) {
+        try {
+          runtimeRefs.accountAbortController.abort();
+        } catch {}
+      }
+      disconnectRealtimeTransport();
+      resetNetworkHealthForAccountSwitch();
+      setState({
+        activeBaseUrl: "",
+        activeWsUrl: "",
+        activeAuthToken: "",
+        sessions: [],
+        activeMap: {},
+        activeSessionId: null,
+        diagnostics: null,
+        onlineCloudHosts: [],
+        selectedCloudHostId: null,
+      });
+    }
+    return;
+  }
 
   const epoch = s.accountEpoch + 1;
   if (runtimeRefs.accountAbortController) {
@@ -2435,7 +2597,7 @@ export async function switchAccount(accountId: string, opts: any = {}) {
     lanOfflineDismissed: false,
   });
 
-  await saveAccountsDirectory(setActiveAccount(getState().accountsState, target.id));
+  await saveAccountsDirectory(setActiveAccount(getState().accountsState, target.id, storeOpts));
 
   const isCloud = target.type === "cloud";
   const isLan = target.type === "lan";
@@ -2466,7 +2628,7 @@ export async function switchAccount(accountId: string, opts: any = {}) {
     getState().localBackendUrl || (typeof window !== "undefined" ? window.location.origin : "")
   ).replace(/\/+$/, "");
   const shouldActAsHostExecutor = isCloud && target.nodeDeployEnv !== "local";
-  if (!opts.skipRoleSwitch && !isMobileAppTarget() && localBase && /^https?:\/\//i.test(localBase)) {
+  if (!opts.skipRoleSwitch && !isMobEnv && localBase && /^https?:\/\//i.test(localBase)) {
     const roleHeaders: Record<string, string> = { "Content-Type": "application/json" };
     if (getState().localControlToken) {
       roleHeaders["X-Local-Token"] = getState().localControlToken;
@@ -2496,11 +2658,7 @@ export async function switchAccount(accountId: string, opts: any = {}) {
   syncConnectedNodeStatusWithManifest(null);
   closeBotScreenOverlay();
 
-  if (isMobileAppTarget() && target.type === "local" && !target.baseUrl) {
-    setState((prev) => ({
-      mobileSheets: { ...prev.mobileSheets, nodeOpen: true },
-    }));
-    scanAndRenderLanNodes();
+  if (isMobEnv && typeof navigator !== "undefined" && navigator.onLine === false) {
     return;
   }
 
@@ -2608,7 +2766,10 @@ export async function initiateLanPairing(deviceInfo: any) {
       mobilePairFeedback: { text: "", kind: "info" },
     });
     setTimeout(() => {
-      (document.getElementById("mobile-pair-code-input") as HTMLInputElement | null)?.focus();
+      const targetId = shouldShowAccountDisconnectedGate(getState())
+        ? "account-gate-pair-code"
+        : "mobile-pair-code-input";
+      (document.getElementById(targetId) as HTMLInputElement | null)?.focus();
     }, 60);
   } catch (err: any) {
     showToast(tr("actions.pairRequestErrorToast", { error: err.message }));
@@ -2642,14 +2803,18 @@ export async function submitLanPairingCode(code: string) {
     if (!res.ok || !data.deviceToken) {
       throw new Error(data.error || tr("actions.pairVerifyFailed"));
     }
-    const nextState = upsertLanAccount(getState().accountsState, {
-      instanceId: data.instanceId || dev.instanceId,
-      name: data.hostname || dev.hostname || dev.host,
-      hostname: data.hostname || dev.hostname || "",
-      platform: data.platform || dev.platform || "",
-      baseUrl: dev.baseUrl,
-      deviceToken: data.deviceToken,
-    });
+    const nextState = upsertLanAccount(
+      getState().accountsState,
+      {
+        instanceId: data.instanceId || dev.instanceId,
+        name: data.hostname || dev.hostname || dev.host,
+        hostname: data.hostname || dev.hostname || "",
+        platform: data.platform || dev.platform || "",
+        baseUrl: dev.baseUrl,
+        deviceToken: data.deviceToken,
+      },
+      getAccountsStoreOptions()
+    );
     const saved = await saveAccountsDirectory(nextState);
     const added = saved.accounts.find(
       (a: any) =>
@@ -2872,6 +3037,7 @@ export async function bootstrapApp() {
 
   if (isMobileAppTarget()) {
     document.documentElement.dataset.appTarget = "mobile";
+    setState({ isMobileClient: true });
     setScreenOrientation("portrait");
   }
 
@@ -2917,7 +3083,7 @@ export async function bootstrapApp() {
     const activeAcc = (s.accountsState?.accounts || []).find(
       (a) => a.id === s.accountsState?.activeAccountId
     );
-    if (!activeAcc || (activeAcc.type === "local" && !activeAcc.baseUrl)) return;
+    if (!activeAcc || activeAcc.type === "local" || !activeAcc.baseUrl) return;
     try {
       await apiFetch("/api/system/health");
       markLanReachable();
@@ -2950,8 +3116,23 @@ export async function bootstrapApp() {
     applyThemePreference(storedScheme, false);
   }
 
-  const activeId = getState().accountsState?.activeAccountId || LOCAL_ACCOUNT_ID;
-  await switchAccount(activeId, { skipRoleSwitch: activeId === LOCAL_ACCOUNT_ID, silent: true });
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    handleBrowserOnlineChange(false);
+  } else {
+    inspectNavigatorConnectionHint();
+  }
+
+  const isMobEnv = isMobileAccountEnvironment(getState());
+  const activeId =
+    getState().accountsState?.activeAccountId || (isMobEnv ? "" : LOCAL_ACCOUNT_ID);
+  if (activeId) {
+    await switchAccount(activeId, {
+      skipRoleSwitch: activeId === LOCAL_ACCOUNT_ID,
+      silent: true,
+    });
+  } else {
+    await switchAccount("", { skipRoleSwitch: true, silent: true });
+  }
 
   if (!storedLang && getState().settings?.language) {
     applyLanguagePreference(getState().settings.language, false);
@@ -3030,9 +3211,7 @@ export async function bootstrapApp() {
     } catch {}
   }
 
-  if (typeof navigator !== "undefined" && navigator.onLine === false) {
-    handleBrowserOnlineChange(false);
-  } else {
+  if (typeof navigator === "undefined" || navigator.onLine !== false) {
     inspectNavigatorConnectionHint();
   }
 }

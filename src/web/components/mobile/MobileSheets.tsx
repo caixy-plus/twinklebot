@@ -33,6 +33,10 @@ import {
   computeUpdateDecisionKey,
   hasConnectedNodeCapability,
 } from "../../services/ota-updater.js";
+import {
+  isMobileAccountEnvironment,
+  shouldShowAccountDisconnectedGate,
+} from "../../services/network-monitor.js";
 import { useI18n, resolveLocalizedAccountName, resolveLocalizedProfileName } from "../../services/i18n.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import {
@@ -62,7 +66,10 @@ export function MobileSheets() {
   const primarySessionId = useStore((s) => s.primarySessionId);
   const computerStatus = useStore((s) => s.computerStatus);
   const config = useStore((s) => s.config);
+  const isMobileClient = useStore((s) => s.isMobileClient);
   const accountsState = useStore((s) => s.accountsState);
+  const networkHealth = useStore((s) => s.networkHealth);
+  const lanNodeOffline = useStore((s) => s.lanNodeOffline);
   const onlineCloudHosts = useStore((s) => s.onlineCloudHosts);
   const selectedCloudHostId = useStore((s) => s.selectedCloudHostId);
   const lanDiscoveredDevices = useStore((s) => s.lanDiscoveredDevices);
@@ -122,9 +129,20 @@ export function MobileSheets() {
   }, [mobilePairModalOpen]);
 
   // Derived mobile summary info
-  const accounts = accountsState?.accounts || [];
-  const activeAccId = accountsState?.activeAccountId || LOCAL_ACCOUNT_ID;
+  const isMobEnv = isMobileAccountEnvironment({ isMobileClient } as any);
+  const rawAccounts = accountsState?.accounts || [];
+  const accounts = isMobEnv
+    ? rawAccounts.filter((a: any) => a && a.type !== "local")
+    : rawAccounts;
+  const activeAccId = accountsState?.activeAccountId || (isMobEnv ? "" : LOCAL_ACCOUNT_ID);
   const activeAcc = accounts.find((a: any) => a.id === activeAccId) || null;
+  const gateOpen = shouldShowAccountDisconnectedGate({
+    isMobileClient,
+    accountsState,
+    networkHealth,
+    lanNodeOffline,
+    updateState,
+  } as any);
   const isCloudMode = activeAcc?.type === "cloud" || config?.deployEnv === "cloud";
   const displayNodeName = activeAcc
     ? resolveLocalizedAccountName(
@@ -1049,47 +1067,67 @@ export function MobileSheets() {
               <>
                 {pairedLans.map((acc: any) => {
                   const isActive = acc.id === activeAccId;
+                  const accLabel = acc.name || acc.hostname || t("mobile.pairedComputerFallback");
                   return (
-                    <button
-                      key={acc.id}
-                      type="button"
-                      className="mobile-card-row"
-                      onClick={() => {
-                        closeNode();
-                        if (!isActive) switchAccount(acc.id);
-                      }}
-                    >
-                      <div>
+                    <div key={acc.id} className="mobile-card-row">
+                      <button
+                        type="button"
+                        style={{
+                          flex: 1,
+                          textAlign: "left",
+                          background: "transparent",
+                          border: "none",
+                          color: "inherit",
+                          cursor: "pointer",
+                          padding: 0,
+                        }}
+                        onClick={() => {
+                          closeNode();
+                          if (!isActive) switchAccount(acc.id);
+                        }}
+                      >
                         <div className="mobile-card-row-title">
                           <span className="status-dot-inline is-ok" aria-hidden="true" />
-                          {acc.name || acc.hostname || t("mobile.pairedComputerFallback")}
+                          {accLabel}
                         </div>
                         <div className="mobile-card-row-sub">
                           {t("mobile.pairedSub", { url: acc.baseUrl })}
                         </div>
+                      </button>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span>
+                          {isActive ? (
+                            <>
+                              {t("common.current")}{" "}
+                              <UiIcon
+                                name="check"
+                                className="inline-ui-icon inline-status-svg is-ok"
+                                size={13}
+                              />
+                            </>
+                          ) : (
+                            <>
+                              {t("common.switch")}{" "}
+                              <UiIcon
+                                name="chevron-right"
+                                className="inline-ui-icon"
+                                size={13}
+                              />
+                            </>
+                          )}
+                        </span>
+                        <button
+                          type="button"
+                          className="account-remove-btn"
+                          aria-label={t("sidebar.removeAccountAria", { name: accLabel })}
+                          onClick={() =>
+                            confirmAndRemoveCloudAccount(acc, { mobileFallback: true })
+                          }
+                        >
+                          <UiIcon name="x" size={13} />
+                        </button>
                       </div>
-                      <span>
-                        {isActive ? (
-                          <>
-                            {t("common.current")}{" "}
-                            <UiIcon
-                              name="check"
-                              className="inline-ui-icon inline-status-svg is-ok"
-                              size={13}
-                            />
-                          </>
-                        ) : (
-                          <>
-                            {t("common.switch")}{" "}
-                            <UiIcon
-                              name="chevron-right"
-                              className="inline-ui-icon"
-                              size={13}
-                            />
-                          </>
-                        )}
-                      </span>
-                    </button>
+                    </div>
                   );
                 })}
 
@@ -1246,7 +1284,7 @@ export function MobileSheets() {
       </div>
 
       {/* ==================== MOBILE PAIR CODE MODAL ==================== */}
-      <div id="mobile-pair-modal" className="modal-backdrop" hidden={!mobilePairModalOpen}>
+      <div id="mobile-pair-modal" className="modal-backdrop" hidden={!mobilePairModalOpen || gateOpen}>
         <div
           className="compact-dialog"
           role="dialog"

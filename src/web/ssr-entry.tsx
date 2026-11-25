@@ -18,6 +18,7 @@ import {
   refreshActiveAccountConnection,
   reloadWorkspaceForActiveAccount,
   retryActiveLanConnection,
+  switchAccountFromGate,
 } from "./services/actions.js";
 import {
   apiFetch,
@@ -32,7 +33,9 @@ import {
   getActiveAccountMeta,
   getNetworkThresholds,
   handleBrowserOnlineChange,
+  isMobileAccountEnvironment,
   isRemoteAccountOffline,
+  markActiveAccountOffline,
   reportHeartbeatRtt,
   reportHeartbeatTimeout,
   reportHttpOutcome,
@@ -77,7 +80,9 @@ export {
   getState,
   handleBrowserOnlineChange,
   handleRealtimePayload,
+  isMobileAccountEnvironment,
   isRemoteAccountOffline,
+  markActiveAccountOffline,
   markLanReachable,
   probeActiveTransportOnResume,
   reconnectRealtimeNow,
@@ -96,6 +101,7 @@ export {
   runtimeRefs,
   setState,
   shouldShowAccountDisconnectedGate,
+  switchAccountFromGate,
   triggerLanUnreachableFallback,
 };
 

@@ -28,7 +28,7 @@ import {
 import { SessionAvatar } from "../common/AvatarView.js";
 import { UiIcon } from "../common/Icon.js";
 import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
-import { getActiveAccountMeta } from "../../services/network-monitor.js";
+import { getActiveAccountMeta, isMobileAccountEnvironment } from "../../services/network-monitor.js";
 import { useI18n, resolveLocalizedAccountName, resolveLocalizedProfileName } from "../../services/i18n.js";
 
 export function LeftSidebar({
@@ -46,13 +46,15 @@ export function LeftSidebar({
   const primarySessionId = primarySession?.id || null;
   const mobileSearchQuery = useStore((s) => s.mobileSearchQuery);
   const openPopover = useStore((s) => s.openPopover);
+  const isMobileClient = useStore((s) => s.isMobileClient);
   const accountsState = useStore((s) => s.accountsState);
   const settings = useStore((s) => s.settings);
   const lastGlobalUsagePayload = useStore((s) => s.lastGlobalUsagePayload);
   const computerStatus = useStore((s) => s.computerStatus);
   const lanNodeOffline = useStore((s) => s.lanNodeOffline);
   const networkHealth = useStore((s) => s.networkHealth);
-  const activeAccMeta = getActiveAccountMeta({ accountsState } as any);
+  const isMobEnv = isMobileAccountEnvironment({ isMobileClient } as any);
+  const activeAccMeta = getActiveAccountMeta({ isMobileClient, accountsState } as any);
   const effectiveNetStatus =
     activeAccMeta.type === "lan" && lanNodeOffline && networkHealth.status !== "recovered"
       ? "offline"
@@ -72,8 +74,11 @@ export function LeftSidebar({
   const profileColor = String(profile.color || "slate");
   const profileInitial = Array.from(profileName)[0]?.toUpperCase() || "U";
 
-  const activeAccountId = accountsState?.activeAccountId || LOCAL_ACCOUNT_ID;
-  const accounts = accountsState?.accounts || [];
+  const activeAccountId = accountsState?.activeAccountId || (isMobEnv ? "" : LOCAL_ACCOUNT_ID);
+  const rawAccounts = accountsState?.accounts || [];
+  const accounts = isMobEnv
+    ? rawAccounts.filter((a: any) => a && a.type !== "local")
+    : rawAccounts;
 
   const totalTok = Number(lastGlobalUsagePayload?.totalTokens) || 0;
   const estCny = Number(lastGlobalUsagePayload?.estimatedCostCny) || 0;

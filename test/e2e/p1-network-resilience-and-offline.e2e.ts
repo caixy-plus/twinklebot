@@ -485,7 +485,9 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
       const mobileAccounts = {
         activeAccountId: "lan-dead",
         accounts: [
+          { id: "local", type: "local", name: "本地账号", baseUrl: "" },
           { id: "lan-dead", type: "lan", name: "离线局域网电脑", baseUrl: `http://127.0.0.1:${deadPort}`, authToken: "lan-tok" },
+          { id: "cloud-dead", type: "cloud", name: "离线云端节点", baseUrl: `http://127.0.0.1:${deadPort}`, authToken: "bad-tok" },
           { id: "cloud-backup", type: "cloud", name: "备用云端", baseUrl: cloudWs.baseUrl, authToken: cloudToken },
         ],
       };
@@ -513,20 +515,40 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
         15_000
       );
 
-      // Mobile gate exposes refresh, switch to backup cloud, inline add-cloud & inline LAN pair
+      // Mobile gate NEVER renders desktop local account, even if present in legacy storage
+      assert.equal(
+        await mobTab.evalJs<boolean>(`Boolean(document.querySelector('[data-account-gate-switch-id="local"]'))`),
+        false,
+        "Mobile gate must never expose local desktop account"
+      );
+
+      // Mobile gate exposes refresh, switch to backup cloud, inline add-cloud, QR scan & inline LAN pair
       assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#account-gate-refresh-btn'))`), true);
       assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#account-gate-add-cloud-btn'))`), true);
+      assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#account-gate-scan-qr-btn'))`), true);
       assert.equal(await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#account-gate-lan-btn'))`), true);
       assert.equal(
         await mobTab.evalJs<boolean>(`Boolean(document.querySelector('[data-account-gate-switch-id="cloud-backup"]'))`),
         true
       );
 
+      // Clicking another unreachable account keeps gate locked (probe-before-unlock) and displays error feedback
+      await mobTab.click('[data-account-gate-switch-id="cloud-dead"]');
+      await mobTab.waitFor(
+        `Boolean(document.querySelector('#account-gate-feedback')?.classList?.contains('is-error'))`,
+        8000
+      );
+      assert.equal(
+        await mobTab.evalJs<boolean>(`Boolean(document.querySelector('#account-disconnected-gate')?.open)`),
+        true,
+        "Switching to an unreachable account must keep AccountDisconnectedGate open"
+      );
+
       // Inline LAN pair panel opens cleanly inside top-layer gate
       await mobTab.click("#account-gate-lan-btn");
       await mobTab.waitFor(`Boolean(document.querySelector('#account-gate-lan-panel'))`, 4000);
 
-      // Clicking backup cloud account directly switches and dismisses the gate cleanly!
+      // Clicking reachable backup cloud account probes OK, switches, and dismisses the gate cleanly!
       await mobTab.click('[data-account-gate-switch-id="cloud-backup"]');
       await mobTab.waitFor(`!document.querySelector('#account-disconnected-gate')?.open`, 10_000);
       await mobTab.waitFor(`document.documentElement.dataset.realtimeConnected === '1'`, 10_000);
