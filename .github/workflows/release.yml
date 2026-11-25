@@ -427,7 +427,7 @@ jobs:
   publish-full:
     name: Assemble Manifest & Publish Full Release
     needs: [prepare, build-desktop, build-android]
-    if: needs.prepare.outputs.mode == 'full'
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.build-desktop.result == 'success' && needs.build-android.result == 'success' && needs.prepare.outputs.mode == 'full' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

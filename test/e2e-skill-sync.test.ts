@@ -235,6 +235,14 @@ test("GitHub Release workflow and rules enforce interactive E2E level gate (defa
     assert.ok(releaseYml.includes(`- ${level}`), `release.yml must support e2e_level option '${level}'`);
   }
   assert.match(releaseYml, /release-e2e:/, "release.yml must include release-e2e pre-release gate job");
+  const publishFullIdx = releaseYml.indexOf("publish-full:");
+  assert.ok(publishFullIdx >= 0, "release.yml must define publish-full job");
+  const publishFullHead = releaseYml.slice(publishFullIdx, publishFullIdx + 360);
+  assert.match(
+    publishFullHead,
+    /!cancelled\(\)\s*&&\s*needs\.prepare\.result\s*==\s*'success'\s*&&\s*needs\.build-desktop\.result\s*==\s*'success'\s*&&\s*needs\.build-android\.result\s*==\s*'success'/,
+    "publish-full must include !cancelled() so skipped release-e2e ancestor does not suppress publishing"
+  );
 
   const ruleText = fs.readFileSync(
     path.join(PROJECT_ROOT, ".agents", "rules", "twinklebot-e2e-sync.md"),
