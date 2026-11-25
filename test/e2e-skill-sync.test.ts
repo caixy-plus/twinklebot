@@ -243,6 +243,12 @@ test("GitHub Release workflow and rules enforce interactive E2E level gate (defa
     /!cancelled\(\)\s*&&\s*needs\.prepare\.result\s*==\s*'success'\s*&&\s*needs\.build-desktop\.result\s*==\s*'success'\s*&&\s*needs\.build-android\.result\s*==\s*'success'/,
     "publish-full must include !cancelled() so skipped release-e2e ancestor does not suppress publishing"
   );
+  assert.match(releaseYml, /\$ZIPALIGN" -p -f 4/, "release.yml must 4KB-align release APK before apksigner");
+  assert.match(releaseYml, /\$APKSIGNER" verify --verbose/, "release.yml must verify signed release APK");
+  assert.ok(
+    !releaseYml.includes("TwinkleBot-mobile-release-unsigned.apk"),
+    "release.yml must never publish an uninstallable unsigned APK"
+  );
 
   const ruleText = fs.readFileSync(
     path.join(PROJECT_ROOT, ".agents", "rules", "twinklebot-e2e-sync.md"),
