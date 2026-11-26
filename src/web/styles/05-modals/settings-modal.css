@@ -1107,9 +1107,9 @@
 }
 
 .relay-qr-box {
-  width: 148px;
-  height: 148px;
-  padding: 6px;
+  width: 204px;
+  height: 204px;
+  padding: 8px;
   border-radius: 10px;
   background: #ffffff;
   border: 1px solid var(--border-hairline);

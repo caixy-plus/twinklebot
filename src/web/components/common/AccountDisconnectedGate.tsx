@@ -277,7 +277,7 @@ export function AccountDisconnectedGate() {
     try {
       const scanRes = await scanQrCodeNative(t("mobile.qrScanPrompt"));
       if (scanRes.unsupported) {
-        showToast(t("mobile.qrUnsupportedToast"));
+        setFeedback({ text: t("mobile.qrUnsupportedToast"), kind: "error" });
         setSubPanel("add-cloud");
         return;
       }
@@ -285,7 +285,14 @@ export function AccountDisconnectedGate() {
         setFeedback({ text: t("mobile.qrPermissionDeniedToast"), kind: "error" });
         return;
       }
-      if (scanRes.cancelled || !scanRes.ok || !scanRes.content) {
+      if (scanRes.cancelled) {
+        return;
+      }
+      if (!scanRes.ok || !scanRes.content) {
+        setFeedback({
+          text: t("mobile.qrInvalidToast", { error: scanRes.error || t("actions.requestError") }),
+          kind: "error",
+        });
         return;
       }
       const imported = await importRemoteAccountFromInput({

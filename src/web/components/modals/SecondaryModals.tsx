@@ -72,6 +72,7 @@ export function SecondaryModals() {
     bots: [],
     messages: [],
   });
+  const [cloudQrScanning, setCloudQrScanning] = useState(false);
 
   // Schedule modal state
   const [schedTitle, setSchedTitle] = useState("");
@@ -1252,48 +1253,75 @@ export function SecondaryModals() {
                 id="cloud-modal-scan-qr-btn"
                 type="button"
                 className="settings-pill-btn"
+                disabled={cloudQrScanning}
                 onClick={async () => {
-                  const res = await scanQrCodeNative(t("mobile.qrScanPrompt"));
-                  if (res.permissionDenied) {
-                    setState((prev) => ({
-                      cloudAccountModal: {
-                        ...prev.cloudAccountModal,
-                        feedback: t("mobile.qrPermissionDeniedToast"),
-                      },
-                    }));
-                    return;
-                  }
-                  if (!res.ok || !res.content) return;
-                  const parsed = res.content.trim().startsWith("twinklebot://")
-                    ? parseRelayInvite(res.content)
-                    : null;
-                  setState((prev) => ({
-                    cloudAccountModal: {
-                      ...prev.cloudAccountModal,
-                      baseUrl: res.content || prev.cloudAccountModal.baseUrl,
-                      name: parsed?.name || parsed?.hostname || prev.cloudAccountModal.name,
-                      authToken: parsed?.relayToken || prev.cloudAccountModal.authToken,
-                      feedback: "",
-                    },
-                  }));
+                  if (cloudQrScanning) return;
+                  setCloudQrScanning(true);
                   try {
-                    await importRemoteAccountFromInput({
-                      accountId: cloudAccountModal.id.trim(),
-                      rawUrlOrInvite: res.content,
-                      name: cloudAccountModal.name.trim() || parsed?.name || parsed?.hostname || "",
-                      authToken: cloudAccountModal.authToken.trim() || parsed?.relayToken || "",
-                      switchAfter: true,
-                    });
-                    setState((prev) => ({
-                      cloudAccountModal: { ...prev.cloudAccountModal, open: false, feedback: "" },
-                    }));
-                  } catch (err: any) {
+                    const res = await scanQrCodeNative(t("mobile.qrScanPrompt"));
+                    if (res.unsupported) {
+                      setState((prev) => ({
+                        cloudAccountModal: {
+                          ...prev.cloudAccountModal,
+                          feedback: t("mobile.qrUnsupportedToast"),
+                        },
+                      }));
+                      return;
+                    }
+                    if (res.permissionDenied) {
+                      setState((prev) => ({
+                        cloudAccountModal: {
+                          ...prev.cloudAccountModal,
+                          feedback: t("mobile.qrPermissionDeniedToast"),
+                        },
+                      }));
+                      return;
+                    }
+                    if (res.cancelled) return;
+                    if (!res.ok || !res.content) {
+                      setState((prev) => ({
+                        cloudAccountModal: {
+                          ...prev.cloudAccountModal,
+                          feedback: t("mobile.qrInvalidToast", {
+                            error: res.error || t("actions.requestError"),
+                          }),
+                        },
+                      }));
+                      return;
+                    }
+                    const parsed = res.content.trim().startsWith("twinklebot://")
+                      ? parseRelayInvite(res.content)
+                      : null;
                     setState((prev) => ({
                       cloudAccountModal: {
                         ...prev.cloudAccountModal,
-                        feedback: err?.message || t("cloudModal.invalidUrlFallback"),
+                        baseUrl: res.content || prev.cloudAccountModal.baseUrl,
+                        name: parsed?.name || parsed?.hostname || prev.cloudAccountModal.name,
+                        authToken: parsed?.relayToken || prev.cloudAccountModal.authToken,
+                        feedback: "",
                       },
                     }));
+                    try {
+                      await importRemoteAccountFromInput({
+                        accountId: cloudAccountModal.id.trim(),
+                        rawUrlOrInvite: res.content,
+                        name: cloudAccountModal.name.trim() || parsed?.name || parsed?.hostname || "",
+                        authToken: cloudAccountModal.authToken.trim() || parsed?.relayToken || "",
+                        switchAfter: true,
+                      });
+                      setState((prev) => ({
+                        cloudAccountModal: { ...prev.cloudAccountModal, open: false, feedback: "" },
+                      }));
+                    } catch (err: any) {
+                      setState((prev) => ({
+                        cloudAccountModal: {
+                          ...prev.cloudAccountModal,
+                          feedback: err?.message || t("cloudModal.invalidUrlFallback"),
+                        },
+                      }));
+                    }
+                  } finally {
+                    setCloudQrScanning(false);
                   }
                 }}
               >

@@ -470,7 +470,7 @@ export async function handleRelayAndAccountsRoutes(
       ...(lanUrl ? { lanUrl } : {}),
     };
     const inviteUri = encodeRelayInviteUri(payload);
-    const qrSvg = renderQrSvg(inviteUri, { size: 184, margin: 2 });
+    const qrSvg = renderQrSvg(inviteUri, { size: 220, margin: 4 });
     return sendJson(res, 200, {
       ok: true,
       inviteUri,

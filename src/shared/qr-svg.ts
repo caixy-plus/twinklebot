@@ -273,11 +273,20 @@ function createEmptyGrid(size: number) {
   return { modules, reserved, setFixed };
 }
 
-function placeAlignmentPatterns(version: number, reserved: boolean[][], setFixed: (r: number, c: number, dark: boolean) => void) {
+function placeAlignmentPatterns(
+  version: number,
+  size: number,
+  setFixed: (r: number, c: number, dark: boolean) => void
+) {
   const centers = ALIGNMENT_POSITIONS[version] || [];
   for (const r0 of centers) {
     for (const c0 of centers) {
-      if (reserved[r0]?.[c0]) continue;
+      // Skip only the 3 corners overlapping finder patterns (never skip timing-pattern row/col 6!)
+      const overlapsFinder =
+        (r0 <= 8 && c0 <= 8) ||
+        (r0 <= 8 && c0 >= size - 9) ||
+        (r0 >= size - 9 && c0 <= 8);
+      if (overlapsFinder) continue;
       for (let dr = -2; dr <= 2; dr++) {
         for (let dc = -2; dc <= 2; dc++) {
           const isDark = Math.abs(dr) === 2 || Math.abs(dc) === 2 || (dr === 0 && dc === 0);
@@ -420,7 +429,7 @@ export function encodeQrMatrix(text: string, ecLevel: QrErrorCorrection = "L"): 
   const size = version * 4 + 17;
 
   const base = createEmptyGrid(size);
-  placeAlignmentPatterns(version, base.reserved, base.setFixed);
+  placeAlignmentPatterns(version, size, base.setFixed);
   reserveFormatAndVersionAreas(version, size, base.setFixed);
 
   // Place interleaved codewords into zig-zag data positions
@@ -470,10 +479,10 @@ export function encodeQrMatrix(text: string, ecLevel: QrErrorCorrection = "L"): 
 export function renderQrSvg(
   text: string,
   {
-    size = 180,
-    margin = 2,
+    size = 220,
+    margin = 4,
     ecLevel = "L" as QrErrorCorrection,
-    darkColor = "#111827",
+    darkColor = "#000000",
     lightColor = "#ffffff",
   }: {
     size?: number;

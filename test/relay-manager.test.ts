@@ -580,3 +580,281 @@ test("account_manage tool & /api/accounts configure remote/cloud accounts withou
   assert.equal(localRemove.ok, true);
   assert.equal(accountActions.list().length, 1);
 });
+
+test("ISO/IEC 18004 QR encoder round-trip & Reed-Solomon syndromes pass for V1-V16 (including V7+ row/col 6 alignments)", () => {
+  const GF_EXP = new Uint8Array(512);
+  const GF_LOG = new Uint8Array(256);
+  let x = 1;
+  for (let i = 0; i < 255; i++) {
+    GF_EXP[i] = x;
+    GF_LOG[x] = i;
+    x <<= 1;
+    if (x & 0x100) x ^= 0x11d;
+  }
+  for (let i = 255; i < 512; i++) GF_EXP[i] = GF_EXP[i - 255];
+  const gfMul = (a: number, b: number) => (a === 0 || b === 0 ? 0 : GF_EXP[GF_LOG[a] + GF_LOG[b]]);
+
+  const ALIGN_POS: number[][] = [
+    [],
+    [],
+    [6, 18],
+    [6, 22],
+    [6, 26],
+    [6, 30],
+    [6, 34],
+    [6, 22, 38],
+    [6, 24, 42],
+    [6, 26, 46],
+    [6, 28, 50],
+    [6, 30, 54],
+    [6, 32, 58],
+    [6, 34, 62],
+    [6, 26, 46, 66],
+    [6, 26, 48, 70],
+    [6, 26, 50, 74],
+  ];
+  const EC_SPECS: Record<"L" | "M", Array<[number, number, number, number, number]>> = {
+    L: [
+      [0, 0, 0, 0, 0],
+      [7, 1, 19, 0, 0],
+      [10, 1, 34, 0, 0],
+      [15, 1, 55, 0, 0],
+      [20, 1, 80, 0, 0],
+      [26, 1, 108, 0, 0],
+      [18, 2, 68, 0, 0],
+      [20, 2, 78, 0, 0],
+      [24, 2, 97, 0, 0],
+      [30, 2, 116, 0, 0],
+      [18, 2, 68, 2, 69],
+      [20, 4, 81, 0, 0],
+      [24, 2, 92, 2, 93],
+      [26, 4, 107, 0, 0],
+      [30, 3, 115, 1, 116],
+      [22, 5, 87, 1, 88],
+      [24, 5, 98, 1, 99],
+    ],
+    M: [
+      [0, 0, 0, 0, 0],
+      [10, 1, 16, 0, 0],
+      [16, 1, 28, 0, 0],
+      [26, 1, 44, 0, 0],
+      [18, 2, 32, 0, 0],
+      [24, 2, 43, 0, 0],
+      [16, 4, 27, 0, 0],
+      [18, 4, 31, 0, 0],
+      [22, 2, 38, 2, 39],
+      [22, 3, 36, 2, 37],
+      [26, 4, 43, 1, 44],
+      [30, 1, 50, 4, 51],
+      [22, 6, 36, 2, 37],
+      [22, 8, 37, 1, 38],
+      [24, 4, 40, 5, 41],
+      [24, 5, 41, 5, 42],
+      [28, 7, 45, 3, 46],
+    ],
+  };
+
+  const maskFn = (m: number, r: number, c: number): boolean => {
+    switch (m) {
+      case 0: return (r + c) % 2 === 0;
+      case 1: return r % 2 === 0;
+      case 2: return c % 3 === 0;
+      case 3: return (r + c) % 3 === 0;
+      case 4: return (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0;
+      case 5: return ((r * c) % 2) + ((r * c) % 3) === 0;
+      case 6: return (((r * c) % 2) + ((r * c) % 3)) % 2 === 0;
+      default: return (((r + c) % 2) + ((r * c) % 3)) % 2 === 0;
+    }
+  };
+
+  const decodeAndVerify = (text: string, expectedEc: "L" | "M") => {
+    const mat = encodeQrMatrix(text, expectedEc);
+    const n = mat.length;
+    const version = (n - 17) / 4;
+    assert.equal(Number.isInteger(version) && version >= 1 && version <= 16, true);
+
+    // 1. Verify both format copies match
+    const c1 = [
+      mat[8][0], mat[8][1], mat[8][2], mat[8][3], mat[8][4], mat[8][5], mat[8][7], mat[8][8],
+      mat[7][8], mat[5][8], mat[4][8], mat[3][8], mat[2][8], mat[1][8], mat[0][8],
+    ];
+    const c2 = [
+      mat[n - 1][8], mat[n - 2][8], mat[n - 3][8], mat[n - 4][8], mat[n - 5][8], mat[n - 6][8], mat[n - 7][8],
+      mat[8][n - 8], mat[8][n - 7], mat[8][n - 6], mat[8][n - 5], mat[8][n - 4], mat[8][n - 3], mat[8][n - 2], mat[8][n - 1],
+    ];
+    let f1 = 0;
+    let f2 = 0;
+    for (let i = 0; i < 15; i++) {
+      f1 = (f1 << 1) | (c1[i] ? 1 : 0);
+      f2 = (f2 << 1) | (c2[i] ? 1 : 0);
+    }
+    assert.equal(f1, f2, `V${version} format copies mismatch`);
+    const unmaskedFmt = f1 ^ 0x5412;
+    const ecBits = (unmaskedFmt >>> 13) & 3;
+    const mask = (unmaskedFmt >>> 10) & 7;
+    assert.equal(ecBits, expectedEc === "M" ? 0 : 1, `V${version} EC level bits mismatch`);
+
+    // 2. Verify reserved patterns including ALL non-finder alignment patterns (including row 6 / col 6)
+    const reserved: boolean[][] = Array.from({ length: n }, () => Array(n).fill(false));
+    const mark = (r: number, c: number) => {
+      if (r >= 0 && c >= 0 && r < n && c < n) reserved[r][c] = true;
+    };
+    for (const [t, l] of [[0, 0], [0, n - 7], [n - 7, 0]]) {
+      for (let dr = -1; dr <= 7; dr++) {
+        for (let dc = -1; dc <= 7; dc++) mark(t + dr, l + dc);
+      }
+    }
+    for (let i = 8; i < n - 8; i++) {
+      assert.equal(mat[6][i], i % 2 === 0, `V${version} horizontal timing mismatch at ${i}`);
+      assert.equal(mat[i][6], i % 2 === 0, `V${version} vertical timing mismatch at ${i}`);
+      mark(6, i);
+      mark(i, 6);
+    }
+    for (const r0 of ALIGN_POS[version]) {
+      for (const c0 of ALIGN_POS[version]) {
+        const overlapsFinder =
+          (r0 <= 8 && c0 <= 8) || (r0 <= 8 && c0 >= n - 9) || (r0 >= n - 9 && c0 <= 8);
+        if (overlapsFinder) continue;
+        for (let dr = -2; dr <= 2; dr++) {
+          for (let dc = -2; dc <= 2; dc++) {
+            const expDark = Math.abs(dr) === 2 || Math.abs(dc) === 2 || (dr === 0 && dc === 0);
+            assert.equal(
+              mat[r0 + dr][c0 + dc],
+              expDark,
+              `V${version} missing/corrupt alignment pattern at (${r0},${c0}) offset (${dr},${dc})`
+            );
+            mark(r0 + dr, c0 + dc);
+          }
+        }
+      }
+    }
+    for (let i = 0; i <= 8; i++) {
+      if (i !== 6) {
+        mark(8, i);
+        mark(i, 8);
+      }
+    }
+    for (let i = 0; i < 8; i++) mark(8, n - 1 - i);
+    for (let i = 0; i < 7; i++) mark(n - 1 - i, 8);
+    assert.equal(mat[n - 8][8], true, `V${version} dark module must be set`);
+    mark(n - 8, 8);
+
+    if (version >= 7) {
+      let v1 = 0;
+      let v2 = 0;
+      for (let i = 0; i < 18; i++) {
+        const r = Math.floor(i / 3);
+        const c = n - 11 + (i % 3);
+        if (mat[r][c]) v1 |= 1 << i;
+        if (mat[c][r]) v2 |= 1 << i;
+        mark(r, c);
+        mark(c, r);
+      }
+      assert.equal(v1, v2, `V${version} version info copies mismatch`);
+      assert.equal(v1 >>> 12, version, `V${version} version number mismatch`);
+    }
+
+    // 3. Unmask & extract codewords in zig-zag order
+    const bits: number[] = [];
+    let upward = true;
+    for (let right = n - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (let i = 0; i < n; i++) {
+        const r = upward ? n - 1 - i : i;
+        for (let dc = 0; dc < 2; dc++) {
+          const c = right - dc;
+          if (reserved[r][c]) continue;
+          bits.push(mat[r][c] !== maskFn(mask, r, c) ? 1 : 0);
+        }
+      }
+      upward = !upward;
+    }
+    const [ecPerBlock, g1Blocks, g1Data, g2Blocks, g2Data] = EC_SPECS[expectedEc][version];
+    const expectedTotalCw = g1Blocks * g1Data + g2Blocks * g2Data + (g1Blocks + g2Blocks) * ecPerBlock;
+    const rawCw: number[] = [];
+    for (let i = 0; i + 8 <= bits.length; i += 8) {
+      let b = 0;
+      for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
+      rawCw.push(b);
+    }
+    assert.equal(rawCw.length, expectedTotalCw, `V${version} codeword count mismatch`);
+
+    // 4. De-interleave blocks & verify Reed-Solomon syndromes === 0
+    const totalBlocks = g1Blocks + g2Blocks;
+    const dataBlocks: number[][] = Array.from({ length: totalBlocks }, () => []);
+    const ecBlocks: number[][] = Array.from({ length: totalBlocks }, () => []);
+    let idx = 0;
+    const maxData = Math.max(g1Data, g2Data);
+    for (let i = 0; i < maxData; i++) {
+      for (let b = 0; b < totalBlocks; b++) {
+        const cap = b < g1Blocks ? g1Data : g2Data;
+        if (i < cap) dataBlocks[b].push(rawCw[idx++]);
+      }
+    }
+    for (let i = 0; i < ecPerBlock; i++) {
+      for (let b = 0; b < totalBlocks; b++) {
+        ecBlocks[b].push(rawCw[idx++]);
+      }
+    }
+    assert.equal(idx, expectedTotalCw);
+
+    for (let b = 0; b < totalBlocks; b++) {
+      const fullBlock = [...dataBlocks[b], ...ecBlocks[b]];
+      for (let k = 0; k < ecPerBlock; k++) {
+        const alpha = GF_EXP[k];
+        let syn = 0;
+        for (const coeff of fullBlock) syn = gfMul(syn, alpha) ^ coeff;
+        assert.equal(syn, 0, `V${version} block ${b} RS syndrome S_${k} non-zero`);
+      }
+    }
+
+    // 5. Decode Byte-mode UTF-8 payload
+    const dataStream = dataBlocks.flat();
+    const dataBits: number[] = [];
+    for (const byteVal of dataStream) {
+      for (let j = 7; j >= 0; j--) dataBits.push((byteVal >>> j) & 1);
+    }
+    const readBits = (offset: number, len: number) => {
+      let v = 0;
+      for (let i = 0; i < len; i++) v = (v << 1) | dataBits[offset + i];
+      return v;
+    };
+    assert.equal(readBits(0, 4), 0b0100, "Must use Byte mode");
+    const countBits = version <= 9 ? 8 : 16;
+    const byteLen = readBits(4, countBits);
+    const outBytes = new Uint8Array(byteLen);
+    let bitCursor = 4 + countBits;
+    for (let i = 0; i < byteLen; i++) {
+      outBytes[i] = readBits(bitCursor, 8);
+      bitCursor += 8;
+    }
+    assert.equal(new TextDecoder().decode(outBytes), text, `V${version} decoded payload mismatch`);
+    return version;
+  };
+
+  const realisticInvite = encodeRelayInviteUri({
+    v: 1,
+    instanceId: "win-desktop-abcdef0123456789",
+    hostname: "DESKTOP-TWINKLE-WIN11",
+    platform: "win32",
+    deployEnv: "local",
+    relayUrl: "https://bot-relay.example.com",
+    relayToken: "tok_0123456789abcdef0123456789abcdef",
+    lanUrl: "http://192.168.10.88:3230",
+  });
+
+  assert.equal(decodeAndVerify("HELLO WORLD", "L"), 1);
+  assert.equal(decodeAndVerify("HELLO WORLD", "M"), 1);
+  assert.equal(decodeAndVerify("A".repeat(120), "L"), 6);
+  assert.equal(decodeAndVerify("A".repeat(145), "L"), 7);
+  assert.equal(decodeAndVerify("A".repeat(145), "M"), 8);
+  const inviteVer = decodeAndVerify(realisticInvite, "L");
+  assert.ok(inviteVer >= 10 && inviteVer <= 13, `Expected V10-V13 for invite, got V${inviteVer}`);
+  assert.ok(decodeAndVerify(realisticInvite, "M") >= 11);
+  assert.ok(decodeAndVerify("R".repeat(480), "L") >= 14);
+
+  const svg = renderQrSvg(realisticInvite);
+  const n = inviteVer * 4 + 17;
+  assert.ok(svg.includes(`viewBox="0 0 ${n + 8} ${n + 8}"`), "Default quiet zone must be 4 modules");
+  assert.ok(svg.includes('fill="#000000"'));
+});

@@ -188,7 +188,13 @@ export function MobileSheets() {
         showToast(t("mobile.qrPermissionDeniedToast"));
         return;
       }
-      if (scanRes.cancelled || !scanRes.ok || !scanRes.content) {
+      if (scanRes.cancelled) {
+        return;
+      }
+      if (!scanRes.ok || !scanRes.content) {
+        showToast(
+          t("mobile.qrInvalidToast", { error: scanRes.error || t("actions.requestError") })
+        );
         return;
       }
       const imported = await importRemoteAccountFromInput({
