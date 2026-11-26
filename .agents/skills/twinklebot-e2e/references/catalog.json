@@ -394,6 +394,8 @@
         "src/agent/prompt.ts",
         "src/agent/prompt-loader.ts",
         "src/agent/prompts/*.md",
+        "src/agent/knowledge-loader.ts",
+        "src/agent/knowledge/*.md",
         "src/agent/scheduler.ts",
         "src/shared/cron.ts",
         "src/lib/file-attachments.ts",
@@ -432,7 +434,7 @@
           "priority": "P1",
           "featureTier": "F2",
           "difficulty": "D2",
-          "title": "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list / self_update",
+          "title": "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list / self_update / app_knowledge",
           "module": "Built-in System Bot Tools"
         },
         {

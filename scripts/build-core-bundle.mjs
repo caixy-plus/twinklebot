@@ -110,6 +110,18 @@ export async function buildCoreBundle({
     }
   }
 
+  // 2b. Stage Self-Knowledge Docs alongside server-bundle.mjs (`MODULE_DIR/knowledge/*.md`)
+  const knowledgeSrc = path.join(PROJECT_ROOT, "src", "agent", "knowledge");
+  const knowledgeDest = path.join(resolvedOut, "knowledge");
+  if (fs.existsSync(knowledgeSrc)) {
+    fs.mkdirSync(knowledgeDest, { recursive: true });
+    for (const name of fs.readdirSync(knowledgeSrc)) {
+      if (name.endsWith(".md")) {
+        fs.copyFileSync(path.join(knowledgeSrc, name), path.join(knowledgeDest, name));
+      }
+    }
+  }
+
   // 3. Stage executor/executor.py (`WORKER_ROOT/executor/executor.py`) for automatic VM SHA-256 sync
   const execSrc = path.join(PROJECT_ROOT, "executor", "executor.py");
   const execDestDir = path.join(resolvedOut, "executor");

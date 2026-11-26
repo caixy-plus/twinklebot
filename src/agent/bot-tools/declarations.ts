@@ -1135,6 +1135,41 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
       required: ["action"],
     },
   },
+  {
+    type: "function",
+    name: "app_knowledge",
+    description:
+      "Query TwinkleBot's built-in product self-knowledge documentation (`list` | `search` | `read`) covering Desktop/Mobile UI navigation, all 8 Settings tabs, shortcuts, interactive cards, accounts/Remote Relay, skills/channels, dual-computer & memory workflows. Always call this before answering user questions about where a TwinkleBot setting/button lives or how an App feature works.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "search", "read"],
+          description:
+            "'list' returns available topic IDs and summaries; 'search' matches keywords or user questions; 'read' reads a full topic or filtered ## section.",
+        },
+        query: {
+          type: "string",
+          description: "Search keywords or question (used when action='search').",
+        },
+        topic: {
+          type: "string",
+          description:
+            "Topic ID (e.g. 'ui-navigation-desktop', 'ui-navigation-mobile', 'chat-cards-and-workflows', 'accounts-relay-and-updates', 'skills-channels-and-vault', 'computers-and-memory') for action='read'.",
+        },
+        section: {
+          type: "string",
+          description: "Optional ## section heading keyword when action='read'.",
+        },
+        limit: {
+          type: "number",
+          description: "Optional max results (1-6, default 3) for action='search'.",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 export const SKILL_NOT_ADDED_ERROR = "该技能当前未添加，请先在左下角「技能商店」添加后再配置。";

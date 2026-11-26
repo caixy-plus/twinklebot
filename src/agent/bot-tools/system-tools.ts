@@ -50,6 +50,11 @@ import { resolveBotByRef } from "./collab-tools.js";
 import { summarizeChannelStatusForBot } from "../../lib/channel-integrations.js";
 import { createSelfUpdateActions } from "../../lib/self-update.js";
 import { resolveProjectRoot } from "../../lib/project-root.js";
+import {
+  listKnowledgeTopics,
+  readKnowledgeTopic,
+  searchKnowledge,
+} from "../knowledge-loader.js";
 import { createAccountDirectoryActions } from "../../server/routes/relay.js";
 
 export const UNHANDLED_BOT_TOOL = Symbol.for("twinklebot.unhandled_bot_tool");
@@ -1226,6 +1231,36 @@ export async function handleSystemBotTool(
         });
       }
       return { ok: false, error: `unknown self_update action: ${action}` };
+    }
+
+    case "app_knowledge": {
+      const action = String(args.action || "list").trim();
+      if (action === "list") {
+        return {
+          ok: true,
+          action: "list",
+          topics: listKnowledgeTopics(),
+        };
+      }
+      if (action === "search") {
+        const res = searchKnowledge(String(args.query || ""), {
+          limit: typeof args.limit === "number" ? args.limit : 3,
+        });
+        return {
+          action: "search",
+          ...res,
+        };
+      }
+      if (action === "read") {
+        const res = readKnowledgeTopic(String(args.topic || ""), {
+          section: typeof args.section === "string" ? args.section : undefined,
+        });
+        return {
+          action: "read",
+          ...res,
+        };
+      }
+      return { ok: false, error: `unknown app_knowledge action: ${action}` };
     }
 
     default:
