@@ -1583,6 +1583,10 @@ export function openSettingsModal(
     void refreshLocalUpdateMetadata();
   } else if (tab === "usage" || tab === "computer") {
     refreshUsageAndHealth();
+  } else if (tab === "relay") {
+    refreshSystemDiagnostics(false);
+    void refreshRelayStatus().catch(() => {});
+    void fetchRelayInvite().catch(() => {});
   } else if (tab === "vault") {
     refreshVault();
   } else if (tab === "updates") {
@@ -1591,7 +1595,7 @@ export function openSettingsModal(
   }
 }
 
-type AppStateTab = "general" | "models" | "computer" | "permissions" | "vault" | "usage" | "updates";
+type AppStateTab = "general" | "relay" | "models" | "computer" | "permissions" | "vault" | "usage" | "updates";
 
 export function openBotUsageModal(sessionId?: string | null) {
   const prev = getState();

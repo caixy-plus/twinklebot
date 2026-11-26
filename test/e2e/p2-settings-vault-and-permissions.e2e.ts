@@ -528,14 +528,37 @@ test("P2 Suite 7: Settings General, Compression, Computer/Permissions, Vault, Di
       priority: "P2",
       featureTier: "F3",
       difficulty: "D2",
-      title: "设置·电脑：外网中继(remote-relay-v1)卡片配置保存(/api/relay/config)、二维码配对(/api/relay/invite)、VPS模板(/api/relay/templates)、探活(/api/relay/control|ping)与共享账号目录(/api/accounts)",
-      module: "Settings Computer / Remote Relay",
+      title: "设置·外网中继(remote-relay-v1)：独立菜单(位于通用下方)、样式护栏、配置保存(/api/relay/config)、二维码配对(/api/relay/invite)、VPS模板(/api/relay/templates)、探活(/api/relay/control|ping)与共享账号目录(/api/accounts)",
+      module: "Settings Relay / Remote Relay",
     },
     async () => {
       await chrome!.navigate(ws.baseUrl);
       await chrome!.waitFor(`document.querySelector('#account-usage-pct')?.textContent?.includes('tok')`, 8000);
-      await openSettingsTab("computer");
+      await openSettingsTab("relay");
       await chrome!.waitFor(`Boolean(document.querySelector('#relay-settings-card'))`, 5000);
+
+      // Verify independent "relay" tab sits immediately under "general" and form controls have proper card padding & select borders
+      const relayLayoutCheck = await chrome!.evalJs<{
+        tabs: string[];
+        bodyPaddingLeft: string;
+        selectBorderTopWidth: string;
+        selectHeight: string;
+      }>(`(() => {
+        const tabs = Array.from(document.querySelectorAll('.settings-nav [data-settings-tab]')).map(el => el.getAttribute('data-settings-tab') || '');
+        const body = document.querySelector('#relay-settings-card .relay-card-body');
+        const sel = document.querySelector('#relay-mode-select');
+        return {
+          tabs,
+          bodyPaddingLeft: body ? getComputedStyle(body).paddingLeft : '0px',
+          selectBorderTopWidth: sel ? getComputedStyle(sel).borderTopWidth : '0px',
+          selectHeight: sel ? getComputedStyle(sel).height : '0px',
+        };
+      })()`);
+      assert.equal(relayLayoutCheck.tabs[0], "general");
+      assert.equal(relayLayoutCheck.tabs[1], "relay", "Remote Relay tab must sit directly under General");
+      assert.notEqual(relayLayoutCheck.bodyPaddingLeft, "0px", "Relay card body must have horizontal padding");
+      assert.notEqual(relayLayoutCheck.selectBorderTopWidth, "0px", "Relay select must render bordered input chrome");
+      assert.equal(relayLayoutCheck.selectHeight, "36px", "Relay select height must align with text inputs");
 
       await chrome!.selectOption("#relay-mode-select", "external");
       await chrome!.fill("#relay-public-url-input", ws.baseUrl);

@@ -885,6 +885,7 @@ export const EN_MESSAGES: Record<I18nKey, string> = {
   "settings.tabGeneral": "General",
   "settings.tabModels": "Models & Routing",
   "settings.tabPermissions": "Permissions",
+  "settings.tabRelay": "Remote Relay",
   "settings.tabUpdates": "About & Diagnostics",
   "settings.tabUsage": "Usage & Billing",
   "settings.tabVault": "Vault",
@@ -1594,7 +1595,6 @@ export const EN_MESSAGES: Record<I18nKey, string> = {
   "mobile.qrInvalidToast": "Invalid TwinkleBot QR code: {error}",
   "mobile.cloudQrAddedToast": "Added Cloud Account \"{name}\" via QR scan",
 
-  "relay.sectionTitle": "Remote Relay",
   "relay.cardTitle": "Remote Access & Tunneling",
   "relay.cardDesc": "Supervise an frpc reverse tunnel or bind your custom public domain for secure mobile/browser access away from LAN.",
   "relay.statusConnected": "Connected",
@@ -1661,4 +1661,6 @@ export const EN_MESSAGES: Record<I18nKey, string> = {
   "relay.templatesCaddyLabel": "Caddyfile Snippet",
   "relay.logsSummary": "Runtime Logs (Redacted · {count} lines)",
   "relay.logsEmpty": "No runtime logs yet",
+  "relay.unavailableTitle": "Remote Relay is unavailable here",
+  "relay.unavailableDesc": "Remote Relay can only be configured on a local desktop host. Enable it on your desktop app, then scan the QR code from mobile or another device.",
 };

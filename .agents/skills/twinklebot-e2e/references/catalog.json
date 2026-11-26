@@ -914,8 +914,8 @@
           "priority": "P2",
           "featureTier": "F3",
           "difficulty": "D2",
-          "title": "设置·电脑：外网中继(remote-relay-v1)卡片配置保存(/api/relay/config)、二维码配对(/api/relay/invite)、VPS模板(/api/relay/templates)、探活(/api/relay/control|ping)与共享账号目录(/api/accounts)",
-          "module": "Settings Computer / Remote Relay"
+          "title": "设置·外网中继(remote-relay-v1)：独立菜单(位于通用下方)、样式护栏、配置保存(/api/relay/config)、二维码配对(/api/relay/invite)、VPS模板(/api/relay/templates)、探活(/api/relay/control|ping)与共享账号目录(/api/accounts)",
+          "module": "Settings Relay / Remote Relay"
         },
         {
           "id": "P2-SSR-01",

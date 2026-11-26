@@ -883,6 +883,7 @@ export const ZH_CN_MESSAGES = {
   "settings.tabGeneral": "通用",
   "settings.tabModels": "模型接入与路由",
   "settings.tabPermissions": "权限",
+  "settings.tabRelay": "外网中继",
   "settings.tabUpdates": "关于与诊断",
   "settings.tabUsage": "用量与账单",
   "settings.tabVault": "保险库",
@@ -1591,7 +1592,6 @@ export const ZH_CN_MESSAGES = {
   "mobile.qrInvalidToast": "未识别到有效的 TwinkleBot 二维码：{error}",
   "mobile.cloudQrAddedToast": "已通过扫码添加云端账号「{name}」",
 
-  "relay.sectionTitle": "外网中继",
   "relay.cardTitle": "外网访问与内网穿透",
   "relay.cardDesc": "托管 frpc 反向隧道或绑定自有公网域名，供手机与外部浏览器在局域网外安全访问当前电脑。",
   "relay.statusConnected": "已连接",
@@ -1658,6 +1658,8 @@ export const ZH_CN_MESSAGES = {
   "relay.templatesCaddyLabel": "Caddyfile 反代片段",
   "relay.logsSummary": "运行日志（已自动脱敏 · 最近 {count} 条）",
   "relay.logsEmpty": "暂无运行日志",
+  "relay.unavailableTitle": "当前环境不支持本机外网中继",
+  "relay.unavailableDesc": "外网中继仅在本机桌面端账号下可用；若需在手机或其他设备访问，请在本机桌面端启用中继后扫码添加为云端账号。",
 } as const;
 
 export type I18nKey = keyof typeof ZH_CN_MESSAGES;

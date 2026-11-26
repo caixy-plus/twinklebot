@@ -425,7 +425,7 @@ export interface AppState {
   // Settings, Billing, Vault, Library, Schedules
   settingsModal: {
     open: boolean;
-    tab: "general" | "models" | "computer" | "permissions" | "vault" | "usage" | "updates";
+    tab: "general" | "relay" | "models" | "computer" | "permissions" | "vault" | "usage" | "updates";
     standaloneBotSessionId: string | null;
     openNewMemoryOnMount: boolean;
   };
