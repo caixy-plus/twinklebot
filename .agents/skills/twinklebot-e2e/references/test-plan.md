@@ -67,7 +67,7 @@
 | **P1** | `P1-BRIDGE-02` | `F1×D3` | `test/e2e/p1-sandbox-electron-and-bridge.e2e.ts` | Cloud↔Host WebSocket Bridge | 云端↔本地 /ws host_rpc_request 跨网宿主机操控(含全 5 工具与环境变量脱敏)及多宿主机切换 |
 | **P1** | `P1-GRP-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Group Coordinator | 群聊协调器 4 项规则：最长前缀优先(@谷歌账号管家 vs @谷歌)、回复优先路由、职责打分选人与 MAX_GROUP_TURNS=3 |
 | **P1** | `P1-COLLAB-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Multi-Bot Collaboration | Agent 跨 Bot 工具链全实测(list_bots/create_bot/send_bot_message/4跳防环/create_bot_group/bot_manage) + 交流胶囊与抽屉 |
-| **P1** | `P1-TOOL-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Built-in System Bot Tools | 内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list |
+| **P1** | `P1-TOOL-01` | `F2×D2` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Built-in System Bot Tools | 内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list / self_update |
 | **P1** | `P1-PROMPT-01` | `F2×D1` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Modular Prompts & Prompt Loader | 模块化 Markdown 系统提示词(PI-001/002/011/014)：5 份模板装配、UI 自认知、跨域 iframe 兜底与动态注入校验 |
 | **P1** | `P1-CARD-01` | `F2×D1` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Interactive ChoiceCard | ChoiceCard 提问卡全模式：单选、多选、多题步进 1/N、自定义输入与插话自动跳过(.is-superseded) |
 | **P1** | `P1-CARD-02` | `F2×D1` | `test/e2e/p1-collab-cards-and-messages.e2e.ts` | Approval Rule Editor / DraftCard | ApprovalCard 自定义规则编辑器(.btn-edit-rule) + DraftCard 内联编辑确认/取消 |

@@ -397,6 +397,7 @@
         "src/agent/scheduler.ts",
         "src/shared/cron.ts",
         "src/lib/file-attachments.ts",
+        "src/lib/self-update.ts",
         "src/lib/ws-server.ts",
         "src/server/routes/media-files.ts",
         "src/server/routes/schedules-vault.ts",
@@ -431,7 +432,7 @@
           "priority": "P1",
           "featureTier": "F2",
           "difficulty": "D2",
-          "title": "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list",
+          "title": "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list / self_update",
           "module": "Built-in System Bot Tools"
         },
         {

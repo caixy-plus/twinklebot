@@ -23,7 +23,7 @@ You MUST execute this automatic analysis + interactive confirmation flow **befor
    ```
 2. **Actively ask the user** (using a multiple-choice question tool if available, or a concise choice prompt) whether to trigger automated E2E testing and which **test level** to run, presenting the smart default first:
    - **`affected+p0` (Recommended Default)**: 本次版本有动到的受影响套件 + P0 核心功能基线（21 项）
-   - **`all`**: 全量自动化测试（P0–P3 全部 14 套件 / 108 项）
+   - **`all`**: 全量自动化测试（P0–P3 全部 14 套件 / 以 `catalog.json` 为准，当前 110 项）
    - **`p0+p1`**: P0 核心 + P1 跨栈与核心业务（67 项）
    - **`p0`**: 仅 P0 核心主链路（21 项）
    - **`affected`**: 仅本次版本改动涉及的受影响套件
@@ -31,6 +31,8 @@ You MUST execute this automatic analysis + interactive confirmation flow **befor
 3. **Honor the chosen level**:
    - Local pre-release verification: `node scripts/run-e2e.mjs --tier=<chosen-level> --since-last-tag` (or `npm run test:e2e:release` for default `affected+p0`).
    - GitHub Actions dispatch: `release.yml` defaults `e2e_level=skip` (build-only; E2E runs locally). Optionally pass `-f e2e_level=<chosen-level>` to run in CI as well.
+4. **Block, Fix & Re-Verify Before Tagging / Publishing**:
+   - In **release gate mode** (when the user explicitly requests a release/build with E2E enabled), any non-`ENV_SKIP` failure (`BUG`) **blocks** pushing release tags or publishing: distinguish true product regressions/races from test-fixture drift, apply the fix, and re-run the affected E2E suite(s) + `npm run typecheck && npm test` to green before continuing the release. (Standalone read-only `/twinklebot-e2e` audits still diagnose and report without modifying business code until confirmed.)
 
 ## 3. Keeping the E2E Catalog Synchronized on Brand-New Features
 When committing genuinely **new** user-facing features (new API route files/endpoints under `src/server/routes/`, new UI components/modals under `src/web/components/`, new bot tools under `src/agent/bot-tools/`, or new `executor/executor.py` endpoints):

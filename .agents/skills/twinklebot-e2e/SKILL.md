@@ -1,7 +1,7 @@
 ---
 name: twinklebot-e2e
 description: >-
-  Run, maintain, and report TwinkleBot's tiered E2E test suite (P0–P3, 14 suites / 108 atomic cases
+  Run, maintain, and report TwinkleBot's tiered E2E test suite (P0–P3, 14 suites / 110 atomic cases
   with 100% 6-dimension coverage across Web Desktop, OrbStack Ubuntu Sandbox, Mobile dist-web,
   Electron, CLI, Landing, and SSR). Use when running targeted or full E2E verification, auditing
   coverage, updating the E2E catalog and tests after adding or modifying features, or generating
@@ -23,8 +23,8 @@ This skill governs how coding agents **run**, **maintain**, and **report** Twink
 
 > **Core Principles**
 > 1. **Silent during small local edits**: Never auto-trigger E2E runs when the user is making small local tweaks or previewing locally. Only run E2E on explicit request (`/twinklebot-e2e ...`) or at the **GitHub Release / version build** boundary.
-> 2. **Interactive GitHub Release Gate (default `affected+p0`)**: Before any GitHub version build (`v*` / `ota-*` tag push or `release.yml` dispatch), auto-inspect impacted suites via `npm run e2e:sync-check -- --since-last-tag` and **actively ask the user** whether to run automated E2E tests and which level to use (`affected+p0` default, `all`, `p0+p1`, `p0`, `affected`, or `skip`).
-> 3. **Targeted first, full on demand**: Never blindly re-run all 108 cases when only a few files changed — use `npm run test:e2e:affected` (or `--suite=<id>` / `--case=<ID>` / `affected+p0` for releases) for fast, high-signal verification.
+> 2. **Interactive GitHub Release Gate (local default `affected+p0`, CI build-only `skip`)**: Before any GitHub version build (`v*` / `ota-*` tag push or `release.yml` dispatch), auto-inspect impacted suites via `npm run e2e:sync-check -- --since-last-tag` and **actively ask the user** whether to run automated E2E tests **locally** and which level to use (`affected+p0` default, `all`, `p0+p1`, `p0`, `affected`, or `skip`). `release.yml` itself defaults `e2e_level=skip` (CI opt-in via workflow input).
+> 3. **Targeted first, full on demand**: Never blindly re-run all 110 cases when only a few files changed — use `npm run test:e2e:affected` (or `--suite=<id>` / `--case=<ID>` / `affected+p0` for releases) for fast, high-signal verification.
 > 4. **Diagnose before modifying**: When asked to test/audit, keep business source code untouched until you produce the diagnostic report and the user confirms what to fix (unless the user explicitly invokes `fix`).
 > 5. **Deterministic offline by default**: All external LLM / IMAP / POP3 / SMTP / MCP / OTA / static site endpoints use local loopback fixtures (`test/helpers/e2e-protocol-fixtures.ts`). Never hit live public APIs unless `TWINKLEBOT_E2E_LIVE=1` is explicitly requested.
 > 6. **Security**: Never commit, print, or log `.env`, API keys, the executor token, or `data/`.
@@ -39,7 +39,7 @@ Determine the user's intent from their prompt or slash-command arguments:
 | :--- | :--- | :--- |
 | *(default)* or `affected` | Detect `git diff` impact and run **only** affected E2E suites | `npm run e2e:sync-check` → `npm run test:e2e:affected` |
 | `release` or `affected+p0` | Pre-release smart gate: changed suites + P0 core (21 cases) | `npm run test:e2e:release` (`--tier=affected+p0 --since-last-tag`) |
-| `p0` / `p1` / `p2` / `p3` / `p0+p1` / `all` | Run a specific priority tier or the complete 14-suite / 108-case suite | `npm run test:e2e:<tier>` or `node scripts/run-e2e.mjs --tier=<tier>` |
+| `p0` / `p1` / `p2` / `p3` / `p0+p1` / `all` | Run a specific priority tier or the complete 14-suite / 110-case suite | `npm run test:e2e:<tier>` or `node scripts/run-e2e.mjs --tier=<tier>` |
 | `--suite=<id>` / `--case=<ID>` | Precision filter for specific suite(s) or case ID(s)/wildcards (e.g. `P1-NET-*`) | `node scripts/run-e2e.mjs --suite=<id>` / `--case=<ID>` |
 | `list` | List all registered suites and atomic case IDs from `catalog.json` | `npm run test:e2e:list` (`node scripts/run-e2e.mjs --list`) |
 | `audit` | Run 6-dimension full-codebase static coverage audit (Files/Routes/Tools/Executor/UI/Capabilities) | `npm run e2e:audit` (`check-e2e-sync.mjs --audit`) |
@@ -92,6 +92,10 @@ Read reference files on demand (progressive disclosure):
      ```
 3. Inspect `test-results/reports/latest.md` and `test-results/evidence/<case-id>/` for any non-PASS cases.
 4. Classify every failure truthfully using [references/report-template.md](./references/report-template.md) (`BUG` vs `UX_DESIGN` vs test-script timing vs `ENV_SKIP`), citing exact `file:line` root causes.
+
+> **Execution Notes**:
+> - To keep `test-results/e2e-summary.json` and `test-results/reports/latest.md` in sync, prefer `node scripts/run-e2e.mjs --suite=<id>` (or `--tier=...`) over raw `node --test`, which only updates `test-results/cases/<suite>.json`.
+> - On headless Ubuntu X11 test displays (`executor/test_e2e_x11_desktop.py`), always launch `xfwm4` inside an isolated `dbus-run-session -- xfwm4 --compositor=off` with `DBUS_SESSION_BUS_ADDRESS` unset; otherwise `xfwm4` exits with `Xfconf could not be initialized` and `wmctrl -l` returns empty.
 
 ### 2. Feature Update Workflow (`/twinklebot-e2e update`)
 Run this workflow whenever a new user-facing feature, API route, UI modal/component, bot tool, or executor endpoint is added or substantially changed:
