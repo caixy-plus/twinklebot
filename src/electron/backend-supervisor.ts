@@ -51,6 +51,11 @@ export function createBackendSupervisor(options: BackendSupervisorOptions) {
   let disposed = false;
   let switchingInFlight: Promise<any> | null = null;
   let deferredSwitch: DeferredCoreSwitch | null = null;
+  let deferredRollback: {
+    reason: string;
+    mode: "previous" | "builtin";
+    queuedAt: number;
+  } | null = null;
   let deferredTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSnapshot: BackendTraySnapshot = { ...DEFAULT_TRAY_SNAPSHOT };
   let crashWindowStart = 0;
@@ -265,6 +270,25 @@ export function createBackendSupervisor(options: BackendSupervisorOptions) {
               scheduleDeferredCheck();
             }
           }
+          if (
+            deferredRollback &&
+            lastSnapshot.activeRunCount === 0 &&
+            !deferredTimer &&
+            !switchingInFlight &&
+            !disposed
+          ) {
+            const rb = deferredRollback;
+            deferredRollback = null;
+            deferredTimer = setTimeout(() => {
+              deferredTimer = null;
+              if (!switchingInFlight && !disposed) {
+                void applyRollbackAndRestart(rb.reason).catch((err) => {
+                  console.warn("[TwinkleBot] Deferred rollback restart failed:", err);
+                });
+              }
+            }, 150);
+            deferredTimer.unref?.();
+          }
           return;
         }
 
@@ -321,13 +345,98 @@ export function createBackendSupervisor(options: BackendSupervisorOptions) {
           return;
         }
 
+        if (msg.type === "ota_apply") {
+          void (async () => {
+            try {
+              const { cleanBuild } = await options.coreOtaManager.stageFromUrl({
+                bundleUrl: String(msg.bundleUrl || ""),
+                expectedSha256: String(msg.sha256 || ""),
+                coreBuild: String(msg.coreBuild || ""),
+              });
+              const result = await requestCoreSwitch(cleanBuild, {
+                force: Boolean(msg.force),
+              });
+              sendToChild(spawned, {
+                type: "ota_apply_result",
+                reqId: msg.reqId,
+                ok: true,
+                queuedForIdle: Boolean(result?.queuedForIdle),
+                activeRunCount: Number(result?.activeRunCount || 0),
+                status: result?.status || options.coreOtaManager.getStatus(),
+                deferredSwitch: deferredSwitch ? { ...deferredSwitch } : null,
+              });
+            } catch (err: any) {
+              sendToChild(spawned, {
+                type: "ota_apply_result",
+                reqId: msg.reqId,
+                ok: false,
+                error: err?.message || String(err),
+                status: options.coreOtaManager.getStatus(),
+              });
+            }
+          })();
+          return;
+        }
+
         if (msg.type === "ota_rollback") {
-          const status = options.coreOtaManager.rollback(msg.reason);
-          sendToChild(spawned, {
-            type: "ota_rollback_result",
-            reqId: msg.reqId,
-            status,
-          });
+          void (async () => {
+            const reason = msg.reason || "Bot 触发回滚";
+            try {
+              const status =
+                msg.mode === "builtin"
+                  ? options.coreOtaManager.rollbackToBuiltIn()
+                  : options.coreOtaManager.rollback(reason);
+              if (msg.restart) {
+                const activeRuns = await queryActiveRunCount();
+                if (activeRuns > 0) {
+                  deferredRollback = {
+                    reason,
+                    mode: msg.mode === "builtin" ? "builtin" : "previous",
+                    queuedAt: Date.now(),
+                  };
+                  sendToChild(spawned, {
+                    type: "ota_rollback_result",
+                    reqId: msg.reqId,
+                    ok: true,
+                    queuedForIdle: true,
+                    activeRunCount: activeRuns,
+                    status,
+                  });
+                  return;
+                }
+                sendToChild(spawned, {
+                  type: "ota_rollback_result",
+                  reqId: msg.reqId,
+                  ok: true,
+                  queuedForIdle: false,
+                  activeRunCount: 0,
+                  status,
+                });
+                setImmediate(() => {
+                  if (!disposed && !switchingInFlight) {
+                    void applyRollbackAndRestart(reason).catch((err) => {
+                      console.warn("[TwinkleBot] Immediate rollback restart failed:", err);
+                    });
+                  }
+                });
+                return;
+              }
+              sendToChild(spawned, {
+                type: "ota_rollback_result",
+                reqId: msg.reqId,
+                ok: true,
+                status,
+              });
+            } catch (err: any) {
+              sendToChild(spawned, {
+                type: "ota_rollback_result",
+                reqId: msg.reqId,
+                ok: false,
+                error: err?.message || String(err),
+                status: options.coreOtaManager.getStatus(),
+              });
+            }
+          })();
         }
       };
 
@@ -485,6 +594,7 @@ export function createBackendSupervisor(options: BackendSupervisorOptions) {
       }
 
       deferredSwitch = null;
+      deferredRollback = null;
       if (deferredTimer) {
         clearTimeout(deferredTimer);
         deferredTimer = null;
@@ -525,6 +635,7 @@ export function createBackendSupervisor(options: BackendSupervisorOptions) {
 
   function cancelDeferredSwitch() {
     deferredSwitch = null;
+    deferredRollback = null;
     if (deferredTimer) {
       clearTimeout(deferredTimer);
       deferredTimer = null;
@@ -536,6 +647,7 @@ export function createBackendSupervisor(options: BackendSupervisorOptions) {
     if (switchingInFlight) return;
     switchingInFlight = (async () => {
       deferredSwitch = null;
+      deferredRollback = null;
       if (deferredTimer) {
         clearTimeout(deferredTimer);
         deferredTimer = null;
@@ -557,6 +669,7 @@ export function createBackendSupervisor(options: BackendSupervisorOptions) {
     disposed = true;
     expectedShutdown = true;
     deferredSwitch = null;
+    deferredRollback = null;
     if (deferredTimer) {
       clearTimeout(deferredTimer);
       deferredTimer = null;

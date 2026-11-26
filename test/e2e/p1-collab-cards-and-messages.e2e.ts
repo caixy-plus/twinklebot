@@ -219,7 +219,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       priority: "P1",
       featureTier: "F2",
       difficulty: "D2",
-      title: "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list",
+      title: "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list / self_update",
       module: "Built-in System Bot Tools",
     },
     async () => {
@@ -263,14 +263,16 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
               { id: "st-11", name: "workspace_search", args: { action: "search", query: "记住工具测试" } },
               { id: "st-12", name: "system_diagnostics", args: { action: "status" } },
               { id: "st-13", name: "computer_provision", args: { action: "probe" } },
-              // Non-admin bot trying computer_provision(install) or account_manage(upsert) must be denied cleanly!
+              // Non-admin bot trying computer_provision(install), account_manage(upsert), or self_update(apply) must be denied cleanly!
               { id: "st-14", name: "computer_provision", args: { action: "install" } },
               { id: "st-15", name: "account_manage", args: { action: "list" } },
               { id: "st-16", name: "account_manage", args: { action: "upsert", name: "BlockedBotAdd", base_url: "https://blocked.example.com" } },
+              { id: "st-17", name: "self_update", args: { action: "status" } },
+              { id: "st-18", name: "self_update", args: { action: "apply" } },
             ],
           };
         }
-        return { text: "全部 9 项系统级 Bot 工具实测完成" };
+        return { text: "全部 10 项系统级 Bot 工具实测完成" };
       });
 
       await fetch(`${ws.baseUrl}/api/sessions/${workerBot.id}/messages`, {
@@ -285,7 +287,8 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       assert.match(joined, /测试联系人/, "vault_manage must save & list items");
       assert.match(joined, /每日早报/, "schedule_manage must create & list schedules");
       assert.match(joined, /架构纪要|saved|path/i, "library_manage must save note & list library");
-      assert.match(joined, /仅管理员|管理员|admin/i, "Non-admin computer_provision(install) must be denied");
+      assert.match(joined, /仅管理员|管理员|admin/i, "Non-admin computer_provision(install) / self_update(apply) must be denied");
+      assert.match(joined, /"supportsCoreOta"|self_update|status/i, "self_update(status) must return runtime update capability");
       assert.ok(ws.store.readSchedules().some((s: any) => s.title === "每日早报"));
     },
     { getChrome: () => chrome }

@@ -269,7 +269,7 @@ test("MessageGroup, MarkdownRenderer, MarkupPreviewCard, and InteractiveCards re
   });
   assert.ok(exHtml.includes("ReviewerBot"));
 
-  // User message preserves data-client-source metadata without showing a visible .msg-source-tag
+  // User message preserves data-client-source and data-channel-source metadata without visible badges (Issue #22 / PI-004)
   const userMsgHtml = ssr.renderStreamItemToStaticMarkup({
     kind: "message",
     id: "u-src-1",
@@ -281,6 +281,20 @@ test("MessageGroup, MarkdownRenderer, MarkupPreviewCard, and InteractiveCards re
   assert.ok(userMsgHtml.includes('data-client-source="desktop"'));
   assert.equal(userMsgHtml.includes("msg-source-tag"), false);
   assert.equal(userMsgHtml.includes("电脑端"), false);
+
+  const channelMsgHtml = ssr.renderStreamItemToStaticMarkup({
+    kind: "message",
+    id: "u-src-2",
+    seq: 44,
+    text: "飞书发来的测试消息",
+    isUser: true,
+    clientSource: { deviceKind: "mobile", platform: "feishu-bot" },
+    channelMeta: { channel: "feishu-bot", accountLabel: "客服助手", senderId: "ou_123" },
+  });
+  assert.ok(channelMsgHtml.includes('data-client-source="mobile"'));
+  assert.ok(channelMsgHtml.includes('data-channel-source="feishu-bot"'));
+  assert.equal(channelMsgHtml.includes("msg-channel-source-tag"), false);
+  assert.equal(channelMsgHtml.includes("来自飞书"), false);
 
   // Inline error notice: lightweight non-dialog strip, no legacy "提示" header, collapses verbose JSON details
   const shortErrHtml = ssr.renderStreamItemToStaticMarkup({

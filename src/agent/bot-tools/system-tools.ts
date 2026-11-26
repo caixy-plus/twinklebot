@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { inferImageMimeType } from "../model.js";
 import { registerEphemeralSecret } from "../tools.js";
 import { findDuplicateMemory, hasExplicitMemoryIntent } from "../memory-extractor.js";
@@ -47,6 +48,8 @@ import {
 import { MAX_BOT_HOPS, getInstalledSkillIds } from "./declarations.js";
 import { resolveBotByRef } from "./collab-tools.js";
 import { summarizeChannelStatusForBot } from "../../lib/channel-integrations.js";
+import { createSelfUpdateActions } from "../../lib/self-update.js";
+import { resolveProjectRoot } from "../../lib/project-root.js";
 import { createAccountDirectoryActions } from "../../server/routes/relay.js";
 
 export const UNHANDLED_BOT_TOOL = Symbol.for("twinklebot.unhandled_bot_tool");
@@ -1175,6 +1178,54 @@ export async function handleSystemBotTool(
       }
 
       return { ok: false, error: `unknown account_manage action: ${action}` };
+    }
+
+    case "self_update": {
+      const action = String(args.action || "check").trim();
+      const callerIsAdmin = Boolean(
+        senderBot?.isAdmin || (senderSessionId && store?.getSession?.(senderSessionId)?.isAdmin)
+      );
+      const rootDir = resolveProjectRoot(path.dirname(fileURLToPath(import.meta.url)));
+      const selfUpdate =
+        ctx.selfUpdateActions ||
+        createSelfUpdateActions({
+          projectRoot: rootDir,
+          publicDir: path.join(rootDir, "public"),
+          appVersion: String(config?.appVersion || "1.0.0"),
+          fetchImpl: fetchImpl || globalThis.fetch,
+        });
+
+      if (action === "status") {
+        return await selfUpdate.status();
+      }
+      if (action === "check") {
+        return await selfUpdate.check({ force: args.force !== false });
+      }
+      if (action === "apply") {
+        if (!callerIsAdmin) {
+          return {
+            ok: false,
+            action: "apply",
+            error: "权限不足：仅管理员 Bot 有权执行自我更新（apply）。",
+          };
+        }
+        return await selfUpdate.apply({ force: Boolean(args.force) });
+      }
+      if (action === "rollback") {
+        if (!callerIsAdmin) {
+          return {
+            ok: false,
+            action: "rollback",
+            error: "权限不足：仅管理员 Bot 有权执行版本回滚（rollback）。",
+          };
+        }
+        const rbMode = args.rollback_mode === "builtin" ? "builtin" : "previous";
+        return await selfUpdate.rollback({
+          mode: rbMode,
+          reason: typeof args.reason === "string" ? args.reason : undefined,
+        });
+      }
+      return { ok: false, error: `unknown self_update action: ${action}` };
     }
 
     default:

@@ -627,6 +627,41 @@ export function sanitizeChannelMeta(raw: unknown): SanitizedChannelMeta | null {
   };
 }
 
+export interface SanitizedClientSource {
+  deviceKind: "mobile" | "desktop";
+  platform?: string;
+}
+
+export function sanitizeClientSource(raw: unknown): SanitizedClientSource | null {
+  if (!raw || typeof raw !== "object") return null;
+  const cs = raw as Record<string, any>;
+  if (cs.deviceKind !== "mobile" && cs.deviceKind !== "desktop") return null;
+  const platform = String(cs.platform ?? "").trim().slice(0, 32);
+  return {
+    deviceKind: cs.deviceKind,
+    ...(platform ? { platform } : {}),
+  };
+}
+
+export function formatClientSourceHeader(clientSource: unknown): string {
+  const cs = sanitizeClientSource(clientSource);
+  if (!cs) return "";
+  const p = (cs.platform || "").toLowerCase();
+  if (cs.deviceKind === "mobile") {
+    if (p === "ios-web") return "[消息来源：TwinkleBot 手机网页端（iOS）]";
+    if (p === "android-web") return "[消息来源：TwinkleBot 手机网页端（Android）]";
+    if (p === "mobile-web" || p === "web") return "[消息来源：TwinkleBot 手机网页端]";
+    if (p === "ios") return "[消息来源：TwinkleBot 手机端（iOS）]";
+    if (p === "android") return "[消息来源：TwinkleBot 手机端（Android）]";
+    return "[消息来源：TwinkleBot 手机端]";
+  }
+  if (p === "web") return "[消息来源：TwinkleBot 桌面网页端]";
+  if (p === "darwin" || p === "macos") return "[消息来源：TwinkleBot 桌面端（macOS）]";
+  if (p === "win32" || p === "windows") return "[消息来源：TwinkleBot 桌面端（Windows）]";
+  if (p === "linux") return "[消息来源：TwinkleBot 桌面端（Linux）]";
+  return "[消息来源：TwinkleBot 桌面端]";
+}
+
 export function formatChannelSourceHeader(channelMeta: unknown): string {
   const cm = sanitizeChannelMeta(channelMeta);
   if (!cm) return "";
@@ -637,6 +672,14 @@ export function formatChannelSourceHeader(channelMeta: unknown): string {
       ? `${cm.senderName} (${cm.senderId})`
       : cm.senderName || cm.senderId || cm.chatId || "未知用户";
   return `[消息来源：${platformName}${botLabel} · 发送者：${senderLabel}]`;
+}
+
+export function formatMessageSourceHeader(meta: unknown): string {
+  if (!meta || typeof meta !== "object") return "";
+  const m = meta as Record<string, any>;
+  const channelHeader = formatChannelSourceHeader(m.channelMeta);
+  if (channelHeader) return channelHeader;
+  return formatClientSourceHeader(m.clientSource);
 }
 
 function summarizeSingleAccountForBot(

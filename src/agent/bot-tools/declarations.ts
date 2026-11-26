@@ -1102,6 +1102,39 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
       required: ["action"],
     },
   },
+  {
+    type: "function",
+    name: "self_update",
+    description:
+      "Check TwinkleBot OTA update status, inspect the authoritative GitHub Releases manifest, apply Web + Core Runtime OTA self-updates (with SHA-256 verification, strict shell-version binding, idle-deferred switching after the Bot finishes replying, and automatic watchdog rollback), or roll back to the previous/built-in stable version. Note: OTA updates TwinkleBot's Web UI and Core Runtime bundle only (external AI models are not part of OTA). `apply` and `rollback` are ADMIN-BOT EXCLUSIVE.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["check", "status", "apply", "rollback"],
+          description:
+            "'status' inspects current local runtime/OTA state; 'check' queries GitHub Releases compatibility; 'apply' downloads, verifies, and switches Web+Core OTA; 'rollback' restores previous or built-in runtime.",
+        },
+        force: {
+          type: "boolean",
+          description:
+            "Optional for action='apply' (default: false). Keep false so the switch defers cleanly until the current Bot reply finishes; only set true if the user explicitly asks to force-restart immediately.",
+        },
+        rollback_mode: {
+          type: "string",
+          enum: ["previous", "builtin"],
+          description:
+            "Optional for action='rollback': 'previous' (default) restores last known-good OTA release; 'builtin' restores the app's built-in bundle.",
+        },
+        reason: {
+          type: "string",
+          description: "Optional human-readable reason when action='rollback'.",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 export const SKILL_NOT_ADDED_ERROR = "该技能当前未添加，请先在左下角「技能商店」添加后再配置。";

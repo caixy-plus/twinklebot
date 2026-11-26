@@ -15,6 +15,7 @@ import {
   encodeFeishuPbFrame,
   extractFeishuMessageText,
   formatFeishuApiError,
+  formatMessageSourceHeader,
   generatePairingCode,
   isSenderAllowed,
   normalizeChannelsAuthStore,
@@ -31,6 +32,7 @@ import {
 import { createChannelManager } from "../src/lib/channel-manager.js";
 import { redactToolArgsForDisplay, runBotCollabTool } from "../src/agent/bot-tools.js";
 import { createModel } from "../src/agent/model.js";
+import { buildGroupPromptContext } from "../src/agent/group-coordinator.js";
 import { createRunner } from "../src/agent/runner.js";
 import { createStore } from "../src/store/index.js";
 import { createServer } from "../src/server/index.js";
@@ -2190,4 +2192,206 @@ test("createTelegramFetch and createProxiedFetch normalize polyfilled AbortSigna
     signal: proxyPolySignal,
   });
   assert.equal(proxyResp.status, 200);
+});
+
+test("formatMessageSourceHeader distinguishes native mobile, mobile web, desktop, and channels cleanly", () => {
+  assert.equal(
+    formatMessageSourceHeader({ clientSource: { deviceKind: "mobile", platform: "ios" } }),
+    "[消息来源：TwinkleBot 手机端（iOS）]"
+  );
+  assert.equal(
+    formatMessageSourceHeader({ clientSource: { deviceKind: "mobile", platform: "ios-web" } }),
+    "[消息来源：TwinkleBot 手机网页端（iOS）]"
+  );
+  assert.equal(
+    formatMessageSourceHeader({ clientSource: { deviceKind: "mobile", platform: "android-web" } }),
+    "[消息来源：TwinkleBot 手机网页端（Android）]"
+  );
+  assert.equal(
+    formatMessageSourceHeader({ clientSource: { deviceKind: "desktop", platform: "darwin" } }),
+    "[消息来源：TwinkleBot 桌面端（macOS）]"
+  );
+  assert.equal(
+    formatMessageSourceHeader({ clientSource: { deviceKind: "desktop", platform: "web" } }),
+    "[消息来源：TwinkleBot 桌面网页端]"
+  );
+  // Channel metadata takes precedence over synthetic clientSource without duplication
+  assert.equal(
+    formatMessageSourceHeader({
+      clientSource: { deviceKind: "mobile", platform: "feishu-bot" },
+      channelMeta: { channel: "feishu-bot", accountLabel: "研发群", senderId: "ou_1" },
+    }),
+    "[消息来源：飞书机器人「研发群」 · 发送者：ou_1]"
+  );
+  assert.equal(
+    formatMessageSourceHeader({
+      clientSource: { deviceKind: "mobile", platform: "telegram-bot" },
+      channelMeta: { channel: "telegram-bot", accountLabel: "BotTG", senderName: "Alice" },
+    }),
+    "[消息来源：Telegram 机器人「BotTG」 · 发送者：Alice]"
+  );
+  assert.equal(formatMessageSourceHeader({}), "");
+});
+
+test("Issue #22: clientSource is injected to LLM on first turn and steer while stored user.text remains clean, and group context injects source headers", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "twinkle-source-meta-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const llmRequests: string[] = [];
+  const mainChatRequests: string[] = [];
+  let holdFirstTurnResolve: any = null;
+  let mainTurnCount = 0;
+
+  const mockLlmSrv = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c);
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    llmRequests.push(bodyText);
+    const isThinkingSummary = bodyText.includes("Distill the current task progress");
+    if (isThinkingSummary) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "正在处理请求" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 5, completion_tokens: 3 },
+        })
+      );
+      return;
+    }
+
+    mainChatRequests.push(bodyText);
+    mainTurnCount += 1;
+    const thisTurn = mainTurnCount;
+    if (thisTurn === 1) {
+      await new Promise<void>((resolve) => {
+        holdFirstTurnResolve = resolve;
+        setTimeout(resolve, 1500);
+      });
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: { role: "assistant", content: thisTurn === 1 ? "第一轮响应完成" : "追问响应完成" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      })
+    );
+  });
+  await new Promise<void>((resolve) => mockLlmSrv.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => mockLlmSrv.close(() => resolve())));
+  const llmPort = (mockLlmSrv.address() as AddressInfo).port;
+
+  const store = createStore(tmpDir);
+  const bot = store.ensureAdminBot();
+  store.writeSettings({
+    model: "gpt-4o",
+    routing: { smartRouter: false },
+    providers: [
+      {
+        id: "openai_mock",
+        type: "openai",
+        name: "MockOpenAI",
+        apiKey: "sk-mock",
+        baseUrl: `http://127.0.0.1:${llmPort}/v1`,
+        models: ["gpt-4o"],
+        enabled: true,
+      },
+    ],
+  });
+
+  const model = createModel({
+    getProviders: () => store.readSettings()?.providers || [],
+    getRouting: () => store.readSettings()?.routing || {},
+  });
+  const runner = createRunner({ store, model });
+  const srv = createServer({
+    config: {
+      port: 0,
+      host: "127.0.0.1",
+      dataDir: tmpDir,
+      deployEnv: "local",
+      models: ["gpt-4o"],
+      defaultModel: "gpt-4o",
+      writeRoots: [tmpDir],
+      screen: { width: 1440, height: 900 },
+    },
+    store,
+    executor: { health: async () => ({ ok: true }), call: async () => ({ ok: true }) } as any,
+    runner,
+  });
+  await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    runner.stop();
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
+  const baseUrl = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+
+  // 1. Send first turn from iOS Mobile App
+  await fetch(`${baseUrl}/api/sessions/${bot.id}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: "第一条来自手机的消息",
+      clientSource: { deviceKind: "mobile", platform: "ios" },
+    }),
+  });
+
+  for (let i = 0; i < 40 && mainChatRequests.length < 1; i += 1) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(mainChatRequests.length >= 1, "First turn must reach mock LLM");
+  assert.match(mainChatRequests[0], /\[消息来源：TwinkleBot 手机端（iOS）\]/, "First turn must inject mobile source header");
+
+  // 2. Steer a follow-up from Desktop Web while first turn is running
+  await fetch(`${baseUrl}/api/sessions/${bot.id}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: "第二条来自桌面网页的追问",
+      clientSource: { deviceKind: "desktop", platform: "web" },
+    }),
+  });
+  holdFirstTurnResolve?.();
+
+  for (let i = 0; i < 80 && runner.isSessionBusy(bot.id); i += 1) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+
+  const allReqText = mainChatRequests.join("\n");
+  assert.match(allReqText, /\[消息来源：TwinkleBot 桌面网页端\]/, "Steered follow-up must also inject its clientSource header");
+
+  // Persisted user events must remain completely clean without [消息来源：...] prefixes
+  const storedUsers = store.readEvents(bot.id).filter((e: any) => e.type === "user");
+  assert.equal(storedUsers.length, 2);
+  assert.equal(storedUsers[0].text, "第一条来自手机的消息");
+  assert.equal(storedUsers[0].clientSource?.platform, "ios");
+  assert.equal(storedUsers[1].text, "第二条来自桌面网页的追问");
+  assert.equal(storedUsers[1].clientSource?.platform, "web");
+
+  // 3. Verify buildGroupPromptContext injects [消息来源：...] into group user lines
+  const groupPrompt = buildGroupPromptContext(
+    [
+      {
+        type: "user",
+        seq: 1,
+        text: "群聊手机端测试",
+        clientSource: { deviceKind: "mobile", platform: "android-web" },
+      },
+      {
+        type: "user",
+        seq: 2,
+        text: "群聊飞书测试",
+        channelMeta: { channel: "feishu-bot", accountLabel: "项目群", senderId: "ou_grp" },
+      },
+    ],
+    "请总结",
+    10
+  );
+  assert.match(groupPrompt, /\[User\] \[消息来源：TwinkleBot 手机网页端（Android）\] 群聊手机端测试/);
+  assert.match(groupPrompt, /\[User\] \[消息来源：飞书机器人「项目群」 · 发送者：ou_grp\] 群聊飞书测试/);
 });

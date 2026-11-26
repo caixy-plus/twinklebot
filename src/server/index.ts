@@ -37,6 +37,7 @@ import {
 import { updateBotComputer } from "../lib/bot-computer-updater.js";
 import { probeBotComputerState } from "../lib/bot-computer-provisioner.js";
 import { stopWslKeepalive } from "../lib/wsl-ubuntu.js";
+import { createSelfUpdateActions } from "../lib/self-update.js";
 import { createRuntimeState } from "../lib/runtime-state.js";
 import { attachWebSocketServer } from "../lib/ws-server.js";
 import { createHostBridge } from "../lib/host-bridge.js";
@@ -609,9 +610,19 @@ export function createServer({
     },
   });
 
+  const selfUpdateActions = createSelfUpdateActions({
+    projectRoot: PROJECT_ROOT,
+    publicDir: PUBLIC_DIR,
+    appVersion: APP_VERSION,
+    getEffectivePublicDir,
+    otaController: otaController || null,
+    fetchImpl: billingFetchImpl || fetch,
+  });
+
   if (runner && typeof runner === "object") {
     runner.getRelayStatus = () => relayManager.getBotSummary();
     runner.accountActions = accountDirectoryActions;
+    runner.selfUpdateActions = selfUpdateActions;
   }
 
   let ctx!: ServerContext;

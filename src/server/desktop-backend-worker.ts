@@ -292,6 +292,63 @@ export async function runDesktopBackendWorker(): Promise<void> {
           void sendPendingRpc({ type: "ota_rollback", reqId, reason }, reqId, 3000, cachedOtaStatus);
           return cachedOtaStatus;
         },
+        getStatusAsync: async () => {
+          if (typeof process.send !== "function") return cachedOtaStatus;
+          const reqId = `status-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const updated = await sendPendingRpc(
+            { type: "ota_status_request", reqId },
+            reqId,
+            2000,
+            cachedOtaStatus
+          );
+          if (updated && typeof updated === "object") {
+            cachedOtaStatus = updated;
+          }
+          return cachedOtaStatus;
+        },
+        applyUpdate: async (payload) => {
+          if (typeof process.send !== "function") {
+            return { ok: false, error: "当前未处于桌面端 Electron 托管运行模式" };
+          }
+          const reqId = `apply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const res = await sendPendingRpc(
+            {
+              type: "ota_apply",
+              reqId,
+              bundleUrl: payload.bundleUrl,
+              sha256: payload.sha256,
+              coreBuild: payload.coreBuild,
+              force: Boolean(payload.force),
+            },
+            reqId,
+            120_000,
+            { ok: false, error: "OTA 下载或应用超时", status: cachedOtaStatus }
+          );
+          return res && typeof res === "object"
+            ? res
+            : { ok: false, error: "OTA 应用失败", status: cachedOtaStatus };
+        },
+        rollbackAsync: async (opts) => {
+          if (typeof process.send !== "function") {
+            return { ok: false, error: "当前未处于桌面端 Electron 托管运行模式" };
+          }
+          const reqId = `rollback-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const res = await sendPendingRpc(
+            {
+              type: "ota_rollback",
+              reqId,
+              reason: opts?.reason,
+              mode: opts?.mode,
+              restart: opts?.restart !== false,
+            },
+            reqId,
+            10_000,
+            { ok: false, error: "OTA 回滚响应超时", status: cachedOtaStatus }
+          );
+          return res && typeof res === "object"
+            ? res
+            : { ok: false, error: "OTA 回滚失败", status: cachedOtaStatus };
+        },
       },
       desktopController: {
         wakeWindow: async () => {
@@ -398,6 +455,15 @@ export async function runDesktopBackendWorker(): Promise<void> {
       });
       return;
     }
+    if (raw.type === "ota_apply_result") {
+      if (raw.status && typeof raw.status === "object") {
+        cachedOtaStatus = raw.status;
+      }
+      if (raw.reqId) {
+        resolvePendingRpc(raw.reqId, raw);
+      }
+      return;
+    }
     if (
       raw.type === "ota_status_result" ||
       raw.type === "ota_confirm_result" ||
@@ -408,7 +474,10 @@ export async function runDesktopBackendWorker(): Promise<void> {
         cachedOtaStatus = raw.status;
       }
       if ("reqId" in raw && raw.reqId) {
-        resolvePendingRpc(raw.reqId, raw.status ?? null);
+        resolvePendingRpc(
+          raw.reqId,
+          raw.type === "ota_rollback_result" ? raw : (raw.status ?? null)
+        );
       }
     }
   });

@@ -42,6 +42,20 @@ export type ParentToWorkerMessage =
       type: "ota_rollback_result";
       reqId: string;
       status: Record<string, any> | null;
+      ok?: boolean;
+      queuedForIdle?: boolean;
+      activeRunCount?: number;
+      error?: string;
+    }
+  | {
+      type: "ota_apply_result";
+      reqId: string;
+      ok: boolean;
+      queuedForIdle?: boolean;
+      activeRunCount?: number;
+      status?: Record<string, any> | null;
+      deferredSwitch?: Record<string, any> | null;
+      error?: string;
     }
   | {
       type: "ota_status_update";
@@ -85,7 +99,17 @@ export type WorkerToParentMessage =
       webBuild?: string;
     }
   | {
+      type: "ota_apply";
+      reqId: string;
+      bundleUrl: string;
+      sha256: string;
+      coreBuild: string;
+      force?: boolean;
+    }
+  | {
       type: "ota_rollback";
       reqId: string;
       reason?: string;
+      mode?: "previous" | "builtin";
+      restart?: boolean;
     };

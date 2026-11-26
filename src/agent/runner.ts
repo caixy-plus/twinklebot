@@ -3,7 +3,7 @@ import { runTask, createControl } from "./loop.js";
 import { createBotScopedExecutorClient } from "./executor-client.js";
 import { resolveBotWorkspaceRoot } from "../lib/bot-workspace.js";
 import {
-  formatChannelSourceHeader,
+  formatMessageSourceHeader,
   sanitizeChannelMeta,
 } from "../lib/channel-integrations.js";
 import {
@@ -408,7 +408,7 @@ export function createRunner({
       const eventsSoFar = store?.readEvents?.(groupSession.id) || [];
       let enrichedUserText = userText;
       const sourcePrefixParts: string[] = [];
-      const chHeader = formatChannelSourceHeader(userMeta?.channelMeta);
+      const chHeader = formatMessageSourceHeader(userMeta);
       if (chHeader) sourcePrefixParts.push(chHeader);
       if (userMeta?.replyTo?.snippet) {
         sourcePrefixParts.push(
@@ -455,6 +455,9 @@ export function createRunner({
           getChannelStatus: runnerApi.getChannelStatus || null,
           channelPairingActions: runnerApi.channelPairingActions || null,
           channelConfigActions: runnerApi.channelConfigActions || null,
+          getRelayStatus: runnerApi.getRelayStatus || null,
+          accountActions: runnerApi.accountActions || null,
+          selfUpdateActions: runnerApi.selfUpdateActions || null,
           store,
           config,
           emit,
@@ -620,6 +623,7 @@ export function createRunner({
                   channelConfigActions: runnerApi.channelConfigActions || null,
                   getRelayStatus: runnerApi.getRelayStatus || null,
                   accountActions: runnerApi.accountActions || null,
+                  selfUpdateActions: runnerApi.selfUpdateActions || null,
                   autoRoute: true,
                   smartRouter: true,
                   enableBotTools: true,
@@ -835,6 +839,7 @@ export function createRunner({
     channelConfigActions: null as Record<string, any> | null,
     getRelayStatus: null as (() => Record<string, any>) | null,
     accountActions: null as Record<string, any> | null,
+    selfUpdateActions: null as Record<string, any> | null,
   };
   return runnerApi;
 }

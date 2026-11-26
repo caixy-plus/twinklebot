@@ -10,8 +10,33 @@ export interface ServerContext {
   getEffectivePublicDir?: () => string;
   otaController?: {
     getStatus: () => any;
+    getStatusAsync?: () => Promise<any>;
     confirmReady: (webBuild?: string) => any;
     rollback: (reason?: string) => any;
+    applyUpdate?: (payload: {
+      bundleUrl: string;
+      sha256: string;
+      coreBuild: string;
+      force?: boolean;
+    }) => Promise<{
+      ok: boolean;
+      queuedForIdle?: boolean;
+      activeRunCount?: number;
+      status?: any;
+      deferredSwitch?: any;
+      error?: string;
+    }>;
+    rollbackAsync?: (opts?: {
+      reason?: string;
+      mode?: "previous" | "builtin";
+      restart?: boolean;
+    }) => Promise<{
+      ok: boolean;
+      queuedForIdle?: boolean;
+      activeRunCount?: number;
+      status?: any;
+      error?: string;
+    }>;
   };
   desktopController?: {
     wakeWindow: () => Promise<{ ok?: boolean; pid: number; windowVisible: boolean }>;

@@ -10,7 +10,7 @@ import {
 import { resolveEffectiveLocale } from "../shared/i18n.js";
 import { getDefaultLocalChromeManager } from "../lib/local-chrome-cdp.js";
 import {
-  formatChannelSourceHeader,
+  formatMessageSourceHeader,
   sanitizeChannelMeta,
 } from "../lib/channel-integrations.js";
 import {
@@ -463,6 +463,7 @@ async function runTaskInner({
     channelConfigActions = null,
     getRelayStatus = null,
     accountActions = null,
+    selfUpdateActions = null,
     store,
     config = {},
     emit = () => {},
@@ -746,9 +747,9 @@ async function runTaskInner({
       let out = String(rawText || "");
       if (!meta || typeof meta !== "object") return out;
       const prefixParts: string[] = [];
-      const channelHeader = formatChannelSourceHeader(meta.channelMeta);
-      if (channelHeader) {
-        prefixParts.push(channelHeader);
+      const sourceHeader = formatMessageSourceHeader(meta);
+      if (sourceHeader) {
+        prefixParts.push(sourceHeader);
       }
       if (meta.replyTo?.snippet) {
         prefixParts.push(
@@ -1946,6 +1947,7 @@ async function runTaskInner({
             channelConfigActions,
             getRelayStatus,
             accountActions,
+            selfUpdateActions,
             userMeta,
             config: promptConfig,
             userText: latestUserText,
