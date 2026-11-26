@@ -11,7 +11,9 @@ import { resolveEffectiveLocale } from "../shared/i18n.js";
 import { getDefaultLocalChromeManager } from "../lib/local-chrome-cdp.js";
 import {
   formatMessageSourceHeader,
+  formatMessageTimeHeader,
   sanitizeChannelMeta,
+  sanitizeClientTimeZone,
 } from "../lib/channel-integrations.js";
 import {
   HOST_TOOL_DECLARATIONS,
@@ -507,6 +509,14 @@ async function runTaskInner({
     }
   }
 
+  const validClientTimeZone = sanitizeClientTimeZone(userMeta?.clientTimeZone);
+  const parsedSentAt = userMeta?.sentAt ? Date.parse(String(userMeta.sentAt)) : NaN;
+  const resolvedSentAt = Number.isFinite(parsedSentAt)
+    ? new Date(parsedSentAt).toISOString()
+    : !promptText
+      ? new Date().toISOString()
+      : undefined;
+
   let emittedUserSeq: number | null = null;
   if (!skipUserEvent) {
     const cleanMeta: Record<string, any> = {};
@@ -543,6 +553,12 @@ async function runTaskInner({
     const cleanChannelMeta = sanitizeChannelMeta(userMeta?.channelMeta);
     if (cleanChannelMeta) {
       cleanMeta.channelMeta = cleanChannelMeta;
+    }
+    if (validClientTimeZone) {
+      cleanMeta.clientTimeZone = validClientTimeZone;
+    }
+    if (resolvedSentAt) {
+      cleanMeta.sentAt = resolvedSentAt;
     }
     emit({ type: "user", text: userText, ...cleanMeta });
     try {
@@ -745,22 +761,30 @@ async function runTaskInner({
 
     function formatContextualUserText(rawText: string, meta: any, includeAttachments = false): string {
       let out = String(rawText || "");
-      if (!meta || typeof meta !== "object") return out;
+      const effectiveMeta = meta && typeof meta === "object" ? meta : {};
       const prefixParts: string[] = [];
-      const sourceHeader = formatMessageSourceHeader(meta);
+      const sourceHeader = formatMessageSourceHeader(effectiveMeta);
       if (sourceHeader) {
         prefixParts.push(sourceHeader);
       }
-      if (meta.replyTo?.snippet) {
+      const timeHeader = formatMessageTimeHeader(effectiveMeta);
+      if (timeHeader) {
+        prefixParts.push(timeHeader);
+      }
+      if (effectiveMeta.replyTo?.snippet) {
         prefixParts.push(
-          `[Replying to (${meta.replyTo.author || "message"}): "${meta.replyTo.snippet}"]`
+          `[Replying to (${effectiveMeta.replyTo.author || "message"}): "${effectiveMeta.replyTo.snippet}"]`
         );
       }
-      if (Array.isArray(meta.quotes) && meta.quotes.length > 0) {
-        prefixParts.push(meta.quotes.map((q: unknown) => `> ${q}`).join("\n"));
+      if (Array.isArray(effectiveMeta.quotes) && effectiveMeta.quotes.length > 0) {
+        prefixParts.push(effectiveMeta.quotes.map((q: unknown) => `> ${q}`).join("\n"));
       }
-      if (includeAttachments && Array.isArray(meta.attachments) && meta.attachments.length > 0) {
-        const attDesc = meta.attachments
+      if (
+        includeAttachments &&
+        Array.isArray(effectiveMeta.attachments) &&
+        effectiveMeta.attachments.length > 0
+      ) {
+        const attDesc = effectiveMeta.attachments
           .map((a: any) => {
             if (!a) return "";
             const label = a.name || a.filename || a.path || "attachment";
@@ -778,9 +802,18 @@ async function runTaskInner({
       return out;
     }
 
+    const initialMetaForPrompt =
+      resolvedSentAt || validClientTimeZone
+        ? {
+            ...(userMeta && typeof userMeta === "object" ? userMeta : {}),
+            ...(resolvedSentAt ? { sentAt: resolvedSentAt } : {}),
+            ...(validClientTimeZone ? { clientTimeZone: validClientTimeZone } : {}),
+          }
+        : userMeta;
+
     let contextualUserText = promptText
       ? userText
-      : formatContextualUserText(userText, userMeta, false);
+      : formatContextualUserText(userText, initialMetaForPrompt, false);
 
     const hasUserAttachments = Boolean(
       Array.isArray(userMeta?.attachments) && userMeta.attachments.length > 0

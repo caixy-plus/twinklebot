@@ -25,6 +25,7 @@ import {
 } from "../../lib/bot-workspace.js";
 import { buildSessionCostSummary } from "../../agent/pricing.js";
 import { detectSemanticStopIntent } from "../../agent/stop-detector.js";
+import { sanitizeClientTimeZone } from "../../lib/channel-integrations.js";
 import {
   VALID_BOT_BROWSER_MODES,
   normalizeBotBrowserMode,
@@ -501,7 +502,11 @@ export async function handleSessionRoutes(
               (rawClientSource.deviceKind === "mobile" || rawClientSource.deviceKind === "desktop")
                 ? rawClientSource.deviceKind
                 : null;
+            const validClientTimeZone = sanitizeClientTimeZone(body.clientTimeZone);
+            const serverSentAt = new Date().toISOString();
             const userMeta = {
+              sentAt: serverSentAt,
+              ...(validClientTimeZone ? { clientTimeZone: validClientTimeZone } : {}),
               ...(body.replyTo && typeof body.replyTo === "object"
                 ? { replyTo: body.replyTo }
                 : {}),

@@ -83,6 +83,29 @@ export function RightInspector({
   const diagnostics = useStore((s) => s.diagnostics);
   const { locale, t } = useI18n();
   const computerDisplays = useStore((s) => s.computerDisplays);
+  const schedules = useStore((s) => s.schedules);
+
+  type CollapsibleSectionKey = "groupMembers" | "botMemory" | "upcoming";
+  const [sectionExpandedOverrides, setSectionExpandedOverrides] = useState<
+    Partial<Record<CollapsibleSectionKey, boolean>>
+  >({});
+
+  useEffect(() => {
+    setSectionExpandedOverrides({});
+  }, [activeSessionId]);
+
+  const isSectionExpanded = (key: CollapsibleSectionKey, itemCount: number): boolean => {
+    const override = sectionExpandedOverrides[key];
+    if (typeof override === "boolean") return override;
+    return itemCount < 2;
+  };
+
+  const toggleSectionExpanded = (key: CollapsibleSectionKey, currentExpanded: boolean) => {
+    setSectionExpandedOverrides((prev) => ({
+      ...prev,
+      [key]: !currentExpanded,
+    }));
+  };
 
   const displayName =
     activeSession?.title && activeSession.title !== "New Session"
@@ -121,6 +144,16 @@ export function RightInspector({
   const groupMembers = memberIds
     .map((id) => sessions.find((s: any) => s.id === id))
     .filter(Boolean);
+
+  const sessionSchedules = (Array.isArray(schedules) ? schedules : []).filter(
+    (s: any) => !activeSessionId || s.sessionId === activeSessionId
+  );
+  const schedulesCount = sessionSchedules.length;
+  const schedCountBadge = schedulesCount > 0 ? `(${schedulesCount})` : "";
+
+  const groupMembersExpanded = isSectionExpanded("groupMembers", groupMembers.length);
+  const botMemoryExpanded = isSectionExpanded("botMemory", memories.length);
+  const upcomingExpanded = isSectionExpanded("upcoming", schedulesCount);
 
   // Computer card status (unified with SettingsModal & MobileSheets via resolveBotComputerStatusDisplay)
   const anySessionRunning =
@@ -617,11 +650,34 @@ export function RightInspector({
         {/* Group Members Section */}
         <section className="inspector-section" id="group-members-section" hidden={!isGroup}>
           <div className="section-header-row">
-            <h3 className="section-label" id="group-members-count-label">
-              {isGroup
-                ? t("inspector.membersCount", { count: groupMembers.length })
-                : t("inspector.memberFallback")}
-            </h3>
+            <button
+              id="group-members-toggle-btn"
+              type="button"
+              className="section-collapse-toggle"
+              aria-expanded={groupMembersExpanded}
+              aria-controls="group-members-body"
+              onClick={() => toggleSectionExpanded("groupMembers", groupMembersExpanded)}
+            >
+              <span className="section-label" id="group-members-count-label">
+                {isGroup
+                  ? t("inspector.membersCount", { count: groupMembers.length })
+                  : t("inspector.memberFallback")}
+              </span>
+              <svg
+                className="section-collapse-chevron"
+                viewBox="0 0 12 12"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4.5 2.5L8 6L4.5 9.5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
             <button
               id="add-group-member-btn"
               type="button"
@@ -631,26 +687,28 @@ export function RightInspector({
               {t("inspector.addMember")}
             </button>
           </div>
-          <div className="grouped-card" id="group-members-list">
-            {groupMembers.map((m: any) => (
-              <div key={m.id} className="grouped-row-btn" style={{ cursor: "default" }}>
-                <span style={{ width: "24px", height: "24px", display: "inline-flex" }}>
-                  <SessionAvatar
-                    session={m}
-                    allSessions={sessions}
-                    primaryId={primarySessionId}
-                  />
-                </span>
-                <span className="grouped-row-text">{m.title || "Bot"}</span>
-                <button
-                  type="button"
-                  className="section-action-link danger-text"
-                  onClick={() => handleRemoveGroupMember(m)}
-                >
-                  {t("common.remove")}
-                </button>
-              </div>
-            ))}
+          <div id="group-members-body" className="inspector-section-body" hidden={!groupMembersExpanded}>
+            <div className="grouped-card" id="group-members-list">
+              {groupMembers.map((m: any) => (
+                <div key={m.id} className="grouped-row-btn" style={{ cursor: "default" }}>
+                  <span style={{ width: "24px", height: "24px", display: "inline-flex" }}>
+                    <SessionAvatar
+                      session={m}
+                      allSessions={sessions}
+                      primaryId={primarySessionId}
+                    />
+                  </span>
+                  <span className="grouped-row-text">{m.title || "Bot"}</span>
+                  <button
+                    type="button"
+                    className="section-action-link danger-text"
+                    onClick={() => handleRemoveGroupMember(m)}
+                  >
+                    {t("common.remove")}
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 
@@ -732,12 +790,35 @@ export function RightInspector({
         {/* Per-Bot Dedicated Memory Section */}
         <section className="inspector-section" id="bot-memory-section" hidden={isGroup}>
           <div className="section-header-row">
-            <h3 className="section-label">
-              {t("inspector.memoryLabel")}{" "}
-              <span id="bot-memory-count-badge" className="section-sub-count">
-                {memCountBadge}
+            <button
+              id="bot-memory-toggle-btn"
+              type="button"
+              className="section-collapse-toggle"
+              aria-expanded={botMemoryExpanded}
+              aria-controls="bot-memory-body"
+              onClick={() => toggleSectionExpanded("botMemory", botMemoryExpanded)}
+            >
+              <span className="section-label">
+                {t("inspector.memoryLabel")}{" "}
+                <span id="bot-memory-count-badge" className="section-sub-count">
+                  {memCountBadge}
+                </span>
               </span>
-            </h3>
+              <svg
+                className="section-collapse-chevron"
+                viewBox="0 0 12 12"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4.5 2.5L8 6L4.5 9.5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
             <button
               id="new-bot-memory-btn"
               type="button"
@@ -764,13 +845,43 @@ export function RightInspector({
               {t("inspector.memoryAdd")}
             </button>
           </div>
-          <BotMemoriesList session={activeSession} listId="bot-memories-list" />
+          <div id="bot-memory-body" className="inspector-section-body" hidden={!botMemoryExpanded}>
+            <BotMemoriesList session={activeSession} listId="bot-memories-list" />
+          </div>
         </section>
 
         {/* Section: Upcoming Schedules */}
         <section className="inspector-section" id="upcoming-section">
           <div className="section-header-row">
-            <h3 className="section-label">{t("inspector.schedulesLabel")}</h3>
+            <button
+              id="upcoming-toggle-btn"
+              type="button"
+              className="section-collapse-toggle"
+              aria-expanded={upcomingExpanded}
+              aria-controls="upcoming-body"
+              onClick={() => toggleSectionExpanded("upcoming", upcomingExpanded)}
+            >
+              <span className="section-label">
+                {t("inspector.schedulesLabel")}{" "}
+                <span id="upcoming-schedule-count-badge" className="section-sub-count">
+                  {schedCountBadge}
+                </span>
+              </span>
+              <svg
+                className="section-collapse-chevron"
+                viewBox="0 0 12 12"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4.5 2.5L8 6L4.5 9.5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
             <button
               id="new-schedule-btn"
               type="button"
@@ -785,7 +896,9 @@ export function RightInspector({
               {t("inspector.schedulesAdd")}
             </button>
           </div>
-          <SchedulesList listId="upcoming-schedules-list" />
+          <div id="upcoming-body" className="inspector-section-body" hidden={!upcomingExpanded}>
+            <SchedulesList listId="upcoming-schedules-list" />
+          </div>
         </section>
 
         {/* Section: Computer */}

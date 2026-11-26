@@ -682,6 +682,98 @@ export function formatMessageSourceHeader(meta: unknown): string {
   return formatClientSourceHeader(m.clientSource);
 }
 
+/**
+ * Validate a client-reported IANA timezone name (e.g. "Asia/Shanghai").
+ * Invalid or non-IANA strings are rejected so callers fall back to server timezone.
+ */
+export function sanitizeClientTimeZone(tz: unknown): string | undefined {
+  if (typeof tz !== "string") return undefined;
+  const trimmed = tz.trim().slice(0, 64);
+  if (!trimmed || trimmed.includes(" ")) return undefined;
+  // Require canonical IANA zone shape ("UTC", "GMT", "Area/Location", "Area/Region/Location")
+  if (!/^[A-Za-z_+-]+(?:\/[A-Za-z0-9_+-]+)*$/.test(trimmed)) return undefined;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: trimmed });
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Format an instant as "YYYY-MM-DD HH:mm:ss ±HH:MM" in the specified IANA timezone
+ * (falling back to the server's local timezone if timeZone is absent or invalid).
+ */
+export function formatLocalTimestampWithOffset(
+  dateInput?: Date | string | number | null,
+  timeZone?: unknown
+): string {
+  let date =
+    dateInput instanceof Date
+      ? dateInput
+      : dateInput !== undefined && dateInput !== null && dateInput !== ""
+        ? new Date(dateInput)
+        : new Date();
+  if (Number.isNaN(date.getTime())) {
+    date = new Date();
+  }
+
+  const serverTz = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch {
+      return "UTC";
+    }
+  })();
+  const resolvedTz = sanitizeClientTimeZone(timeZone) || serverTz;
+
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: resolvedTz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = Object.create(null) as Record<string, string>;
+  for (const p of formatter.formatToParts(date)) {
+    if (p.type !== "literal") parts[p.type] = p.value;
+  }
+
+  const y = parts.year || "1970";
+  const m = parts.month || "01";
+  const d = parts.day || "01";
+  const hh = parts.hour === "24" ? "00" : parts.hour || "00";
+  const mm = parts.minute || "00";
+  const ss = parts.second || "00";
+
+  const wallUtcMs = Date.UTC(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss));
+  const instantSecMs = Math.floor(date.getTime() / 1000) * 1000;
+  const offsetMin = Math.round((wallUtcMs - instantSecMs) / 60000);
+  const sign = offsetMin >= 0 ? "+" : "-";
+  const absMin = Math.abs(offsetMin);
+  const offH = String(Math.floor(absMin / 60)).padStart(2, "0");
+  const offM = String(absMin % 60).padStart(2, "0");
+
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss} ${sign}${offH}:${offM}`;
+}
+
+/**
+ * Format an LLM-only hidden send timestamp header: "[发送时间：YYYY-MM-DD HH:mm:ss ±HH:MM]".
+ * Returns "" unless meta carries a valid server-anchored timestamp (sentAt or event at).
+ */
+export function formatMessageTimeHeader(meta: unknown): string {
+  if (!meta || typeof meta !== "object") return "";
+  const m = meta as Record<string, any>;
+  const rawTs = m.sentAt || m.at;
+  if (!rawTs) return "";
+  const parsed = new Date(rawTs);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return `[发送时间：${formatLocalTimestampWithOffset(parsed, m.clientTimeZone)}]`;
+}
+
 function summarizeSingleAccountForBot(
   id: ChannelSkillId,
   cfg: Record<string, any>,

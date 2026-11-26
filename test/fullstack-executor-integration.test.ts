@@ -383,7 +383,7 @@ test("Fullstack integration: Node Server/Runner/ScreenPool/WebSocket <-> Real Py
         (lastUserIdx >= 0 ? input[lastUserIdx]?.content?.[0]?.text : "") || ""
       );
 
-      if (promptText.startsWith("BROWSER_WAIT:")) {
+      if (promptText.includes("BROWSER_WAIT:")) {
         return {
           thoughts: [],
           text: "",
@@ -405,8 +405,9 @@ test("Fullstack integration: Node Server/Runner/ScreenPool/WebSocket <-> Real Py
         };
       }
 
-      if (promptText.startsWith("SECRET_TYPE:")) {
-        const ref = promptText.slice("SECRET_TYPE:".length).trim();
+      const secretMatch = promptText.match(/SECRET_TYPE:([^\s]+)/);
+      if (secretMatch) {
+        const ref = secretMatch[1].trim();
         return {
           thoughts: [],
           text: "",
@@ -428,7 +429,7 @@ test("Fullstack integration: Node Server/Runner/ScreenPool/WebSocket <-> Real Py
         };
       }
 
-      if (promptText.startsWith("CLI_FAST:")) {
+      if (promptText.includes("CLI_FAST:")) {
         return {
           thoughts: [],
           text: "",

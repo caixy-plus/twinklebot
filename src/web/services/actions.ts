@@ -1377,11 +1377,19 @@ export async function sendUserMessage(rawText?: string) {
             "web",
         };
 
+    let clientTimeZone = "";
+    try {
+      clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    } catch {
+      clientTimeZone = "";
+    }
+
     const msgRes = await apiJson(`/api/sessions/${activeSid}/messages`, {
       method: "POST",
       body: JSON.stringify({
         text,
         clientSource,
+        ...(clientTimeZone ? { clientTimeZone } : {}),
         ...(stagedReplyTarget ? { replyTo: stagedReplyTarget } : {}),
         ...(stagedQuotes.length > 0 ? { quotes: stagedQuotes } : {}),
         ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),

@@ -219,7 +219,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       priority: "P1",
       featureTier: "F2",
       difficulty: "D2",
-      title: "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list / self_update",
+      title: "内置系统工具全覆盖：memory_manage / schedule_manage / vault_manage / workspace_search / library_manage / system_diagnostics / computer_provision / account_manage / skill_list / self_update / app_knowledge",
       module: "Built-in System Bot Tools",
     },
     async () => {
@@ -269,10 +269,11 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
               { id: "st-16", name: "account_manage", args: { action: "upsert", name: "BlockedBotAdd", base_url: "https://blocked.example.com" } },
               { id: "st-17", name: "self_update", args: { action: "status" } },
               { id: "st-18", name: "self_update", args: { action: "apply" } },
+              { id: "st-19", name: "app_knowledge", args: { action: "search", query: "外网中继" } },
             ],
           };
         }
-        return { text: "全部 10 项系统级 Bot 工具实测完成" };
+        return { text: "全部 11 项系统级 Bot 工具实测完成" };
       });
 
       await fetch(`${ws.baseUrl}/api/sessions/${workerBot.id}/messages`, {
@@ -289,6 +290,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       assert.match(joined, /架构纪要|saved|path/i, "library_manage must save note & list library");
       assert.match(joined, /仅管理员|管理员|admin/i, "Non-admin computer_provision(install) / self_update(apply) must be denied");
       assert.match(joined, /"supportsCoreOta"|self_update|status/i, "self_update(status) must return runtime update capability");
+      assert.match(joined, /ui-navigation-desktop|accounts-relay-and-updates/, "app_knowledge(search) must return matching self-knowledge topic IDs");
       assert.ok(ws.store.readSchedules().some((s: any) => s.title === "每日早报"));
     },
     { getChrome: () => chrome }
@@ -978,6 +980,7 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
     },
     async () => {
       await ensureAtWorkspace();
+      ws.store.ensureAdminBot();
       const inspBot = ws.store.createSession({ title: "InspSchedBot" });
       await chrome!.reload(true);
       await chrome!.waitFor(
@@ -1015,6 +1018,23 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       await chrome!.waitFor(
         `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('收到定时或普通任务'))`,
         8000
+      );
+      const userReqJson = JSON.stringify(
+        ws.mockLlm.capturedRequests.find((r) =>
+          String(r.body?.messages?.[0]?.content || "").includes("MARKER_99")
+        )?.body?.messages || []
+      );
+      assert.match(
+        userReqJson,
+        /\[发送时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}\]/,
+        "Issue #24: LLM request must receive hidden [发送时间：YYYY-MM-DD HH:mm:ss ±HH:MM] header"
+      );
+      const visibleUserBubblesText = await chrome!.evalJs(
+        `Array.from(document.querySelectorAll('.user-bubble')).map(el => el.textContent || '').join(' ')`
+      );
+      assert.ok(
+        !String(visibleUserBubblesText || "").includes("[发送时间："),
+        "Issue #24: Visible user chat bubble must NOT expose raw [发送时间：…] header"
       );
       const sysPrompt = String(
         ws.mockLlm.capturedRequests.find((r) => String(r.body?.messages?.[0]?.content || "").includes("MARKER_99"))?.body
@@ -1138,6 +1158,106 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
 
       const evs = ws.store.readEvents(inspBot.id);
       assert.ok(evs.some((e: any) => e.type === "user" && String(e.text || "").includes("[例行任务 · 自动巡检]")));
+
+      // Issue #23: Desktop RightInspector collapsible sections (count >= 2 defaults collapsed, < 2 expanded)
+      assert.equal(
+        await chrome!.evalJs(`document.querySelector('#bot-memory-toggle-btn')?.getAttribute('aria-expanded')`),
+        "true",
+        "1 memory (< 2) should be expanded"
+      );
+      // Add a 2nd memory and create 2 schedules for inspBot, plus a group with 2 members, then switch session & back
+      await chrome!.click("#new-bot-memory-btn");
+      await chrome!.waitFor(`!document.querySelector('#bot-memory-modal-backdrop')?.hidden`, 4000);
+      await chrome!.fill("#bot-memory-modal-name-input", "设计原则");
+      await chrome!.fill("#bot-memory-modal-content-input", "保持界面简洁");
+      await chrome!.click("#save-bot-memory-modal-btn");
+      await chrome!.waitFor(`document.querySelector('#bot-memory-modal-backdrop')?.hidden`, 4000);
+
+      for (const title of ["巡检A", "巡检B"]) {
+        const resSch = await fetch(`${ws.baseUrl}/api/schedules`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: inspBot.id,
+            title,
+            prompt: "noop",
+            repeat: "daily",
+            timeLabel: "10:00",
+            enabled: true,
+          }),
+        });
+        assert.equal(resSch.status, 201);
+      }
+
+      const otherBot = ws.store.createSession({ title: "SwitchTargetBot" });
+      ws.store.createSession({
+        type: "group",
+        title: "CollapseGroup",
+        memberBotIds: [inspBot.id, otherBot.id],
+      });
+      await chrome!.reload(true);
+      await chrome!.waitFor(
+        `Array.from(document.querySelectorAll('#session-list .session-item')).some(x => x.textContent?.includes('InspSchedBot')) &&
+         Array.from(document.querySelectorAll('#session-list .session-item')).some(x => x.textContent?.includes('CollapseGroup'))`,
+        6000
+      );
+
+      // Select InspSchedBot -> both #bot-memory-section (2 memories >= 2) and #upcoming-section (>= 2 schedules) default collapsed
+      await chrome!.evalJs(`(() => {
+        const el = Array.from(document.querySelectorAll('#session-list .session-item')).find(x => x.textContent?.includes('InspSchedBot'));
+        el && el.click();
+      })()`);
+      await chrome!.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('InspSchedBot')`, 4000);
+      await chrome!.waitFor(
+        `document.querySelector('#bot-memory-toggle-btn')?.getAttribute('aria-expanded') === 'false' &&
+         document.querySelector('#bot-memory-body')?.hidden === true &&
+         document.querySelector('#upcoming-toggle-btn')?.getAttribute('aria-expanded') === 'false' &&
+         document.querySelector('#upcoming-body')?.hidden === true &&
+         !document.querySelector('#new-bot-memory-btn')?.hidden &&
+         !document.querySelector('#new-schedule-btn')?.hidden`,
+        5000
+      );
+
+      // Manual toggle expands & persists within same session
+      await chrome!.click("#bot-memory-toggle-btn");
+      await chrome!.click("#upcoming-toggle-btn");
+      await chrome!.waitFor(
+        `document.querySelector('#bot-memory-toggle-btn')?.getAttribute('aria-expanded') === 'true' &&
+         document.querySelector('#bot-memory-body')?.hidden === false &&
+         document.querySelector('#upcoming-toggle-btn')?.getAttribute('aria-expanded') === 'true' &&
+         document.querySelector('#upcoming-body')?.hidden === false`,
+        4000
+      );
+
+      // Switch to CollapseGroup -> #group-members-section (2 members >= 2) defaults collapsed & manual toggle expands
+      await chrome!.evalJs(`(() => {
+        const el = Array.from(document.querySelectorAll('#session-list .session-item')).find(x => x.textContent?.includes('CollapseGroup'));
+        el && el.click();
+      })()`);
+      await chrome!.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('CollapseGroup')`, 4000);
+      await chrome!.waitFor(
+        `document.querySelector('#group-members-toggle-btn')?.getAttribute('aria-expanded') === 'false' &&
+         document.querySelector('#group-members-body')?.hidden === true`,
+        4000
+      );
+      await chrome!.click("#group-members-toggle-btn");
+      await chrome!.waitFor(
+        `document.querySelector('#group-members-toggle-btn')?.getAttribute('aria-expanded') === 'true' &&
+         document.querySelector('#group-members-body')?.hidden === false`,
+        4000
+      );
+
+      // Switching back to InspSchedBot resets per-session overrides back to default collapsed
+      await chrome!.evalJs(`(() => {
+        const el = Array.from(document.querySelectorAll('#session-list .session-item')).find(x => x.textContent?.includes('InspSchedBot'));
+        el && el.click();
+      })()`);
+      await chrome!.waitFor(
+        `document.querySelector('#bot-memory-toggle-btn')?.getAttribute('aria-expanded') === 'false' &&
+         document.querySelector('#bot-memory-body')?.hidden === true`,
+        4000
+      );
+
       ws.mockLlm.setHandler(undefined);
     },
     { getChrome: () => chrome }

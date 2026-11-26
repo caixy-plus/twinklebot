@@ -4,7 +4,9 @@ import { createBotScopedExecutorClient } from "./executor-client.js";
 import { resolveBotWorkspaceRoot } from "../lib/bot-workspace.js";
 import {
   formatMessageSourceHeader,
+  formatMessageTimeHeader,
   sanitizeChannelMeta,
+  sanitizeClientTimeZone,
 } from "../lib/channel-integrations.js";
 import {
   createScreenLeasePool,
@@ -262,7 +264,23 @@ export function createRunner({
     if (cleanChannelMeta) {
       cleanMeta.channelMeta = cleanChannelMeta;
     }
+    const validClientTimeZone = sanitizeClientTimeZone(userMeta?.clientTimeZone);
+    if (validClientTimeZone) {
+      cleanMeta.clientTimeZone = validClientTimeZone;
+    }
+    if (userMeta?.sentAt && Number.isFinite(Date.parse(String(userMeta.sentAt)))) {
+      cleanMeta.sentAt = new Date(String(userMeta.sentAt)).toISOString();
+    }
     return cleanMeta;
+  }
+
+  function ensureServerSentAt(userMeta: any): Record<string, any> {
+    const base = userMeta && typeof userMeta === "object" ? { ...userMeta } : {};
+    const parsed = base.sentAt ? Date.parse(String(base.sentAt)) : NaN;
+    base.sentAt = Number.isFinite(parsed)
+      ? new Date(parsed).toISOString()
+      : new Date().toISOString();
+    return base;
   }
 
   function recordUserMessage(
@@ -284,19 +302,20 @@ export function createRunner({
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
     }
+    const effectiveMeta = ensureServerSentAt(userMeta);
     if (!activeRuns.has(sessionId)) {
-      startInternal(sessionId, text, { userMeta });
+      startInternal(sessionId, text, { userMeta: effectiveMeta });
       return { queued: false, steered: false, queueLength: 0 };
     }
     const entry = activeRuns.get(sessionId);
     // Live-steer the running task immediately instead of blocking behind a queue
-    recordUserMessage(sessionId, text, userMeta);
+    recordUserMessage(sessionId, text, effectiveMeta);
     if (typeof entry?.control?.steer === "function") {
-      entry.control.steer({ text, userMeta });
+      entry.control.steer({ text, userMeta: effectiveMeta });
       return { queued: false, steered: true, queueLength: 0 };
     }
     const q = pendingUserQueue.get(sessionId) || [];
-    q.push({ text, userMeta, skipUserEvent: true });
+    q.push({ text, userMeta: effectiveMeta, skipUserEvent: true });
     pendingUserQueue.set(sessionId, q);
     broadcastGlobal({
       type: "queue_updated",
@@ -410,6 +429,8 @@ export function createRunner({
       const sourcePrefixParts: string[] = [];
       const chHeader = formatMessageSourceHeader(userMeta);
       if (chHeader) sourcePrefixParts.push(chHeader);
+      const timeHeader = formatMessageTimeHeader(userMeta);
+      if (timeHeader) sourcePrefixParts.push(timeHeader);
       if (userMeta?.replyTo?.snippet) {
         sourcePrefixParts.push(
           `[Replying to ${userMeta.replyTo.author || "message"}: "${userMeta.replyTo.snippet}"]`
@@ -565,13 +586,17 @@ export function createRunner({
 
     const isDefaultRunTask = runTaskImpl === runTask;
 
+    const effectiveUserMeta = options.isBotHandoff
+      ? options.userMeta || null
+      : ensureServerSentAt(options.userMeta);
+
     Promise.resolve()
       .then(() => {
         if (session.type === "group" && isDefaultRunTask) {
           return runGroupConversation({
             groupSession: session,
             userText: text,
-            userMeta: options.userMeta || null,
+            userMeta: effectiveUserMeta,
             modelName,
             control: currentControl,
             emit,
@@ -604,7 +629,7 @@ export function createRunner({
         return runTaskImpl({
           sessionId,
           userText: text,
-          userMeta: options.userMeta || null,
+          userMeta: effectiveUserMeta,
           modelName,
           deps: {
             model,

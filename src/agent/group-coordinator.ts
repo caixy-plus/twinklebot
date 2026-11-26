@@ -3,7 +3,10 @@
  * Resolves @Bot mentions, scores member relevance when unmentioned, and bounds turn chains.
  */
 
-import { formatMessageSourceHeader } from "../lib/channel-integrations.js";
+import {
+  formatMessageSourceHeader,
+  formatMessageTimeHeader,
+} from "../lib/channel-integrations.js";
 
 export const MAX_GROUP_TURNS = 3;
 
@@ -177,8 +180,10 @@ export function buildGroupPromptContext(
   const lines = relevant.map((ev) => {
     if (ev.type === "user") {
       const sourceHeader = formatMessageSourceHeader(ev);
+      const timeHeader = formatMessageTimeHeader(ev);
+      const prefix = [sourceHeader, timeHeader].filter(Boolean).join(" ");
       const body = ev.text || "";
-      return sourceHeader ? `[User] ${sourceHeader} ${body}` : `[User]: ${body}`;
+      return prefix ? `[User] ${prefix} ${body}` : `[User]: ${body}`;
     }
     const speaker = ev.botName || "Bot";
     return `[${speaker}]: ${ev.text || ""}`;

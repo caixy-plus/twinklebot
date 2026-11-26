@@ -15,7 +15,9 @@ import {
   encodeFeishuPbFrame,
   extractFeishuMessageText,
   formatFeishuApiError,
+  formatLocalTimestampWithOffset,
   formatMessageSourceHeader,
+  formatMessageTimeHeader,
   generatePairingCode,
   isSenderAllowed,
   normalizeChannelsAuthStore,
@@ -24,6 +26,7 @@ import {
   parseTelegramUpdate,
   parseWhitelistIds,
   redactProxyUrlForDisplay,
+  sanitizeClientTimeZone,
   sanitizeTelegramProxyUrl,
   sendFeishuMessage,
   summarizeChannelStatusForBot,
@@ -2394,4 +2397,187 @@ test("Issue #22: clientSource is injected to LLM on first turn and steer while s
   );
   assert.match(groupPrompt, /\[User\] \[消息来源：TwinkleBot 手机网页端（Android）\] 群聊手机端测试/);
   assert.match(groupPrompt, /\[User\] \[消息来源：飞书机器人「项目群」 · 发送者：ou_grp\] 群聊飞书测试/);
+});
+
+test("Issue #24: server-anchored timestamp & client timezone helpers + LLM-only injection", async () => {
+  // 1. Helper validation across timezones (CST +08:00, IST +05:30, UTC +00:00) & invalid TZ fallback
+  assert.equal(sanitizeClientTimeZone("Asia/Shanghai"), "Asia/Shanghai");
+  assert.equal(sanitizeClientTimeZone("America/Argentina/Buenos_Aires"), "America/Argentina/Buenos_Aires");
+  assert.equal(sanitizeClientTimeZone("Invalid/Zone Name"), undefined);
+  assert.equal(sanitizeClientTimeZone("Mars/Olympus"), undefined);
+
+  const sampleIso = "2026-11-26T08:40:38.000Z";
+  assert.equal(
+    formatLocalTimestampWithOffset(sampleIso, "Asia/Shanghai"),
+    "2026-11-26 16:40:38 +08:00"
+  );
+  assert.equal(
+    formatLocalTimestampWithOffset(sampleIso, "Asia/Kolkata"),
+    "2026-11-26 14:10:38 +05:30"
+  );
+  assert.equal(
+    formatLocalTimestampWithOffset(sampleIso, "UTC"),
+    "2026-11-26 08:40:38 +00:00"
+  );
+  assert.equal(
+    formatMessageTimeHeader({ sentAt: sampleIso, clientTimeZone: "Asia/Shanghai" }),
+    "[发送时间：2026-11-26 16:40:38 +08:00]"
+  );
+  // Missing sentAt/at must return empty string so synthetic fixtures without timestamps aren't altered
+  assert.equal(formatMessageTimeHeader({ clientTimeZone: "Asia/Shanghai" }), "");
+
+  // 2. HTTP route ignores spoofed client sentAt, honors valid clientTimeZone, and injects LLM-only header on first turn & steer
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-time-hdr-"));
+  const { createStore } = await import("../src/store/index.js");
+  const { createRunner } = await import("../src/agent/runner.js");
+  const { createServer } = await import("../src/server/index.js");
+
+  const store = createStore(tmpDir);
+  const bot = store.ensureAdminBot();
+  store.writeSettings({
+    ...(store.readSettings() || {}),
+    model: "gpt-4o",
+    routing: { smartRouter: false },
+    providers: [
+      {
+        id: "openai_mock",
+        type: "openai",
+        name: "MockOpenAI",
+        apiKey: "sk-mock",
+        baseUrl: "http://127.0.0.1:1/v1",
+        models: ["gpt-4o"],
+        enabled: true,
+      },
+    ],
+  });
+
+  const capturedUserPrompts: string[] = [];
+  let releaseFirstTurn: (() => void) | undefined;
+  let firstTurnCalls = 0;
+
+  const fakeModel = {
+    async nextTurn(opts: any) {
+      firstTurnCalls += 1;
+      const serialized = JSON.stringify(opts?.history || opts?.input || []);
+      capturedUserPrompts.push(serialized);
+      if (firstTurnCalls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirstTurn = resolve;
+          setTimeout(resolve, 1500);
+        });
+      }
+      return { text: "ok", calls: [], thoughts: [], usage: { input: 10, output: 5 } };
+    },
+  };
+
+  const runner = createRunner({
+    store,
+    model: fakeModel,
+  });
+
+  const server = createServer({
+    config: {
+      port: 0,
+      host: "127.0.0.1",
+      dataDir: tmpDir,
+      deployEnv: "local",
+      models: ["gpt-4o"],
+      defaultModel: "gpt-4o",
+      writeRoots: [tmpDir],
+      screen: { width: 1440, height: 900 },
+    },
+    store,
+    executor: { health: async () => ({ ok: true }), call: async () => ({ ok: true }) } as any,
+    runner,
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const beforeMs = Date.now();
+    const res1 = await fetch(`${baseUrl}/api/sessions/${bot.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: "测试真实时间注入",
+        sentAt: "1999-01-01T00:00:00.000Z", // spoofed client clock must be ignored!
+        clientTimeZone: "Asia/Shanghai",
+        clientSource: { deviceKind: "desktop", platform: "web" },
+      }),
+    });
+    assert.equal(res1.status, 202, `Expected 202 from POST messages, got ${res1.status}`);
+
+    for (let i = 0; i < 60 && capturedUserPrompts.length < 1; i += 1) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.ok(capturedUserPrompts.length >= 1, "First turn should invoke model");
+    assert.match(
+      capturedUserPrompts[0],
+      /\[发送时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00\]/,
+      "First turn LLM prompt must include formatted Asia/Shanghai timestamp"
+    );
+    assert.doesNotMatch(
+      capturedUserPrompts[0],
+      /1999-01-01/,
+      "Spoofed client sentAt must never override server clock"
+    );
+
+    // Steer follow-up with Asia/Tokyo timezone (+09:00)
+    const res2 = await fetch(`${baseUrl}/api/sessions/${bot.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: "第二条追问时间",
+        clientTimeZone: "Asia/Tokyo",
+        clientSource: { deviceKind: "mobile", platform: "ios" },
+      }),
+    });
+    assert.equal(res2.status, 202, `Expected 202 from steered POST, got ${res2.status}`);
+    releaseFirstTurn?.();
+
+    for (let i = 0; i < 80 && runner.isSessionBusy(bot.id); i += 1) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const allPrompts = capturedUserPrompts.join("\n");
+    assert.match(
+      allPrompts,
+      /\[发送时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+09:00\]/,
+      "Steered turn LLM prompt must carry its +09:00 timestamp"
+    );
+
+    const userEvents = store.readEvents(bot.id).filter((e: any) => e.type === "user");
+    assert.equal(userEvents.length, 2);
+    assert.equal(userEvents[0].text, "测试真实时间注入");
+    assert.equal(userEvents[1].text, "第二条追问时间");
+    assert.ok(
+      Date.parse(userEvents[0].sentAt) >= beforeMs - 2000,
+      "Persisted sentAt must be server-anchored"
+    );
+
+    // 3. Group prompt history preserves [发送时间：…] alongside [消息来源：…]
+    const groupWithTime = buildGroupPromptContext(
+      [
+        {
+          type: "user",
+          seq: 1,
+          text: "群聊时间测试",
+          sentAt: sampleIso,
+          clientTimeZone: "Asia/Shanghai",
+          clientSource: { deviceKind: "desktop", platform: "darwin" },
+        },
+      ],
+      "继续",
+      10
+    );
+    assert.match(
+      groupWithTime,
+      /\[User\] \[消息来源：TwinkleBot 桌面端（macOS）\] \[发送时间：2026-11-26 16:40:38 \+08:00\] 群聊时间测试/
+    );
+  } finally {
+    runner.stop();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
