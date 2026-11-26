@@ -37,6 +37,14 @@ export interface AccountsState {
   accounts: AccountEntry[];
 }
 
+export interface AccountsNormalizeOptions {
+  /**
+   * Desktop/Electron has an embedded local backend ("local"), whereas pure-client
+   * mobile containers only support network-backed "lan" and "cloud" accounts.
+   */
+  allowLocal?: boolean;
+}
+
 export function normalizePreferredRoute(raw: unknown): AccountRoutePreference {
   const clean = String(raw || "").trim().toLowerCase();
   if (clean === "lan" || clean === "relay") return clean;
@@ -92,23 +100,30 @@ export function buildWsUrlFromBase(baseUrl = ""): string {
   return u.toString();
 }
 
-export function normalizeAccountsState(raw: any, localBaseUrl = ""): AccountsState {
+export function normalizeAccountsState(
+  raw: any,
+  localBaseUrl = "",
+  opts: AccountsNormalizeOptions = {}
+): AccountsState {
+  const allowLocal = opts?.allowLocal !== false;
   const src = raw && typeof raw === "object" ? raw : {};
   const list: any[] = Array.isArray(src.accounts) ? src.accounts : [];
-  const cleanLocalBase = localBaseUrl ? normalizeBaseUrl(localBaseUrl) : "";
-  const existingLocal = list.find(
-    (a) => a && (a.id === LOCAL_ACCOUNT_ID || a.type === "local")
-  );
-  const localAccount: AccountEntry = {
-    id: LOCAL_ACCOUNT_ID,
-    type: "local",
-    name: String(existingLocal?.name || "本地账号").trim() || "本地账号",
-    baseUrl: cleanLocalBase || existingLocal?.baseUrl || "",
-    wsUrl: cleanLocalBase
-      ? buildWsUrlFromBase(cleanLocalBase)
-      : existingLocal?.wsUrl || "",
-    createdAt: existingLocal?.createdAt || new Date().toISOString(),
-  };
+  const cleanLocalBase = allowLocal && localBaseUrl ? normalizeBaseUrl(localBaseUrl) : "";
+  const existingLocal = allowLocal
+    ? list.find((a) => a && (a.id === LOCAL_ACCOUNT_ID || a.type === "local"))
+    : null;
+  const localAccount: AccountEntry | null = allowLocal
+    ? {
+        id: LOCAL_ACCOUNT_ID,
+        type: "local",
+        name: String(existingLocal?.name || "本地账号").trim() || "本地账号",
+        baseUrl: cleanLocalBase || existingLocal?.baseUrl || "",
+        wsUrl: cleanLocalBase
+          ? buildWsUrlFromBase(cleanLocalBase)
+          : existingLocal?.wsUrl || "",
+        createdAt: existingLocal?.createdAt || new Date().toISOString(),
+      }
+    : null;
 
   const remoteAccounts: AccountEntry[] = [];
   const seenIds = new Set<string>([LOCAL_ACCOUNT_ID]);
@@ -156,7 +171,21 @@ export function normalizeAccountsState(raw: any, localBaseUrl = ""): AccountsSta
     });
   }
 
-  const accounts = [localAccount, ...remoteAccounts];
+  if (!allowLocal) {
+    const requestedActive = String(src.activeAccountId || "").trim();
+    const activeAccountId =
+      requestedActive &&
+      requestedActive !== LOCAL_ACCOUNT_ID &&
+      remoteAccounts.some((a) => a.id === requestedActive)
+        ? requestedActive
+        : remoteAccounts[0]?.id || "";
+    return {
+      activeAccountId,
+      accounts: remoteAccounts,
+    };
+  }
+
+  const accounts = [localAccount!, ...remoteAccounts];
   const requestedActive = String(src.activeAccountId || LOCAL_ACCOUNT_ID).trim();
   const activeAccountId = accounts.some((a) => a.id === requestedActive)
     ? requestedActive
@@ -168,8 +197,12 @@ export function normalizeAccountsState(raw: any, localBaseUrl = ""): AccountsSta
   };
 }
 
-export function upsertCloudAccount(state: any, input: Record<string, any> = {}): AccountsState {
-  const current = normalizeAccountsState(state);
+export function upsertCloudAccount(
+  state: any,
+  input: Record<string, any> = {},
+  opts: AccountsNormalizeOptions = {}
+): AccountsState {
+  const current = normalizeAccountsState(state, "", opts);
   if (String(input.type || "").trim().toLowerCase() === "local") {
     throw new Error("Only one local account is allowed");
   }
@@ -226,8 +259,12 @@ export function upsertCloudAccount(state: any, input: Record<string, any> = {}):
   };
 }
 
-export function upsertLanAccount(state: any, input: Record<string, any> = {}): AccountsState {
-  const current = normalizeAccountsState(state);
+export function upsertLanAccount(
+  state: any,
+  input: Record<string, any> = {},
+  opts: AccountsNormalizeOptions = {}
+): AccountsState {
+  const current = normalizeAccountsState(state, "", opts);
   const normBase = normalizeBaseUrl(input.baseUrl || input.serverUrl || "");
   if (!normBase) {
     throw new Error("LAN server URL is required");
@@ -288,8 +325,12 @@ export function upsertLanAccount(state: any, input: Record<string, any> = {}): A
   };
 }
 
-export function upsertRelayForLanAccount(state: any, input: Record<string, any> = {}): AccountsState {
-  const current = normalizeAccountsState(state);
+export function upsertRelayForLanAccount(
+  state: any,
+  input: Record<string, any> = {},
+  opts: AccountsNormalizeOptions = {}
+): AccountsState {
+  const current = normalizeAccountsState(state, "", opts);
   const normRelay = normalizeBaseUrl(input.relayUrl || input.baseUrl || input.serverUrl || "");
   if (!normRelay) {
     throw new Error("Relay server URL is required");
@@ -454,16 +495,21 @@ export function parseRelayInvite(rawInput = ""): ParsedRelayInvite | null {
   return null;
 }
 
-export function removeCloudAccount(state: any, id: string): AccountsState {
+export function removeCloudAccount(
+  state: any,
+  id: string,
+  opts: AccountsNormalizeOptions = {}
+): AccountsState {
   const targetId = String(id || "").trim();
   if (targetId === LOCAL_ACCOUNT_ID) {
     throw new Error("Local account cannot be deleted");
   }
-  const current = normalizeAccountsState(state);
+  const current = normalizeAccountsState(state, "", opts);
   const nextAccounts = current.accounts.filter((a) => a.id !== targetId);
+  const fallbackActive = opts?.allowLocal === false ? (nextAccounts[0]?.id || "") : LOCAL_ACCOUNT_ID;
   const nextActive =
     current.activeAccountId === targetId
-      ? LOCAL_ACCOUNT_ID
+      ? fallbackActive
       : current.activeAccountId;
   return {
     activeAccountId: nextActive,
@@ -471,8 +517,12 @@ export function removeCloudAccount(state: any, id: string): AccountsState {
   };
 }
 
-export function setActiveAccount(state: any, id: string): AccountsState {
-  const current = normalizeAccountsState(state);
+export function setActiveAccount(
+  state: any,
+  id: string,
+  opts: AccountsNormalizeOptions = {}
+): AccountsState {
+  const current = normalizeAccountsState(state, "", opts);
   const targetId = String(id || "").trim();
   const found = current.accounts.find((a) => a.id === targetId);
   if (!found) {

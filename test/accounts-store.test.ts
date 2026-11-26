@@ -65,3 +65,30 @@ test("upsertCloudAccount, setActiveAccount, and removeCloudAccount manage N clou
   assert.equal(state.activeAccountId, LOCAL_ACCOUNT_ID);
   assert.equal(state.accounts.length, 2);
 });
+
+test("mobile mode (allowLocal=false) strips local account, avoids local fallback, and returns empty state when all removed", () => {
+  const mobileOpts = { allowLocal: false };
+  const emptyInit = normalizeAccountsState(null, "http://127.0.0.1:3230", mobileOpts);
+  assert.equal(emptyInit.activeAccountId, "");
+  assert.deepEqual(emptyInit.accounts, []);
+
+  // Legacy persisted state containing a ghost "local" account is sanitized automatically
+  const migrated = normalizeAccountsState(
+    {
+      activeAccountId: LOCAL_ACCOUNT_ID,
+      accounts: [
+        { id: LOCAL_ACCOUNT_ID, type: "local", name: "本地账号", baseUrl: "http://127.0.0.1:3230" },
+        { id: "cloud-1", type: "cloud", name: "云端节点", baseUrl: "https://bot.acme.com" },
+      ],
+    },
+    "http://127.0.0.1:3230",
+    mobileOpts
+  );
+  assert.equal(migrated.accounts.length, 1);
+  assert.equal(migrated.accounts[0].id, "cloud-1");
+  assert.equal(migrated.activeAccountId, "cloud-1");
+
+  const afterRemove = removeCloudAccount(migrated, "cloud-1", mobileOpts);
+  assert.equal(afterRemove.activeAccountId, "");
+  assert.deepEqual(afterRemove.accounts, []);
+});

@@ -2,7 +2,9 @@ import { getState, runtimeRefs, setState } from "../state/store.js";
 import {
   getActiveAccountMeta,
   getNetworkThresholds,
+  isMobileAccountEnvironment,
   isRemoteAccountType,
+  markActiveAccountOffline,
   reportHttpOutcome,
   reportHttpSlowInFlight,
 } from "./network-monitor.js";
@@ -162,6 +164,31 @@ export async function apiFetch(url: string, options: any = {}): Promise<Response
       const staleErr: any = new Error("stale account fetch ignored after switch");
       staleErr.code = "STALE_ACCOUNT_EPOCH";
       throw staleErr;
+    }
+    const isGatewayUnreachableStatus =
+      res.status === 502 ||
+      res.status === 503 ||
+      res.status === 504 ||
+      (res.status >= 520 && res.status <= 530);
+    const isRemoteAuthFailure = isRemote && res.status === 401;
+
+    if (isRemote && (isGatewayUnreachableStatus || isRemoteAuthFailure)) {
+      const failureReason = isRemoteAuthFailure ? "auth_failed" : `http_${res.status}`;
+      reportHttpOutcome({
+        ok: false,
+        elapsedMs: Date.now() - startedAt,
+        networkError: true,
+        accountType,
+      });
+      if (isLanNode) {
+        triggerLanUnreachableFallback(new Error(failureReason), {
+          suppressModal: Boolean(suppressLanOfflineModal),
+        });
+      }
+      if (isMobileAccountEnvironment(getState()) || isRemoteAuthFailure) {
+        markActiveAccountOffline(failureReason);
+      }
+      return res;
     }
     if (isLanNode) {
       markLanReachable();

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { resolveEffectiveLocale, type ResolvedLocale } from "/shared/i18n.js";
+import { isMobileAppTarget } from "../mobile-bridge.js";
 import {
   DEFAULT_KIMI_CU_MCP_CONFIG,
 } from "./constants.js";
@@ -190,6 +191,7 @@ export interface HtmlPreviewModalState {
 
 export interface AppState {
   // Multi-account & transport
+  isMobileClient?: boolean;
   accountsState: {
     activeAccountId: string;
     accounts: Array<{
@@ -528,19 +530,26 @@ export function writeUiPrefs(patch: Partial<UiPrefsSnapshot>): UiPrefsSnapshot {
 
 export function createInitialState(): AppState {
   const savedUiPrefs = readUiPrefs();
+  const mobileClient = isMobileAppTarget();
   return {
-    accountsState: {
-      activeAccountId: "local",
-      accounts: [
-        {
-          id: "local",
-          type: "local",
-          name: "本地电脑",
-          baseUrl: "",
-          wsUrl: "",
+    isMobileClient: mobileClient,
+    accountsState: mobileClient
+      ? {
+          activeAccountId: "",
+          accounts: [],
+        }
+      : {
+          activeAccountId: "local",
+          accounts: [
+            {
+              id: "local",
+              type: "local",
+              name: "本地电脑",
+              baseUrl: "",
+              wsUrl: "",
+            },
+          ],
         },
-      ],
-    },
     localBackendUrl: "",
     localControlToken: "",
     activeBaseUrl: "",
@@ -799,6 +808,7 @@ const listeners = new Set<() => void>();
 export const runtimeRefs: {
   accountAbortController: AbortController | null;
   wsSocket: WebSocket | null;
+  wsConnectTimeoutTimer: any;
   wsReconnectTimer: any;
   wsPingTimer: any;
   wsPongTimeoutTimer: any;
@@ -812,6 +822,7 @@ export const runtimeRefs: {
   wsHasOpenedInEpoch: boolean;
   inflightReconnectSync: Promise<any> | null;
   eventSource: EventSource | null;
+  sseConnectTimeoutTimer: any;
   selectSessionSeq: number;
   nextSelectOpts: { preserveScrollIfUnpinned?: boolean } | null;
   settingsMutationSeq: number;
@@ -828,6 +839,7 @@ export const runtimeRefs: {
 } = {
   accountAbortController: null,
   wsSocket: null,
+  wsConnectTimeoutTimer: null,
   wsReconnectTimer: null,
   wsPingTimer: null,
   wsPongTimeoutTimer: null,
@@ -841,6 +853,7 @@ export const runtimeRefs: {
   wsHasOpenedInEpoch: false,
   inflightReconnectSync: null,
   eventSource: null,
+  sseConnectTimeoutTimer: null,
   selectSessionSeq: 0,
   nextSelectOpts: null,
   settingsMutationSeq: 0,

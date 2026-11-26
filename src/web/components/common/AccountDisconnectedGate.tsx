@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { parseRelayInvite } from "/accounts-store.js";
-import { isMobileAppTarget } from "../../mobile-bridge.js";
+import {
+  isNativeQrScannerAvailable,
+  scanQrCodeNative,
+} from "../../mobile-bridge.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
   importRemoteAccountFromInput,
   initiateLanPairing,
   refreshActiveAccountConnection,
   scanAndRenderLanNodes,
+  showToast,
   submitLanPairingCode,
-  switchAccount,
+  switchAccountFromGate,
 } from "../../services/actions.js";
 import {
   getActiveAccountMeta,
+  isMobileAccountEnvironment,
   shouldShowAccountDisconnectedGate,
 } from "../../services/network-monitor.js";
 import { setState, useStore } from "../../state/store.js";
@@ -21,6 +26,7 @@ import { UiIcon } from "./Icon.js";
 type GateSubPanel = "none" | "add-cloud" | "lan-pair";
 
 export function AccountDisconnectedGate() {
+  const isMobileClient = useStore((s) => s.isMobileClient);
   const accountsState = useStore((s) => s.accountsState);
   const networkHealth = useStore((s) => s.networkHealth);
   const lanNodeOffline = useStore((s) => s.lanNodeOffline);
@@ -34,21 +40,25 @@ export function AccountDisconnectedGate() {
   const { locale, t } = useI18n();
 
   const gateSnapshot = {
+    isMobileClient,
     accountsState,
     networkHealth,
     lanNodeOffline,
     updateState,
   } as any;
   const isOpen = shouldShowAccountDisconnectedGate(gateSnapshot);
+  const isMobileEnv = isMobileAccountEnvironment(gateSnapshot);
   const accMeta = getActiveAccountMeta(gateSnapshot);
 
   const dialogRef = useRef<HTMLDialogElement | null>(null);
   const refreshBtnRef = useRef<HTMLButtonElement | null>(null);
+  const addCloudBtnRef = useRef<HTMLButtonElement | null>(null);
   const isOpenRef = useRef(isOpen);
   isOpenRef.current = isOpen;
 
   const [refreshing, setRefreshing] = useState(false);
   const [switchingAccountId, setSwitchingAccountId] = useState<string | null>(null);
+  const [qrScanning, setQrScanning] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; kind: "info" | "error" }>({
     text: "",
     kind: "info",
@@ -61,17 +71,66 @@ export function AccountDisconnectedGate() {
   const [manualLanIp, setManualLanIp] = useState("");
   const [pairCode, setPairCode] = useState("");
 
-  const accounts = Array.isArray(accountsState?.accounts) ? accountsState.accounts : [];
+  const rawAccounts = Array.isArray(accountsState?.accounts) ? accountsState.accounts : [];
+  const accounts = isMobileEnv
+    ? rawAccounts.filter((a: any) => a && a.type !== "local")
+    : rawAccounts;
   const activeAccountId = accountsState?.activeAccountId || "";
   const activeAccount = accounts.find((a: any) => a.id === activeAccountId) || null;
-  const otherAccounts = accounts.filter((a: any) => a.id !== activeAccountId);
-  const showMobileLanTools = isMobileViewport() || isMobileAppTarget();
+  const otherAccounts = activeAccount
+    ? accounts.filter((a: any) => a.id !== activeAccount.id)
+    : accounts;
+  const isSetupMode = isMobileEnv && !activeAccount;
+  const showMobileLanTools = isMobileViewport() || isMobileEnv;
+  const showScanQrBtn =
+    showMobileLanTools && (isNativeQrScannerAvailable() || typeof window !== "undefined");
+
+  // Collapse any underlying mobile sheets/popovers/modals whenever the blocking gate activates
+  useEffect(() => {
+    if (!isOpen) return;
+    setState((prev) => {
+      const hasUnderlyingOverlay =
+        prev.mobileSheets.inspectorOpen ||
+        prev.mobileSheets.settingsOpen ||
+        prev.mobileSheets.nodeOpen ||
+        prev.mobileSheets.botEditorOpen ||
+        prev.settingsModal.open ||
+        prev.appsModalOpen ||
+        prev.searchModalOpen ||
+        prev.openPopover !== null ||
+        prev.lanOfflineModalShown;
+      if (!hasUnderlyingOverlay) return prev;
+      return {
+        openPopover: null,
+        searchModalOpen: false,
+        appsModalOpen: false,
+        lanOfflineModalShown: false,
+        settingsModal: { ...prev.settingsModal, open: false },
+        mobileSheets: {
+          ...prev.mobileSheets,
+          inspectorOpen: false,
+          settingsOpen: false,
+          nodeOpen: false,
+          botEditorOpen: false,
+        },
+      };
+    });
+  }, [isOpen]);
+
+  // Auto-open LAN pairing sub-panel when entering setup mode online on mobile
+  useEffect(() => {
+    if (isOpen && isSetupMode && showMobileLanTools && !networkHealth.browserOffline) {
+      setSubPanel((prev) => (prev === "none" ? "lan-pair" : prev));
+      void scanAndRenderLanNodes();
+    }
+  }, [isOpen, isSetupMode, showMobileLanTools, networkHealth.browserOffline]);
 
   // Reset transient feedback/sub-panels when gate closes or active account changes
   useEffect(() => {
     if (!isOpen) {
       setRefreshing(false);
       setSwitchingAccountId(null);
+      setQrScanning(false);
       setFeedback({ text: "", kind: "info" });
       setSubPanel("none");
       setPairCode("");
@@ -96,7 +155,7 @@ export function AccountDisconnectedGate() {
       }
       queueMicrotask(() => {
         if (isOpenRef.current && dialogRef.current?.open) {
-          refreshBtnRef.current?.focus();
+          (refreshBtnRef.current || addCloudBtnRef.current)?.focus();
         }
       });
     } else if (dialog.open) {
@@ -138,7 +197,7 @@ export function AccountDisconnectedGate() {
   };
 
   const handleRefreshAccount = async () => {
-    if (refreshing || switchingAccountId) return;
+    if (refreshing || switchingAccountId || !activeAccount) return;
     setRefreshing(true);
     setFeedback({ text: t("gate.refreshingAccountToast", { label: accMeta.label }), kind: "info" });
     try {
@@ -159,15 +218,21 @@ export function AccountDisconnectedGate() {
   const handleSwitchAccount = async (targetId: string) => {
     if (!targetId || targetId === activeAccountId || switchingAccountId || refreshing) return;
     const targetAcc = accounts.find((a: any) => a.id === targetId);
+    const targetName =
+      targetAcc?.name || targetAcc?.hostname || targetAcc?.baseUrl || t("gate.targetAccountFallback");
     setSwitchingAccountId(targetId);
     setFeedback({
-      text: t("gate.switchingAccountStatus", {
-        name: targetAcc?.name || targetAcc?.baseUrl || t("gate.targetAccountFallback"),
-      }),
+      text: t("gate.switchingAccountStatus", { name: targetName }),
       kind: "info",
     });
     try {
-      await switchAccount(targetId);
+      const res = await switchAccountFromGate(targetId);
+      if (!res.ok && isOpenRef.current) {
+        setFeedback({
+          text: res.error || t("gate.stillUnreachableError", { label: targetName }),
+          kind: "error",
+        });
+      }
     } finally {
       setSwitchingAccountId(null);
     }
@@ -184,6 +249,7 @@ export function AccountDisconnectedGate() {
         name: cloudName.trim(),
         authToken: cloudToken.trim(),
         switchAfter: true,
+        requireReachable: true,
       });
       setCloudUrl("");
       setCloudName("");
@@ -196,6 +262,44 @@ export function AccountDisconnectedGate() {
       });
     } finally {
       setCloudSaving(false);
+    }
+  };
+
+  const handleGateScanCloudQr = async () => {
+    if (qrScanning || refreshing || switchingAccountId) return;
+    setQrScanning(true);
+    setFeedback({ text: "", kind: "info" });
+    try {
+      const scanRes = await scanQrCodeNative(t("mobile.qrScanPrompt"));
+      if (scanRes.unsupported) {
+        showToast(t("mobile.qrUnsupportedToast"));
+        setSubPanel("add-cloud");
+        return;
+      }
+      if (scanRes.permissionDenied) {
+        setFeedback({ text: t("mobile.qrPermissionDeniedToast"), kind: "error" });
+        return;
+      }
+      if (scanRes.cancelled || !scanRes.ok || !scanRes.content) {
+        return;
+      }
+      const imported = await importRemoteAccountFromInput({
+        rawUrlOrInvite: scanRes.content,
+        switchAfter: true,
+        requireReachable: true,
+      });
+      showToast(
+        t("mobile.cloudQrAddedToast", {
+          name: imported.account?.name || imported.account?.baseUrl || "",
+        })
+      );
+    } catch (err: any) {
+      setFeedback({
+        text: t("mobile.qrInvalidToast", { error: err?.message || t("actions.requestError") }),
+        kind: "error",
+      });
+    } finally {
+      setQrScanning(false);
     }
   };
 
@@ -223,10 +327,16 @@ export function AccountDisconnectedGate() {
 
   const titleText = networkHealth.browserOffline
     ? t("gate.titleOffline")
-    : t("gate.titleLost");
+    : isSetupMode
+      ? t("gate.titleSetup")
+      : t("gate.titleLost");
   const descText = networkHealth.browserOffline
-    ? t("gate.descOffline", { label: accMeta.label })
-    : t("gate.descLost", { label: accMeta.label });
+    ? isSetupMode
+      ? t("gate.descSetup")
+      : t("gate.descOffline", { label: accMeta.label })
+    : isSetupMode
+      ? t("gate.descSetup")
+      : t("gate.descLost", { label: accMeta.label });
 
   return (
     <dialog
@@ -237,6 +347,7 @@ export function AccountDisconnectedGate() {
       aria-labelledby="account-gate-title"
       aria-describedby="account-gate-desc"
       data-account-gate-open={isOpen ? "true" : "false"}
+      data-account-gate-mode={isSetupMode ? "setup" : "disconnected"}
       data-account-type={accMeta.type}
       data-browser-offline={networkHealth.browserOffline ? "true" : "false"}
       onCancel={handleCancel}
@@ -263,55 +374,59 @@ export function AccountDisconnectedGate() {
           </p>
         </div>
 
-        <div className="account-gate-current-card" data-current-account-id={activeAccountId}>
-          <div className="account-gate-current-meta">
-            <div className="account-gate-current-name">
-              <UiIcon
-                name={accMeta.type === "cloud" ? "cloud" : "laptop"}
-                className="inline-ui-icon"
-                size={15}
-              />
-              <span>{accMeta.label}</span>
+        {!isSetupMode && activeAccount && (
+          <>
+            <div className="account-gate-current-card" data-current-account-id={activeAccountId}>
+              <div className="account-gate-current-meta">
+                <div className="account-gate-current-name">
+                  <UiIcon
+                    name={accMeta.type === "cloud" ? "cloud" : "laptop"}
+                    className="inline-ui-icon"
+                    size={15}
+                  />
+                  <span>{accMeta.label}</span>
+                </div>
+                <div className="account-gate-current-sub">
+                  {activeAccount?.baseUrl ||
+                    activeAccount?.relayUrl ||
+                    (accMeta.type === "lan"
+                      ? t("gate.lanWorkspaceLabel")
+                      : t("gate.cloudWorkspaceLabel"))}
+                </div>
+              </div>
+              <span className="account-gate-status-badge">
+                <span className="account-gate-status-dot" aria-hidden="true" />
+                {refreshing ? t("gate.statusRefreshing") : t("gate.statusDisconnected")}
+              </span>
             </div>
-            <div className="account-gate-current-sub">
-              {activeAccount?.baseUrl ||
-                activeAccount?.relayUrl ||
-                (accMeta.type === "lan"
-                  ? t("sidebar.lanComputer")
-                  : t("gate.cloudWorkspaceLabel"))}
-            </div>
-          </div>
-          <span className="account-gate-status-badge">
-            <span className="account-gate-status-dot" aria-hidden="true" />
-            {refreshing ? t("gate.statusRefreshing") : t("gate.statusDisconnected")}
-          </span>
-        </div>
 
-        <button
-          ref={refreshBtnRef}
-          id="account-gate-refresh-btn"
-          type="button"
-          className="account-gate-primary-btn"
-          data-account-gate-action="refresh"
-          disabled={refreshing || Boolean(switchingAccountId)}
-          onClick={handleRefreshAccount}
-        >
-          <svg
-            className={`account-gate-btn-icon${refreshing ? " is-spinning" : ""}`}
-            viewBox="0 0 20 20"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M15.8 10a5.8 5.8 0 1 1-1.7-4.1M15.8 4.4v3.4h-3.4"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-          <span>{refreshing ? t("gate.refreshingBtn") : t("gate.refreshBtn")}</span>
-        </button>
+            <button
+              ref={refreshBtnRef}
+              id="account-gate-refresh-btn"
+              type="button"
+              className="account-gate-primary-btn"
+              data-account-gate-action="refresh"
+              disabled={refreshing || Boolean(switchingAccountId)}
+              onClick={handleRefreshAccount}
+            >
+              <svg
+                className={`account-gate-btn-icon${refreshing ? " is-spinning" : ""}`}
+                viewBox="0 0 20 20"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M15.8 10a5.8 5.8 0 1 1-1.7-4.1M15.8 4.4v3.4h-3.4"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <span>{refreshing ? t("gate.refreshingBtn") : t("gate.refreshBtn")}</span>
+            </button>
+          </>
+        )}
 
         {feedback.text && (
           <div
@@ -342,9 +457,11 @@ export function AccountDisconnectedGate() {
           >
             {otherAccounts.length === 0 ? (
               <div className="account-gate-empty-hint">
-                {t("gate.onlyOneAccountHint", {
-                  lanHint: showMobileLanTools ? t("gate.orPairLanHint") : "",
-                })}
+                {isSetupMode
+                  ? t("gate.setupEmptyHint")
+                  : t("gate.onlyOneAccountHint", {
+                      lanHint: showMobileLanTools ? t("gate.orPairLanHint") : "",
+                    })}
               </div>
             ) : (
               otherAccounts.map((acc: any) => {
@@ -355,7 +472,7 @@ export function AccountDisconnectedGate() {
                   : acc.baseUrl ||
                     acc.relayUrl ||
                     (acc.type === "lan"
-                      ? t("sidebar.lanComputer")
+                      ? t("gate.lanWorkspaceLabel")
                       : t("sidebar.cloudServiceFallback"));
                 const accDisplayName = resolveLocalizedAccountName(
                   acc,
@@ -400,6 +517,7 @@ export function AccountDisconnectedGate() {
 
           <div className="account-gate-secondary-actions">
             <button
+              ref={addCloudBtnRef}
               id="account-gate-add-cloud-btn"
               type="button"
               className={`account-gate-secondary-btn${subPanel === "add-cloud" ? " is-active" : ""}`}
@@ -411,6 +529,17 @@ export function AccountDisconnectedGate() {
             >
               {t("gate.addCloudBtn")}
             </button>
+            {showScanQrBtn && (
+              <button
+                id="account-gate-scan-qr-btn"
+                type="button"
+                className="account-gate-secondary-btn"
+                disabled={refreshing || Boolean(switchingAccountId) || qrScanning}
+                onClick={() => void handleGateScanCloudQr()}
+              >
+                {qrScanning ? t("gate.connecting") : t("gate.scanQrBtn")}
+              </button>
+            )}
             {showMobileLanTools && (
               <button
                 id="account-gate-lan-btn"
