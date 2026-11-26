@@ -1,7 +1,7 @@
 import { useEffect, type RefObject } from "react";
 import { isMobileViewport, syncMobileChatBottomMetrics } from "../mobile-ui.js";
 import { scrollChatStreamToBottom } from "../services/actions.js";
-import { getState, setState, useStore } from "../state/store.js";
+import { getState, runtimeRefs, setState, useStore } from "../state/store.js";
 
 export function useChatScrollPin(
   eventStreamRef: RefObject<HTMLDivElement | null>,
@@ -17,6 +17,12 @@ export function useChatScrollPin(
 
     let touchStartY: number | null = null;
     let userInteractingWithStream = false;
+    let wheelInteractingUntil = 0;
+    let programmaticScrollUntil = 0;
+
+    const markProgrammaticScroll = (ms = 140) => {
+      programmaticScrollUntil = Math.max(programmaticScrollUntil, Date.now() + ms);
+    };
 
     const dismissMobileKeyboardIfFocused = () => {
       if (!isMobileViewport() || typeof document === "undefined") return;
@@ -26,12 +32,22 @@ export function useChatScrollPin(
         active.id === "message-input" ||
         Boolean(composerWrapRef.current && composerWrapRef.current.contains(active));
       if (isComposerField) {
+        runtimeRefs.lastStreamKeyboardDismissAt = Date.now();
         active.blur();
       }
     };
 
     const clearScrollPinGuard = () => {
       userInteractingWithStream = true;
+      programmaticScrollUntil = 0;
+      if (getState().scrollPinGuardUntil !== 0) {
+        setState({ scrollPinGuardUntil: 0 });
+      }
+    };
+
+    const handleWheel = () => {
+      wheelInteractingUntil = Date.now() + 250;
+      programmaticScrollUntil = 0;
       if (getState().scrollPinGuardUntil !== 0) {
         setState({ scrollPinGuardUntil: 0 });
       }
@@ -60,6 +76,19 @@ export function useChatScrollPin(
       userInteractingWithStream = false;
     };
 
+    const handleComposerFocusIn = (ev: FocusEvent) => {
+      const target = ev.target as HTMLElement | null;
+      if (
+        target &&
+        (target.id === "message-input" ||
+          Boolean(composerWrapRef.current && composerWrapRef.current.contains(target)))
+      ) {
+        userInteractingWithStream = false;
+        wheelInteractingUntil = 0;
+        touchStartY = null;
+      }
+    };
+
     const handleScroll = () => {
       const s = getState();
       if (s.scrollPinGuardUntil && Date.now() < s.scrollPinGuardUntil) {
@@ -68,9 +97,15 @@ export function useChatScrollPin(
         }
         return;
       }
-      if (userInteractingWithStream) {
+      const hasActiveUserScroll =
+        userInteractingWithStream || Date.now() < wheelInteractingUntil;
+      if (!hasActiveUserScroll && Date.now() < programmaticScrollUntil) {
+        return;
+      }
+      if (hasActiveUserScroll) {
         dismissMobileKeyboardIfFocused();
         userInteractingWithStream = false;
+        wheelInteractingUntil = 0;
       }
       const distFromBottom =
         streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight;
@@ -85,26 +120,33 @@ export function useChatScrollPin(
 
     const handleCaptureLoad = () => {
       if (getState().autoScrollPinned) {
+        markProgrammaticScroll(140);
         streamEl.scrollTop = streamEl.scrollHeight;
       }
     };
 
     streamEl.addEventListener("pointerdown", clearScrollPinGuard, { passive: true });
-    streamEl.addEventListener("pointerup", handlePointerUp, { passive: true });
-    streamEl.addEventListener("pointercancel", handlePointerUp, { passive: true });
     streamEl.addEventListener("touchstart", handleTouchStart, { passive: true });
     streamEl.addEventListener("touchmove", handleTouchMove, { passive: true });
-    streamEl.addEventListener("touchend", handleTouchEnd, { passive: true });
-    streamEl.addEventListener("touchcancel", handleTouchEnd, { passive: true });
-    streamEl.addEventListener("wheel", clearScrollPinGuard, { passive: true });
+    streamEl.addEventListener("wheel", handleWheel, { passive: true });
     streamEl.addEventListener("scroll", handleScroll, { passive: true });
     streamEl.addEventListener("load", handleCaptureLoad, true);
+    if (typeof window !== "undefined") {
+      window.addEventListener("pointerup", handlePointerUp, { passive: true });
+      window.addEventListener("pointercancel", handlePointerUp, { passive: true });
+      window.addEventListener("touchend", handleTouchEnd, { passive: true });
+      window.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+    }
+    if (typeof document !== "undefined") {
+      document.addEventListener("focusin", handleComposerFocusIn, true);
+    }
 
     let observer: ResizeObserver | null = null;
     if (typeof ResizeObserver === "function") {
       observer = new ResizeObserver(() => {
         syncMobileChatBottomMetrics();
         if (getState().autoScrollPinned) {
+          markProgrammaticScroll(140);
           streamEl.scrollTop = streamEl.scrollHeight;
         }
       });
@@ -116,15 +158,20 @@ export function useChatScrollPin(
 
     return () => {
       streamEl.removeEventListener("pointerdown", clearScrollPinGuard);
-      streamEl.removeEventListener("pointerup", handlePointerUp);
-      streamEl.removeEventListener("pointercancel", handlePointerUp);
       streamEl.removeEventListener("touchstart", handleTouchStart);
       streamEl.removeEventListener("touchmove", handleTouchMove);
-      streamEl.removeEventListener("touchend", handleTouchEnd);
-      streamEl.removeEventListener("touchcancel", handleTouchEnd);
-      streamEl.removeEventListener("wheel", clearScrollPinGuard);
+      streamEl.removeEventListener("wheel", handleWheel);
       streamEl.removeEventListener("scroll", handleScroll);
       streamEl.removeEventListener("load", handleCaptureLoad, true);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointercancel", handlePointerUp);
+        window.removeEventListener("touchend", handleTouchEnd);
+        window.removeEventListener("touchcancel", handleTouchEnd);
+      }
+      if (typeof document !== "undefined") {
+        document.removeEventListener("focusin", handleComposerFocusIn, true);
+      }
       observer?.disconnect();
     };
   }, [eventStreamRef, composerWrapRef]);

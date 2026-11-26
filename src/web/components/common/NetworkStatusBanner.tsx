@@ -25,6 +25,7 @@ export function NetworkStatusBanner({
   contextHint = "",
   onlyWhenOffline = false,
 }: NetworkStatusBannerProps) {
+  const isMobileClient = useStore((s) => s.isMobileClient);
   const networkHealth = useStore((s) => s.networkHealth);
   const lanNodeOffline = useStore((s) => s.lanNodeOffline);
   const accountsState = useStore((s) => s.accountsState);
@@ -34,6 +35,7 @@ export function NetworkStatusBanner({
 
   const accMeta = getActiveAccountMeta(
     {
+      isMobileClient,
       accountsState,
       networkHealth,
       lanNodeOffline,
@@ -119,6 +121,8 @@ export function NetworkStatusBanner({
       message = t("net.offlineRetrying");
     } else if (networkHealth.browserOffline) {
       message = t("net.offlineBrowser");
+    } else if (networkHealth.reason === "auth_failed") {
+      message = t("gate.authFailedError", { name: accountLabel });
     } else {
       message = t("net.offlineAccount", { label: accountLabel });
     }

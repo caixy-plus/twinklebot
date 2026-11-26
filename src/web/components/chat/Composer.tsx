@@ -6,6 +6,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import { isMobileViewport, syncMobileChatBottomMetrics } from "../../mobile-ui.js";
@@ -162,17 +163,32 @@ export function Composer({
     }
   };
 
-  const preserveComposerFocusOnSend = (e: ReactMouseEvent<HTMLButtonElement>) => {
+  const preserveComposerFocusOnSend = (
+    e: ReactMouseEvent<HTMLButtonElement> | ReactPointerEvent<HTMLButtonElement>
+  ) => {
     if (typeof document !== "undefined" && document.activeElement === textareaRef.current) {
       setState({ keepInputFocusedOnSend: true });
     }
-    if (e.type === "mousedown") {
+    if (e.type === "mousedown" || e.type === "pointerdown") {
       e.preventDefault();
     }
   };
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+    const inputEl = textareaRef.current;
+    const shouldHoldFocus =
+      Boolean(inputEl) &&
+      (getState().keepInputFocusedOnSend ||
+        (typeof document !== "undefined" &&
+          (document.activeElement === inputEl ||
+            document.activeElement?.id === "send-btn")));
+    if (shouldHoldFocus) {
+      setState({ keepInputFocusedOnSend: true });
+      if (typeof document !== "undefined" && document.activeElement !== inputEl) {
+        inputEl?.focus?.({ preventScroll: true });
+      }
+    }
     sendUserMessage(composerText);
   };
 

@@ -403,16 +403,16 @@ export function scrollChatStreamToBottom(opts: { guardMs?: number; settle?: bool
   const streamEl = document.getElementById("event-stream");
   if (!streamEl) return;
   syncMobileChatBottomMetrics();
-  const guardMs = Number(opts?.guardMs) || 0;
-  const nextGuard =
-    guardMs > 0
-      ? Math.max(getState().scrollPinGuardUntil || 0, Date.now() + guardMs)
-      : getState().scrollPinGuardUntil;
+  const effectiveGuardMs = Math.max(120, Number(opts?.guardMs) || 0);
+  const nextGuard = Math.max(getState().scrollPinGuardUntil || 0, Date.now() + effectiveGuardMs);
   setState({ autoScrollPinned: true, scrollPinGuardUntil: nextGuard });
 
   const snap = () => {
     const el = document.getElementById("event-stream");
     if (!el || !getState().autoScrollPinned) return;
+    setState({
+      scrollPinGuardUntil: Math.max(getState().scrollPinGuardUntil || 0, Date.now() + 100),
+    });
     el.scrollTop = el.scrollHeight;
   };
   snap();
@@ -1280,15 +1280,73 @@ export async function sendUserMessage(rawText?: string) {
     }));
   }
 
+  const sendStartedAt = Date.now();
+  const isDeliberateFocusTarget = (target: EventTarget | null): boolean => {
+    if (!target || typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) {
+      return false;
+    }
+    if (
+      target === msgInputEl ||
+      target === sendBtnEl ||
+      target === document.body ||
+      target === document.documentElement ||
+      target.id === "send-btn"
+    ) {
+      return false;
+    }
+    if (
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT" ||
+      target.isContentEditable
+    ) {
+      return true;
+    }
+    return Boolean(
+      target.closest(
+        ".modal-backdrop, .mobile-sheet, dialog, .floating-menu, .choice-card, .credential-card, .approval-card, .draft-card"
+      )
+    );
+  };
+
   if (shouldKeepFocus && typeof document !== "undefined" && document.activeElement !== msgInputEl) {
     msgInputEl?.focus?.({ preventScroll: true });
   }
-  let blurredAfterSend = false;
-  const onBlurAfterSend = () => {
-    blurredAfterSend = true;
+  let userDismissedFocus = false;
+  const hasPendingChoiceCard = () =>
+    getState().streamItems.some((it) => it.kind === "choice" && it.status === "pending");
+  const onBlurAfterSend = (ev: FocusEvent) => {
+    const nextTarget =
+      ev.relatedTarget || (typeof document !== "undefined" ? document.activeElement : null);
+    if (
+      !isMobileViewport() ||
+      hasPendingChoiceCard() ||
+      isDeliberateFocusTarget(nextTarget) ||
+      getState().mobileView !== "chat" ||
+      (runtimeRefs.lastStreamKeyboardDismissAt || 0) >= sendStartedAt
+    ) {
+      userDismissedFocus = true;
+      return;
+    }
+    if (shouldKeepFocus && typeof queueMicrotask === "function") {
+      queueMicrotask(() => {
+        if (userDismissedFocus || typeof document === "undefined") return;
+        const cur = getState();
+        if (
+          isMobileViewport() &&
+          cur.activeSessionId === activeSid &&
+          cur.mobileView === "chat" &&
+          !hasPendingChoiceCard() &&
+          document.activeElement !== msgInputEl &&
+          !isDeliberateFocusTarget(document.activeElement)
+        ) {
+          msgInputEl?.focus?.({ preventScroll: true });
+        }
+      });
+    }
   };
   if (msgInputEl) {
-    msgInputEl.addEventListener("blur", onBlurAfterSend, { once: true });
+    msgInputEl.addEventListener("blur", onBlurAfterSend);
   }
   scrollChatStreamToBottom({ guardMs: 500, settle: true });
 
@@ -1300,9 +1358,18 @@ export async function sendUserMessage(rawText?: string) {
       }));
     }
 
-    const isMobClient = isMobileViewport() || isMobileAppTarget();
+    const mobApp = isMobileAppTarget();
+    const isMobClient = isMobileViewport() || mobApp;
+    const mobPlat = getMobilePlatform();
     const clientSource = isMobClient
-      ? { deviceKind: "mobile" as const, platform: getMobilePlatform() || "mobile" }
+      ? {
+          deviceKind: "mobile" as const,
+          platform: mobApp
+            ? mobPlat || "mobile"
+            : mobPlat === "ios" || mobPlat === "android"
+              ? `${mobPlat}-web`
+              : "mobile-web",
+        }
       : {
           deviceKind: "desktop" as const,
           platform:
@@ -1374,20 +1441,44 @@ export async function sendUserMessage(rawText?: string) {
       msgInputEl.removeEventListener("blur", onBlurAfterSend);
     }
     setState({ keepInputFocusedOnSend: false });
-    const hasPendingChoice = getState().streamItems.some(
+    const latest = getState();
+    const hasPendingChoice = latest.streamItems.some(
       (it) => it.kind === "choice" && it.status === "pending"
     );
+    const hasOverlayOpen = Boolean(
+      latest.mobileSheets.inspectorOpen ||
+        latest.mobileSheets.settingsOpen ||
+        latest.mobileSheets.nodeOpen ||
+        latest.mobileSheets.botEditorOpen ||
+        latest.settingsModal.open ||
+        latest.appsModalOpen ||
+        latest.searchModalOpen ||
+        latest.confirmDialog.open ||
+        latest.screenOverlayOpen ||
+        shouldShowAccountDisconnectedGate(latest)
+    );
+    const dismissedByStreamScroll =
+      (runtimeRefs.lastStreamKeyboardDismissAt || 0) >= sendStartedAt;
+    const stillInSameChat =
+      latest.activeSessionId === activeSid &&
+      (!isMobileViewport() || latest.mobileView === "chat");
+    const activeMovedToOtherControl =
+      typeof document !== "undefined" && isDeliberateFocusTarget(document.activeElement);
     if (
       shouldKeepFocus &&
-      !blurredAfterSend &&
+      !userDismissedFocus &&
+      !dismissedByStreamScroll &&
       !hasPendingChoice &&
+      !hasOverlayOpen &&
+      !activeMovedToOtherControl &&
+      stillInSameChat &&
       typeof document !== "undefined" &&
       document.activeElement !== msgInputEl
     ) {
       msgInputEl?.focus?.({ preventScroll: true });
     }
     if (getState().autoScrollPinned) {
-      scrollChatStreamToBottom();
+      scrollChatStreamToBottom({ guardMs: 240 });
     }
   }
 }
@@ -2149,9 +2240,13 @@ export async function confirmAndRemoveCloudAccount(acc: any, { mobileFallback = 
     message: isLan
       ? tr("actions.removeAccountMsg", { label })
       : tr("actions.removeCloudMsg", { label }),
-    detail: displayUrl
-      ? tr("actions.removeCloudDetailWithUrl", { url: displayUrl })
-      : tr("actions.removeCloudDetail"),
+    detail: isLan
+      ? displayUrl
+        ? tr("actions.removeLanDetailWithUrl", { url: displayUrl })
+        : tr("actions.removeLanDetail")
+      : displayUrl
+        ? tr("actions.removeCloudDetailWithUrl", { url: displayUrl })
+        : tr("actions.removeCloudDetail"),
     confirmText: tr("actions.removeCloudConfirm"),
     cancelText: tr("common.cancel"),
     tone: "danger",
@@ -2434,13 +2529,23 @@ export async function reloadWorkspaceForActiveAccount(epoch = getState().account
   void refreshSystemDiagnostics(false);
 }
 
+export async function probeActiveAccountHealth(
+  opts: { timeoutMs?: number; suppressLanOfflineModal?: boolean } = {}
+): Promise<Response> {
+  const res = await apiFetch("/api/relay/ping", opts);
+  if (res.status === 404) {
+    return apiFetch("/api/system/health", opts);
+  }
+  return res;
+}
+
 export async function refreshActiveAccountConnection(
   epoch = getState().accountEpoch
 ): Promise<{ ok: boolean; error?: string }> {
   const s = getState();
   const accMeta = getActiveAccountMeta(s);
   try {
-    const res = await apiFetch("/api/system/health", {
+    const res = await probeActiveAccountHealth({
       timeoutMs: 4000,
       suppressLanOfflineModal: true,
     });
@@ -2467,7 +2572,7 @@ export async function refreshActiveAccountConnection(
 
 export async function retryActiveLanConnection(epoch = getState().accountEpoch): Promise<boolean> {
   try {
-    const res = await apiFetch("/api/system/health", { suppressLanOfflineModal: true });
+    const res = await probeActiveAccountHealth({ suppressLanOfflineModal: true });
     if (epoch !== getState().accountEpoch) return false;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     markLanReachable();
@@ -3080,17 +3185,19 @@ export async function bootstrapApp() {
     }
     runtimeRefs.lastForegroundProbeAt = now;
     const s = getState();
+    const epoch = s.accountEpoch;
     const activeAcc = (s.accountsState?.accounts || []).find(
       (a) => a.id === s.accountsState?.activeAccountId
     );
     if (!activeAcc || activeAcc.type === "local" || !activeAcc.baseUrl) return;
     try {
-      await apiFetch("/api/system/health");
+      const res = await probeActiveAccountHealth({ suppressLanOfflineModal: true });
+      if (!res.ok || epoch !== getState().accountEpoch) return;
       markLanReachable();
       if (!runtimeRefs.wsSocket || runtimeRefs.wsSocket.readyState !== WebSocket.OPEN) {
         connectRealtimeTransport();
       }
-      await syncSessionsAndActiveOnReconnect(getState().accountEpoch);
+      await syncSessionsAndActiveOnReconnect(epoch);
       await refreshOnlineCloudHosts();
       void checkForAppUpdates({ silent: true });
     } catch {
@@ -3150,7 +3257,7 @@ export async function bootstrapApp() {
   let lastComputerPollAt = Date.now();
   const maybePollComputerStatus = (minIntervalMs: number) => {
     if (document.visibilityState === "hidden") return;
-    if (isMobileAppTarget() && !getState().activeBaseUrl) return;
+    if (isMobileAccountEnvironment(getState()) && !getState().activeBaseUrl) return;
     const now = Date.now();
     if (now - lastComputerPollAt < minIntervalMs) return;
     lastComputerPollAt = now;
@@ -3187,6 +3294,10 @@ export async function bootstrapApp() {
 
   window.addEventListener("online", () => {
     handleBrowserOnlineChange(true);
+    const s = getState();
+    if (isMobileAccountEnvironment(s) && !s.activeBaseUrl && !s.activeWsUrl) {
+      return;
+    }
     void reconnectRealtimeNow();
   });
 

@@ -298,6 +298,7 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
         const wasFocused = document.activeElement === input;
         stream.dispatchEvent(new Event('pointerdown', { bubbles: true }));
         stream.dispatchEvent(new Event('scroll', { bubbles: false }));
+        window.dispatchEvent(new Event('pointerup'));
         return wasFocused && document.activeElement !== input;
       })()`);
       assert.equal(blurredOnDrag, true, "User scrolling #event-stream on mobile must blur #message-input to dismiss keyboard");
@@ -323,20 +324,45 @@ test("P1 Suite 7: Mobile UX Regressions (PI-008 Overflow / Tap Actions / Compose
       const valAfterEnter = await tab.evalJs<string>(`document.querySelector('#message-input')?.value || ''`);
       assert.ok(valAfterEnter.includes("第一行") && valAfterEnter.includes("第二行"), "Mobile Enter must NOT auto-submit");
 
-      ws.mockLlm.setHandler(async () => ({ text: "移动端点击发送成功" }));
+      // Issue #21 + Issue #22: Sending preserves #message-input focus (even against spurious relatedTarget=null blur) & injects invisible mobile clientSource to LLM
+      const capturedBodies: string[] = [];
+      let resolveDelayedReply: any = null;
+      ws.mockLlm.setHandler(async ({ body }) => {
+        capturedBodies.push(JSON.stringify(body || {}));
+        await new Promise<void>((resolve) => {
+          resolveDelayedReply = resolve;
+          setTimeout(resolve, 600);
+        });
+        return { text: "移动端点击发送成功" };
+      });
       await tab.click("#send-btn");
+      // Simulate transient WebView spurious blur with relatedTarget=null right after send tap
+      await tab.evalJs(`(() => {
+        const input = document.getElementById('message-input');
+        if (input) input.dispatchEvent(new FocusEvent('blur', { bubbles: true, relatedTarget: null }));
+      })()`);
+      await tab.waitFor(`document.activeElement?.id === 'message-input'`, 2000);
+      resolveDelayedReply?.();
       await tab.waitFor(
         `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('移动端点击发送成功'))`,
         8000
       );
       ws.mockLlm.setHandler(undefined);
+      const focusedAfterTurn = await tab.evalJs<boolean>(`document.activeElement?.id === 'message-input'`);
+      assert.equal(focusedAfterTurn, true, "Mobile #message-input must stay focused during & after send turn (#21)");
+      assert.ok(
+        capturedBodies.some((b) => /\[消息来源：TwinkleBot 手机端/.test(b)),
+        "Mock LLM must receive invisible [消息来源：TwinkleBot 手机端...] header (#22)"
+      );
 
-      // PI-004: Mobile clientSource metadata is preserved on .msg-group without rendering a visible source label
-      const mobSourceMeta = await tab.evalJs<{ visibleTag: boolean; attr: string }>(`(() => ({
-        visibleTag: Boolean(document.querySelector('.msg-source-tag')),
+      // PI-004 / Issue #22: Mobile clientSource metadata is preserved on .msg-group without rendering visible badges
+      const mobSourceMeta = await tab.evalJs<{ visibleSourceTag: boolean; visibleChannelTag: boolean; attr: string }>(`(() => ({
+        visibleSourceTag: Boolean(document.querySelector('.msg-source-tag')),
+        visibleChannelTag: Boolean(document.querySelector('.msg-channel-source-tag')),
         attr: document.querySelector('.msg-group.is-user[data-client-source="mobile"]')?.getAttribute('data-client-source') || '',
       }))()`);
-      assert.equal(mobSourceMeta.visibleTag, false, "User-facing .msg-source-tag must stay hidden");
+      assert.equal(mobSourceMeta.visibleSourceTag, false, "User-facing .msg-source-tag must stay hidden");
+      assert.equal(mobSourceMeta.visibleChannelTag, false, "User-facing .msg-channel-source-tag must stay hidden");
       assert.equal(mobSourceMeta.attr, "mobile", "Mobile-sent message must keep data-client-source metadata");
 
       // Issue #10: When idle (no #live-working-bubble), --mobile-live-bubble-reserve must be 0px

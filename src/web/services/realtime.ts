@@ -1,11 +1,12 @@
 import { isMobileAppTarget } from "../mobile-bridge.js";
 import { getState, runtimeRefs, setState } from "../state/store.js";
-import { apiJson, apiUrl, markLanReachable } from "./api-client.js";
+import { apiFetch, apiJson, apiUrl, markLanReachable } from "./api-client.js";
 import { tr } from "./i18n.js";
 import {
   computeReconnectDelayMs,
   getActiveAccountMeta,
   getNetworkThresholds,
+  isMobileAccountEnvironment,
   isRemoteAccountType,
   reportHeartbeatRtt,
   reportHeartbeatTimeout,
@@ -440,7 +441,18 @@ export function disconnectRealtimeTransport() {
   }
 }
 
+function hasActiveTransportTarget(s = getState()): boolean {
+  if (isMobileAccountEnvironment(s) && !s.activeBaseUrl && !s.activeWsUrl) {
+    return false;
+  }
+  return true;
+}
+
 export function connectGlobalSse(epoch = getState().accountEpoch) {
+  if (!hasActiveTransportTarget()) {
+    disconnectRealtimeTransport();
+    return;
+  }
   if (typeof EventSource !== "function") {
     scheduleTransportReconnect(epoch, "sse_unavailable");
     return;
@@ -576,6 +588,9 @@ export async function syncSessionsAndActiveOnReconnect(epoch = getState().accoun
 export function connectRealtimeTransport() {
   disconnectRealtimeTransport();
   const s = getState();
+  if (!hasActiveTransportTarget(s)) {
+    return;
+  }
   const epoch = s.accountEpoch;
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     reportTransportDisconnected({
@@ -741,15 +756,24 @@ export function connectRealtimeTransport() {
 
 export async function reconnectRealtimeNow(): Promise<boolean> {
   const s = getState();
+  if (!hasActiveTransportTarget(s)) {
+    disconnectRealtimeTransport();
+    return false;
+  }
   const epoch = s.accountEpoch;
-  runtimeRefs.wsReconnectAttempt = 0;
-  connectRealtimeTransport();
   try {
-    await apiJson("/api/system/health", { timeoutMs: 4000, suppressLanOfflineModal: true });
-    if (epoch === getState().accountEpoch) {
-      markLanReachable();
-      await syncSessionsAndActiveOnReconnect(epoch);
+    const probeOpts = { timeoutMs: 4000, suppressLanOfflineModal: true };
+    let res = await apiFetch("/api/relay/ping", probeOpts);
+    if (res.status === 404) {
+      res = await apiFetch("/api/system/health", probeOpts);
     }
+    if (!res.ok || epoch !== getState().accountEpoch) {
+      return false;
+    }
+    runtimeRefs.wsReconnectAttempt = 0;
+    connectRealtimeTransport();
+    markLanReachable();
+    await syncSessionsAndActiveOnReconnect(epoch);
     return true;
   } catch {
     return false;
@@ -757,12 +781,16 @@ export async function reconnectRealtimeNow(): Promise<boolean> {
 }
 
 export function probeActiveTransportOnResume() {
+  const s = getState();
+  if (!hasActiveTransportTarget(s)) {
+    disconnectRealtimeTransport();
+    return;
+  }
   const now = Date.now();
   if (runtimeRefs.lastVisibilityProbeAt && now - runtimeRefs.lastVisibilityProbeAt < 2000) {
     return;
   }
   runtimeRefs.lastVisibilityProbeAt = now;
-  const s = getState();
   const epoch = s.accountEpoch;
   if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   const ws = runtimeRefs.wsSocket;

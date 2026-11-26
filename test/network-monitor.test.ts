@@ -432,5 +432,190 @@ test("Mobile client never exposes local account, locks gate on unconfigured/offl
   globalThis.fetch = (async () => new Response("Unauthorized", { status: 401 })) as any;
   await ssr.apiFetch("/api/system/health");
   assert.equal(ssr.getState().networkHealth.status, "offline");
+  assert.equal(ssr.getState().networkHealth.reason, "auth_failed");
   assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+});
+
+test("401 auth_failed renders auth-failed gate, probes /api/relay/ping without flapping, and ignores local-control 401", async (t) => {
+  const ssr = await import(pathToFileURL(SSR_BUNDLE_PATH).href);
+  const prevFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = prevFetch;
+    ssr.clearNetworkMonitorTimers();
+    ssr.disconnectRealtimeTransport();
+  });
+
+  // 1. Local-control endpoints (X-Local-Token) returning 401 must NOT lock remote account
+  ssr.resetStoreForTest({
+    accountsState: CLOUD_ACCOUNTS,
+    activeBaseUrl: "https://cloud.example.com",
+    accountEpoch: 50,
+  });
+  ssr.clearNetworkMonitorTimers();
+  globalThis.fetch = (async () => new Response("Unauthorized", { status: 401 })) as any;
+  await ssr.apiFetch("http://127.0.0.1:3230/api/desktop/wake");
+  assert.equal(ssr.getState().networkHealth.status, "online");
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), false);
+
+  // 2. Remote API 401 sets reason="auth_failed", renders auth-failed gate, and refresh probes /api/relay/ping
+  const requestedUrls: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const urlStr = typeof input === "string" ? input : String((input as Request).url || input);
+    requestedUrls.push(urlStr);
+    if (urlStr.includes("/api/system/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+  }) as any;
+
+  await ssr.apiFetch("/api/config");
+  assert.equal(ssr.getState().networkHealth.status, "offline");
+  assert.equal(ssr.getState().networkHealth.reason, "auth_failed");
+
+  const authGateHtml = ssr.renderAppToStaticMarkup({
+    isMobileClient: true,
+    accountsState: {
+      activeAccountId: "cloud-1",
+      accounts: [
+        { id: "cloud-1", type: "cloud", name: "云端主账号", baseUrl: "https://cloud.example.com" },
+      ],
+    },
+    activeBaseUrl: "https://cloud.example.com",
+    accountEpoch: 51,
+    networkHealth: ssr.getState().networkHealth,
+  });
+  assert.ok(authGateHtml.includes('data-account-gate-mode="auth-failed"'));
+  assert.ok(authGateHtml.includes("账号认证已失效"));
+
+  requestedUrls.length = 0;
+  const refreshRes = await ssr.refreshActiveAccountConnection(51);
+  assert.equal(refreshRes.ok, false);
+  assert.ok(
+    requestedUrls.some((u) => u.includes("/api/relay/ping")),
+    "refreshActiveAccountConnection must probe /api/relay/ping"
+  );
+  assert.equal(
+    requestedUrls.some((u) => u.includes("/api/system/health")),
+    false,
+    "refreshActiveAccountConnection must NOT fall back to unauthenticated /api/system/health on 401"
+  );
+  assert.equal(ssr.getState().networkHealth.status, "offline");
+  assert.equal(ssr.getState().networkHealth.reason, "auth_failed");
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+});
+
+test("Browser online resume keeps remote gate locked until probe succeeds, and reconnecting timeout escalates to offline", async (t) => {
+  const ssr = await import(pathToFileURL(SSR_BUNDLE_PATH).href);
+  t.after(() => {
+    ssr.clearNetworkMonitorTimers();
+    ssr.disconnectRealtimeTransport();
+  });
+
+  ssr.resetStoreForTest({
+    isMobileClient: true,
+    accountsState: {
+      activeAccountId: "cloud-1",
+      accounts: [
+        { id: "cloud-1", type: "cloud", name: "云端主账号", baseUrl: "https://cloud.example.com" },
+      ],
+    },
+    activeBaseUrl: "https://cloud.example.com",
+    accountEpoch: 60,
+  });
+  ssr.clearNetworkMonitorTimers();
+
+  // Offline -> online on remote account clears browserOffline while keeping status="offline"
+  ssr.handleBrowserOnlineChange(false);
+  assert.equal(ssr.getState().networkHealth.status, "offline");
+  assert.equal(ssr.getState().networkHealth.browserOffline, true);
+
+  ssr.handleBrowserOnlineChange(true);
+  assert.equal(ssr.getState().networkHealth.browserOffline, false);
+  assert.equal(ssr.getState().networkHealth.status, "offline");
+  assert.equal(ssr.shouldShowAccountDisconnectedGate(ssr.getState()), true);
+
+  // Local account still enters reconnecting on browser online resume
+  ssr.resetStoreForTest({
+    isMobileClient: false,
+    accountsState: { ...CLOUD_ACCOUNTS, activeAccountId: "local" },
+    accountEpoch: 61,
+  });
+  ssr.handleBrowserOnlineChange(false);
+  ssr.handleBrowserOnlineChange(true);
+  assert.equal(ssr.getState().networkHealth.status, "reconnecting");
+
+  // Single HTTP timeout while already reconnecting escalates remote account to offline
+  ssr.resetStoreForTest({
+    isMobileClient: true,
+    accountsState: {
+      activeAccountId: "cloud-1",
+      accounts: [
+        { id: "cloud-1", type: "cloud", name: "云端主账号", baseUrl: "https://cloud.example.com" },
+      ],
+    },
+    activeBaseUrl: "https://cloud.example.com",
+    accountEpoch: 62,
+    networkHealth: {
+      ...ssr.createInitialState().networkHealth,
+      status: "reconnecting",
+      reconnectAttempt: 1,
+      reason: "ws_closed",
+    },
+  });
+  ssr.clearNetworkMonitorTimers();
+  ssr.reportHttpOutcome({ ok: false, elapsedMs: 5000, timedOut: true, accountType: "cloud" });
+  assert.equal(ssr.getState().networkHealth.status, "offline");
+  assert.equal(ssr.getState().networkHealth.reason, "timeout");
+});
+
+test("Mobile setup mode (no active account) short-circuits connectRealtimeTransport, probe, and reconnectRealtimeNow", async (t) => {
+  const ssr = await import(pathToFileURL(SSR_BUNDLE_PATH).href);
+  const origWs = globalThis.WebSocket;
+  const origEs = globalThis.EventSource;
+  const origFetch = globalThis.fetch;
+  t.after(() => {
+    ssr.disconnectRealtimeTransport();
+    ssr.clearNetworkMonitorTimers();
+    globalThis.WebSocket = origWs;
+    globalThis.EventSource = origEs;
+    globalThis.fetch = origFetch;
+  });
+
+  let wsCalls = 0;
+  let esCalls = 0;
+  let fetchCalls = 0;
+
+  globalThis.WebSocket = class MockWs {
+    constructor() {
+      wsCalls += 1;
+    }
+    close() {}
+  } as any;
+  globalThis.EventSource = class MockEs {
+    constructor() {
+      esCalls += 1;
+    }
+    close() {}
+  } as any;
+  globalThis.fetch = (async () => {
+    fetchCalls += 1;
+    return new Response("ok", { status: 200 });
+  }) as any;
+
+  ssr.resetStoreForTest({
+    isMobileClient: true,
+    accountsState: { activeAccountId: "", accounts: [] },
+    activeBaseUrl: "",
+    activeWsUrl: "",
+    accountEpoch: 70,
+  });
+
+  ssr.connectRealtimeTransport();
+  ssr.probeActiveTransportOnResume();
+  const reconnectOk = await ssr.reconnectRealtimeNow();
+
+  assert.equal(reconnectOk, false);
+  assert.equal(wsCalls, 0, "Setup mode must not open WebSocket");
+  assert.equal(esCalls, 0, "Setup mode must not open EventSource");
+  assert.equal(fetchCalls, 0, "Setup mode must not call fetch during reconnect");
 });

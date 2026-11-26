@@ -610,6 +610,14 @@ test("P1 Suite 6: Unified Weak-Network Banner, WS Heartbeat/Backoff Reconnect & 
       module: "Mobile Cloud QR Scan & Self-Connect Guard",
     },
     async () => {
+      // Restore localWs from host_executor (left by earlier cloud-account cases) back to master
+      const roleResetRes = await fetch(`${localWs.baseUrl}/api/system/role`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "master" }),
+      });
+      assert.equal(roleResetRes.ok, true, "localWs role reset to master must succeed");
+
       const distWebDir = path.resolve(process.cwd(), "dist-web");
       assert.ok(fs.existsSync(path.join(distWebDir, "index.html")), "dist-web/ must be built");
       const mobileStatic = await serveStaticDir(distWebDir);

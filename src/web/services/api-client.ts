@@ -165,12 +165,26 @@ export async function apiFetch(url: string, options: any = {}): Promise<Response
       staleErr.code = "STALE_ACCOUNT_EPOCH";
       throw staleErr;
     }
+    const reqPath = (() => {
+      try {
+        return new URL(apiUrl(url), "http://127.0.0.1").pathname;
+      } catch {
+        return String(url || "");
+      }
+    })();
+    const isLocalControlEndpoint =
+      reqPath === "/api/system/role" ||
+      reqPath.endsWith("/api/system/role") ||
+      reqPath === "/api/host/execute" ||
+      reqPath.endsWith("/api/host/execute") ||
+      reqPath === "/api/desktop" ||
+      reqPath.includes("/api/desktop/");
     const isGatewayUnreachableStatus =
       res.status === 502 ||
       res.status === 503 ||
       res.status === 504 ||
       (res.status >= 520 && res.status <= 530);
-    const isRemoteAuthFailure = isRemote && res.status === 401;
+    const isRemoteAuthFailure = isRemote && !isLocalControlEndpoint && res.status === 401;
 
     if (isRemote && (isGatewayUnreachableStatus || isRemoteAuthFailure)) {
       const failureReason = isRemoteAuthFailure ? "auth_failed" : `http_${res.status}`;

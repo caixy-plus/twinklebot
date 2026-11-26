@@ -134,10 +134,11 @@ export function shouldShowAccountDisconnectedGate(s: AppState = getState()): boo
     return true;
   }
   if (isRemoteAccountOffline(s)) return true;
+  const host = typeof window !== "undefined" ? window.location.hostname || "" : "";
   if (
-    typeof window !== "undefined" &&
+    host &&
     isMobileViewport() &&
-    !/^(127\.0\.0\.1|localhost|::1|\[::1\])$/i.test(window.location.hostname || "") &&
+    !/^(127\.0\.0\.1|localhost|::1|\[::1\])$/i.test(host) &&
     (s.networkHealth?.status === "offline" || Boolean(s.networkHealth?.browserOffline))
   ) {
     return true;
@@ -345,7 +346,7 @@ export function reportHttpOutcome({
     return;
   }
 
-  if (consecutiveHttpFailures >= 2 || (networkError && cur.status !== "online")) {
+  if (consecutiveHttpFailures >= 2 || ((networkError || timedOut) && cur.status !== "online")) {
     patchNetworkHealth({
       status: "offline",
       reason: timedOut ? "timeout" : "network_error",
@@ -382,6 +383,7 @@ export function reportHeartbeatTimeout() {
     weakDebounceTimer = null;
   }
   const cur = getState().networkHealth;
+  if (cur.status === "offline" && cur.reason === "auth_failed") return;
   patchNetworkHealth({
     status: cur.browserOffline ? "offline" : "reconnecting",
     reconnectAttempt: Math.max(1, (cur.reconnectAttempt || 0) + 1),
@@ -438,6 +440,8 @@ export function reportTransportDisconnected({
   reason?: string;
 }) {
   if (getState().updateState?.coreSwitchInProgress) return;
+  const cur = getState().networkHealth;
+  if (cur.status === "offline" && cur.reason === "auth_failed") return;
   if (weakDebounceTimer) {
     clearTimeout(weakDebounceTimer);
     weakDebounceTimer = null;
@@ -481,12 +485,17 @@ export function handleBrowserOnlineChange(isOnline: boolean) {
   }
   const cur = getState().networkHealth;
   if (cur.status === "offline" || cur.browserOffline) {
+    const meta = getActiveAccountMeta();
+    const keepOfflineUntilProbe = isRemoteAccountType(meta.type);
     patchNetworkHealth({
-      status: "reconnecting",
+      status: keepOfflineUntilProbe ? "offline" : "reconnecting",
       browserOffline: false,
       reconnectAttempt: 1,
       nextRetryAt: Date.now() + 500,
-      reason: "browser_online_resume",
+      reason:
+        keepOfflineUntilProbe && cur.reason === "auth_failed" && !cur.browserOffline
+          ? "auth_failed"
+          : "browser_online_resume",
     });
   }
 }

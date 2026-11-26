@@ -819,6 +819,7 @@ export const runtimeRefs: {
   lastHiddenAt: number;
   lastForegroundProbeAt: number;
   lastVisibilityProbeAt: number;
+  lastStreamKeyboardDismissAt: number;
   wsHasOpenedInEpoch: boolean;
   inflightReconnectSync: Promise<any> | null;
   eventSource: EventSource | null;
@@ -850,6 +851,7 @@ export const runtimeRefs: {
   lastHiddenAt: 0,
   lastForegroundProbeAt: 0,
   lastVisibilityProbeAt: 0,
+  lastStreamKeyboardDismissAt: 0,
   wsHasOpenedInEpoch: false,
   inflightReconnectSync: null,
   eventSource: null,

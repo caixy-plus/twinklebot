@@ -1073,7 +1073,12 @@ export function MobileSheets() {
                       <button
                         type="button"
                         style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: "8px",
                           flex: 1,
+                          minWidth: 0,
                           textAlign: "left",
                           background: "transparent",
                           border: "none",
@@ -1086,16 +1091,16 @@ export function MobileSheets() {
                           if (!isActive) switchAccount(acc.id);
                         }}
                       >
-                        <div className="mobile-card-row-title">
-                          <span className="status-dot-inline is-ok" aria-hidden="true" />
-                          {accLabel}
+                        <div>
+                          <div className="mobile-card-row-title">
+                            <span className="status-dot-inline is-ok" aria-hidden="true" />
+                            {accLabel}
+                          </div>
+                          <div className="mobile-card-row-sub">
+                            {t("mobile.pairedSub", { url: acc.baseUrl })}
+                          </div>
                         </div>
-                        <div className="mobile-card-row-sub">
-                          {t("mobile.pairedSub", { url: acc.baseUrl })}
-                        </div>
-                      </button>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span>
+                        <span style={{ flexShrink: 0 }}>
                           {isActive ? (
                             <>
                               {t("common.current")}{" "}
@@ -1116,17 +1121,17 @@ export function MobileSheets() {
                             </>
                           )}
                         </span>
-                        <button
-                          type="button"
-                          className="account-remove-btn"
-                          aria-label={t("sidebar.removeAccountAria", { name: accLabel })}
-                          onClick={() =>
-                            confirmAndRemoveCloudAccount(acc, { mobileFallback: true })
-                          }
-                        >
-                          <UiIcon name="x" size={13} />
-                        </button>
-                      </div>
+                      </button>
+                      <button
+                        type="button"
+                        className="account-remove-btn"
+                        aria-label={t("sidebar.removeAccountAria", { name: accLabel })}
+                        onClick={() =>
+                          confirmAndRemoveCloudAccount(acc, { mobileFallback: true })
+                        }
+                      >
+                        <UiIcon name="x" size={13} />
+                      </button>
                     </div>
                   );
                 })}

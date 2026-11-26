@@ -226,6 +226,8 @@ test("Mobile composer keeps keyboard open on send and pins scroll cleanly on ent
 
   assert.equal(/messageInput\?\.\s*blur/.test(appJs), false, "sendUserMessage must not blur messageInput on mobile");
   assert.ok(appJs.includes("keepInputFocusedOnSend"), "sendBtn pointer/mouse handlers must retain composer focus");
+  assert.ok(appJs.includes("e.preventDefault()") && appJs.includes("onPointerDown={preserveComposerFocusOnSend}"), "Composer must prevent default on both pointerdown and mousedown");
+  assert.ok(appJs.includes('window.addEventListener("pointerup"') && appJs.includes('window.addEventListener("touchend"'), "useChatScrollPin must bind release listeners on window");
   assert.ok(appJs.includes("preventScroll: true"), "sendUserMessage must preserve composer focus without scroll jump");
   assert.ok(appJs.includes("selectSessionSeq"), "selectSession must ignore stale async fetches");
   assert.ok(mobileCss.includes(".event-stream:not(.is-replaying) > *"), "mobile CSS must suppress enter animation during history replay");

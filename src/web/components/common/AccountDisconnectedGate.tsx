@@ -19,7 +19,7 @@ import {
   isMobileAccountEnvironment,
   shouldShowAccountDisconnectedGate,
 } from "../../services/network-monitor.js";
-import { setState, useStore } from "../../state/store.js";
+import { getState, setState, useStore } from "../../state/store.js";
 import { useI18n, resolveLocalizedAccountName } from "../../services/i18n.js";
 import { UiIcon } from "./Icon.js";
 
@@ -203,10 +203,15 @@ export function AccountDisconnectedGate() {
     try {
       const res = await refreshActiveAccountConnection(accountEpoch);
       if (!res.ok && isOpenRef.current) {
+        const latestHealth = getState().networkHealth;
+        const isAuthErr =
+          !latestHealth?.browserOffline && latestHealth?.reason === "auth_failed";
         setFeedback({
-          text: networkHealth.browserOffline
+          text: latestHealth?.browserOffline
             ? t("gate.stillOfflineError")
-            : t("gate.stillUnreachableError", { label: accMeta.label }),
+            : isAuthErr
+              ? t("gate.authFailedError", { name: accMeta.label })
+              : t("gate.stillUnreachableError", { label: accMeta.label }),
           kind: "error",
         });
       }
@@ -325,18 +330,25 @@ export function AccountDisconnectedGate() {
     (d: any) => !pairedLanUrls.has(String(d?.baseUrl || "").replace(/\/+$/, ""))
   );
 
+  const isAuthFailed =
+    !isSetupMode && !networkHealth.browserOffline && networkHealth.reason === "auth_failed";
+
   const titleText = networkHealth.browserOffline
     ? t("gate.titleOffline")
     : isSetupMode
       ? t("gate.titleSetup")
-      : t("gate.titleLost");
+      : isAuthFailed
+        ? t("gate.titleAuthFailed")
+        : t("gate.titleLost");
   const descText = networkHealth.browserOffline
     ? isSetupMode
       ? t("gate.descSetup")
       : t("gate.descOffline", { label: accMeta.label })
     : isSetupMode
       ? t("gate.descSetup")
-      : t("gate.descLost", { label: accMeta.label });
+      : isAuthFailed
+        ? t("gate.descAuthFailed", { label: accMeta.label })
+        : t("gate.descLost", { label: accMeta.label });
 
   return (
     <dialog
@@ -347,7 +359,7 @@ export function AccountDisconnectedGate() {
       aria-labelledby="account-gate-title"
       aria-describedby="account-gate-desc"
       data-account-gate-open={isOpen ? "true" : "false"}
-      data-account-gate-mode={isSetupMode ? "setup" : "disconnected"}
+      data-account-gate-mode={isSetupMode ? "setup" : isAuthFailed ? "auth-failed" : "disconnected"}
       data-account-type={accMeta.type}
       data-browser-offline={networkHealth.browserOffline ? "true" : "false"}
       onCancel={handleCancel}
@@ -396,7 +408,11 @@ export function AccountDisconnectedGate() {
               </div>
               <span className="account-gate-status-badge">
                 <span className="account-gate-status-dot" aria-hidden="true" />
-                {refreshing ? t("gate.statusRefreshing") : t("gate.statusDisconnected")}
+                {refreshing
+                  ? t("gate.statusRefreshing")
+                  : isAuthFailed
+                    ? t("gate.statusAuthFailed")
+                    : t("gate.statusDisconnected")}
               </span>
             </div>
 

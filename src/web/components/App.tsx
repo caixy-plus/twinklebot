@@ -1,8 +1,9 @@
 import { useEffect, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import { useGlobalShortcuts } from "../hooks/useGlobalShortcuts.js";
 import { useMobileViewport } from "../hooks/useMobileViewport.js";
+import { isMobileViewport } from "../mobile-ui.js";
 import { bootstrapApp } from "../services/actions.js";
-import { readUiPrefs, useStore, writeUiPrefs } from "../state/store.js";
+import { getState, readUiPrefs, useStore, writeUiPrefs } from "../state/store.js";
 import { ChatStage } from "./chat/ChatStage.js";
 import { AccountDisconnectedGate } from "./common/AccountDisconnectedGate.js";
 import { ConfirmDialog } from "./common/ConfirmDialog.js";
@@ -21,14 +22,31 @@ export function App() {
   const inspectorOpen = useStore((s) => s.inspectorOpen);
   const desktopFullscreen = useStore((s) => s.desktopFullscreen);
   const mobileView = useStore((s) => s.mobileView);
+  const activeSessionId = useStore((s) => s.activeSessionId);
   const accentColor = useStore((s) => s.accentColor);
 
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const chatStageRef = useRef<HTMLElement | null>(null);
+  const prevSessionIdRef = useRef<string | null>(activeSessionId);
 
   const { toggleCompactSidebar, setInspectorOpen, toggleInspector } =
     useGlobalShortcuts();
   useMobileViewport(chatStageRef);
+
+  useEffect(() => {
+    const prevSid = prevSessionIdRef.current;
+    prevSessionIdRef.current = activeSessionId;
+    if (!isMobileViewport() || typeof document === "undefined") return;
+    const activeEl = document.activeElement as HTMLElement | null;
+    if (!activeEl || activeEl.id !== "message-input") return;
+    const switchedToList = mobileView === "list";
+    const switchedSession =
+      Boolean(prevSid && activeSessionId && prevSid !== activeSessionId) &&
+      !getState().keepInputFocusedOnSend;
+    if (switchedToList || switchedSession) {
+      activeEl.blur();
+    }
+  }, [mobileView, activeSessionId]);
 
   useEffect(() => {
     const prefs = readUiPrefs();
