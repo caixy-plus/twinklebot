@@ -5,25 +5,25 @@
   "otaChannelTag": "ota-channel",
   "shells": {
     "desktop": {
-      "version": "1.0.6",
-      "minVersionForOta": "1.0.6",
-      "minVersionForCoreOta": "1.0.6"
+      "version": "1.0.7",
+      "minVersionForOta": "1.0.7",
+      "minVersionForCoreOta": "1.0.7"
     },
     "android": {
-      "version": "1.0.6",
-      "buildCode": 7,
-      "minVersionForOta": "1.0.6",
-      "minBuildCodeForOta": 7
+      "version": "1.0.7",
+      "buildCode": 8,
+      "minVersionForOta": "1.0.7",
+      "minBuildCodeForOta": 8
     },
     "ios": {
-      "version": "1.0.6",
-      "buildCode": 7,
-      "minVersionForOta": "1.0.6",
-      "minBuildCodeForOta": 7
+      "version": "1.0.7",
+      "buildCode": 8,
+      "minVersionForOta": "1.0.7",
+      "minBuildCodeForOta": 8
     }
   },
   "backend": {
-    "version": "1.0.6",
+    "version": "1.0.7",
     "minCompatibleVersion": "1.0.0",
     "apiCapabilities": [
       "core-v1",
