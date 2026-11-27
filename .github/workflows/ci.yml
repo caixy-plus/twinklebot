@@ -6,7 +6,7 @@ on:
       - main
       - "feat/**"
     paths-ignore:
-      - "README.md"
+      - "README*.md"
       - "AGENTS.md"
       - "CLAUDE.md"
       - "LICENSE"
@@ -16,7 +16,7 @@ on:
     branches:
       - main
     paths-ignore:
-      - "README.md"
+      - "README*.md"
       - "AGENTS.md"
       - "CLAUDE.md"
       - "LICENSE"

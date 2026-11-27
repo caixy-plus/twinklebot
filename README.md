@@ -6,7 +6,7 @@
 
 <p><strong>Cross-Platform Multi-Bot AI Desktop &amp; Mobile Agent</strong></p>
 
-<p>跨平台多 Bot 协同 AI 桌面与移动智能体 —— 融合专属沙箱电脑、宿主机执行桥、三档智能路由与全渠道触达</p>
+<p>An AI agent workspace combining an isolated sandbox computer, a host execution bridge, 3-tier smart routing, and omnichannel access</p>
 
 <p>
   <a href="https://github.com/caixy-plus/twinklebot/releases/latest"><img src="https://img.shields.io/github/v/release/caixy-plus/twinklebot?style=flat-square&label=Release&color=blue" alt="GitHub Release" /></a>
@@ -20,107 +20,112 @@
 </p>
 
 <p>
-  <a href="#核心能力">核心能力</a> ·
-  <a href="#下载与安装">下载与安装</a> ·
-  <a href="#快速上手">快速上手</a> ·
-  <a href="#系统架构">系统架构</a> ·
-  <a href="#开发者参考">开发者参考</a> ·
-  <a href="#安全与隐私红线">安全红线</a>
+  <strong>English</strong> ·
+  <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p>
+  <a href="#key-capabilities">Key Capabilities</a> ·
+  <a href="#downloads--installation">Downloads &amp; Installation</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#developer-reference">Developer Reference</a> ·
+  <a href="#security--privacy-redlines">Security Redlines</a>
 </p>
 
 </div>
 
 ---
 
-## 核心能力
+## Key Capabilities
 
-TwinkleBot 围绕**多智能体协作**、**双电脑执行面**与**跨端无缝触达**构建，覆盖从个人桌面自动化到移动远程遥控与 IM 机器人接入的完整工作流：
+TwinkleBot is built around **multi-agent collaboration**, **dual-computer execution surfaces**, and **seamless cross-device reach**, covering end-to-end workflows from local desktop automation to mobile remote control and IM bots:
 
-| 能力维度 | 核心特性与机制 |
+| Dimension | Features & Architecture |
 | :--- | :--- |
-| **Multi-Bot 与群聊协作** | 内置主控 Bot（`Twinkle`）与多位可定制专属 Bot（13 种形状 × 11 种配色头像，独立工作区 / 记忆 / 资料库）；支持 `bot_manage`（含带记忆克隆）、`create_bot`、`list_bots`、`send_bot_message`（最大跳数 `MAX_BOT_HOPS=8`）、`workspace_search` 与 `library_manage`。群聊（`type: "group"`）支持 `@BotName` 最长前缀匹配、回复优先路由与角色相关性评分（单轮最多 `MAX_GROUP_TURNS=3`）。**双层记忆**兼顾 Bot 专属记忆与全局共享记忆，并支持静默异步提取。 |
-| **实时插话与 6 种交互卡片** | 支持运行中无中断实时插话转向（**Live Steering**）、自然语言停止检测（`stop-detector`）、60 步上限暂停续跑、悬停/点击回复与划词引用、用户消息就地修改重发（同步截断 DOM / NDJSON / 历史），以及最多 3 个附件（单个 ≤ 10 MB）。内置 **6 种内联交互卡片**：`ask_user_choice`（支持 `1–6` / `A–F` 快捷键）、`propose_draft`、`request_credential`、`ApprovalCard`（内联权限规则编辑器）、`MarkupPreviewCard`（沙箱 HTML/SVG 实时预览与 3 种背景/视口切换）、`send_file`（工作区/下载卡片）。 |
-| **双电脑 + 3 浏览器引擎 + KimiCU** | **Bot 的电脑**：Ubuntu XFCE `:1`（1440×900），支持 macOS **OrbStack**、Windows **WSL2 Ubuntu** 或云端 Linux（`executor.py` `:7300`，noVNC `:6080`）；沙箱内 CLI / 文件 / GUI 默认自动放行，内置「Bot 的电脑」面板支持**「取得控制权」**人工接管与并发屏幕池，支持 `computer_provision` 自动部署与 `system_diagnostics`。<br>**你的电脑（Host Executor）**：`host_run_shell`（zsh / UTF-8 PowerShell）、`host_open`、`host_read_file`、`host_write_file`，由 `始终允许 / 每次询问 / 从不允许` 策略严格管控。<br>**KimiCU MCP（macOS 专属）**：通过 `/Applications/KimiCU.app/Contents/MacOS/kimi-cu` 暴露 20 个工具，实现不抢占物理鼠标光标的后台窗口截图、AX 树读取与键鼠控制。<br>**3 种 Chrome 引擎**：Bot Chrome CDP（`:9222`，共享登录态）、Host Chrome Headless（空白配置、低 CPU 占用）、Host Chrome Debug（`:9223`）。 |
-| **三档智能路由与多币种计费** | `fast` / `standard` / `deep` + `image` 智能分级路由，内置 L1 路由规划、动态升档与异常冷却（402/429/503/504 冷却 `60s`，404 永久隔离）；提供 `economy` / `balanced` / `quality` 预设与 `maxTurnUsd` 单轮预算限制。内置 `gemini`（基于 `@google/genai` >=2.29.1 Interactions API，云端 `DEPLOY_ENV=cloud` 支持免密钥 GCP Vertex AI）、`openai`、`deepseek`、`openai-compatible` 驱动（支持填写密钥或环境变量名）；`USD` / `CNY` 多币种计费统一折算为 `¥`（`USD_TO_CNY=7.25`）并支持余额校准。 |
-| **全渠道连接、外网中继与 IM Bot** | 统一采用**「本地账号 / 云端账号」**模型。<br>**移动端（Capacitor Android / iOS + Mobile Web）**：构建产物 `dist-web/` 物理剥离服务端与敏感配置；支持 UDP `41234`（`TWINKLEBOT_DISCOVER_V1`）局域网自动发现 + 6 位配对码（5 分钟有效、5 次失败锁定）换取永久设备令牌；支持原生二维码扫描（Android `PortraitCaptureActivity` / iOS `AVCaptureSession`）、断连门禁页，以及竖屏锁定 + 远程桌面自动横屏与远程键盘切换。<br>**外网中继（`remote-relay-v1`）**：桌面端「设置 → 外网中继」在 `127.0.0.1:3231` 启动强鉴权中继（Bearer / `?token=` 换取 `HttpOnly` Cookie，中继端口锁定自配置），支持内置托管 `frpc`（WSS/TCP/QUIC，`caffeinate` 防休眠）或外置代理，可生成 `twinklebot://...` 二维码及 VPS `frps.toml` / `Caddyfile`。云端模式 `DEPLOY_ENV=cloud` 根路径 `/` 返回 `ok`。<br>**飞书 & Telegram**：多账号 `feishu-bot`（`@larksuiteoapi/node-sdk`，WebSocket / Webhook）与 `telegram-bot`（`grammy`，Long Polling + HTTP/SOCKS5 代理 / Webhook），支持对话内配置（`skill_configure_channel`）与 6 位配对码管理（`channel_pairing_manage`），**跨 Desktop / Mobile / Web / 飞书 / Telegram 共享会话历史与 `memories`**，并自动完成 `send_file` / `generate_image` 文件直发（Telegram ≤ 50 MB，飞书 ≤ 30 MB）。 |
-| **技能生态、保险库与定时调度** | **7 个不可移除核心内置技能**（`desktop-control`、`shell-and-files`、`ai-image` 含 SVG 回退、`multi-bot-collab`、`interactive-cards`、`custom-skill-manager`、`websearch` DuckDuckGo→Bing + `web_fetch`）+ **5 个商店可安装技能**（`kimi-cu`、`feishu-bot`、`telegram-bot`、`qqmail` 16 位授权码、`custom-mail` IMAP/POP3/SMTP 多账号）。支持 `custom_skill_manage` 管理全局或单 Bot 自定义 `SKILL.md`、标准 5 字段 Cron 调度（`schedule_manage`），以及基于 **AES-256-GCM**（OS Keychain / DPAPI / 密钥文件）的加密保险库（仅向模型返回不透明引用 `secret_ref`）。 |
-| **Core + Web OTA 热更新** | 依托 `version-policy.json`（`v1.0.7`，Android/iOS `buildCode: 8`，14 项 `apiCapabilities`）实现 `v1.0.5+` 严格壳版本绑定校验。桌面端 Core OTA 热更新 `server-bundle.mjs`、Web 静态资源、`executor.py` 与提示词/知识库；移动端 Web OTA 热更新 `dist-web/`。支持 `self_update`（`status` / `check` / `apply` / `rollback` 至 `previous` / `builtin`），在活跃轮次完成后排队生效并配备 Watchdog 自动回滚；版本号严格遵循 `PATCH 0–9` / `MINOR 0–19` 进位规则。 |
+| **Multi-Bot & Group Collaboration** | Ships with an admin Bot (`Twinkle`) plus customizable specialized Bots (13 shapes × 11 colors avatars, isolated workspace / memory / library); supports `bot_manage` (including clone-with-memory), `create_bot`, `list_bots`, `send_bot_message` (`MAX_BOT_HOPS=8`), `workspace_search`, and `library_manage`. Group chats (`type: "group"`) support `@BotName` longest-prefix matching, reply-priority routing, and role-relevance scoring (`MAX_GROUP_TURNS=3` per turn). **Dual-layer memory** maintains both Bot-private and global shared memories with silent async extraction. |
+| **Live Steering & 6 Interactive Cards** | Supports non-blocking mid-turn redirection (**Live Steering**), natural-language stop detection (`stop-detector`), 60-step pause & resume, hover/click reply & text-selection quote, in-place user message edit & resend (synchronously truncating DOM / NDJSON / history), and up to 3 attachments (≤ 10 MB each). Includes **6 inline interactive cards**: `ask_user_choice` (`1–6` / `A–F` hotkeys), `propose_draft`, `request_credential`, `ApprovalCard` (inline permission rule editor), `MarkupPreviewCard` (sandboxed HTML/SVG live preview with 3 background/viewport toggles), and `send_file` (workspace/download card). |
+| **Dual Computers + 3 Browser Engines + KimiCU** | **Bot's Computer**: Ubuntu XFCE `:1` (1440×900) backed by macOS **OrbStack**, Windows **WSL2 Ubuntu**, or cloud Linux (`executor.py` `:7300`, noVNC `:6080`); CLI, file, and GUI tools inside the sandbox auto-allow by default, with a built-in **Bot's Computer** pane supporting **Take Control** and a concurrent screen pool, plus `computer_provision` and `system_diagnostics`.<br>**Your Computer (Host Executor)**: `host_run_shell` (zsh / UTF-8 PowerShell), `host_open`, `host_read_file`, and `host_write_file`, strictly governed by `Always Allow / Ask Every Time / Never Allow` policies.<br>**KimiCU MCP (macOS only)**: Launches `/Applications/KimiCU.app/Contents/MacOS/kimi-cu` with live tool and capability self-discovery for background, cursor-safe window screenshots, AX tree inspection, and keyboard/mouse automation.<br>**3 Chrome Engines**: Bot Chrome CDP (`:9222`, shared login state), Host Chrome Headless (clean profile, low CPU), and Host Chrome Debug (`:9223`). |
+| **3-Tier Smart Routing & Multi-Currency Billing** | Smart `fast` / `standard` / `deep` + `image` tiered routing with L1 planning, dynamic tier escalation, and error cooldowns (`60s` on 402/429/503/504, permanent isolation on 404); includes `economy` / `balanced` / `quality` presets and `maxTurnUsd` budget caps. Built-in drivers for `gemini` (`@google/genai` >=2.29.1 Interactions API, plus keyless GCP Vertex AI when `DEPLOY_ENV=cloud`), `openai`, `deepseek`, and `openai-compatible` (accepting raw API keys or env var names); `USD` / `CNY` usage converts uniformly to `¥` (`USD_TO_CNY=7.25`) with balance calibration. |
+| **Omnichannel Access, Remote Relay & IM Bots** | Unified **Local Account / Cloud Account** model.<br>**Mobile (Capacitor Android / iOS + Mobile Web)**: `dist-web/` physically strips backend code and secrets; supports UDP `41234` (`TWINKLEBOT_DISCOVER_V1`) LAN auto-discovery + 6-digit pairing codes (5-min TTL, 5-attempt lockout) exchanged for a permanent device token; native QR scanner (Android `PortraitCaptureActivity` / iOS `AVCaptureSession`), disconnected gate, portrait lock with auto-landscape remote desktop, and virtual remote keyboard toggle.<br>**Remote Relay (`remote-relay-v1`)**: Desktop **Settings → Remote Relay** starts a strict-auth relay on `127.0.0.1:3231` (Bearer / `?token=` exchanged for an `HttpOnly` Cookie, with self-config endpoints locked), supporting built-in managed `frpc` (WSS/TCP/QUIC + `caffeinate` sleep prevention) or external proxies, generating `twinklebot://...` QR codes and VPS `frps.toml` / `Caddyfile` snippets. Cloud mode (`DEPLOY_ENV=cloud`) returns `ok` on `/`.<br>**Feishu & Telegram**: Multi-account `feishu-bot` (`@larksuiteoapi/node-sdk`, WebSocket / Webhook) and `telegram-bot` (`grammy`, Long Polling + HTTP/SOCKS5 proxy / Webhook) with in-chat setup (`skill_configure_channel`) and 6-digit pairing management (`channel_pairing_manage`), **sharing session history and `memories` across Desktop / Mobile / Web / Feishu / Telegram**, and automatically delivering files from `send_file` / `generate_image` (Telegram ≤ 50 MB, Feishu ≤ 30 MB). |
+| **Skill Ecosystem, Encrypted Vault & Cron Scheduling** | **7 non-removable core built-in skills** (`desktop-control`, `shell-and-files`, `ai-image` with SVG fallback, `multi-bot-collab`, `interactive-cards`, `custom-skill-manager`, `websearch` DuckDuckGo→Bing + `web_fetch`) + **5 store-installable skills** (`kimi-cu`, `feishu-bot`, `telegram-bot`, `qqmail` 16-char auth code, `custom-mail` multi-account IMAP/POP3/SMTP). Supports `custom_skill_manage` for global or per-Bot `SKILL.md`, standard 5-field Cron scheduling (`schedule_manage`), and an **AES-256-GCM** encrypted credential vault (OS Keychain / DPAPI / keyfile) that exposes only opaque `secret_ref` tokens to models. |
+| **Core + Web OTA Hot Updates** | Backed by `version-policy.json` (`v1.0.7`, Android/iOS `buildCode: 8`, 14 `apiCapabilities`) with strict `v1.0.5+` shell-version binding checks. Desktop Core OTA hot-updates `server-bundle.mjs`, Web static assets, `executor.py`, and prompts/knowledge; Mobile Web OTA hot-updates `dist-web/`. Supports `self_update` (`status` / `check` / `apply` / `rollback` to `previous` / `builtin`), queued cleanly after active turns with Watchdog auto-rollback; shell versions strictly follow `PATCH 0–9` / `MINOR 0–19` rollover rules. |
 
 ---
 
-## 下载与安装
+## Downloads & Installation
 
-预编译桌面端安装包与 Android APK 均发布于 [GitHub Releases](https://github.com/caixy-plus/twinklebot/releases)：
+Prebuilt desktop installers and signed Android APKs are published on [GitHub Releases](https://github.com/caixy-plus/twinklebot/releases):
 
-| 平台 | 产物格式 | 下载入口 |
+| Platform | Artifacts | Download |
 | :--- | :--- | :--- |
-| **macOS**（Apple Silicon / Intel） | `.dmg` / `.zip` | [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) |
-| **Windows**（x64） | `.exe`（NSIS 安装器）/ `.zip` | [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) |
-| **Linux**（x64） | `.AppImage` / `.tar.gz` | [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) |
-| **Android** | 正式签名 `.apk` | [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) |
-| **全部历史版本与 OTA** | 全平台安装包 / `ota-channel` | [All Releases](https://github.com/caixy-plus/twinklebot/releases) |
+| **macOS** (Apple Silicon / Intel) | `.dmg` / `.zip` | [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) |
+| **Windows** (x64) | `.exe` (NSIS Installer) / `.zip` | [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) |
+| **Linux** (x64) | `.AppImage` / `.tar.gz` | [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) |
+| **Android** | Signed `.apk` | [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) |
+| **All Releases & OTA** | Full platform installers / `ota-channel` | [All Releases](https://github.com/caixy-plus/twinklebot/releases) |
 
 ---
 
-## 快速上手
+## Quick Start
 
-### 方式一：安装包直接启动（推荐桌面 / 移动用户）
+### Option 1: Installers (Recommended for Desktop / Mobile)
 
-1. 从 [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest) 下载并安装对应平台的应用。
-2. 首次打开后，在引导流程或「设置 → 模型接入与路由」中填写模型密钥（或环境变量名），即可开始对话。
-3. 如需启用 **Bot 的电脑**（Ubuntu XFCE 沙箱桌面），macOS 可配合 **OrbStack**、Windows 可配合 **WSL2 Ubuntu**，并在应用内通过 `computer_provision` 一键部署沙箱环境与浏览器。
+1. Download and install the package for your platform from [Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest).
+2. On first launch, enter your model API key (or environment variable name) in the onboarding flow or **Settings → Models & Routing** to start chatting.
+3. To enable **Bot's Computer** (Ubuntu XFCE sandbox desktop), use **OrbStack** on macOS or **WSL2 Ubuntu** on Windows, then run `computer_provision` in chat to provision the sandbox and browser in one click.
 
-### 方式二：源码运行与 CLI 模式（Node.js >= 22.13）
+### Option 2: Run from Source & CLI Mode (Node.js >= 22.13)
 
 ```bash
-# 1. 克隆仓库并安装依赖
+# 1. Clone the repository and install dependencies
 git clone https://github.com/caixy-plus/twinklebot.git
 cd twinklebot
 npm install
 
-# 2. （可选）部署 Ubuntu 沙箱执行器（生成 TWINKLEBOT_EXECUTOR_TOKEN 并启动 twinklebot-executor.service）
+# 2. (Optional) Deploy the Ubuntu sandbox executor (generates TWINKLEBOT_EXECUTOR_TOKEN and starts twinklebot-executor.service)
 ./scripts/deploy-executor.sh
 
-# 3. 编译 TypeScript 与前端资源并启动本地服务（默认监听 http://127.0.0.1:3230）
+# 3. Compile TypeScript & frontend assets and start the local server (listens on http://127.0.0.1:3230)
 npm start
 
-# 或使用命令行模式单次执行任务（支持 stdin [y/N] 交互审批）
-npm run cli -- "你的任务描述"
+# Or run a single task in interactive CLI mode (supports stdin [y/N] approvals)
+npm run cli -- "Describe your task here"
 ```
 
 > [!TIP]
-> - 沙箱环境（Ubuntu XFCE `:1`，1440×900）除通过 `./scripts/deploy-executor.sh` 手动部署外，也可直接在对话中调用 `computer_provision` 自动完成 `xdotool`、`wmctrl`、`xclip`、`imagemagick`、Google Chrome / Chromium、`Xtigervnc`/`x11vnc`、noVNC（`:6080`）与中文字体配置。
-> - 模型密钥既可写入根目录 `.env`（如 `GEMINI_API_KEY`），也可启动后在界面「设置 → 模型接入与路由」中直接配置。
+> - Besides manual provisioning via `./scripts/deploy-executor.sh`, you can call `computer_provision` directly in chat to install `xdotool`, `wmctrl`, `xclip`, `imagemagick`, Google Chrome / Chromium, `Xtigervnc`/`x11vnc`, noVNC (`:6080`), and CJK fonts inside the Ubuntu XFCE `:1` (`1440×900`) sandbox.
+> - Model keys can either live in root `.env` (e.g. `GEMINI_API_KEY`) or be configured directly in the UI under **Settings → Models & Routing**.
 
 ---
 
-## 系统架构
+## Architecture
 
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
 flowchart LR
-  subgraph Clients["多端接入与交互入口"]
-    Desktop["Electron 桌面端 / Web SPA"]
-    Mobile["Capacitor 移动端 (Android / iOS)"]
-    IM["飞书 Feishu / Telegram Bot"]
+  subgraph Clients["Clients & Omnichannel Entry"]
+    Desktop["Electron Desktop / Web SPA"]
+    Mobile["Capacitor Mobile (Android / iOS)"]
+    IM["Feishu / Telegram Bot"]
   end
 
-  subgraph Core["TwinkleBot Core (:3230 / 外网中继 :3231)"]
-    Router["三档智能路由 (fast / standard / deep + image)"]
-    Collab["Multi-Bot 协作与群聊 (@BotName)"]
-    Memory["双层记忆 & AES-256-GCM 保险库"]
-    OTA["Cron 调度 & Core/Web OTA"]
+  subgraph Core["TwinkleBot Core (:3230 / Remote Relay :3231)"]
+    Router["3-Tier Smart Router (fast / standard / deep + image)"]
+    Collab["Multi-Bot Collab & Group Chat (@BotName)"]
+    Memory["Dual-Layer Memory & AES-256-GCM Vault"]
+    OTA["Cron Scheduler & Core/Web OTA"]
   end
 
-  subgraph Exec["双电脑执行面与浏览器引擎"]
-    BotPC["Bot 的电脑: Ubuntu XFCE (:7300 / noVNC :6080)"]
-    HostPC["你的电脑: Host Executor (Shell / 文件)"]
-    KimiCU["KimiCU MCP (macOS 后台窗口控制)"]
-    Chrome["3 浏览器引擎 (Bot CDP :9222 / Headless / Debug :9223)"]
+  subgraph Exec["Dual-Computer Execution & Browser Engines"]
+    BotPC["Bot's Computer: Ubuntu XFCE (:7300 / noVNC :6080)"]
+    HostPC["Your Computer: Host Executor (Shell / Files)"]
+    KimiCU["KimiCU MCP (macOS Background Window Control)"]
+    Chrome["3 Browser Engines (Bot CDP :9222 / Headless / Debug :9223)"]
   end
 
   Desktop --> Core
-  Mobile -->|"UDP 41234 局域网配对 / frpc 中继"| Core
+  Mobile -->|"UDP 41234 LAN Pairing / frpc Relay"| Core
   IM -->|"WebSocket / Long Polling / Webhook"| Core
   Core --> BotPC
   Core --> HostPC
@@ -130,108 +135,108 @@ flowchart LR
 
 ---
 
-## 开发者参考
+## Developer Reference
 
 <details>
-<summary><b>目录结构（TypeScript Monorepo）</b></summary>
+<summary><b>Directory Layout (TypeScript Monorepo)</b></summary>
 
 ```text
 twinklebot/
 ├── src/
-│   ├── shared/              # 前后端共享类型、DTO 与浏览器安全模块（accounts-store / skills-catalog / versioning）
-│   ├── server/              # HTTP / WebSocket 服务端（index.ts、context.ts、http-utils.ts、static.ts、routes/*.ts）
-│   ├── agent/               # Agent 执行循环、智能路由、上下文压缩、策略、providers/*.ts、bot-tools/*.ts、prompts/、knowledge/
-│   ├── store/               # 会话（.json/.ndjson/.history.json）、技能、Cron 日程、保险库原子持久化（写入 data/）
-│   ├── lib/                 # LAN 发现、配对鉴权、外网中继、飞书/Telegram 渠道、邮件、MCP、网页搜索、计费与宿主机桥接
-│   ├── electron/            # Electron 主进程、Core OTA、托盘与后台监管（backend-supervisor.ts / core-ota.ts）
-│   ├── web/                 # React 19 + Vite SPA 前端（main.tsx、ssr-entry.tsx、components/、hooks/、services/、state/、styles/）
-│   ├── cli/                 # 命令行交互执行入口（index.ts）
-│   └── landing/             # 官网展示页源码
-├── electron/                # Electron 预加载脚本与托盘页面（preload.cjs、tray-preload.cjs、tray.html）
-├── public/                  # 静态资源、样式与编译输出（public/dist/）
-├── executor/                # Ubuntu 沙箱执行守护脚本（仅依赖 Python 3 标准库，监听 7300 端口）与 Python 单测
-├── android/ & ios/          # Capacitor 原生工程（Android LanDiscoveryPlugin / PortraitCaptureActivity 等）
-├── scripts/                 # 构建、Core/Web OTA 打包、版本号同步、沙箱部署与 E2E 运行脚本
-├── test/                    # 单元/集成测试与分层 E2E 测试套件（test/e2e/）
-├── .agents/skills/twinklebot-e2e/  # 分层 E2E 规范、catalog.json 与覆盖率审计脚本
-└── version-policy.json      # 壳版本、OTA 最低版本策略与 API Capabilities 单一真源
+│   ├── shared/              # Shared types, DTOs & browser-safe modules (accounts-store / skills-catalog / versioning)
+│   ├── server/              # HTTP / WebSocket server (index.ts, context.ts, http-utils.ts, static.ts, routes/*.ts)
+│   ├── agent/               # Agent loop, smart router, context compression, policy, providers/*.ts, bot-tools/*.ts, prompts/, knowledge/
+│   ├── store/               # Atomic persistence for sessions (.json/.ndjson/.history.json), skills, Cron schedules, vault (under data/)
+│   ├── lib/                 # LAN discovery, pairing auth, remote relay, Feishu/Telegram channels, mail, MCP, web search, billing & host bridge
+│   ├── electron/            # Electron main process, Core OTA, tray & backend supervisor (backend-supervisor.ts / core-ota.ts)
+│   ├── web/                 # React 19 + Vite SPA frontend (main.tsx, ssr-entry.tsx, components/, hooks/, services/, state/, styles/)
+│   ├── cli/                 # Interactive CLI runner (index.ts)
+│   └── landing/             # Official landing page source
+├── electron/                # Electron preload scripts & tray page (preload.cjs, tray-preload.cjs, tray.html)
+├── public/                  # Static assets, stylesheets & compiled frontend bundles (public/dist/)
+├── executor/                # Ubuntu sandbox executor daemon (Python 3 stdlib only, port 7300) & Python unit tests
+├── android/ & ios/          # Capacitor native projects (Android LanDiscoveryPlugin / PortraitCaptureActivity, etc.)
+├── scripts/                 # Build, Core/Web OTA packaging, version sync, sandbox provisioning & E2E runner scripts
+├── test/                    # Unit/integration tests & tiered E2E suites (test/e2e/)
+├── .agents/skills/twinklebot-e2e/  # Tiered E2E specification, catalog.json & coverage audit scripts
+└── version-policy.json      # Single source of truth for shell versions, OTA minimum bounds & API Capabilities
 ```
 
 </details>
 
 <details>
-<summary><b>构建、打包与 Core + Web OTA</b></summary>
+<summary><b>Build, Packaging &amp; Core + Web OTA</b></summary>
 
 ```bash
-# 类型检查与全量构建（dist-server/ + core-runtime + public/dist/ + landing/dist/）
+# Typecheck and full build (dist-server/ + core-runtime + public/dist/ + landing/dist/)
 npm run typecheck
 npm run build:ts
-npm run build:ota            # 生成 twinklebot-core-desktop.tar.gz 与 twinklebot-web-mobile.tar.gz
+npm run build:ota            # Generates twinklebot-core-desktop.tar.gz and twinklebot-web-mobile.tar.gz
 
-# 桌面端开发与打包（Electron）
-npm run electron:dev         # 构建并本地启动 Electron
-npm run electron:pack:mac    # macOS 免签名目录包
-npm run electron:pack:win    # Windows 免安装目录包
-npm run electron:pack:linux  # Linux 免安装目录包
-npm run electron:dist:mac    # macOS dmg / zip 安装包
-npm run electron:dist:win    # Windows NSIS / zip 安装包
-npm run electron:dist:linux  # Linux AppImage / tar.gz 安装包
+# Desktop development & packaging (Electron)
+npm run electron:dev         # Build and launch Electron locally
+npm run electron:pack:mac    # macOS unpacked app directory
+npm run electron:pack:win    # Windows unpacked app directory
+npm run electron:pack:linux  # Linux unpacked app directory
+npm run electron:dist:mac    # macOS dmg / zip installers
+npm run electron:dist:win    # Windows NSIS / zip installers
+npm run electron:dist:linux  # Linux AppImage / tar.gz installers
 
-# 移动端构建（剥离服务端与敏感文件至 dist-web/ 并同步 Capacitor）
+# Mobile build (strips backend/secrets into dist-web/ and syncs Capacitor)
 npm run mobile:build:web
 npm run mobile:sync:android
 npm run mobile:apk:debug
 npm run mobile:apk:release
 
-# 统一同步版本号（仅需升级原生壳版本时使用，PATCH 0-9 / MINOR 0-19）
+# Synchronize native shell versions (only when native shell layers change; PATCH 0-9 / MINOR 0-19)
 npm run version:bump -- --dry-run
 ```
 
 </details>
 
 <details>
-<summary><b>测试与分层 E2E 体系（14 套件 / 110 用例）</b></summary>
+<summary><b>Testing &amp; Tiered E2E Suite (14 Suites / 110 Cases)</b></summary>
 
-TwinkleBot 内置 74 个单元/集成测试文件、Python 沙箱执行器单测，以及覆盖 **P0–P3 共 14 个套件 / 110 个原子用例**（`P0: 21`、`P1: 47`、`P2: 30`、`P3: 12`）的分层 E2E 体系（默认 headless Chrome + 离线回环固件）：
+TwinkleBot includes 74 unit/integration test files, Python sandbox executor unit tests, and a tiered E2E suite spanning **P0–P3 (14 suites / 110 atomic cases**: `P0: 21`, `P1: 47`, `P2: 30`, `P3: 12`) using headless Chrome and offline loopback fixtures by default:
 
 ```bash
-# 单元与集成测试
-npm test                     # 编译并运行全部 node --test 用例
-npm run test:py              # 运行 executor/ Python 单元测试（或 orb -m ubuntu python3 -m unittest discover -s executor -v）
-npm run test:integration     # 串联执行 test:py + test + test:e2e:chrome
+# Unit & integration tests
+npm test                     # Compile TS and run all node --test suites
+npm run test:py              # Run executor/ Python unit tests (or orb -m ubuntu python3 -m unittest discover -s executor -v)
+npm run test:integration     # Run test:py + test + test:e2e:chrome sequentially
 
-# 分层 E2E 与覆盖率审计
-npm run test:e2e:list        # 查看全部 14 个套件与 110 个用例清单
-npm run test:e2e:p0          # 核心冒烟与安全底线（21 用例）
-npm run test:e2e:p1          # 协作、卡片、沙箱、路由与移动端交互（47 用例）
-npm run test:e2e:p2          # CLI、官网、设置与快捷键（30 用例）
-npm run test:e2e:p3          # 托盘混沌恢复与实网冒烟（12 用例）
-npm run test:e2e:all         # 全量 110 用例
-npm run test:e2e:affected    # 基于 git 变更影响面自动筛选运行
-npm run test:e2e:release     # 发布前 affected + P0 回归门禁
-npm run e2e:sync-check       # 检查代码改动与 E2E 目录同步状态
-npm run e2e:audit            # 6 维度 100% 静态覆盖率审计
-npm run e2e:report           # 生成标准 Markdown 测试诊断报告
+# Tiered E2E & coverage audits
+npm run test:e2e:list        # List all 14 suites and 110 cases
+npm run test:e2e:p0          # Core smoke & security baseline (21 cases)
+npm run test:e2e:p1          # Collab, cards, sandbox, routing & mobile flows (47 cases)
+npm run test:e2e:p2          # CLI, landing page, settings & hotkeys (30 cases)
+npm run test:e2e:p3          # Tray chaos recovery & live-network smoke (12 cases)
+npm run test:e2e:all         # All 110 cases
+npm run test:e2e:affected    # Auto-select suites based on git diff impact
+npm run test:e2e:release     # Pre-release gate: affected + P0
+npm run e2e:sync-check       # Verify code changes vs E2E catalog sync
+npm run e2e:audit            # 6-dimension 100% static coverage audit
+npm run e2e:report           # Generate standardized Markdown diagnostic report
 ```
 
 </details>
 
 ---
 
-## 安全与隐私红线
+## Security & Privacy Redlines
 
 > [!IMPORTANT]
-> - **网络与鉴权隔离**：Web 服务默认仅绑定回环地址 `127.0.0.1:3230`；外网中继 `:3231` 强制鉴权（Bearer / `?token=` 换取 `HttpOnly` Cookie）并锁定自身配置接口；Ubuntu 执行器 `:7300` 强制 Bearer Token；LAN 与 IM 渠道 6 位配对码连续失败 5 次即锁定；云端模式 `DEPLOY_ENV=cloud` 根路径仅响应 `ok` 纯 API。
-> - **双电脑分级审批**：沙箱环境（**Bot 的电脑**）内 CLI、文件与 GUI 默认自动放行；宿主机（**你的电脑** `host_*` 工具）与跨工作区写操作、高危命令/管道脚本受 `始终允许 / 每次询问 / 从不允许` 策略与用户审批严格约束。
-> - **敏感路径双重拦截**：`.ssh`、`.aws`、`.gnupg`、`Library/Keychains`、`chrome-debug-profile`、`.env*`、`*credentials*`、`*secret*`、`*token*`、`vault.json` 及系统目录/Shell 启动脚本在策略层与执行层双重拒绝读写与外发。
-> - **零泄漏保险库与运行时防护**：凭据由 **AES-256-GCM** 加密存储于 `vault.json`，模型侧仅见不透明引用 `secret_ref`（`{{secret:cred_...}}`），仅在受控 `browser_type` / `type_text` 时解封注入，绝不暴露给 LLM、Shell 或 URL；`web_fetch` 拦截内网与云元数据 IP 防止 SSRF；MCP 子进程自动剥离敏感环境变量（`SCRUBBED_ENV_KEYS`）；系统严格隔离不可信屏幕/网页/邮件内容以防御提示注入，并限制单任务最高 `60` 步与单条 Shell `120s` 超时。
+> - **Network & Auth Isolation**: The web server binds to loopback `127.0.0.1:3230` by default; the remote relay (`:3231`) enforces authentication (Bearer / `?token=` exchanged for an `HttpOnly` Cookie) and locks self-configuration endpoints; the Ubuntu executor (`:7300`) requires a Bearer Token; LAN and IM 6-digit pairing codes lock after 5 consecutive failures; cloud mode (`DEPLOY_ENV=cloud`) serves pure API with `ok` on `/`.
+> - **Dual-Computer Tiered Approval**: CLI, file, and GUI operations inside **Bot's Computer** sandbox auto-allow by default, whereas host actions (**Your Computer** `host_*` tools), cross-workspace writes, and dangerous commands/piped scripts are strictly governed by `Always Allow / Ask Every Time / Never Allow` policies and explicit user approval.
+> - **Dual-Layer Sensitive Path Blocking**: Both the policy engine and execution layer block reads, writes, and exfiltration targeting `.ssh`, `.aws`, `.gnupg`, `Library/Keychains`, `chrome-debug-profile`, `.env*`, `*credentials*`, `*secret*`, `*token*`, `vault.json`, system directories, and shell startup scripts.
+> - **Zero-Leak Vault & Runtime Guards**: Credentials are encrypted with **AES-256-GCM** in `vault.json`; models only see opaque `secret_ref` placeholders (`{{secret:cred_...}}`), unwrapped solely inside controlled `browser_type` / `type_text` injections and never exposed to LLMs, shells, or URLs. `web_fetch` blocks private/cloud-metadata IPs against SSRF, MCP child processes strip sensitive environment variables (`SCRUBBED_ENV_KEYS`), untrusted screen/web/email text is isolated against prompt injection, and execution enforces a `60`-step task limit and `120s` per-command shell timeout.
 
 ---
 
-## 社区与开源协议
+## Community & License
 
-- 问题反馈与建议：[GitHub Issues](https://github.com/caixy-plus/twinklebot/issues) · 版本发布记录：[Releases](https://github.com/caixy-plus/twinklebot/releases) · 交流讨论：[Discussions](https://github.com/caixy-plus/twinklebot/discussions)
-- 欢迎通过 Issue 与 Pull Request 参与贡献；提交前请确保 `npm run typecheck`、`npm test` 与 `npm run e2e:audit` 通过。
+- Feedback & bug reports: [GitHub Issues](https://github.com/caixy-plus/twinklebot/issues) · Releases: [Releases](https://github.com/caixy-plus/twinklebot/releases) · Discussions: [Discussions](https://github.com/caixy-plus/twinklebot/discussions)
+- Issues and Pull Requests are welcome! Before submitting, please make sure `npm run typecheck`, `npm test`, and `npm run e2e:audit` pass.
 
 <a href="https://www.star-history.com/#caixy-plus/twinklebot&Date">
   <picture>
@@ -241,4 +246,4 @@ npm run e2e:report           # 生成标准 Markdown 测试诊断报告
   </picture>
 </a>
 
-基于 [MIT License](LICENSE) 开源。
+Licensed under the [MIT License](LICENSE).
