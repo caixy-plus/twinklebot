@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - "v*"
-      - "ota-*"
+      - "ota-[0-9]*"
   workflow_dispatch:
     inputs:
       mode:
@@ -67,6 +67,10 @@ jobs:
           WEB_STAMP=$(date -u +"%Y%m%d.%H%M%S")
           if [[ "${{ github.event_name }}" == "push" ]]; then
             REF_TAG="${{ github.ref_name }}"
+            if [[ "$REF_TAG" == "ota-channel" ]]; then
+              echo "::error::ota-channel is a rolling release pointer tag and must never trigger release builds."
+              exit 1
+            fi
             if [[ "$REF_TAG" == v* ]]; then
               MODE="full"
             else
@@ -262,7 +266,7 @@ jobs:
 
       - name: Refresh rolling ota-channel pointer asset
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
           TARGET_REF: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
         run: |
@@ -516,7 +520,7 @@ jobs:
 
       - name: Upload OTA assets, clean temp metadata & publish Official GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
           TARGET_REF: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
           RELEASE_TAG: "${{ needs.prepare.outputs.release_tag }}"
