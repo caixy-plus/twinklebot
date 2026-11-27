@@ -137,12 +137,16 @@ interface ActiveChannelTurn {
   messageId?: string;
   reactionPromise?: Promise<string | null>;
   buffer: string[];
+  lastInterimText: string;
   pendingMedia: ChannelOutboundMedia[];
   lastError: string;
   delivered: boolean;
   choiceNotified: boolean;
   steeredCount?: number;
+  awaitingSteerContinuation: boolean;
   steerGraceTimer?: ReturnType<typeof setTimeout> | null;
+  inactivityTimer?: ReturnType<typeof setTimeout> | null;
+  startedAtMs: number;
   donePromise: Promise<void>;
   resolveDone: () => void;
 }
@@ -229,6 +233,59 @@ export function createChannelManager({
   const pendingChoices = new Map<string, PendingChannelChoice>();
   const activeTurns = new Map<string, ActiveChannelTurn>();
   const sessionChains = new Map<string, Promise<void>>();
+  const chatTextChains = new Map<string, Promise<void>>();
+  const chatMediaChains = new Map<string, Promise<void>>();
+
+  const TURN_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
+  const TURN_ABSOLUTE_MAX_MS = 30 * 60_000;
+
+  function enqueueChatTask(
+    map: Map<string, Promise<void>>,
+    chatKey: string,
+    fn: () => Promise<void>
+  ): Promise<void> {
+    const prev = map.get(chatKey) || Promise.resolve();
+    const next = prev.catch(() => {}).then(fn);
+    const tracked = next.finally(() => {
+      if (map.get(chatKey) === tracked) {
+        map.delete(chatKey);
+      }
+    });
+    map.set(chatKey, tracked);
+    return next;
+  }
+
+  function clearTurnTimers(turn: ActiveChannelTurn): void {
+    if (turn.inactivityTimer) {
+      clearTimeout(turn.inactivityTimer);
+      turn.inactivityTimer = null;
+    }
+    if (turn.steerGraceTimer) {
+      clearTimeout(turn.steerGraceTimer);
+      turn.steerGraceTimer = null;
+    }
+  }
+
+  function armTurnInactivityTimer(turn: ActiveChannelTurn): void {
+    if (turn.inactivityTimer) {
+      clearTimeout(turn.inactivityTimer);
+      turn.inactivityTimer = null;
+    }
+    const timer = setTimeout(() => {
+      turn.inactivityTimer = null;
+      if (activeTurns.get(turn.sessionId) !== turn) return;
+      const busy =
+        typeof runner?.isSessionBusy === "function" && Boolean(runner.isSessionBusy(turn.sessionId));
+      if (busy && Date.now() - turn.startedAtMs < TURN_ABSOLUTE_MAX_MS) {
+        armTurnInactivityTimer(turn);
+        return;
+      }
+      activeTurns.delete(turn.sessionId);
+      turn.resolveDone();
+    }, TURN_INACTIVITY_TIMEOUT_MS);
+    timer.unref?.();
+    turn.inactivityTimer = timer;
+  }
 
   const runtimeStates = new Map<string, ChannelRuntimeState>();
   const tgConns = new Map<string, TelegramConnEntry>();
@@ -377,12 +434,13 @@ export function createChannelManager({
     channel: ChannelSkillId,
     accountId: string,
     chatId: string,
-    media: ChannelOutboundMedia
+    media: ChannelOutboundMedia,
+    opts?: { preserveLastSendError?: boolean }
   ): Promise<{ ok: boolean; error?: string }> {
     const rt = getRuntime(channel, accountId);
     try {
       await sendChannelMedia(channel, accountId, chatId, media);
-      if (rt.lastSendError !== null) {
+      if (!opts?.preserveLastSendError && rt.lastSendError !== null) {
         rt.lastSendError = null;
         notifyStateChange();
       }
@@ -402,12 +460,13 @@ export function createChannelManager({
     channel: ChannelSkillId,
     accountId: string,
     chatId: string,
-    text: string
+    text: string,
+    opts?: { preserveLastSendError?: boolean }
   ): Promise<boolean> {
     const rt = getRuntime(channel, accountId);
     try {
       await sendChannelReply(channel, accountId, chatId, text);
-      if (rt.lastSendError !== null) {
+      if (!opts?.preserveLastSendError && rt.lastSendError !== null) {
         rt.lastSendError = null;
         notifyStateChange();
       }
@@ -545,9 +604,35 @@ export function createChannelManager({
         return;
       }
 
-      if (event.type === "status" && event.status === "running" && turn.steerGraceTimer) {
+      const isTerminalStatus =
+        event.type === "status" && TERMINAL_SESSION_STATUSES.has(String(event.status || ""));
+      if (!isTerminalStatus) {
+        armTurnInactivityTimer(turn);
+      }
+
+      const isContinuationSignal =
+        (event.type === "status" && event.status === "running") ||
+        event.type === "answer" ||
+        event.type === "assistant_message" ||
+        event.type === "assistant_text" ||
+        (event.type === "result" &&
+          (event.name === "send_file" || event.name === "generate_image"));
+
+      if (turn.awaitingSteerContinuation && isContinuationSignal) {
+        if (turn.steerGraceTimer) {
+          clearTimeout(turn.steerGraceTimer);
+          turn.steerGraceTimer = null;
+        }
+        turn.awaitingSteerContinuation = false;
+        turn.delivered = false;
+        turn.choiceNotified = false;
+        if (event.type === "status" && event.status === "running") {
+          return;
+        }
+      } else if (event.type === "status" && event.status === "running" && turn.steerGraceTimer) {
         clearTimeout(turn.steerGraceTimer);
         turn.steerGraceTimer = null;
+        turn.awaitingSteerContinuation = false;
         turn.delivered = false;
         turn.choiceNotified = false;
         return;
@@ -698,6 +783,15 @@ export function createChannelManager({
       }
 
       if (
+        event.type === "assistant_text" &&
+        typeof event.text === "string" &&
+        event.text.trim()
+      ) {
+        turn.lastInterimText = event.text.trim();
+        return;
+      }
+
+      if (
         (event.type === "answer" || event.type === "assistant_message") &&
         typeof event.text === "string" &&
         event.text.trim()
@@ -705,6 +799,7 @@ export function createChannelManager({
         if (turn.steerGraceTimer) {
           clearTimeout(turn.steerGraceTimer);
           turn.steerGraceTimer = null;
+          turn.awaitingSteerContinuation = false;
           turn.delivered = false;
         }
         turn.buffer.push(event.text.trim());
@@ -724,71 +819,109 @@ export function createChannelManager({
       if (event.type === "status" && TERMINAL_SESSION_STATUSES.has(String(event.status || ""))) {
         clearPendingApprovalsForSession(event.sessionId);
         if (!turn.delivered) {
-          turn.delivered = true;
-          const remainingSteers = Math.max(0, Number(turn.steeredCount) || 0);
-          if (remainingSteers === 0) {
-            activeTurns.delete(event.sessionId);
-          } else {
-            turn.steeredCount = remainingSteers - 1;
-          }
           const failed = String(event.status) === "error";
-          void finalizeTurnReaction(turn, failed);
           const replyText =
             turn.buffer.join("\n\n").trim() ||
+            (!failed && event.status !== "stopped" ? turn.lastInterimText.trim() : "") ||
             (failed
               ? `执行任务时发生错误${turn.lastError ? `：${turn.lastError}` : "，请在 TwinkleBot App 查看详情。"}`
               : event.status === "stopped"
                 ? "任务已停止。"
                 : "");
-          turn.buffer = [];
           const mediaItems = [...turn.pendingMedia];
+          turn.buffer = [];
           turn.pendingMedia = [];
-          const deliverAll = async () => {
-            const outboundText = stripLocalWorkspaceEmbedsForChannel(replyText, mediaItems);
-            if (outboundText) {
-              await sendChannelReplyTracked(turn.channel, turn.accountId, turn.chatId, outboundText);
+          turn.lastInterimText = "";
+          turn.lastError = "";
+          turn.delivered = true;
+
+          const remainingSteers = Math.max(0, Number(turn.steeredCount) || 0);
+          if (remainingSteers > 0) {
+            turn.steeredCount = remainingSteers - 1;
+            turn.awaitingSteerContinuation = true;
+            if (turn.steerGraceTimer) clearTimeout(turn.steerGraceTimer);
+            turn.steerGraceTimer = setTimeout(() => {
+              turn.steerGraceTimer = null;
+              if (activeTurns.get(event.sessionId) !== turn) return;
+              if (
+                typeof runner?.isSessionBusy === "function" &&
+                Boolean(runner.isSessionBusy(event.sessionId))
+              ) {
+                turn.awaitingSteerContinuation = false;
+                turn.delivered = false;
+                turn.choiceNotified = false;
+                return;
+              }
+              activeTurns.delete(event.sessionId);
+              turn.resolveDone();
+            }, 150);
+            turn.steerGraceTimer.unref?.();
+          } else {
+            if (activeTurns.get(event.sessionId) === turn) {
+              activeTurns.delete(event.sessionId);
             }
-            for (const mediaItem of mediaItems) {
-              const mediaRes = await sendChannelMediaTracked(
-                turn.channel,
-                turn.accountId,
-                turn.chatId,
-                mediaItem
-              );
-              if (!mediaRes.ok) {
-                const fileLabel = mediaItem.name || path.basename(mediaItem.filePath) || "附件";
-                const errDetail = mediaRes.error || "未知错误";
-                const sizeHint = /too big|413|size|large|exceed|limit/i.test(errDetail)
-                  ? "（可能超过外部通道单文件大小限制）"
-                  : "";
-                await sendChannelReplyTracked(
+            if (turn.inactivityTimer) {
+              clearTimeout(turn.inactivityTimer);
+              turn.inactivityTimer = null;
+            }
+          }
+
+          void finalizeTurnReaction(turn, failed);
+
+          const chatKey = `${turn.channel}:${turn.accountId}:${turn.chatId}`;
+          const outboundText = stripLocalWorkspaceEmbedsForChannel(replyText, mediaItems);
+          let textFailed = false;
+          const textPromise = outboundText
+            ? enqueueChatTask(chatTextChains, chatKey, async () => {
+                const ok = await sendChannelReplyTracked(
                   turn.channel,
                   turn.accountId,
                   turn.chatId,
-                  `⚠️ 文件发送失败（${fileLabel}）：${errDetail}${sizeHint}`
+                  outboundText
                 );
-              }
-            }
-          };
-          const finishTurn = () => {
-            if (remainingSteers > 0) {
-              if (turn.steerGraceTimer) clearTimeout(turn.steerGraceTimer);
-              turn.steerGraceTimer = setTimeout(() => {
-                turn.steerGraceTimer = null;
-                if (activeTurns.get(event.sessionId) === turn) {
-                  activeTurns.delete(event.sessionId);
-                }
+                if (!ok) textFailed = true;
+              })
+            : Promise.resolve();
+
+          if (remainingSteers === 0) {
+            if (outboundText) {
+              void textPromise.finally(() => {
                 turn.resolveDone();
-              }, 80);
-              turn.steerGraceTimer.unref?.();
+              });
             } else {
               turn.resolveDone();
             }
-          };
-          if (replyText || mediaItems.length > 0) {
-            void deliverAll().finally(finishTurn);
-          } else {
-            finishTurn();
+          }
+
+          if (mediaItems.length > 0) {
+            void enqueueChatTask(chatMediaChains, chatKey, async () => {
+              await textPromise.catch(() => {});
+              let anyMediaFailed = false;
+              for (const mediaItem of mediaItems) {
+                const mediaRes = await sendChannelMediaTracked(
+                  turn.channel,
+                  turn.accountId,
+                  turn.chatId,
+                  mediaItem,
+                  { preserveLastSendError: textFailed || anyMediaFailed }
+                );
+                if (!mediaRes.ok) {
+                  anyMediaFailed = true;
+                  const fileLabel = mediaItem.name || path.basename(mediaItem.filePath) || "附件";
+                  const errDetail = mediaRes.error || "未知错误";
+                  const sizeHint = /too big|413|size|large|exceed|limit/i.test(errDetail)
+                    ? "（可能超过外部通道单文件大小限制）"
+                    : "";
+                  await sendChannelReplyTracked(
+                    turn.channel,
+                    turn.accountId,
+                    turn.chatId,
+                    `⚠️ 文件发送失败（${fileLabel}）：${errDetail}${sizeHint}\n文件已保存在 TwinkleBot App 中，可在桌面端/手机端对话框或交付文件列表查看下载。`,
+                    { preserveLastSendError: true }
+                  );
+                }
+              }
+            });
           }
         }
       }
@@ -809,10 +942,15 @@ export function createChannelManager({
     acctLabel: string,
     msg: ParsedInboundChannelMessage
   ): Promise<void> {
-    let resolveDone!: () => void;
+    let rawResolveDone!: () => void;
     const donePromise = new Promise<void>((resolve) => {
-      resolveDone = resolve;
+      rawResolveDone = resolve;
     });
+    let turnRef: ActiveChannelTurn | null = null;
+    const resolveDone = () => {
+      if (turnRef) clearTurnTimers(turnRef);
+      rawResolveDone();
+    };
 
     const prevChain = sessionChains.get(sessionId) || Promise.resolve();
     const nextChain = prevChain
@@ -828,23 +966,22 @@ export function createChannelManager({
           sessionId,
           messageId: msg.messageId,
           buffer: [],
+          lastInterimText: "",
           pendingMedia: [],
           lastError: "",
           delivered: false,
           choiceNotified: false,
+          awaitingSteerContinuation: false,
+          steerGraceTimer: null,
+          inactivityTimer: null,
+          startedAtMs: Date.now(),
           donePromise,
           resolveDone,
         };
+        turnRef = turn;
         activeTurns.set(sessionId, turn);
         startTurnReaction(turn);
-
-        const safetyTimer = setTimeout(() => {
-          if (activeTurns.get(sessionId) === turn) {
-            activeTurns.delete(sessionId);
-          }
-          resolveDone();
-        }, 5 * 60_000);
-        safetyTimer.unref?.();
+        armTurnInactivityTimer(turn);
 
         const userMeta = {
           clientSource: {
@@ -862,12 +999,22 @@ export function createChannelManager({
         };
 
         try {
+          const wasBusy =
+            typeof runner?.isSessionBusy === "function" && Boolean(runner.isSessionBusy(sessionId));
           if (typeof runner?.enqueue === "function") {
-            await runner.enqueue(sessionId, msg.text, userMeta);
+            const enqRes = await runner.enqueue(sessionId, msg.text, userMeta);
+            if (wasBusy || enqRes?.steered || enqRes?.queued) {
+              turn.steeredCount = (turn.steeredCount || 0) + 1;
+            }
           } else if (typeof runner?.start === "function") {
+            if (wasBusy) {
+              turn.steeredCount = (turn.steeredCount || 0) + 1;
+            }
             await runner.start(sessionId, msg.text, userMeta);
           } else {
-            activeTurns.delete(sessionId);
+            if (activeTurns.get(sessionId) === turn) {
+              activeTurns.delete(sessionId);
+            }
             resolveDone();
           }
           await donePromise;
@@ -884,7 +1031,7 @@ export function createChannelManager({
           );
           resolveDone();
         } finally {
-          clearTimeout(safetyTimer);
+          clearTurnTimers(turn);
         }
       });
 
@@ -1137,7 +1284,17 @@ export function createChannelManager({
     }
 
     const sessionId = resolveTargetSessionId(acct.defaultSessionId);
-    const activeTurn = activeTurns.get(sessionId);
+    let activeTurn = activeTurns.get(sessionId);
+    if (
+      activeTurn &&
+      activeTurn.awaitingSteerContinuation &&
+      typeof runner?.isSessionBusy === "function" &&
+      !runner.isSessionBusy(sessionId)
+    ) {
+      activeTurns.delete(sessionId);
+      activeTurn.resolveDone();
+      activeTurn = undefined;
+    }
     if (
       activeTurn &&
       typeof runner?.isSessionBusy === "function" &&
@@ -2134,11 +2291,14 @@ export function createChannelManager({
       unsubscribeRunner = null;
     }
     pendingApprovals.clear();
+    pendingChoices.clear();
     for (const turn of activeTurns.values()) {
       turn.resolveDone();
     }
     activeTurns.clear();
     sessionChains.clear();
+    chatTextChains.clear();
+    chatMediaChains.clear();
   }
 
   return {

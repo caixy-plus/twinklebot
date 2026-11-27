@@ -33,6 +33,7 @@ import {
   sendFeishuMedia,
   sendFeishuMessage,
   sendTelegramMedia,
+  sendTelegramMessage,
   summarizeChannelStatusForBot,
   testFeishuChannel,
 } from "../src/lib/channel-integrations.js";
@@ -3100,4 +3101,460 @@ test("Phase 6 P2-5 & P2-7: viaRelay [消息来源], group Bot reply timestamps &
   runner.start(bot.id, "跨 Bot 接力任务", undefined, { isBotHandoff: true });
   await new Promise((r) => setTimeout(r, 30));
   assert.ok(handoffMeta?.sentAt && Number.isFinite(Date.parse(handoffMeta.sentAt)));
+});
+
+test("channelManager: live-steer continuation during slow delivery & >150ms thinking preserves all Telegram replies", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-ch-steer-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const store = createStore(tmpDir);
+  const bot = store.createSession({ title: "SteerBot", isAdmin: true });
+  store.writeChannelsAuth({
+    telegramAccounts: [
+      {
+        id: "tg_steer",
+        label: "TG Steer",
+        enabled: true,
+        botToken: "123456:TG_STEER_TOKEN",
+        approvedChats: [{ chatId: "chat_steer", userId: "u_steer", approvedAt: new Date().toISOString() }],
+      },
+    ],
+  });
+
+  const sentTexts: string[] = [];
+  const fetchImpl: typeof fetch = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body || "{}"));
+      sentTexts.push(String(body.text || ""));
+      // Slow reply upload to simulate network latency overlapping continuation run start
+      await new Promise((r) => setTimeout(r, 40));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: sentTexts.length } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as any;
+
+  let busy = false;
+  let turnCount = 0;
+  const subs = new Set<(ev: any) => void>();
+  const emit = (ev: any) => subs.forEach((fn) => fn(ev));
+  const mockRunner: any = {
+    isSessionBusy: () => busy,
+    subscribe: (fn: (ev: any) => void) => {
+      subs.add(fn);
+      return () => subs.delete(fn);
+    },
+    enqueue: async (sessionId: string, text: string) => {
+      turnCount += 1;
+      if (turnCount === 1) {
+        busy = true;
+        return { queued: false, steered: false, queueLength: 0 };
+      }
+      // Steered arrival while turn 1 is still busy
+      return { queued: false, steered: true, queueLength: 0 };
+    },
+  };
+
+  const mgr = createChannelManager({
+    store,
+    runner: mockRunner,
+    getInstalledSkills: () => ["telegram-bot"],
+    fetchImpl,
+  });
+  t.after(() => mgr.stopAll());
+  mgr.syncFromStore();
+
+  // Start Turn 1
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    accountId: "tg_steer",
+    eventId: "tg:st-1",
+    chatId: "chat_steer",
+    senderId: "u_steer",
+    senderName: "User",
+    text: "第一条",
+  });
+  await new Promise((r) => setTimeout(r, 15));
+
+  // Steer Turn 2 while Turn 1 is still active
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    accountId: "tg_steer",
+    eventId: "tg:st-2",
+    chatId: "chat_steer",
+    senderId: "u_steer",
+    senderName: "User",
+    text: "第二条插话",
+  });
+
+  // Case A: Turn 1 ends and immediate continuation starts while Turn 1 reply HTTP call is in-flight
+  emit({ sessionId: bot.id, type: "answer", text: "第一轮回复" });
+  emit({ sessionId: bot.id, type: "status", status: "done" });
+  await new Promise((r) => setTimeout(r, 10));
+  emit({ sessionId: bot.id, type: "status", status: "running" });
+  // Even if continuation thinks > 180ms before emitting answer, Turn 2 reply must NOT be dropped
+  await new Promise((r) => setTimeout(r, 200));
+  emit({ sessionId: bot.id, type: "answer", text: "第二轮续跑回复" });
+  busy = false;
+  emit({ sessionId: bot.id, type: "status", status: "done" });
+
+  for (let i = 0; i < 40 && sentTexts.length < 2; i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(sentTexts.includes("第一轮回复"), `Missing first reply in ${JSON.stringify(sentTexts)}`);
+  assert.ok(sentTexts.includes("第二轮续跑回复"), `Missing continuation reply in ${JSON.stringify(sentTexts)}`);
+});
+
+test("channelManager: slow media upload does not block next Telegram turn text reply & preserves lastSendError", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-ch-decouple-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const store = createStore(tmpDir);
+  const bot = store.createSession({ title: "MediaDecoupleBot", isAdmin: true });
+  const slowFile = path.join(tmpDir, "slow-archive.txt");
+  fs.writeFileSync(slowFile, "payload", "utf8");
+  const failFile = path.join(tmpDir, "too-big.zip");
+  fs.writeFileSync(failFile, "big-payload", "utf8");
+
+  store.writeChannelsAuth({
+    telegramAccounts: [
+      {
+        id: "tg_dec",
+        label: "TG Decouple",
+        enabled: true,
+        botToken: "123456:TG_DECOUPLE_TOKEN",
+        approvedChats: [{ chatId: "chat_dec", userId: "u_dec", approvedAt: new Date().toISOString() }],
+      },
+    ],
+  });
+
+  const timeline: string[] = [];
+  let mediaMode: "slow" | "fail" | "ok" = "slow";
+  let textFailOnce = false;
+  const fetchImpl: typeof fetch = (async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    if (u.includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body || "{}"));
+      if (textFailOnce && !String(body.text || "").includes("文件发送失败")) {
+        textFailOnce = false;
+        return new Response(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: text rejected" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      timeline.push(`msg:${body.text}`);
+      return new Response(JSON.stringify({ ok: true, result: { message_id: timeline.length } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (u.includes("/sendDocument")) {
+      if (mediaMode === "slow") {
+        await new Promise((r) => setTimeout(r, 240));
+        timeline.push("media:slow-done");
+        return new Response(JSON.stringify({ ok: true, result: { message_id: 99 } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (mediaMode === "fail") {
+        return new Response(JSON.stringify({ ok: false, error_code: 413, description: "Request Entity Too Large" }), {
+          status: 413,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      timeline.push("media:ok");
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 100 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as any;
+
+  let busy = false;
+  const subs = new Set<(ev: any) => void>();
+  const emit = (ev: any) => subs.forEach((fn) => fn(ev));
+  const mgr = createChannelManager({
+    store,
+    runner: {
+      isSessionBusy: () => busy,
+      subscribe: (fn: (ev: any) => void) => {
+        subs.add(fn);
+        return () => subs.delete(fn);
+      },
+      enqueue: async (sessionId: string, text: string) => {
+        busy = true;
+        setTimeout(() => {
+          if (text === "turn1-slow-media") {
+            emit({
+              sessionId,
+              type: "result",
+              name: "send_file",
+              result: { ok: true, source_path: slowFile, name: "slow-archive.txt", is_media: false },
+            });
+            emit({ sessionId, type: "answer", text: "第一轮文字" });
+          } else if (text === "turn2-fast") {
+            emit({ sessionId, type: "answer", text: "第二轮秒回" });
+          } else if (text === "turn3-media-fail") {
+            emit({
+              sessionId,
+              type: "result",
+              name: "send_file",
+              result: { ok: true, source_path: failFile, name: "too-big.zip", is_media: false },
+            });
+            emit({ sessionId, type: "answer", text: "第三轮文字" });
+          } else if (text === "turn4-text-fail-media-ok") {
+            textFailOnce = true;
+            emit({
+              sessionId,
+              type: "result",
+              name: "send_file",
+              result: { ok: true, source_path: slowFile, name: "slow-archive.txt", is_media: false },
+            });
+            emit({ sessionId, type: "answer", text: "第四轮失败文字" });
+          }
+          busy = false;
+          emit({ sessionId, type: "status", status: "done" });
+        }, 5);
+        return { queued: false, steered: false, queueLength: 0 };
+      },
+    },
+    getInstalledSkills: () => ["telegram-bot"],
+    fetchImpl,
+  });
+  t.after(() => mgr.stopAll());
+  mgr.syncFromStore();
+
+  // 1. Slow media upload on Turn 1 must not block Turn 2's text reply
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    accountId: "tg_dec",
+    eventId: "tg:dec-1",
+    chatId: "chat_dec",
+    senderId: "u_dec",
+    senderName: "DecoupleUser",
+    text: "turn1-slow-media",
+  });
+  await new Promise((r) => setTimeout(r, 25));
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    accountId: "tg_dec",
+    eventId: "tg:dec-2",
+    chatId: "chat_dec",
+    senderId: "u_dec",
+    senderName: "DecoupleUser",
+    text: "turn2-fast",
+  });
+  for (let i = 0; i < 60 && !timeline.includes("media:slow-done"); i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const idxMsg1 = timeline.indexOf("msg:第一轮文字");
+  const idxMsg2 = timeline.indexOf("msg:第二轮秒回");
+  const idxMedia1 = timeline.indexOf("media:slow-done");
+  assert.ok(idxMsg1 >= 0 && idxMsg2 > idxMsg1 && idxMedia1 > idxMsg2, `Expected msg2 before slow media: ${JSON.stringify(timeline)}`);
+
+  // 2. When media fails and warning text succeeds, lastSendError must NOT be wiped to null
+  mediaMode = "fail";
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    accountId: "tg_dec",
+    eventId: "tg:dec-3",
+    chatId: "chat_dec",
+    senderId: "u_dec",
+    senderName: "DecoupleUser",
+    text: "turn3-media-fail",
+  });
+  for (let i = 0; i < 40 && !timeline.some((x) => x.includes("文件发送失败")); i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const warnText = timeline.find((x) => x.includes("文件发送失败")) || "";
+  assert.ok(warnText.includes("TwinkleBot App"), `Expected App download fallback hint in warning: ${warnText}`);
+  const errAfterMediaFail = mgr.getStatusPayload()["telegram-bot"].accounts[0].runtime.lastSendError;
+  assert.match(errAfterMediaFail || "", /Too Large|413/i, `Expected preserved lastSendError, got ${errAfterMediaFail}`);
+
+  // 3. When text fails and media succeeds, lastSendError must NOT be wiped to null
+  mediaMode = "ok";
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    accountId: "tg_dec",
+    eventId: "tg:dec-4",
+    chatId: "chat_dec",
+    senderId: "u_dec",
+    senderName: "DecoupleUser",
+    text: "turn4-text-fail-media-ok",
+  });
+  for (let i = 0; i < 40 && !timeline.includes("media:ok"); i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const errAfterTextFail = mgr.getStatusPayload()["telegram-bot"].accounts[0].runtime.lastSendError;
+  assert.match(errAfterTextFail || "", /text rejected|Bad Request/i, `Expected preserved text failure error, got ${errAfterTextFail}`);
+});
+
+test("Telegram outbound retries transient failures, falls back sendPhoto->sendDocument, handles assistant_text & busy non-channel collision, and reports truthful send_file states", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-ch-hardening-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  // 1. sendTelegramMessage retries transient fetch error and succeeds
+  let msgAttempts = 0;
+  const retryFetch: typeof fetch = (async (url: string) => {
+    if (String(url).includes("/sendMessage")) {
+      msgAttempts += 1;
+      if (msgAttempts === 1) {
+        throw new TypeError("fetch failed: ECONNRESET");
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as any;
+  await sendTelegramMessage({ botToken: "123:RETRY", apiBaseUrl: "" }, "999", "重试后成功", retryFetch);
+  assert.equal(msgAttempts, 2);
+
+  // 2. sendTelegramMedia falls back from sendPhoto to sendDocument on PHOTO_INVALID_DIMENSIONS
+  const oddImg = path.join(tmpDir, "wide-banner.png");
+  fs.writeFileSync(oddImg, Buffer.from("89504e470d0a1a0a", "hex"));
+  const mediaCalls: string[] = [];
+  const fallbackFetch: typeof fetch = (async (url: string) => {
+    const u = String(url);
+    mediaCalls.push(u);
+    if (u.includes("/sendPhoto")) {
+      return new Response(
+        JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: PHOTO_INVALID_DIMENSIONS" }),
+        { status: 400, headers: { "content-type": "application/json" } }
+      );
+    }
+    if (u.includes("/sendDocument")) {
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 2 } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  }) as any;
+  await sendTelegramMedia(
+    { botToken: "123:FALLBACK", apiBaseUrl: "" },
+    "999",
+    { filePath: oddImg, name: "wide-banner.png", mimeType: "image/png", isMedia: true },
+    fallbackFetch
+  );
+  assert.ok(mediaCalls.some((u) => u.includes("/sendPhoto")));
+  assert.ok(mediaCalls.some((u) => u.includes("/sendDocument")));
+
+  // 3. Fallback to assistant_text when answer is empty & non-channel busy session collision
+  const store = createStore(tmpDir);
+  const bot = store.createSession({ title: "FallbackBot", isAdmin: true });
+  store.writeChannelsAuth({
+    telegramAccounts: [
+      {
+        id: "tg_fb",
+        label: "TG FB",
+        enabled: true,
+        botToken: "123456:TG_FB_TOKEN",
+        approvedChats: [{ chatId: "chat_fb", userId: "u_fb", approvedAt: new Date().toISOString() }],
+      },
+    ],
+  });
+  const sentMsgs: string[] = [];
+  const fbFetch: typeof fetch = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes("/sendMessage")) {
+      sentMsgs.push(String(JSON.parse(String(init?.body || "{}")).text || ""));
+    }
+    return new Response(JSON.stringify({ ok: true, result: { message_id: 10 } }), { status: 200 });
+  }) as any;
+
+  let busy = false;
+  const subs = new Set<(ev: any) => void>();
+  const emit = (ev: any) => subs.forEach((fn) => fn(ev));
+  const mgr = createChannelManager({
+    store,
+    runner: {
+      isSessionBusy: () => busy,
+      subscribe: (fn: (ev: any) => void) => {
+        subs.add(fn);
+        return () => subs.delete(fn);
+      },
+      enqueue: async (sessionId: string, text: string) => {
+        if (text === "busy-collision") {
+          busy = true;
+          setTimeout(() => {
+            // Prior non-channel turn finishes, then steered TG turn runs and only emits assistant_text
+            emit({ sessionId, type: "answer", text: "App 前置回合回答" });
+            emit({ sessionId, type: "status", status: "done" });
+            setTimeout(() => {
+              emit({ sessionId, type: "status", status: "running" });
+              emit({ sessionId, type: "assistant_text", text: "仅通过 assistant_text 输出的 TG 回复" });
+              busy = false;
+              emit({ sessionId, type: "status", status: "done" });
+            }, 15);
+          }, 20);
+          return { queued: false, steered: true, queueLength: 0 };
+        }
+        return { queued: false, steered: false, queueLength: 0 };
+      },
+    },
+    getInstalledSkills: () => ["telegram-bot"],
+    fetchImpl: fbFetch,
+  });
+  t.after(() => mgr.stopAll());
+  mgr.syncFromStore();
+
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    accountId: "tg_fb",
+    eventId: "tg:fb-1",
+    chatId: "chat_fb",
+    senderId: "u_fb",
+    senderName: "FallbackUser",
+    text: "busy-collision",
+  });
+  for (let i = 0; i < 40 && sentMsgs.length < 2; i += 1) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(
+    sentMsgs.includes("仅通过 assistant_text 输出的 TG 回复"),
+    `Expected assistant_text fallback in ${JSON.stringify(sentMsgs)}`
+  );
+
+  // 4. send_file truthful states: app_only, queued_on_turn_end (no "Do not poll"), and exceeds_channel_limit (>50MB)
+  const wsDir = path.join(tmpDir, "workspaces", `bot_${bot.id}`);
+  fs.mkdirSync(wsDir, { recursive: true });
+  const smallDoc = path.join(wsDir, "small.txt");
+  fs.writeFileSync(smallDoc, "ok", "utf8");
+  const hugeFile = path.join(wsDir, "huge.bin");
+  fs.writeFileSync(hugeFile, "");
+  fs.truncateSync(hugeFile, 51 * 1024 * 1024);
+
+  const appOnlyRes: any = await runBotCollabTool(
+    "send_file",
+    { path: smallDoc },
+    { store, senderSessionId: bot.id, senderBot: bot, config: { writeRoots: [path.join(tmpDir, "workspaces")] } }
+  );
+  assert.equal(appOnlyRes.ok, true);
+  assert.equal(appOnlyRes.channel_delivery, "app_only");
+
+  const tgSmallRes: any = await runBotCollabTool(
+    "send_file",
+    { path: smallDoc },
+    {
+      store,
+      senderSessionId: bot.id,
+      senderBot: bot,
+      config: { writeRoots: [path.join(tmpDir, "workspaces")] },
+      userMeta: { channelMeta: { channel: "telegram-bot", accountId: "tg_fb", chatId: "chat_fb" } },
+    }
+  );
+  assert.equal(tgSmallRes.ok, true);
+  assert.equal(tgSmallRes.channel_delivery, "queued_on_turn_end");
+  assert.equal(String(tgSmallRes.delivery_note || "").includes("Do not poll or re-send"), false);
+
+  const tgHugeRes: any = await runBotCollabTool(
+    "send_file",
+    { path: hugeFile },
+    {
+      store,
+      senderSessionId: bot.id,
+      senderBot: bot,
+      config: { writeRoots: [path.join(tmpDir, "workspaces")] },
+      userMeta: { channelMeta: { channel: "telegram-bot", accountId: "tg_fb", chatId: "chat_fb" } },
+    }
+  );
+  assert.equal(tgHugeRes.ok, true);
+  assert.equal(tgHugeRes.channel_delivery, "exceeds_channel_limit");
 });

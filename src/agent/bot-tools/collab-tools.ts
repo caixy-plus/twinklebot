@@ -195,6 +195,20 @@ export async function handleCollabBotTool(
         userMeta?.channelMeta && typeof userMeta.channelMeta === "object"
           ? userMeta.channelMeta
           : null;
+      const channelName = String(channelMeta?.channel || "").trim();
+      const channelHardLimitBytes = channelName === "feishu-bot" ? 30 * 1024 * 1024 : 50 * 1024 * 1024;
+      const channelLimitMb = channelName === "feishu-bot" ? 30 : 50;
+      const channelDelivery = !channelMeta
+        ? { channel_delivery: "app_only" }
+        : staged.size > channelHardLimitBytes
+          ? {
+              channel_delivery: "exceeds_channel_limit",
+              delivery_note: `File staged in App (${staged.size} bytes), but exceeds ${channelName}'s ${channelLimitMb}MB limit and cannot be uploaded there. Tell the user to download from TwinkleBot App or split/compress the file.`,
+            }
+          : {
+              channel_delivery: "queued_on_turn_end",
+              delivery_note: `File staged in App and queued for automatic upload to ${channelName} at turn end. Actual upload runs asynchronously after your final reply; if upload fails, the user will receive an explicit failure notice in the channel and lastSendError will record the reason.`,
+            };
 
       return {
         ok: true,
@@ -209,13 +223,7 @@ export async function handleCollabBotTool(
         is_media: staged.isMedia,
         markdown: staged.markdown,
         ...(args.caption ? { caption: String(args.caption).trim() } : {}),
-        ...(channelMeta
-          ? {
-              channel_delivery: "queued_on_turn_end",
-              delivery_note:
-                "File staged and queued for automatic external channel upload at turn end. Do not poll or re-send; summarize directly.",
-            }
-          : {}),
+        ...channelDelivery,
       };
     } catch (err: any) {
       return {

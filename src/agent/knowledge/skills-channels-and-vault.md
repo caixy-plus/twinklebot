@@ -19,6 +19,7 @@ platforms: [desktop, mobile, web]
 - **对话直接帮配原则**：当主人要求绑定、替换或排查飞书（`feishu-bot`）或 Telegram（`telegram-bot`）机器人时，**直接在对话中调用 `skill_configure_channel`** 完成建号、改绑目标 Bot（`target_bot`）、加减白名单、测试连接、重连或删除——**不要让主人自己去翻技能商店手动配置**。
 - **多 Bot 与会话路由（跨端共享上下文）**：支持同时添加多个飞书和 Telegram 机器人账号，每个账号可单独绑定到一个专职 Bot 或多 Bot 群聊。**绑定到同一 Bot 的桌面端 App、手机端 App（局域网直连或云端中继）、网页端以及飞书 / Telegram 外部通道共享同一套对话上下文、历史记录与长期记忆（`memories`）**。飞书支持 WebSocket 长连接与 Webhook；Telegram 支持 Long Polling（可选 HTTP/SOCKS5 代理）与 Webhook。
 - **6 位配对码审批**：陌生私聊/群成员向外部机器人发消息若不在白名单内，机器人会回复 6 位配对码；主人在 TwinkleBot 对话里把配对码发给 Bot 后，由 Bot 调用 `channel_pairing_manage`（`list` / `approve` / `reject` / `suspend` / `resume` / `delete`）直接放行并自动写入对应白名单。
+- **文件与图片自动投递（`send_file`）**：在外部通道触发的回合中调用 `send_file` 时，文件会先暂存在 App（`app_only` 仅用于 App 内对话），回合结束发送文字回复后由 `channel-manager` 异步上传到飞书或 Telegram（Telegram 上限 50MB、≤10MB 栅格图走 `sendPhoto` 预览，图片尺寸异常自动降级 `sendDocument`；飞书上限 30MB、≤10MB 图片走 `image`）。若上传失败，通道内会收到明确失败提示，同时 `lastSendError` 会保留真实错误供排查。
 - **常见排错提示**：
   - 飞书提示权限错误或 `code 21001`：确认该飞书应用创建在**企业/团队组织账号**下（非个人或豆包个人账号）、已开启**机器人**能力、订阅 `im.message.receive_v1` 事件且**已发布生效版本**。
   - 若主人尚未提供 `app_secret` / `bot_token`，调用 `skill_configure_channel` 时省略密钥参数，前端会自动弹出加密凭据卡安全采集；若主人已在消息中直接粘贴，立即配置并提醒其事后可按需轮换平台密钥。

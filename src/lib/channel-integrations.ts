@@ -1423,13 +1423,15 @@ export function createTelegramFetch(
 
 export function createTelegramApi(
   cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl"> & { proxy?: string },
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  opts?: { timeoutSeconds?: number }
 ): GrammyApi {
   const base = sanitizeChannelApiBaseUrl(cfg.apiBaseUrl, DEFAULT_TELEGRAM_API_BASE);
   const resolvedFetch = createTelegramFetch(cfg, fetchImpl);
   return new GrammyApi(cfg.botToken, {
     apiRoot: base,
     fetch: resolvedFetch as any,
+    timeoutSeconds: opts?.timeoutSeconds ?? 35,
     baseFetchConfig: {},
   });
 }
@@ -2023,6 +2025,72 @@ export interface ChannelOutboundMedia {
   caption?: string;
 }
 
+function isTransientTelegramError(err: any): { transient: boolean; retryAfterMs?: number } {
+  const errorCode = Number(err?.error_code ?? err?.error?.error_code ?? err?.status ?? 0);
+  if (errorCode === 429) {
+    const retryAfterSec = Number(err?.parameters?.retry_after ?? err?.error?.parameters?.retry_after ?? 1);
+    return {
+      transient: true,
+      retryAfterMs: Math.min(5000, Math.max(250, retryAfterSec * 1000)),
+    };
+  }
+  if (errorCode === 400 || errorCode === 401 || errorCode === 403 || errorCode === 404 || errorCode === 413) {
+    return { transient: false };
+  }
+  if (errorCode >= 500 && errorCode < 600) {
+    return { transient: true };
+  }
+  const inner = err?.error ?? err?.cause;
+  if (err?.name === "HttpError" || inner) {
+    const innerCode = String(inner?.code || "");
+    if (/^(ECONNRESET|ETIMEDOUT|EPIPE|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|UND_ERR_)/i.test(innerCode)) {
+      return { transient: true };
+    }
+    const innerMsg = String(inner?.message || inner || "");
+    if (/fetch failed|ECONNRESET|ETIMEDOUT|EPIPE|ENOTFOUND|UND_ERR|AbortError|timeout|NetworkError|socket hang up/i.test(innerMsg)) {
+      return { transient: true };
+    }
+    if (err?.name === "HttpError" && /Network request for .+ failed/i.test(String(err?.message || ""))) {
+      return { transient: true };
+    }
+  }
+  const msg = String(err?.description || err?.message || err || "");
+  if (
+    /fetch failed|ECONNRESET|ETIMEDOUT|EPIPE|ENOTFOUND|UND_ERR|AbortError|timeout|NetworkError|socket hang up|Network request for .+ failed/i.test(
+      msg
+    )
+  ) {
+    return { transient: true };
+  }
+  return { transient: false };
+}
+
+function sleepDelayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function runWithTelegramRetry<T>(
+  maxAttempts: number,
+  fn: () => Promise<T>
+): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt >= maxAttempts) break;
+      const check = isTransientTelegramError(err);
+      if (!check.transient) break;
+      const waitMs = check.retryAfterMs ?? (attempt === 1 ? 250 : 750);
+      await sleepDelayMs(waitMs);
+    }
+  }
+  throw lastErr;
+}
+
 export async function sendTelegramMessage(
   cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl"> & { proxy?: string },
   chatId: string,
@@ -2033,7 +2101,7 @@ export async function sendTelegramMessage(
   const api = createTelegramApi(cfg, fetchImpl);
   const chunks = chunkChannelText(text, 3900);
   for (const chunk of chunks) {
-    await api.sendMessage(chatId, chunk);
+    await runWithTelegramRetry(3, () => api.sendMessage(chatId, chunk));
   }
 }
 
@@ -2051,17 +2119,38 @@ export async function sendTelegramMedia(
   if (size <= 0 || size > 50 * 1024 * 1024) {
     throw new Error(`Telegram media file exceeds 50MB limit (${size} bytes)`);
   }
-  const fileName = String(media.name || path.basename(media.filePath) || "file").trim();
-  const inputFile = new InputFile(fs.readFileSync(media.filePath), fileName);
-  const api = createTelegramApi(cfg, fetchImpl);
+  const fileName =
+    String(media.name || path.basename(media.filePath) || "file")
+      .trim()
+      .replace(/[\r\n"]/g, "_") || "file";
+  const fileBuffer = fs.readFileSync(media.filePath);
+  const uploadTimeoutSeconds = Math.min(180, Math.max(60, Math.ceil(size / (20 * 1024)) + 30));
+  const api = createTelegramApi(cfg, fetchImpl, { timeoutSeconds: uploadTimeoutSeconds });
   const caption = media.caption ? String(media.caption).trim().slice(0, 1024) : undefined;
-  const sendAsPhoto =
+  let sendAsPhoto =
     isRasterChannelImage(media.filePath, media.mimeType) && size <= 10 * 1024 * 1024;
-  if (sendAsPhoto) {
-    await api.sendPhoto(chatId, inputFile, caption ? { caption } : undefined);
-  } else {
+  await runWithTelegramRetry(2, async () => {
+    const inputFile = new InputFile(fileBuffer, fileName);
+    if (sendAsPhoto) {
+      try {
+        await api.sendPhoto(chatId, inputFile, caption ? { caption } : undefined);
+        return;
+      } catch (err: any) {
+        const msg = String(err?.description || err?.message || err || "");
+        if (/PHOTO_INVALID_DIMENSIONS|IMAGE_PROCESS_FAILED|PHOTO_SAVE_FILE_INVALID|PHOTO_EXT_INVALID/i.test(msg)) {
+          sendAsPhoto = false;
+          await api.sendDocument(
+            chatId,
+            new InputFile(fileBuffer, fileName),
+            caption ? { caption } : undefined
+          );
+          return;
+        }
+        throw err;
+      }
+    }
     await api.sendDocument(chatId, inputFile, caption ? { caption } : undefined);
-  }
+  });
 }
 
 export async function setTelegramMessageReaction(
