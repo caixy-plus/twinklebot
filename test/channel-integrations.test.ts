@@ -26,9 +26,12 @@ import {
   parseTelegramUpdate,
   parseWhitelistIds,
   redactProxyUrlForDisplay,
+  redactSensitiveTokensInText,
   sanitizeClientTimeZone,
   sanitizeTelegramProxyUrl,
+  sendFeishuMedia,
   sendFeishuMessage,
+  sendTelegramMedia,
   summarizeChannelStatusForBot,
   testFeishuChannel,
 } from "../src/lib/channel-integrations.js";
@@ -2580,4 +2583,128 @@ test("Issue #24: server-anchored timestamp & client timezone helpers + LLM-only 
     await new Promise<void>((resolve) => server.close(() => resolve()));
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("channel-manager passes send_file & generate_image outputs through to Telegram/Feishu and redacts shell tokens", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-ch-media-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const imgFile = path.join(tmpDir, "preview.png");
+  const docFile = path.join(tmpDir, "report.txt");
+  fs.writeFileSync(imgFile, Buffer.from("89504e470d0a1a0a", "hex"));
+  fs.writeFileSync(docFile, "hello report", "utf8");
+
+  // 1. Token redaction in run_shell display args & text
+  const fakeTgTok = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi";
+  const redactedCmd = redactToolArgsForDisplay("run_shell", {
+    command: `curl -F document=@a.txt https://api.telegram.org/bot${fakeTgTok}/sendDocument`,
+  });
+  assert.equal(redactedCmd.command.includes(fakeTgTok), false);
+  assert.match(redactSensitiveTokensInText(`token=bot${fakeTgTok}`), /bot\[REDACTED\]/);
+
+  // 2. Telegram sendPhoto + sendDocument + Feishu image/file upload via channel-manager
+  const store = createStore(tmpDir);
+  const bot = store.createSession({ title: "MediaBot", isAdmin: true });
+  store.writeChannelsAuth({
+    "telegram-bot": {
+      enabled: true,
+      connectionMode: "webhook",
+      botToken: fakeTgTok,
+      defaultSessionId: bot.id,
+      allowedSenderIds: ["tg_u1"],
+    },
+    "feishu-bot": {
+      enabled: true,
+      connectionMode: "webhook",
+      appId: "cli_media_1",
+      appSecret: "sec_media_1",
+      defaultSessionId: bot.id,
+      allowedSenderIds: ["ou_u1"],
+    },
+  });
+
+  const apiCalls: Array<{ url: string; body: string }> = [];
+  const fetchImpl: typeof fetch = (async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    apiCalls.push({ url: u, body: typeof init?.body === "string" ? init.body : "<form>" });
+    if (u.includes("api.telegram.org")) {
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 101 } }), { status: 200 });
+    }
+    if (u.includes("/tenant_access_token/internal")) {
+      return new Response(JSON.stringify({ code: 0, tenant_access_token: "t-med", expire: 7200 }), { status: 200 });
+    }
+    if (u.includes("/open-apis/im/v1/images")) {
+      return new Response(JSON.stringify({ code: 0, data: { image_key: "img_k1" } }), { status: 200 });
+    }
+    if (u.includes("/open-apis/im/v1/files")) {
+      return new Response(JSON.stringify({ code: 0, data: { file_key: "file_k1" } }), { status: 200 });
+    }
+    if (u.includes("/open-apis/im/v1/messages")) {
+      return new Response(JSON.stringify({ code: 0, data: { message_id: "om_med_1" } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as any;
+
+  const runner = createRunner({
+    store,
+    runTaskImpl: (async ({ deps }: any) => {
+      deps.emit({
+        type: "result",
+        name: "generate_image",
+        result: { ok: true, path: imgFile, name: "preview.png", mime_type: "image/png", is_media: true },
+      });
+      deps.emit({
+        type: "result",
+        name: "send_file",
+        result: { ok: true, source_path: docFile, name: "report.txt", mime_type: "text/plain", is_media: false },
+      });
+      deps.emit({ type: "answer", text: "文件与图片已生成。" });
+      deps.emit({ type: "status", status: "done" });
+      return { status: "done", text: "文件与图片已生成。" };
+    }) as any,
+  });
+
+  const mgr = createChannelManager({
+    store,
+    runner,
+    getInstalledSkills: () => ["telegram-bot", "feishu-bot"],
+    fetchImpl,
+  });
+  t.after(() => {
+    mgr.stopAll();
+    runner.stop();
+  });
+  mgr.syncFromStore();
+
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    eventId: "tg:media-1",
+    chatId: "999111",
+    senderId: "tg_u1",
+    senderName: "测试用户",
+    text: "发给我",
+  });
+  for (let i = 0; i < 60 && !apiCalls.some((c) => c.url.includes("/sendDocument")); i++) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(apiCalls.some((c) => c.url.includes("/sendMessage")), "Telegram text must be sent");
+  assert.ok(apiCalls.some((c) => c.url.includes("/sendPhoto")), "Telegram photo must be sent for PNG");
+  assert.ok(apiCalls.some((c) => c.url.includes("/sendDocument")), "Telegram document must be sent for TXT");
+
+  await sendFeishuMedia(
+    { appId: "cli_media_1", appSecret: "sec_media_1", domain: "feishu", apiBaseUrl: "" },
+    "oc_feishu_1",
+    { filePath: imgFile, name: "preview.png", mimeType: "image/png", isMedia: true },
+    fetchImpl
+  );
+  await sendFeishuMedia(
+    { appId: "cli_media_1", appSecret: "sec_media_1", domain: "feishu", apiBaseUrl: "" },
+    "oc_feishu_1",
+    { filePath: docFile, name: "report.txt", mimeType: "text/plain", isMedia: false },
+    fetchImpl
+  );
+  assert.ok(apiCalls.some((c) => c.url.includes("/open-apis/im/v1/images")));
+  assert.ok(apiCalls.some((c) => c.url.includes("/open-apis/im/v1/files")));
+  assert.ok(apiCalls.some((c) => c.body.includes("img_k1")));
+  assert.ok(apiCalls.some((c) => c.body.includes("file_k1")));
 });

@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import path from "node:path";
 import tls from "node:tls";
 import * as lark from "@larksuiteoapi/node-sdk";
-import { Api as GrammyApi } from "grammy";
+import { Api as GrammyApi, InputFile } from "grammy";
 import { isSafePublicWebUrl } from "./web-search.js";
 
 export type ChannelSkillId = "feishu-bot" | "telegram-bot";
@@ -1952,6 +1954,52 @@ export async function testTelegramChannel(
   }
 }
 
+export function redactSensitiveTokensInText(text = ""): string {
+  const s = String(text || "");
+  if (!s) return "";
+  return s
+    .replace(/\bbot\d{6,14}:[A-Za-z0-9_-]{25,}\b/g, "bot[REDACTED]")
+    .replace(/\b\d{8,14}:[A-Za-z0-9_-]{30,}\b/g, "[REDACTED_TG_TOKEN]")
+    .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "sk-[REDACTED]")
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GH_TOKEN]")
+    .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[REDACTED_GOOGLE_KEY]");
+}
+
+const RASTER_IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+const RASTER_IMAGE_MIMES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+
+function isRasterChannelImage(filePath: string, mimeType = ""): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = String(mimeType || "").toLowerCase();
+  return RASTER_IMAGE_EXTS.has(ext) || RASTER_IMAGE_MIMES.has(mime);
+}
+
+function resolveFeishuFileType(
+  fileName: string
+): "opus" | "mp4" | "pdf" | "doc" | "xls" | "ppt" | "stream" {
+  const ext = path.extname(fileName).toLowerCase();
+  if (ext === ".opus") return "opus";
+  if (ext === ".mp4") return "mp4";
+  if (ext === ".pdf") return "pdf";
+  if (ext === ".doc" || ext === ".docx") return "doc";
+  if (ext === ".xls" || ext === ".xlsx") return "xls";
+  if (ext === ".ppt" || ext === ".pptx") return "ppt";
+  return "stream";
+}
+
+export interface ChannelOutboundMedia {
+  filePath: string;
+  name?: string;
+  mimeType?: string;
+  isMedia?: boolean;
+  caption?: string;
+}
+
 export async function sendTelegramMessage(
   cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl"> & { proxy?: string },
   chatId: string,
@@ -1963,6 +2011,33 @@ export async function sendTelegramMessage(
   const chunks = chunkChannelText(text, 3900);
   for (const chunk of chunks) {
     await api.sendMessage(chatId, chunk);
+  }
+}
+
+export async function sendTelegramMedia(
+  cfg: Pick<TelegramChannelConfig, "botToken" | "apiBaseUrl"> & { proxy?: string },
+  chatId: string,
+  media: ChannelOutboundMedia,
+  fetchImpl: typeof fetch = fetch
+): Promise<void> {
+  if (!cfg.botToken || !chatId || !media?.filePath) return;
+  if (!fs.existsSync(media.filePath) || !fs.statSync(media.filePath).isFile()) {
+    throw new Error(`Telegram media file not found: ${media.filePath}`);
+  }
+  const size = fs.statSync(media.filePath).size;
+  if (size <= 0 || size > 50 * 1024 * 1024) {
+    throw new Error(`Telegram media file exceeds 50MB limit (${size} bytes)`);
+  }
+  const fileName = String(media.name || path.basename(media.filePath) || "file").trim();
+  const inputFile = new InputFile(fs.readFileSync(media.filePath), fileName);
+  const api = createTelegramApi(cfg, fetchImpl);
+  const caption = media.caption ? String(media.caption).trim().slice(0, 1024) : undefined;
+  const sendAsPhoto =
+    isRasterChannelImage(media.filePath, media.mimeType) && size <= 10 * 1024 * 1024;
+  if (sendAsPhoto) {
+    await api.sendPhoto(chatId, inputFile, caption ? { caption } : undefined);
+  } else {
+    await api.sendDocument(chatId, inputFile, caption ? { caption } : undefined);
   }
 }
 
@@ -2185,6 +2260,89 @@ export async function sendFeishuMessage(
       err.feishuCode = Number(data.code);
       throw err;
     }
+  }
+}
+
+export async function sendFeishuMedia(
+  cfg: Pick<FeishuChannelConfig, "appId" | "appSecret" | "domain" | "apiBaseUrl">,
+  chatId: string,
+  media: ChannelOutboundMedia,
+  fetchImpl: typeof fetch = fetch,
+  clientOverride?: lark.Client
+): Promise<void> {
+  if (!cfg.appId || !cfg.appSecret || !chatId || !media?.filePath) return;
+  if (!fs.existsSync(media.filePath) || !fs.statSync(media.filePath).isFile()) {
+    throw new Error(`Feishu media file not found: ${media.filePath}`);
+  }
+  const size = fs.statSync(media.filePath).size;
+  if (size <= 0 || size > 30 * 1024 * 1024) {
+    throw new Error(`Feishu media file exceeds 30MB limit (${size} bytes)`);
+  }
+  const client = clientOverride || createLarkClient(cfg, fetchImpl);
+  const fileName = String(media.name || path.basename(media.filePath) || "file").trim();
+  const isImage = isRasterChannelImage(media.filePath, media.mimeType);
+  const fileBytes = fs.readFileSync(media.filePath);
+  try {
+    if (isImage) {
+      const uploadRes: any = await client.im.v1.image.create({
+        data: {
+          image_type: "message",
+          image: fileBytes,
+        },
+      });
+      const imageKey = String(uploadRes?.image_key || uploadRes?.data?.image_key || "").trim();
+      if (!imageKey) {
+        throw new Error("Feishu image upload returned empty image_key");
+      }
+      const sendRes: any = await client.im.v1.message.create({
+        params: { receive_id_type: "chat_id" },
+        data: {
+          receive_id: chatId,
+          msg_type: "image",
+          content: JSON.stringify({ image_key: imageKey }),
+        },
+      });
+      if (typeof sendRes?.code === "number" && sendRes.code !== 0) {
+        const err: any = new Error(formatFeishuApiError(sendRes.code, sendRes.msg, 200));
+        err.feishuCode = Number(sendRes.code);
+        throw err;
+      }
+      return;
+    }
+
+    const uploadRes: any = await client.im.v1.file.create({
+      data: {
+        file_type: resolveFeishuFileType(fileName),
+        file_name: fileName,
+        file: fileBytes,
+      },
+    });
+    const fileKey = String(uploadRes?.file_key || uploadRes?.data?.file_key || "").trim();
+    if (!fileKey) {
+      throw new Error("Feishu file upload returned empty file_key");
+    }
+    const sendRes: any = await client.im.v1.message.create({
+      params: { receive_id_type: "chat_id" },
+      data: {
+        receive_id: chatId,
+        msg_type: "file",
+        content: JSON.stringify({ file_key: fileKey }),
+      },
+    });
+    if (typeof sendRes?.code === "number" && sendRes.code !== 0) {
+      const err: any = new Error(formatFeishuApiError(sendRes.code, sendRes.msg, 200));
+      err.feishuCode = Number(sendRes.code);
+      throw err;
+    }
+  } catch (rawErr: any) {
+    if (rawErr?.feishuCode !== undefined) throw rawErr;
+    const info = extractLarkErrorInfo(rawErr);
+    if (info.code !== undefined || info.status !== undefined) {
+      const err: any = new Error(formatFeishuApiError(info.code, info.msg || rawErr?.message, info.status));
+      if (info.code !== undefined) err.feishuCode = info.code;
+      throw err;
+    }
+    throw rawErr;
   }
 }
 

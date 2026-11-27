@@ -134,6 +134,7 @@ export interface ExtractMemoryCandidatesOptions {
   recentSuggestedContents?: string[];
   config?: Record<string, any>;
   timeoutMs?: number;
+  onUsage?: (info: { model: string; providerId?: string | null; usage: any }) => void;
 }
 
 export async function extractMemoryCandidates({
@@ -146,6 +147,7 @@ export async function extractMemoryCandidates({
   recentSuggestedContents = [],
   config = {},
   timeoutMs = 9000,
+  onUsage,
 }: ExtractMemoryCandidatesOptions): Promise<ExtractedMemoryCandidate[]> {
   if (!model || typeof model.summarizeTurn !== "function") return [];
   if (!shouldRunMemoryExtraction(userText, assistantText)) return [];
@@ -220,6 +222,18 @@ export async function extractMemoryCandidates({
       clearTimeout(timer)
     );
 
+    if (turn?.usage && typeof onUsage === "function") {
+      try {
+        onUsage({
+          model: turn.usedModel || targetModel,
+          providerId: turn.usedProviderId || null,
+          usage: turn.usage,
+        });
+      } catch {
+        // ignore accounting callback failure
+      }
+    }
+
     const parsed = parseJsonPayload(turn?.text || "");
     const rawList = Array.isArray(parsed?.candidates) ? parsed.candidates : [];
     const dedupPool: any[] = [
@@ -265,6 +279,8 @@ export async function runPostTurnMemoryExtraction({
   userText,
   assistantText,
   config = {},
+  emit,
+  onUsage,
   broadcastGlobal,
 }: {
   store: any;
@@ -275,6 +291,7 @@ export async function runPostTurnMemoryExtraction({
   assistantText: string;
   config?: Record<string, any>;
   emit?: (evt: Record<string, any>) => void;
+  onUsage?: (info: { model: string; providerId?: string | null; usage: any }) => void;
   broadcastGlobal?: (evt: Record<string, any>) => void;
 }): Promise<ExtractedMemoryCandidate[]> {
   if (!store || !sessionId) return [];
@@ -295,6 +312,24 @@ export async function runPostTurnMemoryExtraction({
     botMemories,
     globalMemories,
     config,
+    onUsage: (info) => {
+      if (typeof emit === "function" && info?.usage) {
+        emit({
+          type: "usage",
+          model: info.model,
+          ...(info.providerId ? { providerId: info.providerId } : {}),
+          routeTier: "memory",
+          routeLabel: "记忆提炼",
+          input: info.usage.input ?? 0,
+          output: info.usage.output ?? 0,
+          ...(info.usage.cached ? { cached: info.usage.cached } : {}),
+          ...(info.usage.thoughts ? { thoughts: info.usage.thoughts } : {}),
+        });
+      }
+      if (typeof onUsage === "function") {
+        onUsage(info);
+      }
+    },
   });
 
   if (candidates.length === 0) return [];

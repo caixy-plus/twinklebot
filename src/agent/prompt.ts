@@ -1,5 +1,34 @@
 import { renderPromptTemplate } from "./prompt-loader.js";
 
+export const MAX_PROMPT_MEMORY_SECTION_CHARS = 2500;
+
+export function formatBoundedMemoryLines(
+  memories: any[] = [],
+  maxChars = MAX_PROMPT_MEMORY_SECTION_CHARS
+): string {
+  const lines: string[] = [];
+  let used = 0;
+  let omitted = 0;
+  for (const m of memories) {
+    if (!m || m.enabled === false) continue;
+    const body = String(m.instruction || m.content || m.desc || "").trim();
+    if (!body) continue;
+    const line = `- ${m.name}: ${body}`;
+    if (lines.length > 0 && used + line.length + 1 > maxChars) {
+      omitted += 1;
+      continue;
+    }
+    lines.push(line);
+    used += line.length + 1;
+  }
+  if (omitted > 0) {
+    lines.push(
+      `- ... (${omitted} more memories omitted; call \`memory_manage(action: "list")\` to view all)`
+    );
+  }
+  return lines.join("\n");
+}
+
 export function buildSystemInstruction(config: Record<string, any> = {}): string {
   const width = config.screen?.width ?? 1440;
   const height = config.screen?.height ?? 900;
@@ -27,12 +56,12 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
       )
     : [];
   if (botMemories.length > 0) {
-    const botMemoryLines = botMemories
-      .map((m: any) => `- ${m.name}: ${m.instruction || m.content || m.desc}`)
-      .join("\n");
-    sections.push(
-      `Your Dedicated Bot Memory (${botName} — Managed by you, shown under "专属记忆"):\n${botMemoryLines}`
-    );
+    const botMemoryLines = formatBoundedMemoryLines(botMemories);
+    if (botMemoryLines) {
+      sections.push(
+        `Your Dedicated Bot Memory (${botName} — Managed by you, shown under "专属记忆"):\n${botMemoryLines}`
+      );
+    }
   }
 
   const botSchedules = Array.isArray(botIdentity?.schedules)
@@ -233,10 +262,10 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
     (m: any) => m && m.enabled !== false && (m.instruction || m.content || m.desc)
   );
   if (enabledMemories.length > 0) {
-    const memoryLines = enabledMemories
-      .map((m: any) => `- ${m.name}: ${m.instruction || m.content || m.desc}`)
-      .join("\n");
-    sections.push(`Global Memory ("全局记忆"):\n${memoryLines}`);
+    const memoryLines = formatBoundedMemoryLines(enabledMemories);
+    if (memoryLines) {
+      sections.push(`Global Memory ("全局记忆"):\n${memoryLines}`);
+    }
   }
 
   const rawCustomSkills = Array.isArray(config.customSkills) ? config.customSkills : [];

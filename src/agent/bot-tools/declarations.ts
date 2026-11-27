@@ -37,7 +37,10 @@ import {
   setDefaultMailAccount,
   removeMailAccount,
 } from "../../lib/mail-accounts.js";
-import { redactProxyUrlForDisplay } from "../../lib/channel-integrations.js";
+import {
+  redactProxyUrlForDisplay,
+  redactSensitiveTokensInText,
+} from "../../lib/channel-integrations.js";
 
 
 export const MAX_BOT_HOPS = 4;
@@ -1225,6 +1228,10 @@ export function redactToolArgsForDisplay(name: string, args: any) {
       }
     }
     return out;
+  }
+  if ((name === "run_shell" || name === "host_run_shell") && typeof args.command === "string") {
+    const redacted = redactSensitiveTokensInText(args.command);
+    return redacted === args.command ? args : { ...args, command: redacted };
   }
   return args;
 }

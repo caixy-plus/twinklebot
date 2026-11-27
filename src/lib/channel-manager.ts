@@ -1,3 +1,4 @@
+import path from "node:path";
 import * as lark from "@larksuiteoapi/node-sdk";
 import { Bot as GrammyBot } from "grammy";
 import {
@@ -29,13 +30,16 @@ import {
   sanitizeFeishuChannelConfig,
   sanitizeTelegramChannelConfig,
   sanitizeTelegramProxyUrl,
+  sendFeishuMedia,
   sendFeishuMessage,
+  sendTelegramMedia,
   sendTelegramMessage,
   setTelegramMessageReaction,
   testFeishuChannel,
   testTelegramChannel,
   timingSafeEqualStr,
   type ChannelApprovedChat,
+  type ChannelOutboundMedia,
   type ChannelPendingPairing,
   type ChannelSkillId,
   type ChannelsAuthStore,
@@ -87,6 +91,7 @@ interface ActiveChannelTurn {
   messageId?: string;
   reactionPromise?: Promise<string | null>;
   buffer: string[];
+  pendingMedia: ChannelOutboundMedia[];
   lastError: string;
   delivered: boolean;
   choiceNotified: boolean;
@@ -285,6 +290,59 @@ export function createChannelManager({
     }
   }
 
+  async function sendChannelMedia(
+    channel: ChannelSkillId,
+    accountId: string,
+    chatId: string,
+    media: ChannelOutboundMedia
+  ): Promise<void> {
+    const configs = readConfigs();
+    if (channel === "telegram-bot") {
+      const tgCfg = findAccount(configs.telegramAccounts, configs["telegram-bot"], accountId);
+      if (!tgCfg) return;
+      await sendTelegramMedia(tgCfg, chatId, media, fetchImpl);
+    } else {
+      const fsCfg = findAccount(configs.feishuAccounts, configs["feishu-bot"], accountId);
+      if (!fsCfg) return;
+      try {
+        await sendFeishuMedia(fsCfg, chatId, media, fetchImpl, getFeishuClient(fsCfg));
+      } catch (err: any) {
+        const code = Number(err?.feishuCode);
+        if (code === 99991663 || code === 99991664 || code === 99991661) {
+          fsClients.delete(accountKey("feishu-bot", fsCfg.id));
+          await sendFeishuMedia(fsCfg, chatId, media, fetchImpl, getFeishuClient(fsCfg));
+          return;
+        }
+        throw err;
+      }
+    }
+  }
+
+  async function sendChannelMediaTracked(
+    channel: ChannelSkillId,
+    accountId: string,
+    chatId: string,
+    media: ChannelOutboundMedia
+  ): Promise<boolean> {
+    const rt = getRuntime(channel, accountId);
+    try {
+      await sendChannelMedia(channel, accountId, chatId, media);
+      if (rt.lastSendError !== null) {
+        rt.lastSendError = null;
+        notifyStateChange();
+      }
+      return true;
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || "发送媒体文件失败").trim();
+      console.warn(`[channel-manager] ${channel}:${accountId} media failed: ${errMsg}`);
+      if (rt.lastSendError !== errMsg) {
+        rt.lastSendError = errMsg;
+        notifyStateChange();
+      }
+      return false;
+    }
+  }
+
   async function sendChannelReplyTracked(
     channel: ChannelSkillId,
     accountId: string,
@@ -456,6 +514,27 @@ export function createChannelManager({
       }
 
       if (
+        event.type === "result" &&
+        (event.name === "send_file" || event.name === "generate_image") &&
+        event.result?.ok
+      ) {
+        const filePath = String(event.result.source_path || event.result.path || "").trim();
+        if (
+          filePath &&
+          !turn.pendingMedia.some((item) => item.filePath === filePath)
+        ) {
+          turn.pendingMedia.push({
+            filePath,
+            name: String(event.result.name || path.basename(filePath)),
+            mimeType: event.result.mime_type ? String(event.result.mime_type) : undefined,
+            isMedia: Boolean(event.result.is_media || event.name === "generate_image"),
+            caption: event.result.caption ? String(event.result.caption) : undefined,
+          });
+        }
+        return;
+      }
+
+      if (
         (event.type === "answer" || event.type === "assistant_message") &&
         typeof event.text === "string" &&
         event.text.trim()
@@ -488,9 +567,17 @@ export function createChannelManager({
               : event.status === "stopped"
                 ? "任务已停止。"
                 : "");
-          if (replyText) {
-            void sendChannelReplyTracked(turn.channel, turn.accountId, turn.chatId, replyText)
-              .finally(() => turn.resolveDone());
+          const mediaItems = [...turn.pendingMedia];
+          const deliverAll = async () => {
+            if (replyText) {
+              await sendChannelReplyTracked(turn.channel, turn.accountId, turn.chatId, replyText);
+            }
+            for (const mediaItem of mediaItems) {
+              await sendChannelMediaTracked(turn.channel, turn.accountId, turn.chatId, mediaItem);
+            }
+          };
+          if (replyText || mediaItems.length > 0) {
+            void deliverAll().finally(() => turn.resolveDone());
           } else {
             turn.resolveDone();
           }
@@ -532,6 +619,7 @@ export function createChannelManager({
           sessionId,
           messageId: msg.messageId,
           buffer: [],
+          pendingMedia: [],
           lastError: "",
           delivered: false,
           choiceNotified: false,

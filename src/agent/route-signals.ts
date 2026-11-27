@@ -16,6 +16,35 @@ const OBSERVE_ONLY_TOOLS = new Set([
   "library_manage",
   "skill_list",
   "list_bots",
+  "read_file",
+  "host_read_file",
+  "browser_snapshot",
+  "browser_tabs",
+  "browser_wait",
+  "web_search",
+  "web_fetch",
+  "mail_list_accounts",
+  "mail_list_messages",
+  "app_knowledge",
+  "system_diagnostics",
+]);
+
+const SLEEP_POLL_RE =
+  /^\s*(?:sleep\s+\d+|Start-Sleep\b|timeout\s+\/t|for\b.*\bsleep\b)/i;
+
+const GUI_SCREEN_TOOLS = new Set([
+  "click",
+  "double_click",
+  "right_click",
+  "move",
+  "drag",
+  "scroll",
+  "type_text",
+  "key",
+  "browser_snapshot",
+  "browser_click",
+  "browser_type",
+  "browser_wait",
 ]);
 
 export const ROUTE_ESCALATE_TOOL_DECLARATION = {
@@ -38,6 +67,11 @@ export interface RouteRuntime {
   softFailures: number;
   repeatCount: number;
   lastCallHash: string;
+  recentCallHashes: string[];
+  cycleDetected: boolean;
+  sleepPollCount: number;
+  consecutiveUnchangedGuiSteps: number;
+  challengeStallDetected: boolean;
   noProgressSteps: number;
   escalationRequests: number;
   pendingDeepSteps: number;
@@ -46,6 +80,8 @@ export interface RouteRuntime {
   pendingFastThinking: string;
   deepStepsUsed: number;
   lastStepHadFailure: boolean;
+  consecutiveOkSteps: number;
+  autoEscalations: number;
   tierPath: RouteTier[];
   errorsTotal: number;
   softFailuresTotal: number;
@@ -58,6 +94,11 @@ export function createRouteRuntime(): RouteRuntime {
     softFailures: 0,
     repeatCount: 0,
     lastCallHash: "",
+    recentCallHashes: [],
+    cycleDetected: false,
+    sleepPollCount: 0,
+    consecutiveUnchangedGuiSteps: 0,
+    challengeStallDetected: false,
     noProgressSteps: 0,
     escalationRequests: 0,
     pendingDeepSteps: 0,
@@ -66,6 +107,8 @@ export function createRouteRuntime(): RouteRuntime {
     pendingFastThinking: "",
     deepStepsUsed: 0,
     lastStepHadFailure: false,
+    consecutiveOkSteps: 0,
+    autoEscalations: 0,
     tierPath: [],
     errorsTotal: 0,
     softFailuresTotal: 0,
@@ -123,6 +166,47 @@ export function recordToolOutcome(
   const h = hashCall(name, args);
   rt.repeatCount = h === rt.lastCallHash ? rt.repeatCount + 1 : 0;
   rt.lastCallHash = h;
+
+  rt.recentCallHashes.push(h);
+  if (rt.recentCallHashes.length > 8) {
+    rt.recentCallHashes.shift();
+  }
+  const len = rt.recentCallHashes.length;
+  const hasPeriod2Cycle =
+    len >= 4 &&
+    rt.recentCallHashes[len - 1] !== rt.recentCallHashes[len - 2] &&
+    rt.recentCallHashes[len - 1] === rt.recentCallHashes[len - 3] &&
+    rt.recentCallHashes[len - 2] === rt.recentCallHashes[len - 4];
+  const hasPeriod3Cycle =
+    len >= 6 &&
+    rt.recentCallHashes[len - 1] === rt.recentCallHashes[len - 4] &&
+    rt.recentCallHashes[len - 2] === rt.recentCallHashes[len - 5] &&
+    rt.recentCallHashes[len - 3] === rt.recentCallHashes[len - 6] &&
+    new Set(rt.recentCallHashes.slice(len - 3)).size > 1;
+  if (hasPeriod2Cycle || hasPeriod3Cycle) {
+    rt.cycleDetected = true;
+    rt.repeatCount = Math.max(rt.repeatCount, 2);
+  }
+
+  const isSleepPoll =
+    (name === "run_shell" || name === "host_run_shell") &&
+    typeof (args as any)?.command === "string" &&
+    SLEEP_POLL_RE.test(String((args as any).command));
+  if (isSleepPoll) {
+    rt.sleepPollCount += 1;
+  } else if (kind === "ok") {
+    rt.sleepPollCount = 0;
+  }
+
+  if (result?.challenge_detected === true) {
+    rt.challengeStallDetected = true;
+    rt.consecutiveUnchangedGuiSteps += 1;
+  } else if (result?.screen_changed === false) {
+    rt.consecutiveUnchangedGuiSteps += 1;
+  } else if (result?.screen_changed === true || (!GUI_SCREEN_TOOLS.has(name) && !isSleepPoll && kind === "ok")) {
+    rt.consecutiveUnchangedGuiSteps = 0;
+    rt.challengeStallDetected = false;
+  }
 
   rt.noProgressSteps = OBSERVE_ONLY_TOOLS.has(name) ? rt.noProgressSteps + 1 : 0;
   return kind;
@@ -189,11 +273,52 @@ export interface EscalationDecision {
  */
 export function decideEscalation(
   rt: RouteRuntime,
-  { baseTier = "standard", budget, deepCap = 3 }: { baseTier?: RouteTier; budget?: TurnBudgetLike; deepCap?: number } = {}
+  {
+    baseTier = "standard",
+    budget,
+    deepCap = 3,
+    sameFastStandard = false,
+  }: {
+    baseTier?: RouteTier;
+    budget?: TurnBudgetLike;
+    deepCap?: number;
+    sameFastStandard?: boolean;
+  } = {}
 ): EscalationDecision | null {
   const deepAllowed = (!budget || budget.canUseDeep()) && rt.deepStepsUsed < deepCap;
   const rescueAllowed = !budget || budget.canUseDeep();
   const canSubstituteXhigh = baseTier === "fast" && (!budget || budget.canEscalate());
+
+  // 0. CAPTCHA / verification challenge or 4+ consecutive unchanged GUI steps → immediate takeover fuse
+  if (rt.challengeStallDetected || rt.consecutiveUnchangedGuiSteps >= 4) {
+    const challengeNudge =
+      'Warning: Visual/CAPTCHA challenge or repeated unchanged screen detected. STOP blind coordinate clicking or OCR brute-force scripts. Guide the user to open "Bot 的电脑" and click "取得控制权" to complete the login/verification directly.';
+    if (deepAllowed) {
+      return {
+        tier: "deep",
+        reason: "人机验证或界面无响应 · 触发人工接管引导",
+        thinkingLevel: "medium",
+        nudge: challengeNudge,
+      };
+    }
+    return {
+      tier: baseTier,
+      reason: "人机验证或界面无响应 · 触发人工接管引导",
+      thinkingLevel: baseTier === "fast" ? "high" : "medium",
+      nudge: challengeNudge,
+    };
+  }
+
+  // 0b. Repeated shell sleep polling → force stop polling
+  if (rt.sleepPollCount >= 2) {
+    return {
+      tier: baseTier,
+      reason: "检测到重复 sleep 轮询 · 立即止停",
+      thinkingLevel: baseTier === "fast" ? "medium" : "low",
+      nudge:
+        "Warning: Repeated shell sleep polling detected. STOP running sleep loops to wait on async tasks or collaborators. End this turn or check status once cleanly.",
+    };
+  }
 
   // 1. Hard rescue: 2+ consecutive hard errors or soft failures (bypasses deepCap, still budget-bound)
   if (rt.consecutiveErrors >= 2 || rt.softFailures >= 2) {
@@ -205,14 +330,14 @@ export function decideEscalation(
     }
   }
 
-  // 2. Repeated identical call → one-shot re-plan with a nudge
-  if (rt.repeatCount >= 2) {
+  // 2. Repeated identical or alternating A->B->A->B call → one-shot re-plan with a nudge
+  if (rt.repeatCount >= 2 || rt.cycleDetected) {
     if (deepAllowed) {
       return {
         tier: "deep",
         reason: "重复操作 · 重新规划",
         thinkingLevel: "high",
-        nudge: "Warning: You have repeated the exact same action multiple times with no progress. Try a different approach or explain the blocker directly to the user.",
+        nudge: "Warning: You have repeated the exact same action or cycle multiple times with no progress. Try a different approach or explain the blocker directly to the user.",
       };
     }
     if (canSubstituteXhigh && !budget?.canUseDeep?.()) {
@@ -220,7 +345,15 @@ export function decideEscalation(
         tier: "fast",
         reason: "预算保护 · Hydrogen XHigh 重规划",
         thinkingLevel: "xhigh",
-        nudge: "Warning: You have repeated the exact same action multiple times with no progress. Try a different approach or explain the blocker directly to the user.",
+        nudge: "Warning: You have repeated the exact same action or cycle multiple times with no progress. Try a different approach or explain the blocker directly to the user.",
+      };
+    }
+    if (rt.cycleDetected) {
+      return {
+        tier: baseTier,
+        reason: "交替循环 · 强制切换策略",
+        thinkingLevel: baseTier === "fast" ? "high" : "medium",
+        nudge: "Warning: You are stuck in an alternating action cycle with no progress. Try a different approach or explain the blocker directly to the user.",
       };
     }
   }
@@ -240,13 +373,22 @@ export function decideEscalation(
     return { tier: "fast", reason: "Hydrogen 极限推理", thinkingLevel: rt.pendingFastThinking };
   }
 
-  // 6. Hydrogen had a failure → step up to Argon for the rest of the turn (never jump Hydrogen → Carbon directly)
+  // 6. Hydrogen had a failure → step up to Argon (or raise thinking when fast === standard)
   if (baseTier === "fast" && (rt.lastStepHadFailure || rt.consecutiveErrors >= 1 || rt.softFailures >= 1)) {
+    if (sameFastStandard) {
+      return { tier: "fast", reason: "执行受阻 · 提升思考深度", thinkingLevel: "high" };
+    }
     return { tier: "standard", reason: "执行受阻 · 升级 Argon", thinkingLevel: "medium", promoteBase: true };
   }
 
   // 7. Visual self-request
   if (rt.pendingStandard && baseTier === "fast") {
+    if (sameFastStandard) {
+      if (deepAllowed) {
+        return { tier: "deep", reason: "模型申请视觉 · 升级深度模型", thinkingLevel: "medium" };
+      }
+      return { tier: "fast", reason: "模型申请视觉 · 提升思考深度", thinkingLevel: "high" };
+    }
     return { tier: "standard", reason: "模型申请视觉 · 切换 Argon", thinkingLevel: "low", promoteBase: true };
   }
 
@@ -259,21 +401,39 @@ export function decideEscalation(
 }
 
 /** Must be called after a model step was executed with the given tier. */
-export function commitStepTier(rt: RouteRuntime, tier: RouteTier): void {
+export function commitStepTier(
+  rt: RouteRuntime,
+  tier: RouteTier,
+  opts: { usedEscalation?: boolean; thinkingLevel?: string } = {}
+): void {
   rt.tierPath.push(tier);
+  if (opts.usedEscalation) {
+    rt.autoEscalations += 1;
+  }
+  rt.consecutiveOkSteps = rt.lastStepHadFailure ? 0 : rt.consecutiveOkSteps + 1;
   if (tier === "fast" && rt.pendingFastThinking) {
     rt.pendingFastThinking = "";
   }
+  const isRescueStep =
+    tier === "deep" || (tier === "fast" && opts.thinkingLevel === "xhigh");
   if (tier === "deep") {
     rt.deepStepsUsed += 1;
     if (rt.pendingDeepSteps > 0) rt.pendingDeepSteps -= 1;
+  }
+  if (isRescueStep) {
     // After a rescue/re-plan, reset loop detectors so we do not immediately re-trigger
     rt.repeatCount = 0;
+    rt.cycleDetected = false;
     rt.noProgressSteps = 0;
+    rt.sleepPollCount = 0;
+    rt.consecutiveUnchangedGuiSteps = 0;
+    rt.challengeStallDetected = false;
     if (rt.consecutiveErrors >= 2) rt.consecutiveErrors = 1;
     if (rt.softFailures >= 2) rt.softFailures = 1;
   }
-  if (tier === "standard") rt.pendingStandard = false;
+  if (tier === "standard" || (tier === "deep" && rt.pendingStandard)) {
+    rt.pendingStandard = false;
+  }
 }
 
 /** Compresses a tier path into a readable label, e.g. `Hydrogen → Argon → Carbon×2 → Argon`. */

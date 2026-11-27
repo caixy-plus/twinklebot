@@ -8,6 +8,7 @@ import {
   planRoute,
   normalizeRoutePlan,
   extractJsonObject,
+  isSimpleFollowUp,
   isTrivialChat,
   resetRoutePlanCache,
 } from "../src/agent/route-planner.js";
@@ -593,4 +594,97 @@ test("4 Hydrogen High generates step_plan allocating per-step models, and pure t
     { stage: "plan", model: "gemini-4-hydrogen", thinkingLevel: "high" },
     { stage: "exec", model: "gemini-4-hydrogen", thinkingLevel: "medium" },
   ]);
+});
+
+test("route-signals detects A->B->A->B cycles, sleep polling, CAPTCHA stall, fast/xhigh decay, and same-model collapse", () => {
+  // 1. Alternating A->B->A->B cycle detection
+  const rtCycle = createRouteRuntime();
+  recordToolOutcome(rtCycle, { name: "click", args: { x: 183, y: 351 }, result: { ok: true, screen_changed: true } });
+  recordToolOutcome(rtCycle, { name: "click", args: { x: 1084, y: 608 }, result: { ok: true, screen_changed: true } });
+  recordToolOutcome(rtCycle, { name: "click", args: { x: 183, y: 351 }, result: { ok: true, screen_changed: true } });
+  recordToolOutcome(rtCycle, { name: "click", args: { x: 1084, y: 608 }, result: { ok: true, screen_changed: true } });
+  assert.equal(rtCycle.cycleDetected, true);
+  const cycEsc = decideEscalation(rtCycle, { baseTier: "fast" });
+  assert.ok(cycEsc?.nudge && cycEsc.tier === "deep");
+
+  // 2. Sleep polling fuse
+  const rtSleep = createRouteRuntime();
+  recordToolOutcome(rtSleep, { name: "run_shell", args: { command: "sleep 25" }, result: { exit_code: 0 } });
+  recordToolOutcome(rtSleep, { name: "run_shell", args: { command: "sleep 25" }, result: { exit_code: 0 } });
+  const sleepEsc = decideEscalation(rtSleep, { baseTier: "fast" });
+  assert.match(sleepEsc?.reason || "", /sleep/i);
+
+  // 3. CAPTCHA / verification challenge fuse
+  const rtCap = createRouteRuntime();
+  recordToolOutcome(rtCap, { name: "browser_snapshot", args: {}, result: { ok: true, challenge_detected: true } });
+  const capEsc = decideEscalation(rtCap, { baseTier: "fast" });
+  assert.match(capEsc?.nudge || "", /Bot 的电脑/);
+
+  // 4. Expanded OBSERVE_ONLY_TOOLS (read_file / browser_snapshot)
+  const rtObs = createRouteRuntime();
+  for (let i = 0; i < 4; i++) {
+    recordToolOutcome(rtObs, { name: i % 2 === 0 ? "read_file" : "browser_snapshot", args: { i }, result: { ok: true } });
+  }
+  assert.equal(rtObs.noProgressSteps, 4);
+
+  // 5. fast === standard same-model collapse + autoEscalations + fast/xhigh softFailures decay
+  const rtSame = createRouteRuntime();
+  beginStep(rtSame);
+  recordToolOutcome(rtSame, { name: "run_shell", args: { command: "bad1" }, result: { exit_code: 1 } });
+  const sameEsc = decideEscalation(rtSame, { baseTier: "fast", sameFastStandard: true });
+  assert.equal(sameEsc?.tier, "fast");
+  assert.equal(sameEsc?.thinkingLevel, "high");
+  assert.equal(Boolean(sameEsc?.promoteBase), false);
+  commitStepTier(rtSame, "fast", { usedEscalation: true, thinkingLevel: "high" });
+  assert.equal(rtSame.autoEscalations, 1);
+
+  recordToolOutcome(rtSame, { name: "run_shell", args: { command: "bad2" }, result: { exit_code: 1 } });
+  commitStepTier(rtSame, "fast", { usedEscalation: true, thinkingLevel: "xhigh" });
+  assert.equal(rtSame.softFailures, 1, "fast/xhigh rescue must decay softFailures >= 2 down to 1");
+});
+
+test("isSimpleFollowUp skips planner and planCache separates identical inputs with distinct recentContext", async () => {
+  resetRoutePlanCache();
+  assert.equal(isSimpleFollowUp("继续"), true);
+  assert.equal(isSimpleFollowUp("好的！"), true);
+  assert.equal(isSimpleFollowUp("继续帮我写个脚本"), false);
+
+  let planCalls = 0;
+  const model = {
+    async planTurn() {
+      planCalls += 1;
+      return {
+        text: JSON.stringify({
+          complexity: "standard",
+          needs_visual: false,
+          needs_planning: false,
+          expected_steps: 2,
+          risk: "low",
+          category: "coding",
+          confidence: 0.9,
+          reason: "上下文分析",
+        }),
+      };
+    },
+  } as any;
+
+  const follow = await planRoute({ model, rawUserText: "继续", config: CFG });
+  assert.equal(follow.source, "trivial");
+  assert.equal(planCalls, 0);
+
+  await planRoute({
+    model,
+    rawUserText: "帮我处理一下这个报错",
+    recentContext: "User: 刚才跑 Python 脚本报 ImportError",
+    botId: "b1",
+    config: CFG,
+  });
+  await planRoute({
+    model,
+    rawUserText: "帮我处理一下这个报错",
+    recentContext: "User: 刚才编译 Android Gradle 报 SDK missing",
+    botId: "b1",
+    config: CFG,
+  });
+  assert.equal(planCalls, 2, "Different recentContext must not collide in planCache");
 });

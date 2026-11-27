@@ -12,6 +12,7 @@ import { getDefaultLocalChromeManager } from "../lib/local-chrome-cdp.js";
 import {
   formatMessageSourceHeader,
   formatMessageTimeHeader,
+  redactSensitiveTokensInText,
   sanitizeChannelMeta,
   sanitizeClientTimeZone,
 } from "../lib/channel-integrations.js";
@@ -58,6 +59,7 @@ import {
   trimHistoryToTokenBudget,
 } from "./context.js";
 import {
+  getEffectiveCompressionWindow,
   getModelContextWindow,
   normalizeContextCompressionSettings,
 } from "../shared/context-compression.js";
@@ -69,7 +71,7 @@ import {
   resolveTierModels,
   resolveUtilityModels,
 } from "./router.js";
-import { planRoute } from "./route-planner.js";
+import { isSimpleFollowUp, isTrivialChat, planRoute } from "./route-planner.js";
 import {
   createRouteRuntime,
   beginStep,
@@ -92,7 +94,10 @@ import {
 } from "./route-stats.js";
 import { normalizeMailAuthStore } from "../lib/mail-client.js";
 import { OFFICE_SKILLS, resolveInstalledSkillIds } from "../shared/skills-catalog.js";
-import { summarizeThinkingProgress } from "./thinking-summarizer.js";
+import {
+  fallbackThinkingSummary,
+  summarizeThinkingProgress,
+} from "./thinking-summarizer.js";
 import { runPostTurnMemoryExtraction } from "./memory-extractor.js";
 import { USD_TO_CNY } from "./pricing.js";
 
@@ -183,7 +188,8 @@ function loadVisualAttachmentImages(
 
 export function truncateForDisplay(val: any, maxLen = 2000): any {
   if (typeof val === "string") {
-    return val.length > maxLen ? val.slice(0, maxLen) : val;
+    const clean = redactSensitiveTokensInText(val);
+    return clean.length > maxLen ? clean.slice(0, maxLen) : clean;
   }
   if (Array.isArray(val)) {
     return val.map((item) => truncateForDisplay(item, maxLen));
@@ -418,7 +424,9 @@ export async function runTask(opts: Record<string, any> = {}): Promise<{ status:
         steps: routeTrace.runtime?.tierPath?.length || 0,
         errors: routeTrace.runtime?.errorsTotal || 0,
         softFailures: routeTrace.runtime?.softFailuresTotal || 0,
-        escalations: routeTrace.runtime?.escalationEvents?.length || 0,
+        escalations:
+          (routeTrace.runtime?.escalationEvents?.length || 0) +
+          (routeTrace.runtime?.autoEscalations || 0),
         deepSteps: routeTrace.runtime?.deepStepsUsed || 0,
         costUsd: Math.round((routeTrace.budget?.spentUsd || 0) * 1e6) / 1e6,
         status: result?.status || "error",
@@ -636,6 +644,19 @@ async function runTaskInner({
     });
     return inflightScreenLeasePromise;
   };
+  let smart: Record<string, any> | null = null;
+  let lastSummaryDomain = "";
+  let lastModelSummaryStep = 0;
+  const classifySummaryDomain = (calls: any[] = []): string => {
+    const first = String(calls?.[0]?.name || "");
+    if (!first) return "init";
+    if (first === "run_shell" || first === "host_run_shell") return "shell";
+    if (first.includes("read_file") || first.includes("write_file") || first.includes("edit_file")) return "file";
+    if (first === "open_url" || first.startsWith("browser_")) return "browser";
+    if (first === "web_search" || first === "web_fetch") return "web";
+    if (first.startsWith("mail_")) return "mail";
+    return first;
+  };
   const scheduleThinkingSummary = ({
     thoughts = [],
     calls = [],
@@ -646,6 +667,31 @@ async function runTaskInner({
     stepNo?: number;
   }) => {
     if (ctrl.stopped || runEnded) return;
+    const summaryDomain = classifySummaryDomain(calls);
+    const hasThoughts = Array.isArray(thoughts) && thoughts.some((t) => typeof t === "string" && t.trim());
+    if (
+      stepNo > 1 &&
+      !hasThoughts &&
+      Array.isArray(calls) &&
+      calls.length > 0 &&
+      (summaryDomain === lastSummaryDomain || stepNo - lastModelSummaryStep < 2)
+    ) {
+      lastSummaryDomain = summaryDomain;
+      const initialSettings = store?.readSettings?.() || {};
+      const initialRouting = normalizeRoutingSettings(initialSettings?.routing);
+      const { fastModel: utilityFastModel, fallbackModel: utilityDefaultModel } = resolveUtilityModels(
+        config,
+        Date.now(),
+        initialRouting
+      );
+      emitTagged({
+        type: "thinking_summary",
+        text: fallbackThinkingSummary(calls, stepNo),
+        model: utilityFastModel || utilityDefaultModel,
+        source: "fallback",
+      });
+      return;
+    }
     if (activeSummaryCtrl) {
       try {
         activeSummaryCtrl.abort();
@@ -688,10 +734,13 @@ async function runTaskInner({
         }
         if (res?.source === "model") {
           hasModelSummary = true;
+          lastModelSummaryStep = stepNo;
+          lastSummaryDomain = summaryDomain;
         } else if (hasModelSummary) {
           return;
         }
         if (res?.usage && res?.usedModel) {
+          smart?.budget?.add?.(res.usedModel, res.usage);
           emitTagged({
             type: "usage",
             model: res.usedModel,
@@ -716,7 +765,7 @@ async function runTaskInner({
       .catch(() => {});
   };
 
-  if (String(userText || "").trim()) {
+  if (String(userText || "").trim() && !isTrivialChat(userText, { hasAttachments: false })) {
     scheduleThinkingSummary({ thoughts: [], calls: [], stepNo: 1 });
   }
 
@@ -833,7 +882,7 @@ async function runTaskInner({
     // ---- Smart Router v2 (L0/L1): model-assisted task profiling ----
     const routingSettings = normalizeRoutingSettings(store?.readSettings?.()?.routing);
     const smartCandidate = Boolean(autoRoute && smartRouter && routingSettings.smartRouter);
-    let smart: Record<string, any> | null = null;
+    smart = null;
     if (smartCandidate) {
       const routeBot = speakerBot || store?.getSession?.(sessionId) || null;
       const planCtrl = new AbortController();
@@ -888,13 +937,16 @@ async function runTaskInner({
         runtime.pendingDeepReason = "开局深度规划";
         const budget = createTurnBudget({ maxTurnUsd: routingSettings.maxTurnUsd });
         if (planned.usage && planned.usedModel) budget.add(planned.usedModel, planned.usage);
+        const resolvedTiers = resolveTierModels(config, Date.now(), routingSettings);
         smart = {
           plan,
           source: planned.source,
           mode: routingSettings.mode,
           bias,
+          initialBaseTier: decision.baseTier,
           baseTier: decision.baseTier,
           baseThinking: decision.thinkingLevel,
+          sameFastStandard: Boolean(resolvedTiers.fast && resolvedTiers.fast === resolvedTiers.standard),
           deepCap: preset.deepCap,
           runtime,
           budget,
@@ -1024,6 +1076,8 @@ async function runTaskInner({
       ? [...TOOL_DECLARATIONS, ...BOT_COLLAB_TOOL_DECLARATIONS]
       : TOOL_DECLARATIONS;
 
+    let frozenSystemInstruction: string | null = null;
+
     if (!skipHistorySave && store?.saveHistory) {
       store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
     }
@@ -1068,6 +1122,7 @@ async function runTaskInner({
       if (hasVisualSteer && smart) {
         smart.plan.needs_visual = true;
       }
+      frozenSystemInstruction = null;
       if (!skipHistorySave && store?.saveHistory) {
         store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
       }
@@ -1109,7 +1164,9 @@ async function runTaskInner({
           : typeof model?.nextTurn === "function"
             ? model.nextTurn.bind(model)
             : null;
-      const contextWindow = config?.contextWindow || getModelContextWindow(activeModel);
+      const contextWindow =
+        config?.contextWindow ||
+        getEffectiveCompressionWindow(activeModel, config?.effectiveContextCeiling);
       const targetTriggerTokens = Math.round(
         contextWindow * (compressionRules.triggerPercent / 100)
       );
@@ -1160,9 +1217,11 @@ async function runTaskInner({
                   signal: combinedSignal,
                 });
                 if (summaryRes?.usage) {
+                  const summaryUsedModel = summaryRes.usedModel || summaryModel;
+                  smart?.budget?.add?.(summaryUsedModel, summaryRes.usage);
                   emitTagged({
                     type: "usage",
-                    model: summaryRes.usedModel || summaryModel,
+                    model: summaryUsedModel,
                     ...(summaryRes.usedProviderId ? { providerId: summaryRes.usedProviderId } : {}),
                     routeTier: "summary",
                     routeLabel: "上下文摘要",
@@ -1269,10 +1328,19 @@ async function runTaskInner({
       // ---- Smart Router v2 (L2/L3): runtime escalation decision for this step ----
       let smartEsc: any = null;
       if (smart) {
+        if (
+          !smart.runtime.lastStepHadFailure &&
+          smart.runtime.consecutiveOkSteps >= 3 &&
+          smart.initialBaseTier &&
+          tierRank(smart.baseTier) > tierRank(smart.initialBaseTier)
+        ) {
+          smart.baseTier = smart.initialBaseTier;
+        }
         smartEsc = decideEscalation(smart.runtime, {
           baseTier: smart.baseTier,
           budget: smart.budget,
           deepCap: smart.deepCap,
+          sameFastStandard: Boolean(smart.sameFastStandard),
         });
         if (smartEsc?.promoteBase && tierRank(smartEsc.tier) > tierRank(smart.baseTier)) {
           smart.baseTier = smartEsc.tier;
@@ -1479,7 +1547,10 @@ async function runTaskInner({
           )
         );
       }
-      const systemInstruction = buildSystemInstruction(promptConfig);
+      if (frozenSystemInstruction === null) {
+        frozenSystemInstruction = buildSystemInstruction(promptConfig);
+      }
+      const systemInstruction = frozenSystemInstruction;
       const overheadTokens =
         estimateTextTokens(systemInstruction) +
         estimateStepTokens({ arguments: stepTools });
@@ -1621,7 +1692,10 @@ async function runTaskInner({
       const actualUsedModel = turn?.usedModel || requestedModel;
 
       if (smart) {
-        commitStepTier(smart.runtime, stepRoute.tier);
+        commitStepTier(smart.runtime, stepRoute.tier, {
+          usedEscalation: Boolean(smartEsc),
+          thinkingLevel: stepRoute.thinkingLevel,
+        });
         if (turn?.usage) smart.budget.add(actualUsedModel, turn.usage);
         const noticeLevel = smart.budget.takeNotice();
         if (noticeLevel) {
@@ -1874,6 +1948,12 @@ async function runTaskInner({
             userText: latestUserText,
             assistantText: answerText,
             config: { ...config, routing: postRouting },
+            emit: emitTagged,
+            onUsage: (info) => {
+              if (smart?.budget && info?.usage && info?.model) {
+                smart.budget.add(info.model, info.usage);
+              }
+            },
             broadcastGlobal,
           }).catch(() => {});
         }
@@ -1900,6 +1980,17 @@ async function runTaskInner({
       // providers never see a user message splitting assistant.tool_calls and tool results.
       const deferredScreenSteps: any[] = [];
       const isTruncatedTurn = turn?.finishReason === "length";
+      const BATCHED_GUI_ACTIONS = new Set([
+        "click",
+        "double_click",
+        "right_click",
+        "move",
+        "drag",
+        "scroll",
+        "type_text",
+        "key",
+      ]);
+      let abortRemainingGuiBatch = false;
       for (const call of turn.calls) {
         if (ctrl.stopped) {
           setStatus("stopped");
@@ -1916,6 +2007,21 @@ async function runTaskInner({
               null
             )
           );
+          continue;
+        }
+
+        if (abortRemainingGuiBatch && BATCHED_GUI_ACTIONS.has(call.name)) {
+          const skipRes = {
+            error:
+              "skipped remaining batched GUI action after prior GUI failure or verification challenge",
+          };
+          emitTagged({
+            type: "result",
+            callId: call.id,
+            name: call.name,
+            result: skipRes,
+          });
+          history.push(...toolResultSteps(call, skipRes, null));
           continue;
         }
 
@@ -2246,6 +2352,12 @@ async function runTaskInner({
         }
         if (smart) {
           recordToolOutcome(smart.runtime, { name: call.name, args: call.args, result: toolResult });
+        }
+        if (
+          (BATCHED_GUI_ACTIONS.has(call.name) || isBrowserAutomationTool(call.name)) &&
+          (toolResult?.error || toolResult?.challenge_detected === true)
+        ) {
+          abortRemainingGuiBatch = true;
         }
 
         let screenshotFile: string | undefined;

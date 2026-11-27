@@ -8,6 +8,8 @@ import { createStore } from "../src/store/index.js";
 import {
   CONTEXT_COMPRESSION_PRESETS,
   DEFAULT_CONTEXT_COMPRESSION,
+  DEFAULT_EFFECTIVE_CONTEXT_CEILING,
+  getEffectiveCompressionWindow,
   getModelContextWindow,
   matchContextCompressionPreset,
   normalizeContextCompressionSettings,
@@ -965,4 +967,84 @@ test("sanitizeOrphanedCalls never pairs an earlier turn's orphaned call_id with 
   const keptInterleaved = sanitizeOrphanedCalls(interleavedTurn);
   assert.equal(keptInterleaved.filter((s) => s.type === "function_call").length, 2);
   assert.equal(keptInterleaved.filter((s) => s.type === "function_result").length, 2);
+});
+
+test("getEffectiveCompressionWindow caps 1M models at 160K while keeping raw getModelContextWindow intact", () => {
+  assert.equal(getModelContextWindow("deepseek-flash"), 1_000_000);
+  assert.equal(getEffectiveCompressionWindow("deepseek-flash"), DEFAULT_EFFECTIVE_CONTEXT_CEILING);
+  assert.equal(getEffectiveCompressionWindow("deepseek-v4-pro"), 160_000);
+  assert.equal(getEffectiveCompressionWindow("deepseek-chat"), 128_000);
+  assert.equal(getEffectiveCompressionWindow("custom::qwen-32k"), 32_000);
+  assert.equal(getEffectiveCompressionWindow("deepseek-flash", 300_000), 300_000);
+});
+
+test("runTask freezes in-turn systemInstruction across memory_manage calls to preserve Prompt Cache", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "loop-frozen-sys-"));
+  const store = createStore(tmpDir);
+  const session = store.createSession({ title: "缓存稳定测试" });
+  const seenInstructions: string[] = [];
+  let step = 0;
+
+  const model = {
+    async nextTurn(opts: any) {
+      seenInstructions.push(String(opts.systemInstruction || ""));
+      step += 1;
+      if (step === 1) {
+        return {
+          thoughts: [],
+          text: "",
+          calls: [
+            {
+              id: "mem-1",
+              name: "memory_manage",
+              args: { action: "save", scope: "bot", name: "测试规则", content: "必须固定前缀缓存" },
+            },
+          ],
+          outputSteps: [
+            {
+              type: "function_call",
+              id: "mem-1",
+              name: "memory_manage",
+              arguments: { action: "save", scope: "bot", name: "测试规则", content: "必须固定前缀缓存" },
+            },
+          ],
+          usage: { input: 500, output: 30 },
+        };
+      }
+      return {
+        thoughts: [],
+        text: "记忆已保存。",
+        calls: [],
+        outputSteps: [{ type: "model_output", content: [{ type: "text", text: "记忆已保存。" }] }],
+        usage: { input: 520, output: 12 },
+      };
+    },
+  };
+
+  try {
+    const res = await runTask({
+      sessionId: session.id,
+      userText: "帮我保存一条缓存测试规则",
+      deps: {
+        store,
+        model: model as any,
+        executor: { async call() { return { ok: true }; } } as any,
+        enableBotTools: true,
+        config: { defaultModel: "gemini-4-hydrogen", maxSteps: 4, settleMs: 0 },
+      },
+      ctrl: createControl(),
+      autoRoute: false,
+    });
+    assert.equal(res.status, "done");
+    assert.equal(seenInstructions.length, 2);
+    assert.equal(
+      seenInstructions[0],
+      seenInstructions[1],
+      "In-turn systemInstruction must stay byte-identical after mid-turn memory_manage"
+    );
+    const updatedBot = store.getSession(session.id);
+    assert.ok(updatedBot?.memories?.some((m: any) => m.name === "测试规则"));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

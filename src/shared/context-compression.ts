@@ -65,6 +65,24 @@ export function getLocalizedContextCompressionPresets(
 }
 
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
+export const DEFAULT_EFFECTIVE_CONTEXT_CEILING = 160_000;
+
+/**
+ * Caps automatic context compression trigger windows to a cost/attention sweet spot
+ * (default 160K tokens) so 1M-window models still summarize before ballooning to 500K+.
+ */
+export function getEffectiveCompressionWindow(
+  modelName = "",
+  ceiling = DEFAULT_EFFECTIVE_CONTEXT_CEILING
+): number {
+  const modelWindow = getModelContextWindow(modelName);
+  const rawCeiling = Number(ceiling);
+  const safeCeiling =
+    Number.isFinite(rawCeiling) && rawCeiling >= 16_000
+      ? Math.round(rawCeiling)
+      : DEFAULT_EFFECTIVE_CONTEXT_CEILING;
+  return Math.min(modelWindow, safeCeiling);
+}
 
 /**
  * Resolves the effective context window budget (in tokens) for a given model ID.
