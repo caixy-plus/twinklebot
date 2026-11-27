@@ -2145,7 +2145,7 @@ test("Phase 6 P2-2 & P2-7: approval context/draft reuse/reminder & on-demand pre
             return { ok: true };
           },
         },
-        config: { maxSteps: 5, settleMs: 0 },
+        config: { maxSteps: 5, settleMs: 0, sandboxMode: "restricted" },
         emit: (e: any) => {
           draftEvents.push(e);
           if (e.type === "approval_request") approvalsSeen.push(e);
@@ -2282,6 +2282,78 @@ test("Phase 6 P2-2 & P2-7: approval context/draft reuse/reminder & on-demand pre
     });
     assert.match(thirdPromptText, /\[上轮回复完成：2026-11-27 10:05:30 \+08:00，耗时 2m5s\]/);
     assert.equal(thirdAllText.includes("[上轮回复完成："), false, "assistant history must remain unpolluted");
+  } finally {
+    cleanup();
+  }
+});
+
+test("loop reloads live settings.policy per call so clicking Always Allow takes effect within the same batched turn", async () => {
+  const { store, cleanup } = createTestStore();
+  try {
+    const bot = store.createSession({ title: "BatchLivePolicyBot" });
+    store.writeSettings({
+      hostComputer: { executionMode: "ask" },
+      policy: { autoAudit: true, askRules: [], allowRules: [] },
+    });
+
+    let llmStep = 0;
+    const ctrl = createControl();
+    const events: any[] = [];
+    const seenApprovalRequests: string[] = [];
+
+    const runPromise = runTask({
+      sessionId: bot.id,
+      userText: "连续执行两条主机只读或写入测试",
+      control: ctrl,
+      deps: {
+        store,
+        enableBotTools: true,
+        model: {
+          async nextTurn() {
+            llmStep += 1;
+            if (llmStep === 1) {
+              return {
+                text: "",
+                calls: [
+                  { id: "b1", name: "host_run_shell", args: { command: "echo batch-one", risk: "medium" } },
+                  { id: "b2", name: "host_run_shell", args: { command: "echo batch-two", risk: "medium" } },
+                ],
+                outputSteps: [
+                  { type: "function_call", id: "b1", name: "host_run_shell", arguments: { command: "echo batch-one", risk: "medium" } },
+                  { type: "function_call", id: "b2", name: "host_run_shell", arguments: { command: "echo batch-two", risk: "medium" } },
+                ],
+                thoughts: [],
+              };
+            }
+            return { text: "批量执行完成。", calls: [], outputSteps: [], thoughts: [] };
+          },
+        },
+        executor: createFakeExecutor(),
+        config: { maxSteps: 4, settleMs: 0, hostExecutionMode: "ask" },
+        emit: (e: any) => {
+          events.push(e);
+          if (e.type === "approval_request") {
+            seenApprovalRequests.push(e.callId);
+            // Simulate user clicking "Always Allow" on the first card and persisting allowRule immediately
+            store.writeSettings({
+              policy: {
+                autoAudit: true,
+                askRules: [],
+                allowRules: [{ id: "allow-echo", tool: "host_run_shell", pattern: "echo batch", label: "allow batch echo" }],
+              },
+            });
+            setTimeout(() => ctrl.resolveApproval(e.callId, true), 10);
+          }
+        },
+      },
+    });
+
+    await runPromise;
+    assert.deepEqual(
+      seenApprovalRequests,
+      ["b1"],
+      "Approving b1 with persisted allowRule must suppress b2 confirmation in the exact same turn"
+    );
   } finally {
     cleanup();
   }

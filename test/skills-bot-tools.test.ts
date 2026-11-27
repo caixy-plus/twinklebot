@@ -349,6 +349,79 @@ test("system prompt describes added skills, dual-computer model, and kimi-cu gro
   assert.ok(sWithKimi.includes("snapshot_id"));
   assert.ok(sWithKimi.includes("screenshot_id"));
   assert.ok(sWithKimi.includes("schedule_manage"));
+
+  // Adaptive v0.7.7 profile: index + paste + drag_paths + subscribe_system_state, NO js / element_id
+  const sV077 = buildSystemInstruction({
+    enableBotTools: true,
+    installedSkills: ["kimi-cu"],
+    hostExecutionMode: "always",
+    kimiCuActive: true,
+    kimiCuRuntimeProfile: {
+      serverId: "kimi-cu",
+      serverInfo: { name: "kimi-cu", version: "0.7.7" },
+      capabilities: {},
+      runtimeCapabilities: { input_mode: "adaptive_background_first", moves_real_pointer: false },
+      instructions: "",
+      tools: [
+        { name: "list_apps", fullName: "mcp__kimi_cu__list_apps", description: "", params: [], required: [], readOnly: true },
+        { name: "get_app_state", fullName: "mcp__kimi_cu__get_app_state", description: "", params: ["app", "rect"], required: [], readOnly: true },
+        { name: "click", fullName: "mcp__kimi_cu__click", description: "", params: ["app", "index", "snapshot_id", "x", "y", "screenshot_id"], required: [], readOnly: false },
+        { name: "paste", fullName: "mcp__kimi_cu__paste", description: "", params: ["app", "text"], required: ["text"], readOnly: false },
+        { name: "drag_paths", fullName: "mcp__kimi_cu__drag_paths", description: "", params: ["app", "paths"], required: ["paths"], readOnly: false },
+        { name: "subscribe_system_state", fullName: "mcp__kimi_cu__subscribe_system_state", description: "", params: [], required: [], readOnly: true },
+        { name: "get_system_state", fullName: "mcp__kimi_cu__get_system_state", description: "", params: [], required: [], readOnly: true },
+      ],
+    },
+  });
+  assert.ok(sV077.includes("kimi-cu v0.7.7"));
+  assert.ok(sV077.includes("`index`"));
+  assert.ok(sV077.includes("mcp__kimi_cu__paste"));
+  assert.ok(sV077.includes("mcp__kimi_cu__drag_paths"));
+  assert.ok(sV077.includes("subscribe_system_state"));
+  assert.ok(!sV077.includes("mcp__kimi_cu__js"));
+  assert.ok(!sV077.includes("element_id"));
+
+  // Legacy v0.6.8 profile: element_id + js still supported gracefully
+  const sV068 = buildSystemInstruction({
+    enableBotTools: true,
+    installedSkills: ["kimi-cu"],
+    hostExecutionMode: "always",
+    kimiCuActive: true,
+    kimiCuRuntimeProfile: {
+      serverId: "kimi-cu",
+      serverInfo: { name: "kimi-cu", version: "0.6.8" },
+      capabilities: {},
+      runtimeCapabilities: null,
+      instructions: "",
+      tools: [
+        { name: "click", fullName: "mcp__kimi_cu__click", description: "", params: ["app", "element_id", "snapshot_id"], required: [], readOnly: false },
+        { name: "js", fullName: "mcp__kimi_cu__js", description: "", params: ["code"], required: ["code"], readOnly: false },
+      ],
+    },
+  });
+  assert.ok(sV068.includes("kimi-cu v0.6.8"));
+  assert.ok(sV068.includes("element_id"));
+  assert.ok(sV068.includes("mcp__kimi_cu__js"));
+
+  // Future v0.9.0 profile: auto-surfaces server instructions & brand-new tools without OTA
+  const sFuture = buildSystemInstruction({
+    enableBotTools: true,
+    installedSkills: ["kimi-cu"],
+    hostExecutionMode: "always",
+    kimiCuActive: true,
+    kimiCuRuntimeProfile: {
+      serverId: "kimi-cu",
+      serverInfo: { name: "kimi-cu", version: "0.9.0" },
+      capabilities: {},
+      runtimeCapabilities: null,
+      instructions: "Use ocr_region on canvas-only apps.",
+      tools: [
+        { name: "ocr_region", fullName: "mcp__kimi_cu__ocr_region", description: "", params: [], required: [], readOnly: true },
+      ],
+    },
+  });
+  assert.ok(sFuture.includes("Use ocr_region on canvas-only apps."));
+  assert.ok(sFuture.includes("ocr_region"));
 });
 
 test("schedule_manage supports create, list, update, toggle, and remove for a Bot and injects into system prompt", async (t) => {

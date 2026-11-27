@@ -645,15 +645,31 @@ export async function handleSessionRoutes(
                   }`
               ),
             };
+            const dedupeRules = (rules: any[]) => {
+              const out: any[] = [];
+              const seen = new Set<string>();
+              for (const r of rules) {
+                if (!r || typeof r !== "object") continue;
+                const key = `${String(r.tool || "*").trim()}::${String(r.pattern || "").trim()}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push(r);
+              }
+              return out;
+            };
             if (incomingRule.mode === "ask") {
-              const askRules = Array.isArray(policy.askRules)
-                ? [...policy.askRules, ruleEntry]
-                : [ruleEntry];
+              const askRules = dedupeRules(
+                Array.isArray(policy.askRules)
+                  ? [...policy.askRules, ruleEntry]
+                  : [ruleEntry]
+              );
               ctx.store?.writeSettings?.({ policy: { ...policy, askRules } });
             } else {
-              const allowRules = Array.isArray(policy.allowRules)
-                ? [...policy.allowRules, ruleEntry]
-                : [ruleEntry];
+              const allowRules = dedupeRules(
+                Array.isArray(policy.allowRules)
+                  ? [...policy.allowRules, ruleEntry]
+                  : [ruleEntry]
+              );
               ctx.store?.writeSettings?.({ policy: { ...policy, allowRules } });
             }
             try {

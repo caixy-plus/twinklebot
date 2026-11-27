@@ -375,6 +375,39 @@ test("hostExecutionMode ask allows read-only host/MCP inspection but confirms mu
     "confirm"
   );
   assert.equal(
+    assessToolCall("mcp__kimi_cu__subscribe_system_state", {}, askCfg).decision,
+    "allow"
+  );
+  assert.equal(
+    assessToolCall("mcp__kimi_cu__get_system_state", {}, askCfg).decision,
+    "allow"
+  );
+  assert.equal(
+    assessToolCall("mcp__kimi_cu__unsubscribe_system_state", {}, askCfg).decision,
+    "allow"
+  );
+  assert.equal(
+    assessToolCall(
+      "mcp__kimi_cu__list_displays",
+      {},
+      { ...askCfg, mcpReadOnlyTools: new Set(["mcp__kimi_cu__list_displays"]) }
+    ).decision,
+    "allow"
+  );
+  assert.equal(
+    assessToolCall("mcp__kimi_cu__drag_paths", { app: "com.apple.finder", paths: [] }, askCfg)
+      .decision,
+    "confirm"
+  );
+  assert.equal(
+    assessToolCall(
+      "mcp__kimi_cu__future_click",
+      { app: "com.apple.finder" },
+      { ...askCfg, mcpReadOnlyTools: new Set(["mcp__kimi_cu__list_displays"]) }
+    ).decision,
+    "confirm"
+  );
+  assert.equal(
     assessToolCall("host_run_shell", { command: "ls -la" }, askCfg).decision,
     "confirm"
   );
@@ -391,8 +424,12 @@ test("hostExecutionMode always allows normal host actions and non-sensitive host
     "allow"
   );
   assert.equal(
-    assessToolCall("host_run_shell", { command: "rm -rf /tmp/foo" }, alwaysCfg).decision,
+    assessToolCall("host_run_shell", { command: "rm -rf ~/Desktop/foo" }, alwaysCfg).decision,
     "confirm"
+  );
+  assert.equal(
+    assessToolCall("host_run_shell", { command: "rm -rf /tmp/foo" }, alwaysCfg).decision,
+    "allow"
   );
   assert.equal(
     assessToolCall(
@@ -450,7 +487,11 @@ test("default sandboxMode is full: Bot Computer sandbox tools auto-allow while p
   );
   assert.equal(
     assessToolCall("write_file", { path: "/opt/sandbox/app.txt", content: "ok" }, defaultCfg).decision,
-    "confirm"
+    "allow"
+  );
+  assert.equal(
+    assessToolCall("write_file", { path: "/home/ubuntu/app.py", content: "ok" }, defaultCfg).decision,
+    "allow"
   );
   assert.equal(
     assessToolCall("write_file", { path: "/opt/sandbox/.env", content: "SECRET=1" }, defaultCfg).decision,
@@ -458,14 +499,14 @@ test("default sandboxMode is full: Bot Computer sandbox tools auto-allow while p
   );
   assert.equal(
     assessToolCall("click", { x: 10, y: 20, risk: "high" }, defaultCfg).decision,
-    "confirm"
+    "allow"
   );
 });
 
 test("hostExecutionMode always eliminates false-positive confirmations while protecting deletions, sensitive configs, and shell bypasses", () => {
-  const alwaysCfg = { ...cfg, hostExecutionMode: "always" };
+  const alwaysCfg = { ...cfg, botWorkspaceRoot: "/Users/YOUR_USERNAME/TwinkleBot/workspace/bots/b1", hostExecutionMode: "always" };
 
-  // Routine everyday commands that used to false-positive on mv / --format / dd / quoted args
+  // Routine everyday commands + safe scratch/own-workspace rm auto-allow under always mode
   const routineHostShellCommands = [
     "mv ~/Downloads/draft.md ~/Desktop/final.md",
     "git mv old.ts new.ts",
@@ -477,6 +518,8 @@ test("hostExecutionMode always eliminates false-positive confirmations while pro
     'git commit -m "rm unused helper and sudo doc note"',
     'grep -rn "sudo" docs/',
     'echo "reboot schedule ready"',
+    "rm -rf /tmp/twinklebot-scratch-dir",
+    "rm -f /Users/YOUR_USERNAME/TwinkleBot/workspace/bots/b1/temp-note.md",
   ];
   for (const command of routineHostShellCommands) {
     assert.equal(
@@ -484,13 +527,21 @@ test("hostExecutionMode always eliminates false-positive confirmations while pro
       "allow",
       `Expected allow under always mode for routine command: ${command}`
     );
+    assert.equal(
+      assessToolCall("host_run_shell", { command, risk: "high" }, alwaysCfg).decision,
+      "allow",
+      `Expected allow under always mode even with spurious risk=high: ${command}`
+    );
   }
 
   // Genuine destructive commands and shell-nested bypasses still require confirmation
   const riskyHostShellCommands = [
     "sudo brew services restart nginx",
-    "rm -rf /tmp/foo",
+    "rm -rf /tmp",
+    "rm -rf /tmp/*",
+    "rm -rf /tmp/../Users/victim",
     "rm ~/Desktop/important.docx",
+    "rm -rf /Users/YOUR_USERNAME/TwinkleBot/workspace/bots/b1",
     "Remove-Item -Recurse C:\\Temp\\old",
     "dd if=/dev/zero of=/dev/disk2",
     "format C:",
@@ -601,7 +652,8 @@ test("hostExecutionMode always ignores spurious LLM risk=high on routine host_ru
     "echo '127.0.0.1 evil' > /etc/hosts",
     "echo '127.0.0.1 evil' | tee -a /etc/hosts",
     "cp ~/tmp.plist ~/Library/LaunchAgents/com.evil.plist",
-    "rm -rf /tmp/foo",
+    "rm -rf ~/Desktop/foo",
+    "rm -rf /tmp",
     "sudo echo hi",
   ];
   for (const command of destructiveCommands) {
@@ -664,7 +716,8 @@ test("sandboxMode full auto-allows internal sandbox tools even with spurious ris
     "confirm"
   );
 
-  // External interactive sandbox tools still confirm when risk="high" unless matched by tool-specific allowRule
+  // ALL sandbox tools (including external interactive click/type/browser_click/browser_type)
+  // auto-allow in sandboxMode=full even when LLM tags spurious risk="high", while askRules still prompt
   for (const [tool, args] of [
     ["browser_click", { ref: "e5", risk: "high" }],
     ["browser_type", { ref: "e3", text: "publish", submit: true, risk: "high" }],
@@ -672,20 +725,20 @@ test("sandboxMode full auto-allows internal sandbox tools even with spurious ris
     ["type_text", { text: "send", risk: "high" }],
     ["key", { combo: "Return", risk: "high" }],
   ] as [string, Record<string, any>][]) {
-    assert.equal(assessToolCall(tool, args, fullCfg).decision, "confirm");
+    assert.equal(assessToolCall(tool, args, fullCfg).decision, "allow");
     assert.equal(
       assessToolCall(tool, args, {
         ...fullCfg,
-        policy: { autoAudit: true, allowRules: [{ tool, pattern: "" }], askRules: [] },
+        policy: { autoAudit: true, allowRules: [], askRules: [{ tool, pattern: "" }] },
       }).decision,
-      "allow",
-      `Tool-specific allowRule must allow ${tool} even with risk=high in sandboxMode=full`
+      "confirm",
+      `Explicit askRule must still prompt for ${tool} in sandboxMode=full`
     );
-    // Global wildcard rule must NOT silently bypass risk=high
+    // Still confirms under sandboxMode=restricted when risk=high
     assert.equal(
       assessToolCall(tool, args, {
         ...fullCfg,
-        policy: { autoAudit: true, allowRules: [{ tool: "*", pattern: "" }], askRules: [] },
+        sandboxMode: "restricted",
       }).decision,
       "confirm"
     );
@@ -720,7 +773,7 @@ test("policy autoAudit=false skips automatic risk=high prompts while still enfor
   );
   // Still enforces deterministic destructive shell confirmation
   assert.equal(
-    assessToolCall("host_run_shell", { command: "rm -rf /tmp/x" }, noAuditCfg).decision,
+    assessToolCall("host_run_shell", { command: "rm -rf ~/Desktop/x" }, noAuditCfg).decision,
     "confirm"
   );
   // Still enforces hostExecutionMode="ask"
@@ -816,9 +869,17 @@ test("P1-3 & P1-6: Shell sensitive path closure, PowerShell rules, sandboxMode=f
     "allow"
   );
 
-  // sandboxMode="full" enforces writeRoots on write_file / edit_file
+  // sandboxMode="full" allows in-sandbox writes across Ubuntu paths while sandboxMode="restricted" enforces writeRoots
   assert.equal(
     assessToolCall("edit_file", { path: "/opt/outside/cfg.txt", target: "a", replacement: "b" }, secCfg).decision,
+    "allow"
+  );
+  assert.equal(
+    assessToolCall(
+      "edit_file",
+      { path: "/opt/outside/cfg.txt", target: "a", replacement: "b" },
+      { ...secCfg, sandboxMode: "restricted" }
+    ).decision,
     "confirm"
   );
   assert.equal(

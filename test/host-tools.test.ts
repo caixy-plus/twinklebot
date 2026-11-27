@@ -31,7 +31,6 @@ test("HOST_TOOL_DECLARATIONS defines 6 host tools and scopes risk parameter to m
     "host_run_shell",
     "host_write_file",
     "host_edit_file",
-    "host_record_screen",
   ]);
   for (const decl of HOST_TOOL_DECLARATIONS) {
     assert.equal(decl.type, "function");

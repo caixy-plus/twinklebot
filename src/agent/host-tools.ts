@@ -18,7 +18,7 @@ const RISK_PROP = {
   type: "string",
   enum: ["low", "medium", "high"],
   description:
-    `Estimated risk level on the user's ${HOST_OS_LABEL}. Always use 'low'/'medium' for routine reads, searches, cd/git/npm/build/deploy scripts, organizing/renaming files, running normal CLI tools, or editing ordinary files the user asked for. Reserve 'high' ONLY for irreversible external actions (sending messages/posts, payments, orders, agreements), deleting important files (rm), destructive git force-push/reset, modifying sensitive system/shell configs, or privileged sudo commands.`,
+    `Optional (OMIT or use 'low'/'medium' for routine work on the user's ${HOST_OS_LABEL}: reading, searching, builds, git, organizing files, scratch cleanup, or editing project files requested by the user). Destructive commands (sudo, home/system rm, git force-push) and sensitive configs are audited automatically — reserve 'high' ONLY for irreversible external side effects (sending messages/posts, real payments, orders).`,
 };
 
 export const HOST_TOOL_DECLARATIONS = [
@@ -182,7 +182,6 @@ export const HOST_TOOL_DECLARATIONS = [
           type: "number",
           description: "Optional display index (0-based, default 0).",
         },
-        risk: RISK_PROP,
       },
     },
   },

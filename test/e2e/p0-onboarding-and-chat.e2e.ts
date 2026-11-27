@@ -677,6 +677,18 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
       })()`);
       await chrome!.waitFor(`document.querySelector('#header-bot-name')?.textContent?.includes('ReloadRecoveryBot')`, 6000);
 
+      await fetch(`${ws.baseUrl}/api/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          policy: {
+            autoAudit: true,
+            askRules: [{ id: "e2e-reload", tool: "browser_click", pattern: "", label: "e2e reload confirm" }],
+            allowRules: [],
+          },
+        }),
+      });
+
       let step = 0;
       mockLlm.setHandler(async ({ body }) => {
         if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "等待确认" };
@@ -711,6 +723,11 @@ test("P0 Suite 1: Onboarding, Gemini Interactions, Streaming Chat, Steering, Sto
         `Array.from(document.querySelectorAll('.bot-bubble')).some(el => el.textContent?.includes('刷新恢复并完成执行'))`,
         8000
       );
+      await fetch(`${ws.baseUrl}/api/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ policy: { autoAudit: true, askRules: [], allowRules: [] } }),
+      });
 
       // Cross-client error dismissal: closing once persists on server and syncs live across devices
       const err1 = ws.store.appendEvent(reloadBot.id, {

@@ -377,8 +377,8 @@ export const SKILL_FALLBACK_CATALOG = {
       id: "kimi-cu",
       name: "KimiCU 桌面软件操控",
       nameEn: "KimiCU Desktop Control",
-      desc: "通过本地 KimiCU MCP 服务无感后台操控任意 Mac 桌面软件（不抢占物理鼠标指针）",
-      descEn: "Control macOS desktop apps silently via local KimiCU MCP without hijacking the cursor",
+      desc: "通过本地 KimiCU MCP 后台无感操控任意 Mac 桌面软件（窗口截图、AX 控件树、键鼠/剪贴板粘贴、多路径拖拽与系统状态观测，不抢物理鼠标；自动适配已安装版本）",
+      descEn: "Control macOS desktop apps silently via local KimiCU MCP (window capture, AX tree, cursor-safe input, paste, multi-path drag & system state observation; auto-adapts to installed version)",
       icon: "🖱️",
       category: "platform",
       builtin: false,
@@ -386,7 +386,6 @@ export const SKILL_FALLBACK_CATALOG = {
       supportedPlatforms: ["darwin"],
       installed: false,
       mcpServerId: "kimi-cu",
-      toolCount: 20,
     },
   ],
   office: [

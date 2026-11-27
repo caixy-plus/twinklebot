@@ -1698,6 +1698,8 @@ async function runTaskInner({
       const installedSkills = resolveInstalledSkillIds(settings);
       let activeMcpTools: any[] = [];
       let kimiCuActive = false;
+      let kimiCuRuntimeProfile: any = null;
+      let mcpReadOnlyTools = new Set<string>();
       let mcpStatusNote = "";
       if (
         enableBotTools &&
@@ -1708,6 +1710,17 @@ async function runTaskInner({
         try {
           activeMcpTools = await mcpManager.listGeminiTools(["kimi-cu"]);
           kimiCuActive = activeMcpTools.length > 0;
+          kimiCuRuntimeProfile =
+            typeof mcpManager.getServerRuntimeProfile === "function"
+              ? mcpManager.getServerRuntimeProfile("kimi-cu")
+              : null;
+          if (kimiCuRuntimeProfile && Array.isArray(kimiCuRuntimeProfile.tools)) {
+            mcpReadOnlyTools = new Set(
+              kimiCuRuntimeProfile.tools
+                .filter((t: any) => t?.readOnly && t?.fullName)
+                .map((t: any) => String(t.fullName))
+            );
+          }
         } catch (err: any) {
           mcpStatusNote = err?.message || String(err);
         }
@@ -1751,11 +1764,13 @@ async function runTaskInner({
         deployEnv: config?.deployEnv || "local",
         smartRouterActive: Boolean(smart),
         hostExecutionMode,
+        policy: settings.policy || config.policy,
         browserAutomationMode:
           config?.deployEnv === "cloud" ? "bot_computer" : effectiveBrowserMode,
         browserDebugPort: browserAutomationSettings.debugPort,
         uiLocale: resolveEffectiveLocale(settings?.language || config?.language),
         kimiCuActive,
+        kimiCuRuntimeProfile,
         mcpStatusNote,
         globalMemories:
           settings.globalMemories ||
@@ -2541,15 +2556,21 @@ async function runTaskInner({
           continue;
         }
 
+        const liveSettings = store?.readSettings?.() || settings;
+        const liveHostExecutionMode =
+          scopedRuntimeConfig?.hostExecutionMode ||
+          liveSettings?.hostComputer?.executionMode ||
+          hostExecutionMode;
         const policyConfig = {
           ...scopedRuntimeConfig,
-          hostExecutionMode,
+          hostExecutionMode: liveHostExecutionMode,
           browserAutomationMode:
             config?.deployEnv === "cloud" ? "bot_computer" : effectiveBrowserMode,
           botWorkspaceRoot,
-          sandboxMode: config?.sandboxMode || settings?.sandboxMode || "full",
+          sandboxMode: config?.sandboxMode || liveSettings?.sandboxMode || "full",
           isAdminBot: Boolean(speakerBot?.isAdmin || store?.getSession?.(sessionId)?.isAdmin),
-          policy: settings.policy || config.policy,
+          policy: liveSettings.policy || config.policy,
+          mcpReadOnlyTools,
         };
         const { decision, reason } = assessToolCall(
           call.name,
@@ -2694,13 +2715,15 @@ async function runTaskInner({
           "browser_click",
           "browser_type",
           "click",
+          "type_text",
           "key",
           "mail_send_message",
         ]);
         const reuseApprovedDraft =
           decision === "confirm" &&
           approvedDraftsInTurn.length > 0 &&
-          DRAFT_REUSE_ELIGIBLE_TOOLS.has(call.name) &&
+          (DRAFT_REUSE_ELIGIBLE_TOOLS.has(call.name) ||
+            call.name.startsWith("mcp__kimi_cu__")) &&
           reason === "Action is flagged as high risk";
 
         if (decision === "deny") {

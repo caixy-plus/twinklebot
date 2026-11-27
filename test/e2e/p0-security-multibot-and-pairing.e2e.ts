@@ -138,6 +138,17 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
       };
 
       try {
+        await fetch(`${ws.baseUrl}/api/settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            policy: {
+              autoAudit: true,
+              askRules: [{ id: "e2e-sec-02", tool: "browser_click", pattern: "", label: "e2e sec-02" }],
+              allowRules: [],
+            },
+          }),
+        });
         // 1. Approve once
         let step = 0;
         mockLlm.setHandler(async ({ body }) => {
@@ -230,6 +241,11 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
       } finally {
         ws.executor.call = origCall;
         mockLlm.setHandler(undefined);
+        await fetch(`${ws.baseUrl}/api/settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ policy: { autoAudit: true, askRules: [], allowRules: [] } }),
+        }).catch(() => {});
       }
     },
     { getChrome: () => chrome }
@@ -539,13 +555,27 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
       );
       assert.equal(
         assessToolCall("edit_file", { path: "/opt/outside-forbidden/cfg.txt", target: "a", replacement: "b" }, alwaysCfg).decision,
+        "allow",
+        "sandboxMode=full allows in-sandbox edit_file across Ubuntu paths"
+      );
+      assert.equal(
+        assessToolCall(
+          "edit_file",
+          { path: "/opt/outside-forbidden/cfg.txt", target: "a", replacement: "b" },
+          { ...alwaysCfg, sandboxMode: "restricted" }
+        ).decision,
         "confirm",
-        "sandbox edit_file outside writeRoots must still require confirmation even under sandboxMode=full"
+        "sandbox edit_file outside writeRoots must still require confirmation when sandboxMode=restricted"
       );
       assert.equal(
         assessToolCall("host_run_shell", { command: "rm -rf /tmp/foo", risk: "medium" }, alwaysCfg).decision,
+        "allow",
+        "Safe /tmp scratch rm auto-allows in always mode"
+      );
+      assert.equal(
+        assessToolCall("host_run_shell", { command: "rm -rf ~/Desktop/foo", risk: "medium" }, alwaysCfg).decision,
         "confirm",
-        "Dangerous shell rm must still require confirmation in always mode"
+        "Dangerous home directory shell rm must still require confirmation in always mode"
       );
       assert.equal(
         assessToolCall(
@@ -585,16 +615,9 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
         "sandboxMode=full internal tools ignore spurious risk=high"
       );
       assert.equal(
-        assessToolCall(
-          "browser_click",
-          { ref: "e1", risk: "high" },
-          {
-            ...alwaysCfg,
-            policy: { autoAudit: true, allowRules: [{ tool: "browser_click", pattern: "" }], askRules: [] },
-          }
-        ).decision,
+        assessToolCall("browser_click", { ref: "e1", risk: "high" }, alwaysCfg).decision,
         "allow",
-        "sandboxMode=full external interactive tools honor tool-specific allowRules even with risk=high"
+        "sandboxMode=full interactive tools auto-allow even with spurious risk=high"
       );
 
       // 2. hostExecutionMode = "ask": read-only host tools allowed, write tools confirm

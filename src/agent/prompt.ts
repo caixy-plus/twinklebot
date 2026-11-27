@@ -1,7 +1,81 @@
 import path from "node:path";
+import type { McpDiscoveredToolSummary, McpRuntimeProfile } from "../lib/mcp-client.js";
 import { renderPromptTemplate } from "./prompt-loader.js";
 
 export const MAX_PROMPT_MEMORY_SECTION_CHARS = 2500;
+
+export function buildKimiCuPromptSection(
+  profile?: McpRuntimeProfile | null,
+  autoAuditEnabled = true
+): string {
+  const tools = Array.isArray(profile?.tools) ? profile.tools : [];
+  const byName = new Map<string, McpDiscoveredToolSummary>(
+    tools.map((t) => [t.name, t])
+  );
+  const verLabel = profile?.serverInfo?.version
+    ? ` (${profile.serverInfo.name || "kimi-cu"} v${profile.serverInfo.version}, ${tools.length} live tools)`
+    : "";
+  const rc = profile?.runtimeCapabilities || null;
+  const rtTags: string[] = [];
+  if (rc && typeof rc === "object") {
+    if (typeof rc.input_mode === "string" && rc.input_mode) rtTags.push(rc.input_mode);
+    if (rc.moves_real_pointer === false) rtTags.push("cursor-safe");
+    if (rc.state_diff === true) rtTags.push("state-diff");
+    if (rc.supports_rich_paste === true) rtTags.push("rich-paste");
+    if (rc.foreground_fallback_supported === true) rtTags.push("foreground-fallback");
+  }
+  const rtLine = rtTags.length > 0 ? ` Runtime capabilities: ${rtTags.join(", ")}.` : "";
+
+  const clickParams = byName.get("click")?.params || [];
+  const usesLegacyElementId =
+    clickParams.includes("element_id") && !clickParams.includes("index");
+
+  const hasTool = (name: string) => (byName.size === 0 ? true : byName.has(name));
+
+  const locateTools = ["`mcp__kimi_cu__list_apps`"];
+  if (hasTool("list_windows")) locateTools.push("`mcp__kimi_cu__list_windows`");
+  if (hasTool("launch_app")) locateTools.push("`mcp__kimi_cu__launch_app`");
+
+  const observeTools = ["`mcp__kimi_cu__get_app_state`"];
+  if (hasTool("get_window_state")) observeTools.push("`mcp__kimi_cu__get_window_state`");
+  if (byName.has("subscribe_system_state") && byName.has("get_system_state")) {
+    observeTools.push("`mcp__kimi_cu__subscribe_system_state`/`get_system_state`");
+  }
+
+  const groundingText = usesLegacyElementId
+    ? "`snapshot_id` + `element_id` (preferred) or `screenshot_id` + `point`"
+    : "`snapshot_id` + `index` (AX element index from latest `get_app_state`, preferred) or `screenshot_id` + `x`, `y` (pixel coordinates, plus `window_id` when targeting a specific window)";
+
+  const actExtras: string[] = [];
+  if (hasTool("paste")) {
+    actExtras.push(
+      "Prefer `mcp__kimi_cu__paste` (supports background/rich paste and CJK text when `type_text` cannot verify AX insertion) before `mcp__kimi_cu__press_key` in a subsequent turn"
+    );
+  }
+  if (byName.has("drag_paths")) {
+    actExtras.push("use `mcp__kimi_cu__drag_paths` for multi-stroke drags");
+  }
+  if (byName.has("js")) {
+    actExtras.push(
+      "legacy `mcp__kimi_cu__js` is available on this runtime for batched `@kimi/cu` scripting"
+    );
+  }
+
+  const lines = [
+    `- KimiCU macOS GUI Control${verLabel} (\`mcp__kimi_cu__*\` — Optional Platform Skill ACTIVE): Controls macOS desktop apps in the background WITHOUT moving or hijacking the user's physical mouse cursor!${rtLine} Follow these Grounding & Forward-Compatibility Rules:`,
+    `  1. Discover apps/windows first via ${locateTools.join(", ")} (never guess bundle IDs).`,
+    `  2. Observe state via ${observeTools.join(", ")} (returns \`snapshot_id\` and/or \`screenshot_id\`; use \`rect\` crop when dense UI is downscaled).`,
+    `  3. Act with schema-exact Grounding IDs: pass ${groundingText} to \`mcp__kimi_cu__click\` / \`type_text\` / \`scroll\` / \`set_value\`.${actExtras.length > 0 ? " " + actExtras.join("; ") + "." : ""} Always follow each live ` + "`mcp__kimi_cu__*`" + ` tool's declared JSON schema and parameter names rather than guessing unavailable tools or parameters.`,
+    `  4. Background-first & Safety: avoid \`activate: true\` or \`mcp__kimi_cu__activate_window\` unless foreground focus is strictly required, NEVER target \`com.twinklebot.desktop\`${autoAuditEnabled ? ", and omit `risk` for normal app clicks/typing/saving while passing `risk: \"high\"` only on the final irreversible Send/Pay/Delete action" : ""}.`,
+  ];
+  if (tools.length > 0) {
+    lines.push(`  - Live discovered tools (${tools.length}): ${tools.map((t) => t.name).join(", ")}.`);
+  }
+  if (profile?.instructions) {
+    lines.push(`  - Server instructions: ${String(profile.instructions).slice(0, 1200)}`);
+  }
+  return lines.join("\n");
+}
 
 export function formatBoundedMemoryLines(
   memories: any[] = [],
@@ -188,21 +262,19 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
     if (hostExecutionMode === "off") {
       hostComputerLine = `- User's Computer ("你的电脑", ${hostDisplayLabel}): Currently DISABLED ("在这台电脑上执行" = "从不允许"). If the user asks you to run commands or control apps on their computer, politely tell them to switch "设置 → 电脑 → 你的电脑 → 在这台电脑上执行" to "始终允许" or "每次询问".`;
     } else {
+      const autoAuditEnabled = config.policy?.autoAudit !== false;
       const modeNote =
         hostExecutionMode === "always"
-          ? "auto-allowed for routine tasks in scope: reading/searching files, `cd`/local `git`/build/deploy scripts, organizing/renaming files (`mv`), editing ordinary files the user asked to modify, generating docs/media, and running normal CLI tools — use `risk: \"low\"` or `\"medium\"` and execute directly without asking first; ONLY set `risk: \"high\"` (or let automatic audit confirm) for deleting important files (`rm`), destructive `git push --force` / `git reset --hard`, privileged `sudo`, modifying sensitive system/shell configs, or irreversible external actions (sending messages/posts — draft first, payments, orders, agreements)"
+          ? autoAuditEnabled
+            ? "auto-allowed for routine tasks in scope (reading/searching, `cd`/local `git`/build/deploy scripts, organizing/renaming files, scratch cleanup, editing user-requested project files, normal CLI tools — execute directly without asking; deterministic guardrails catch destructive host `rm`/`sudo`/git force-push and sensitive configs, so omit `risk` unless triggering a final irreversible external commitment like sending outbound messages or real payments)"
+            : "auto-allowed for routine host tasks in scope (destructive commands and sensitive paths are still deterministically guarded)"
           : "mutating host actions prompt the user for confirmation";
       hostComputerLine = isWinHost
         ? `- User's Computer ("你的电脑", ${hostDisplayLabel} — mode: \`${hostExecutionMode}\`, ${modeNote}): Use \`host_run_shell\` (runs Windows PowerShell \`powershell.exe -NoProfile -NonInteractive\` directly with UTF-8 & \`WSL_UTF8=1\` enabled — write native PowerShell 5.1 syntax using \`;\` instead of \`&&\`, no outer \`powershell -Command\` wrapper needed), \`host_open\` (Explorer / default app), \`host_read_file\`, and \`host_write_file\` when inspecting/editing local Windows files or managing WSL.`
         : `- User's Computer ("你的电脑", ${hostDisplayLabel} — mode: \`${hostExecutionMode}\`, ${modeNote}): Use \`host_run_shell\`, \`host_open\`, \`host_read_file\`, and \`host_write_file\` when the user wants to inspect/edit local Mac files, open local folders/apps, or run macOS CLI commands (\`open\`, \`osascript\`, \`shortcuts\`, \`git\`, \`brew\`).`;
 
       if (kimiActive) {
-        kimiCuLine =
-          `- KimiCU macOS GUI Control (\`mcp__kimi_cu__*\` — Optional Platform Skill ACTIVE): Controls ANY macOS desktop app in the background WITHOUT moving or hijacking the user's physical mouse cursor! Follow these 4 Grounding Iron Laws:\n` +
-          `  1. Discover apps first via \`mcp__kimi_cu__list_apps\` (never guess bundle IDs).\n` +
-          `  2. Observe target app via \`mcp__kimi_cu__get_app_state\` (returns single-window screenshot + AX tree \`[eN]\` + \`snapshot_id\` + \`screenshot_id\`).\n` +
-          `  3. Act with Grounding IDs: always pass \`snapshot_id\` + \`element_id\` (preferred) or \`screenshot_id\` + \`point\` to \`mcp__kimi_cu__click\` / \`mcp__kimi_cu__type_text\` / \`mcp__kimi_cu__scroll\`. Do NOT pass \`activate: true\` unless explicitly needed — keep operations background & cursor-safe! Prefer \`mcp__kimi_cu__js\` to combine action + \`cu.sleep\` + \`cu.get_app_state\` in one turn.\n` +
-          `  4. NEVER target \`com.twinklebot.desktop\`, and ALWAYS pass \`risk: "high"\` before clicking Send/Submit/Pay/Delete in user apps.`;
+        kimiCuLine = buildKimiCuPromptSection(config.kimiCuRuntimeProfile, autoAuditEnabled);
       } else if (isWinHost) {
         kimiCuLine = `- KimiCU GUI Control (\`kimi-cu\`): Not available on Windows PC hosts (macOS-only optional skill). Do NOT mention macOS paths or \`.app\` bundles to Windows users.`;
       } else if (kimiAdded && config.mcpStatusNote) {

@@ -30,14 +30,7 @@ export const SCREENSHOT_FILE_REGEX = /^\d{4}\.png$/;
 
 export const DEFAULT_POLICY = {
   autoAudit: true,
-  askRules: [
-    {
-      id: "ask-shell-danger",
-      tool: "run_shell",
-      pattern: "sudo",
-      label: "run_shell · 包含 sudo 的命令前必须批准",
-    },
-  ],
+  askRules: [],
   allowRules: [],
 };
 

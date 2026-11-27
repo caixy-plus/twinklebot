@@ -521,10 +521,114 @@ function extractCandidatePathsFromShellCommand(command: string): string[] {
   return Array.from(candidates);
 }
 
-export function isHostShellSafeForAlwaysMode(command: unknown): boolean {
+function splitSimpleShellArgs(command: string): string[] | null {
+  const tokens: string[] = [];
+  let cur = "";
+  let inTok = false;
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    if (quote) {
+      if (quote === '"' && ch === "\\" && i + 1 < command.length) {
+        cur += command[i + 1];
+        inTok = true;
+        i += 1;
+        continue;
+      }
+      if (ch === quote) {
+        quote = null;
+        inTok = true;
+        continue;
+      }
+      cur += ch;
+      inTok = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inTok = true;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < command.length) {
+      cur += command[i + 1];
+      inTok = true;
+      i += 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (inTok) {
+        tokens.push(cur);
+        cur = "";
+        inTok = false;
+      }
+      continue;
+    }
+    cur += ch;
+    inTok = true;
+  }
+  if (quote) return null;
+  if (inTok) tokens.push(cur);
+  return tokens;
+}
+
+export function isSafeScratchRmCommand(
+  command: unknown,
+  botWorkspaceRoot?: string
+): boolean {
   if (typeof command !== "string" || !command.trim()) return false;
   if (DENIED_KEYCHAIN_SHELL_RE.test(command)) return false;
-  return !isDangerousShellCommand(command, { allowNormalMv: true });
+  if (/[;&|`$><\r\n]/.test(command)) return false;
+  const tokens = splitSimpleShellArgs(command.trim());
+  if (!tokens || tokens.length < 2) return false;
+  const cmdName = normalizeCommandBaseName(tokens[0]);
+  if (cmdName !== "rm" && cmdName !== "rmdir" && cmdName !== "unlink") {
+    return false;
+  }
+
+  const targets: string[] = [];
+  let endOfFlags = false;
+  for (let i = 1; i < tokens.length; i += 1) {
+    const tok = tokens[i];
+    if (!tok) continue;
+    if (!endOfFlags && tok === "--") {
+      endOfFlags = true;
+      continue;
+    }
+    if (!endOfFlags && tok.startsWith("-")) {
+      continue;
+    }
+    targets.push(tok);
+  }
+  if (targets.length === 0) return false;
+
+  const scratchRoots = [os.tmpdir(), "/tmp", "/var/tmp"];
+  if (botWorkspaceRoot) scratchRoots.push(botWorkspaceRoot);
+  const resolvedRoots = scratchRoots
+    .map((r) => normalizeCandidatePath(r))
+    .filter(Boolean);
+
+  for (const rawTarget of targets) {
+    if (/(?:^|[\\/])\.\.(?:$|[\\/])/.test(rawTarget)) return false;
+    if (/^[*?]+$/.test(rawTarget) || /[/\\][*?]+$/.test(rawTarget)) return false;
+    if (isPathDenied(rawTarget) || isSensitiveConfigPath(rawTarget)) return false;
+    const resolved = normalizeCandidatePath(rawTarget);
+    if (!resolved) return false;
+    const insideScratch = resolvedRoots.some(
+      (root) => resolved !== root && resolved.startsWith(root + path.sep)
+    );
+    if (!insideScratch) return false;
+  }
+  return true;
+}
+
+export function isHostShellSafeForAlwaysMode(
+  command: unknown,
+  botWorkspaceRoot?: string
+): boolean {
+  if (typeof command !== "string" || !command.trim()) return false;
+  if (DENIED_KEYCHAIN_SHELL_RE.test(command)) return false;
+  if (!isDangerousShellCommand(command, { allowNormalMv: true })) return true;
+  return isSafeScratchRmCommand(command, botWorkspaceRoot);
 }
 
 const SANDBOX_INTERNAL_AUTO_ALLOW_TOOLS = new Set([
@@ -569,7 +673,18 @@ const READ_ONLY_HOST_AND_MCP_TOOLS = new Set([
   "mcp__kimi_cu__get_window",
   "mcp__kimi_cu__get_app_state",
   "mcp__kimi_cu__get_window_state",
+  "mcp__kimi_cu__subscribe_system_state",
+  "mcp__kimi_cu__get_system_state",
+  "mcp__kimi_cu__unsubscribe_system_state",
 ]);
+
+function isReadOnlyHostOrMcpTool(name: string, config?: Record<string, any>): boolean {
+  if (READ_ONLY_HOST_AND_MCP_TOOLS.has(name)) return true;
+  const dyn = config?.mcpReadOnlyTools;
+  if (dyn instanceof Set) return dyn.has(name);
+  if (Array.isArray(dyn)) return dyn.includes(name);
+  return false;
+}
 
 function normalizeCandidatePath(filePath: unknown): string {
   if (typeof filePath !== "string") return "";
@@ -853,12 +968,16 @@ export function assessToolCall(
 
     // 2b. Explicit allowRules:
     // - Always honored when risk !== "high".
-    // - Also honored for Bot Computer external interactive tools (browser_click / browser_type /
-    //   click / type_text / key) under sandboxMode="full" and specific (non-wildcard) rules under
-    //   hostExecutionMode="always", so clicking "始终允许" actually suppresses repeat prompts.
-    // - Under hostExecutionMode="ask", risk === "high" must NEVER be bypassed by allowRules.
+    // - Honored for Bot Computer tools under sandboxMode="full", and for host/MCP rules
+    //   when hostExecutionMode="always" (including explicit wildcard rules in "always" mode
+    //   so UI rules match user intent; hardcoded Step 1 guardrails and Step 2a askRules still win).
+    // - Under hostExecutionMode="ask" or sandboxMode="restricted", risk === "high" must NEVER be
+    //   bypassed by global wildcard rules (and host ask mode never bypasses high risk via allowRules).
     const canAllowRuleBypassHighRisk =
-      (sandboxMode === "full" && SANDBOX_EXTERNAL_INTERACTION_TOOLS.has(name)) ||
+      (sandboxMode === "full" && SANDBOX_TOOLS.has(name) && !isLocalHostAction) ||
+      (isLocalHostAction && hostExecutionMode === "always");
+    const allowWildcardHighRiskBypass =
+      (!isLocalHostAction && sandboxMode === "full") ||
       (isLocalHostAction && hostExecutionMode === "always");
     const allowRules = Array.isArray(policy.allowRules) ? policy.allowRules : [];
     for (const rule of allowRules) {
@@ -866,7 +985,10 @@ export function assessToolCall(
       const rulePat = String(rule?.pattern || "").trim();
       const isWildcardRule =
         (!ruleTool || ruleTool === "*") && (!rulePat || rulePat === "*");
-      if (safeArgs.risk === "high" && (!canAllowRuleBypassHighRisk || isWildcardRule)) {
+      if (
+        safeArgs.risk === "high" &&
+        (!canAllowRuleBypassHighRisk || (isWildcardRule && !allowWildcardHighRiskBypass))
+      ) {
         continue;
       }
       if (matchesCustomRule(rule, name, safeArgs)) {
@@ -879,22 +1001,22 @@ export function assessToolCall(
   }
 
   // 3. High risk action confirmation (skipped when policy.autoAudit === false)
-  // - Under sandboxMode="full", internal Bot Computer tools (shell, files, reads, navigation,
-  //   scroll, wait, select, upload) run in an isolated sandbox and ignore spurious LLM risk="high".
+  // - Under sandboxMode="full", ALL Bot Computer sandbox tools run in an isolated Ubuntu sandbox
+  //   and ignore spurious LLM risk="high" (saving users from confirmation fatigue on routine clicks).
   // - Under hostExecutionMode="always", ignore spurious LLM risk="high" on read-only host/MCP
-  //   inspection, host_open, non-sensitive host_write_file, and deterministic-safe host_run_shell
-  //   commands (e.g. `cd /repo && git commit`, `./deploy.sh`), while still confirming real
-  //   destructive/privileged shell commands, sensitive config writes, and risky MCP GUI actions.
+  //   inspection, host_open, non-sensitive host_write_file/host_edit_file, and deterministic-safe
+  //   host_run_shell commands (including safe /tmp or own-workspace scratch cleanup), while still
+  //   confirming real destructive/privileged shell commands, sensitive config writes, and risky MCP actions.
   const ignoreSpuriousHighRisk =
-    (sandboxMode === "full" && SANDBOX_INTERNAL_AUTO_ALLOW_TOOLS.has(name) && !isLocalHostAction) ||
+    (sandboxMode === "full" && SANDBOX_TOOLS.has(name) && !isLocalHostAction) ||
     (hostExecutionMode === "always" &&
-      (READ_ONLY_HOST_AND_MCP_TOOLS.has(name) ||
+      (isReadOnlyHostOrMcpTool(name, config) ||
         name === "host_open" ||
         ((name === "host_write_file" || name === "host_edit_file") &&
           Boolean(normalizeCandidatePath(safeArgs.path)) &&
           !isSensitiveConfigPath(safeArgs.path)) ||
         (name === "host_run_shell" &&
-          (isHostShellSafeForAlwaysMode(safeArgs.command) ||
+          (isHostShellSafeForAlwaysMode(safeArgs.command, config?.botWorkspaceRoot) ||
             isReadOnlyHostShellCommand(safeArgs.command)))));
   if (autoAuditEnabled && safeArgs.risk === "high" && !ignoreSpuriousHighRisk) {
     return {
@@ -903,7 +1025,7 @@ export function assessToolCall(
     };
   }
 
-  // 4. Sandbox high-privilege mode (default "full"): Bot Computer tools run inside isolated sandbox
+  // 4. Sandbox high-privilege mode (default "full"): Bot Computer tools run inside isolated Ubuntu sandbox
   if (sandboxMode === "full" && SANDBOX_TOOLS.has(name) && !isLocalHostAction) {
     if (name === "write_file" || name === "edit_file") {
       const resolvedPath = normalizeCandidatePath(safeArgs.path);
@@ -912,27 +1034,6 @@ export function assessToolCall(
           decision: "confirm",
           reason: `Missing or invalid file path for ${name}`,
         };
-      }
-      const allowedSandboxRoots = [
-        ...(Array.isArray(config?.writeRoots) ? config.writeRoots : []),
-        ...(config?.botWorkspaceRoot ? [config.botWorkspaceRoot] : []),
-      ];
-      if (allowedSandboxRoots.length > 0) {
-        const tempRoots = [os.tmpdir(), "/tmp", "/var/tmp"];
-        const insideAllowed = [...allowedSandboxRoots, ...tempRoots].some((root: unknown) => {
-          const resolvedRoot = normalizeCandidatePath(root);
-          if (!resolvedRoot) return false;
-          return (
-            resolvedPath === resolvedRoot ||
-            resolvedPath.startsWith(resolvedRoot + path.sep)
-          );
-        });
-        if (!insideAllowed) {
-          return {
-            decision: "confirm",
-            reason: `Write path '${safeArgs.path}' is outside allowed write roots`,
-          };
-        }
       }
     }
     return {
@@ -945,7 +1046,7 @@ export function assessToolCall(
   if (
     isLocalHostAction &&
     hostExecutionMode === "ask" &&
-    !READ_ONLY_HOST_AND_MCP_TOOLS.has(name)
+    !isReadOnlyHostOrMcpTool(name, config)
   ) {
     return {
       decision: "confirm",
@@ -966,6 +1067,16 @@ export function assessToolCall(
     const command = typeof safeArgs.command === "string" ? safeArgs.command : "";
     const allowNormalMv = name === "host_run_shell" && hostExecutionMode === "always";
     if (isDangerousShellCommand(command, { allowNormalMv })) {
+      if (
+        name === "host_run_shell" &&
+        hostExecutionMode === "always" &&
+        isSafeScratchRmCommand(command, config?.botWorkspaceRoot)
+      ) {
+        return {
+          decision: "allow",
+          reason: "Safe scratch/workspace cleanup allowed under hostExecutionMode=always",
+        };
+      }
       return {
         decision: "confirm",
         reason: "Shell command requires confirmation",

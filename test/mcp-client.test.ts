@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   DEFAULT_MCP_SERVERS,
   getDefaultMcpServers,
+  inferMcpToolReadOnly,
   toMcpFunctionName,
   parseMcpFunctionName,
   isMcpToolName,
@@ -262,8 +266,10 @@ test("createMcpManager performs stdio handshake, lists Gemini-safe tools, extrac
   assert.equal(getAppState.type, "function");
   assert.equal("additionalProperties" in getAppState.parameters, false);
   assert.equal("minimum" in getAppState.parameters.properties.max_depth, false);
-  // Ensure risk parameter is available for policy engine
-  assert.ok(getAppState.parameters.properties.risk);
+  // Read-only MCP tools omit risk to prevent spurious confirmations, while mutating tools include it
+  assert.equal(getAppState.parameters.properties.risk, undefined);
+  const clickTool = tools.find((d) => d.name === "mcp__kimi_cu__click");
+  assert.ok(clickTool?.parameters?.properties?.risk);
 
   const status = await manager.getServerStatus("kimi-cu", { connect: false });
   assert.equal(status.connected, true);
@@ -385,4 +391,138 @@ test("Phase 4 P0-5: createMcpManager caps oversized MCP text and structuredConte
   assert.ok(resText.length < 13000);
   assert.match(resText, /truncated 18000 MCP chars/);
   assert.equal(res.result.structuredContent._truncated, true);
+});
+
+test("createMcpManager auto-reloads upgraded binary on disk, honors tools/list_changed, and infers readOnly metadata", async (t) => {
+  assert.equal(inferMcpToolReadOnly({ name: "subscribe_system_state" }), true);
+  assert.equal(inferMcpToolReadOnly({ name: "get_app_state" }), true);
+  assert.equal(inferMcpToolReadOnly({ name: "list_custom_views" }), true);
+  assert.equal(inferMcpToolReadOnly({ name: "click" }), false);
+  assert.equal(inferMcpToolReadOnly({ name: "drag_paths" }), false);
+  assert.equal(
+    inferMcpToolReadOnly({ name: "future_action", annotations: { readOnlyHint: true } }),
+    true
+  );
+  assert.equal(
+    inferMcpToolReadOnly({ name: "get_secret", annotations: { destructiveHint: true } }),
+    false
+  );
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gb-mcp-upgrade-"));
+  const scriptPath = path.join(tmpDir, "dynamic-kimicu.mjs");
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const writeMockScript = (mode: "v068" | "v077") => {
+    const code =
+      mode === "v068"
+        ? `
+import readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(o) { process.stdout.write(JSON.stringify(o) + "\\n"); }
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", serverInfo: { name: "kimi-cu", version: "0.6.8" }, capabilities: { tools: {} } } });
+  } else if (msg.method === "tools/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [
+      { name: "click", description: "legacy click", inputSchema: { type: "object", properties: { app: { type: "string" }, element_id: { type: "string" }, snapshot_id: { type: "string" } } } },
+      { name: "js", description: "legacy js repl", inputSchema: { type: "object", properties: { code: { type: "string" } } } }
+    ] } });
+  }
+});
+`
+        : `
+import readline from "node:readline";
+let extraAdded = false;
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+function send(o) { process.stdout.write(JSON.stringify(o) + "\\n"); }
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        serverInfo: { name: "kimi-cu", version: "0.7.7" },
+        instructions: "Prefer subscribe_system_state over polling.",
+        capabilities: {
+          tools: { listChanged: true },
+          experimental: {
+            "kimi-cu-runtime": {
+              input_mode: "adaptive_background_first",
+              moves_real_pointer: false,
+              state_diff: true,
+              supports_rich_paste: true
+            }
+          }
+        }
+      }
+    });
+  } else if (msg.method === "tools/list") {
+    const tools = [
+      { name: "click", description: "grounded click", inputSchema: { type: "object", properties: { app: { type: "string" }, index: { type: "integer" }, snapshot_id: { type: "string" } } } },
+      { name: "paste", description: "background paste", inputSchema: { type: "object", properties: { app: { type: "string" }, text: { type: "string" } } } },
+      { name: "subscribe_system_state", description: "subscribe focus", inputSchema: { type: "object", properties: {} } }
+    ];
+    if (extraAdded) {
+      tools.push({ name: "inspect_displays", description: "live added display inspector", inputSchema: { type: "object", properties: {} } });
+    }
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools } });
+  } else if (msg.method === "tools/call" && msg.params?.name === "paste") {
+    extraAdded = true;
+    send({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} });
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "pasted" }] } });
+  }
+});
+`;
+    fs.writeFileSync(scriptPath, code, "utf8");
+  };
+
+  writeMockScript("v068");
+  const mgr = createMcpManager({
+    platform: "darwin",
+    getServersConfig: () => ({
+      "kimi-cu": {
+        type: "stdio",
+        command: process.execPath,
+        args: [scriptPath],
+      },
+    }),
+  });
+  t.after(() => mgr.closeAll());
+
+  const toolsV1 = await mgr.listGeminiTools(["kimi-cu"]);
+  assert.deepEqual(
+    toolsV1.map((x) => x.name),
+    ["mcp__kimi_cu__click", "mcp__kimi_cu__js"]
+  );
+  const profileV1 = mgr.getServerRuntimeProfile("kimi-cu");
+  assert.equal(profileV1?.serverInfo?.version, "0.6.8");
+
+  // Simulate in-place KimiCU upgrade on disk without calling reconnectServer
+  writeMockScript("v077");
+  const nextTime = new Date(Date.now() + 5000);
+  fs.utimesSync(scriptPath, nextTime, nextTime);
+
+  const toolsV2 = await mgr.listGeminiTools(["kimi-cu"]);
+  assert.deepEqual(
+    toolsV2.map((x) => x.name),
+    ["mcp__kimi_cu__click", "mcp__kimi_cu__paste", "mcp__kimi_cu__subscribe_system_state"]
+  );
+  const profileV2 = mgr.getServerRuntimeProfile("kimi-cu");
+  assert.equal(profileV2?.serverInfo?.version, "0.7.7");
+  assert.equal(profileV2?.runtimeCapabilities?.input_mode, "adaptive_background_first");
+  assert.equal(profileV2?.instructions, "Prefer subscribe_system_state over polling.");
+  assert.equal(
+    profileV2?.tools.find((x) => x.name === "subscribe_system_state")?.readOnly,
+    true
+  );
+
+  // Trigger notifications/tools/list_changed -> next listGeminiTools refreshes automatically
+  await mgr.callTool("mcp__kimi_cu__paste", { app: "Notes", text: "hi" });
+  const toolsV3 = await mgr.listGeminiTools(["kimi-cu"]);
+  assert.ok(toolsV3.some((x) => x.name === "mcp__kimi_cu__inspect_displays"));
 });

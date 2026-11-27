@@ -847,7 +847,9 @@ export function SkillsStoreModal() {
         ? t("skills.mcpUnsupportedSub")
         : t("skills.mcpMissingBinarySub");
     }
-    return t("skills.mcpAddedSub", { count: skill.toolCount });
+    return typeof skill.toolCount === "number" && skill.toolCount > 0
+      ? t("skills.mcpAddedSub", { count: skill.toolCount })
+      : t("skills.mcpAddedDynamicSub");
   };
 
   const skillMatchesSearch = (skill: any, query: string) => {
@@ -4205,6 +4207,22 @@ export function SkillsStoreModal() {
                           ? `${srvErr}${srvCmdText ? ` (${srvCmdText})` : ""}`
                           : t("skills.mcpExecutableReadyDetail", { cmd: srvCmdText })}
                 </div>
+                {srv?.connected && srv.runtimeCapabilities && (
+                  <div id="mcp-cap-chips" className="mcp-cap-chips">
+                    {srv.runtimeCapabilities.input_mode === "adaptive_background_first" && (
+                      <span className="mcp-cap-chip">{t("skills.mcpCapBackgroundFirst")}</span>
+                    )}
+                    {srv.runtimeCapabilities.moves_real_pointer === false && (
+                      <span className="mcp-cap-chip">{t("skills.mcpCapCursorSafe")}</span>
+                    )}
+                    {srv.runtimeCapabilities.state_diff === true && (
+                      <span className="mcp-cap-chip">{t("skills.mcpCapStateDiff")}</span>
+                    )}
+                    {srv.runtimeCapabilities.supports_rich_paste === true && (
+                      <span className="mcp-cap-chip">{t("skills.mcpCapRichPaste")}</span>
+                    )}
+                  </div>
+                )}
                 <div
                   id="mcp-tools-chips"
                   className="mcp-tools-chips"

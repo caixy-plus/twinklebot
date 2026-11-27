@@ -391,11 +391,20 @@ export function createServer({
               0
             )
           : 0;
+        const mcpProfile = s.mcpServerId
+          ? activeMcpManager?.getServerRuntimeProfile?.(s.mcpServerId) || null
+          : null;
         return {
           ...s,
           installed: isBuiltin ? true : installed.includes(s.id),
           removable: !isBuiltin,
           supported: isSkillSupportedOnPlatform(s, hostPlatform),
+          ...(mcpProfile
+            ? {
+                toolCount: mcpProfile.tools.length,
+                serverVersion: mcpProfile.serverInfo?.version || "",
+              }
+            : {}),
           ...(chEntry
             ? {
                 configured,

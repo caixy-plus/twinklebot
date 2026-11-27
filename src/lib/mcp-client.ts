@@ -13,6 +13,120 @@ export interface McpServerConfig {
   env?: Record<string, string>;
 }
 
+export interface McpDiscoveredToolSummary {
+  name: string;
+  fullName: string;
+  description: string;
+  params: string[];
+  required: string[];
+  readOnly: boolean;
+}
+
+export interface McpRuntimeProfile {
+  serverId: string;
+  serverInfo: { name?: string; version?: string } | null;
+  capabilities: Record<string, any>;
+  runtimeCapabilities: Record<string, any> | null;
+  instructions: string;
+  tools: McpDiscoveredToolSummary[];
+}
+
+export interface McpServerStatus {
+  serverId: string;
+  configured: boolean;
+  command?: string;
+  args?: string[];
+  binaryExists: boolean;
+  connected: boolean;
+  unsupportedPlatform?: boolean;
+  binaryUpgraded?: boolean;
+  serverInfo?: { name?: string; version?: string } | null;
+  capabilities?: Record<string, any>;
+  runtimeCapabilities?: Record<string, any> | null;
+  instructions?: string;
+  toolCount?: number;
+  tools?: string[];
+  error?: string;
+}
+
+const KNOWN_READONLY_MCP_TOOLS = new Set([
+  "list_apps",
+  "list_windows",
+  "get_window",
+  "get_app_state",
+  "get_window_state",
+  "subscribe_system_state",
+  "get_system_state",
+  "unsubscribe_system_state",
+]);
+
+const MUTATING_MCP_TOOL_WORDS_RE =
+  /(?:^|_)(click|type|paste|press|key|scroll|drag|set|write|edit|delete|remove|drop|send|submit|pay|launch|open|activate|close|kill|quit|stop|run|exec|eval|js|perform|select|tap|focus|move|resize|clear|reset|toggle|create|update|install|uninstall)(?:$|_)/i;
+
+export function inferMcpToolReadOnly(tool: any): boolean {
+  if (tool?.annotations?.destructiveHint === true) return false;
+  if (typeof tool?.annotations?.readOnlyHint === "boolean") {
+    return tool.annotations.readOnlyHint;
+  }
+  const rawName = String(tool?.name || "").trim();
+  if (!rawName) return false;
+  if (KNOWN_READONLY_MCP_TOOLS.has(rawName)) return true;
+  if (MUTATING_MCP_TOOL_WORDS_RE.test(rawName)) return false;
+  return /^(list|get|read|inspect|describe|check|find|query|search)_/i.test(rawName);
+}
+
+function resolveBinaryPath(command: unknown): string {
+  const cmd = String(command || "").trim();
+  if (!cmd) return "";
+  if (path.isAbsolute(cmd) || cmd.includes("/") || cmd.includes("\\")) {
+    try {
+      fs.accessSync(cmd, fs.constants.X_OK);
+      return cmd;
+    } catch {
+      return "";
+    }
+  }
+  const pathDirs = String(process.env.PATH || "").split(path.delimiter);
+  for (const dir of pathDirs) {
+    if (!dir) continue;
+    const candidate = path.join(dir, cmd);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // continue scanning PATH
+    }
+  }
+  return "";
+}
+
+function computeBinaryFingerprint(command: unknown, args?: readonly unknown[]): string {
+  const parts: string[] = [];
+  const resolved = resolveBinaryPath(command);
+  if (resolved) {
+    try {
+      const st = fs.statSync(resolved);
+      parts.push(`${resolved}:${Math.trunc(st.mtimeMs)}:${st.size}`);
+    } catch {
+      parts.push(resolved);
+    }
+  }
+  if (Array.isArray(args)) {
+    const firstArg = typeof args[0] === "string" ? args[0].trim() : "";
+    if (firstArg && !firstArg.startsWith("-")) {
+      try {
+        const st = fs.statSync(firstArg);
+        if (st.isFile()) {
+          parts.push(`arg0:${Math.trunc(st.mtimeMs)}:${st.size}`);
+        }
+      } catch {
+        // ignore non-file argument
+      }
+    }
+  }
+  return parts.join("|");
+}
+
 export function isKimiCuSupportedPlatform(platform: string = process.platform): boolean {
   return platform === "darwin";
 }
@@ -214,7 +328,10 @@ function createStdioSession(
   let closed = false;
   let stderrTail = "";
   let serverInfo: any = null;
+  let serverCapabilities: Record<string, any> = {};
+  let serverInstructions = "";
   let toolsCache: any[] | null = null;
+  let toolsStale = false;
   let connectPromise: Promise<void> | null = null;
   const pending = new Map<number, PendingJsonRpc>();
 
@@ -333,6 +450,9 @@ function createStdioSession(
 
       stderrTail = "";
       toolsCache = null;
+      toolsStale = false;
+      serverCapabilities = {};
+      serverInstructions = "";
 
       const proc = spawnFn(command, args, {
         stdio: ["pipe", "pipe", "pipe"],
@@ -360,6 +480,7 @@ function createStdioSession(
           child = null;
           rl = null;
           toolsCache = null;
+          toolsStale = false;
           connectPromise = null;
         }
       });
@@ -378,7 +499,12 @@ function createStdioSession(
         } catch {
           return;
         }
-        if (msg.id === undefined || msg.id === null) return;
+        if (msg.id === undefined || msg.id === null) {
+          if (msg.method === "notifications/tools/list_changed") {
+            toolsStale = true;
+          }
+          return;
+        }
         const entry = pending.get(msg.id);
         if (!entry) return;
         clearTimeout(entry.timer);
@@ -405,12 +531,19 @@ function createStdioSession(
           12_000
         );
         serverInfo = initRes?.serverInfo || null;
+        serverCapabilities =
+          initRes?.capabilities && typeof initRes.capabilities === "object"
+            ? initRes.capabilities
+            : {};
+        serverInstructions =
+          typeof initRes?.instructions === "string" ? initRes.instructions.trim() : "";
         sendJson({
           jsonrpc: "2.0",
           method: "notifications/initialized",
         });
         const listRes = await request("tools/list", {}, 12_000);
         toolsCache = Array.isArray(listRes?.tools) ? listRes.tools : [];
+        toolsStale = false;
       } catch (err) {
         cleanupChild();
         throw err;
@@ -424,6 +557,41 @@ function createStdioSession(
     }
   }
 
+  function buildRuntimeProfile(): McpRuntimeProfile {
+    const tools = (toolsCache || [])
+      .filter((t) => Boolean(t?.name))
+      .map((t) => {
+        const props =
+          t?.inputSchema?.properties && typeof t.inputSchema.properties === "object"
+            ? Object.keys(t.inputSchema.properties)
+            : [];
+        const req = Array.isArray(t?.inputSchema?.required)
+          ? t.inputSchema.required.map(String)
+          : [];
+        return {
+          name: String(t.name),
+          fullName: toMcpFunctionName(serverId, String(t.name)),
+          description: String(t.description || ""),
+          params: props,
+          required: req,
+          readOnly: inferMcpToolReadOnly(t),
+        };
+      });
+    const exp = serverCapabilities?.experimental;
+    const runtimeCapabilities =
+      exp && typeof exp === "object" && exp["kimi-cu-runtime"] && typeof exp["kimi-cu-runtime"] === "object"
+        ? exp["kimi-cu-runtime"]
+        : null;
+    return {
+      serverId,
+      serverInfo,
+      capabilities: serverCapabilities,
+      runtimeCapabilities,
+      instructions: serverInstructions,
+      tools,
+    };
+  }
+
   return {
     isConnected(): boolean {
       return Boolean(child && !child.killed && child.exitCode === null && toolsCache);
@@ -431,11 +599,25 @@ function createStdioSession(
     getServerInfo() {
       return serverInfo;
     },
+    getCapabilities() {
+      return serverCapabilities;
+    },
+    getInstructions() {
+      return serverInstructions;
+    },
+    getRuntimeProfile(): McpRuntimeProfile {
+      return buildRuntimeProfile();
+    },
     getCachedTools(): any[] {
       return toolsCache || [];
     },
     async listTools(): Promise<any[]> {
       await ensureConnected();
+      if (toolsStale) {
+        const listRes = await request("tools/list", {}, 12_000);
+        toolsCache = Array.isArray(listRes?.tools) ? listRes.tools : [];
+        toolsStale = false;
+      }
       return toolsCache || [];
     },
     async callTool(
@@ -575,6 +757,7 @@ export function createMcpManager({
       command: cfg?.command || "",
       args: Array.isArray(cfg?.args) ? cfg.args : [],
       env: cfg?.env || {},
+      binaryFingerprint: computeBinaryFingerprint(cfg?.command, cfg?.args),
     });
   }
 
@@ -603,6 +786,17 @@ export function createMcpManager({
       return resolveConfigs();
     },
 
+    getServerRuntimeProfile(serverId: string): McpRuntimeProfile | null {
+      const configs = resolveConfigs();
+      const cfg = configs[serverId];
+      if (!cfg) return null;
+      const existing = sessions.get(serverId);
+      if (!existing || existing.sig !== configSignature(cfg) || !existing.session.isConnected()) {
+        return null;
+      }
+      return existing.session.getRuntimeProfile();
+    },
+
     async listGeminiTools(serverIds: string[] = []) {
       const declarations: any[] = [];
       for (const serverId of serverIds) {
@@ -612,12 +806,13 @@ export function createMcpManager({
           if (!t?.name) continue;
           const params = sanitizeMcpSchemaForGemini(t.inputSchema);
           if (!params.properties) params.properties = {};
-          if (!params.properties.risk) {
+          const isReadOnly = inferMcpToolReadOnly(t);
+          if (!isReadOnly && !params.properties.risk) {
             params.properties.risk = {
               type: "string",
               enum: ["low", "medium", "high"],
               description:
-                "Estimated risk level on user's Mac ('high' for sending messages, deleting files, payments, or submitting forms).",
+                "Optional (OMIT or use 'low'/'medium' for routine Mac app clicking, typing, searching, saving, or user-requested actions). Set 'high' ONLY for the final irreversible action: sending a message to someone, real payment/order, or permanent deletion.",
             };
           }
           declarations.push({
@@ -645,7 +840,10 @@ export function createMcpManager({
       return session.callTool(parsed.toolName, args, options);
     },
 
-    async getServerStatus(serverId: string, { connect = false }: { connect?: boolean } = {}) {
+    async getServerStatus(
+      serverId: string,
+      { connect = false }: { connect?: boolean } = {}
+    ): Promise<McpServerStatus> {
       const configs = resolveConfigs();
       const cfg = configs[serverId];
       if (!cfg) {
@@ -694,9 +892,13 @@ export function createMcpManager({
       }
 
       if (!connect) {
-        const existing = sessions.get(serverId)?.session;
-        if (existing && existing.isConnected()) {
-          const tools = existing.getCachedTools();
+        const existingEntry = sessions.get(serverId);
+        const existing = existingEntry?.session;
+        const upToDate =
+          Boolean(existing && existing.isConnected()) &&
+          existingEntry?.sig === configSignature(cfg);
+        if (upToDate && existing) {
+          const profile = existing.getRuntimeProfile();
           return {
             serverId,
             configured: true,
@@ -704,9 +906,12 @@ export function createMcpManager({
             args: Array.isArray(cfg.args) ? [...cfg.args] : [],
             binaryExists: true,
             connected: true,
-            serverInfo: existing.getServerInfo(),
-            toolCount: tools.length,
-            tools: tools.map((t) => t.name),
+            serverInfo: profile.serverInfo,
+            capabilities: profile.capabilities,
+            runtimeCapabilities: profile.runtimeCapabilities,
+            ...(profile.instructions ? { instructions: profile.instructions } : {}),
+            toolCount: profile.tools.length,
+            tools: profile.tools.map((t) => t.name),
           };
         }
         return {
@@ -716,6 +921,7 @@ export function createMcpManager({
           args: Array.isArray(cfg.args) ? [...cfg.args] : [],
           binaryExists: true,
           connected: false,
+          ...(existing && existing.isConnected() ? { binaryUpgraded: true } : {}),
           toolCount: 0,
           tools: [],
         };
@@ -723,7 +929,8 @@ export function createMcpManager({
 
       try {
         const session = await getOrCreateSession(serverId);
-        const tools = await session.listTools();
+        await session.listTools();
+        const profile = session.getRuntimeProfile();
         return {
           serverId,
           configured: true,
@@ -731,9 +938,12 @@ export function createMcpManager({
           args: Array.isArray(cfg.args) ? [...cfg.args] : [],
           binaryExists: true,
           connected: true,
-          serverInfo: session.getServerInfo(),
-          toolCount: tools.length,
-          tools: tools.map((t) => t.name),
+          serverInfo: profile.serverInfo,
+          capabilities: profile.capabilities,
+          runtimeCapabilities: profile.runtimeCapabilities,
+          ...(profile.instructions ? { instructions: profile.instructions } : {}),
+          toolCount: profile.tools.length,
+          tools: profile.tools.map((t) => t.name),
         };
       } catch (err: any) {
         return {

@@ -241,14 +241,39 @@ export function translateToolHumanSummary(
         : "正在向 Mac 软件窗口后台输入内容";
     }
     if (sub === "press_key") {
+      const k = args?.keys || args?.key;
       return isEn
-        ? `Sending key to Mac window${args?.key ? ` (${args.key})` : ""}`
-        : `正在向 Mac 窗口发送按键${args?.key ? `（${args.key}）` : ""}`;
+        ? `Sending key to Mac window${k ? ` (${k})` : ""}`
+        : `正在向 Mac 窗口发送按键${k ? `（${k}）` : ""}`;
     }
     if (sub === "scroll") {
       return isEn ? "Scrolling Mac window in background" : "正在后台滚动 Mac 软件窗口";
     }
-    if (sub === "js") {
+    if (sub === "drag" || sub === "drag_paths") {
+      return isEn
+        ? "Dragging inside Mac window in background"
+        : "正在后台拖拽 Mac 软件界面";
+    }
+    if (sub === "select_text") {
+      return isEn
+        ? "Selecting text in Mac window"
+        : "正在选中 Mac 软件窗口文本";
+    }
+    if (
+      sub === "subscribe_system_state" ||
+      sub === "get_system_state" ||
+      sub === "unsubscribe_system_state"
+    ) {
+      return isEn
+        ? "Observing macOS system & focus state"
+        : "正在观测 Mac 系统与窗口焦点状态";
+    }
+    if (sub === "debug_tap") {
+      return isEn
+        ? "Inspecting Mac app event tap"
+        : "正在调试 Mac 应用事件通道";
+    }
+    if (sub === "js" || sub === "js_reset") {
       return isEn
         ? `Running JS in Mac app webview${args?.window_id ? ` (#${args.window_id})` : ""}`
         : `正在操控 Mac 应用内嵌页面${args?.window_id ? `（#${args.window_id}）` : ""}`;

@@ -54,6 +54,10 @@ test("policy splits Host Restricted Mode vs Sandbox Full-Privilege Mode and bloc
   );
   assert.equal(
     assessToolCall("write_file", { path: "/opt/app/config.json", content: "{}" }, { sandboxMode: "full", writeRoots: ["/tmp"] }).decision,
+    "allow"
+  );
+  assert.equal(
+    assessToolCall("write_file", { path: "/opt/app/config.json", content: "{}" }, { sandboxMode: "restricted", writeRoots: ["/tmp"] }).decision,
     "confirm"
   );
 

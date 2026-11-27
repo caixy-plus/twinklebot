@@ -11,7 +11,7 @@ import { startMockLlmServer } from "../helpers/e2e-protocol-fixtures.js";
 import { createSuiteCollector, PROJECT_ROOT } from "../helpers/e2e-report-collector.js";
 import { createStore } from "../../src/store/index.js";
 
-function writeCliSettings(dataDir: string, openaiBaseUrl: string) {
+function writeCliSettings(dataDir: string, openaiBaseUrl: string, extra: Record<string, unknown> = {}) {
   fs.writeFileSync(
     path.join(dataDir, "settings.json"),
     JSON.stringify({
@@ -36,6 +36,7 @@ function writeCliSettings(dataDir: string, openaiBaseUrl: string) {
           enabled: true,
         },
       ],
+      ...extra,
     }),
     "utf8"
   );
@@ -135,7 +136,7 @@ test("P2 Suite 9: CLI Tool (Providers / Interactive Approval / Max-Steps & Doubl
       t.after(() => fs.rmSync(tmpData, { recursive: true, force: true }));
       const mockLlm = await startMockLlmServer();
       t.after(() => mockLlm.close());
-      writeCliSettings(tmpData, mockLlm.openaiBaseUrl);
+      writeCliSettings(tmpData, mockLlm.openaiBaseUrl, { policy: { askRules: [{ tool: "browser_click", pattern: "" }] } });
 
       let actionCalled = 0;
       const mockExecSrv = http.createServer((req, res) => {
@@ -156,7 +157,7 @@ test("P2 Suite 9: CLI Tool (Providers / Interactive Approval / Max-Steps & Doubl
         if (!Array.isArray(body?.tools) || body.tools.length === 0) return { text: "审批任务" };
         step += 1;
         if (step === 1) {
-          return { toolCalls: [{ id: "cli-apv-1", name: "browser_click", args: { ref: "e1", risk: "high" } }] };
+          return { toolCalls: [{ id: "cli-apv-1", name: "browser_click", args: { ref: "e1", risk: "low" } }] };
         }
         return { text: "CLI审批放行成功" };
       });

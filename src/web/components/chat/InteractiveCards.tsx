@@ -295,9 +295,19 @@ export function ApprovalCard({
   item: Extract<StreamItem, { kind: "approval" }>;
 }) {
   const { locale, t } = useI18n();
+  const rawPath = typeof item.args?.path === "string" ? item.args.path.trim() : "";
+  const suggestedPathPattern = (() => {
+    if (!rawPath) return "";
+    const normalized = rawPath.replace(/\\/g, "/");
+    const lastSlash = normalized.lastIndexOf("/");
+    if (lastSlash > 0) {
+      return rawPath.slice(0, lastSlash + 1);
+    }
+    return rawPath;
+  })();
   const defaultPattern =
     extractSuggestedCommandPattern(item.args?.command) ||
-    item.args?.path ||
+    suggestedPathPattern ||
     item.args?.url ||
     item.args?.app ||
     item.args?.target ||

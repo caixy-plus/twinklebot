@@ -58,16 +58,23 @@ test("TOOL_DECLARATIONS has expected shape and covers all 21 action tools", () =
     "browser_upload_file",
   ];
 
-  const riskFreeReadOnlyTools = new Set([
+  const riskFreeSandboxTools = new Set([
     "screenshot",
     "list_windows",
     "focus_window",
     "scroll",
+    "drag",
+    "run_shell",
     "read_file",
+    "write_file",
+    "edit_file",
+    "open_url",
     "browser_snapshot",
     "browser_tabs",
     "browser_scroll",
     "browser_wait",
+    "browser_select",
+    "browser_upload_file",
   ]);
 
   const toolMap = new Map();
@@ -78,12 +85,12 @@ test("TOOL_DECLARATIONS has expected shape and covers all 21 action tools", () =
     assert.equal(decl.parameters.type, "object");
     assert.ok(decl.parameters.properties, "parameters must have properties");
     const props = decl.parameters.properties as Record<string, any>;
-    if (riskFreeReadOnlyTools.has(decl.name)) {
+    if (riskFreeSandboxTools.has(decl.name)) {
       assert.equal(props.risk, undefined, `${decl.name} should omit risk property`);
     } else {
       assert.ok(props.risk, `${decl.name} must define risk property`);
       assert.equal(props.risk.type, "string");
-      assert.deepEqual(props.risk.enum, ["low", "high"]);
+      assert.deepEqual(props.risk.enum, ["low", "medium", "high"]);
     }
     assert.ok(Array.isArray(decl.parameters.required));
     toolMap.set(decl.name, decl);

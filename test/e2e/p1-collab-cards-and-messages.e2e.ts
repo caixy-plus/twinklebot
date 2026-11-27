@@ -533,6 +533,17 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       assert.match(cancelResult, /cancel|取消|false|rejected/i);
 
       // 2. ApprovalCard inline custom rule editor
+      await fetch(`${ws.baseUrl}/api/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          policy: {
+            autoAudit: true,
+            askRules: [{ id: "e2e-inline-edit", tool: "browser_click", pattern: "", label: "e2e inline edit" }],
+            allowRules: [],
+          },
+        }),
+      });
       step = 0;
       ws.mockLlm.setHandler(async ({ body }) => {
         const s = JSON.stringify(body?.messages || "");
@@ -564,6 +575,11 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       );
       const pol = ws.store.readSettings().policy;
       assert.ok((pol?.allowRules || []).some((r: any) => r.pattern === "custom-rule-cmd"));
+      await fetch(`${ws.baseUrl}/api/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ policy: { autoAudit: true, askRules: [], allowRules: [] } }),
+      }).catch(() => {});
       ws.mockLlm.setHandler(undefined);
     },
     { getChrome: () => chrome }

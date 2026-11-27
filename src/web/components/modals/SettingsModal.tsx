@@ -346,6 +346,7 @@ export function SettingsModal() {
   const settings = useStore((s) => s.settings);
   const spellcheckEnabled = useStore((s) => s.spellcheckEnabled);
   const diagnostics = useStore((s) => s.diagnostics);
+  const mcpStatusByServer = useStore((s) => s.mcpStatusByServer);
   const computerStatus = useStore((s) => s.computerStatus);
   const computerDisplays = useStore((s) => s.computerDisplays);
   const vaultItems = useStore((s) => s.vaultItems);
@@ -900,19 +901,44 @@ export function SettingsModal() {
     usage: t("settings.tabUsage"),
     updates: t("settings.tabUpdates"),
   };
-  const permissionRuleTools = [
+  const basePermissionRuleTools: readonly [string, string][] = [
     ["*", t("settings.permToolAny")],
     ["host_run_shell", t("settings.permToolHostShell")],
     ["host_open", t("settings.permToolHostOpen")],
     ["host_write_file", t("settings.permToolHostWrite")],
+    ["host_edit_file", t("settings.permToolHostEdit")],
+    ["host_record_screen", t("settings.permToolHostRecord")],
     ["mcp__kimi_cu__click", t("settings.permToolMacClick")],
     ["mcp__kimi_cu__type_text", t("settings.permToolMacType")],
+    ["mcp__kimi_cu__paste", t("settings.permToolMacPaste")],
+    ["mcp__kimi_cu__press_key", t("settings.permToolMacPressKey")],
     ["mcp__kimi_cu__js", t("settings.permToolMacJs")],
     ["run_shell", t("settings.permToolBotShell")],
     ["write_file", t("settings.permToolBotWrite")],
-    ["open_url", "open_url"],
+    ["edit_file", t("settings.permToolBotEdit")],
+    ["browser_click", t("settings.permToolBotBrowserClick")],
+    ["browser_type", t("settings.permToolBotBrowserType")],
+    ["browser_upload_file", t("settings.permToolBotUpload")],
     ["click", "click"],
-  ] as const;
+    ["type_text", t("settings.permToolBotType")],
+    ["key", t("settings.permToolBotKey")],
+    ["open_url", "open_url"],
+  ];
+  const liveKimiTools = Array.isArray(mcpStatusByServer?.["kimi-cu"]?.tools)
+    ? mcpStatusByServer["kimi-cu"].tools
+    : [];
+  const seenRuleTools = new Set(basePermissionRuleTools.map(([tool]) => tool));
+  const dynamicKimiRuleTools: [string, string][] = [];
+  for (const rawTool of liveKimiTools) {
+    const fnName = `mcp__kimi_cu__${String(rawTool || "").trim()}`;
+    if (!rawTool || seenRuleTools.has(fnName)) continue;
+    seenRuleTools.add(fnName);
+    dynamicKimiRuleTools.push([fnName, `${fnName} (KimiCU)`]);
+  }
+  const permissionRuleTools: readonly [string, string][] = [
+    ...basePermissionRuleTools,
+    ...dynamicKimiRuleTools,
+  ];
 
   // Profile local state
   const profile = settings?.profile || { name: "", color: "slate" };
@@ -2345,6 +2371,10 @@ export function SettingsModal() {
                   {label}
                 </option>
               ))}
+              {editRuleTool &&
+                !permissionRuleTools.some(([val]) => val === editRuleTool) && (
+                  <option value={editRuleTool}>{editRuleTool}</option>
+                )}
             </select>
           </label>
           <label className="field-group custom-skill-slug-field">

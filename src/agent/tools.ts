@@ -4,9 +4,9 @@ import { isBrowserAutomationTool } from "../shared/browser-automation.js";
 
 const RISK_PROPERTY = {
   type: "string",
-  enum: ["low", "high"],
+  enum: ["low", "medium", "high"],
   description:
-    "Always use 'low' for normal clicks, navigation, filling drafts, or routine sandbox operations. Set to 'high' ONLY when the action causes irreversible external side effects: paying, submitting real orders, sending messages/emails, publishing public posts, or deleting important online/local data.",
+    "Optional (OMIT for routine actions). Normal clicks, typing, navigation, login, search, saving, refreshing, and sandbox UI steps are auto-allowed — omit this field or use 'low'/'medium'. Reserve 'high' ONLY for the final irreversible real-world action (real-money checkout/payment, sending an outbound email/message, publishing publicly, or permanent irreplaceable deletion).",
 };
 
 const SECRET_PLACEHOLDER_RE = /\{\{secret:(cred_[a-f0-9]+)\}\}/g;
@@ -227,7 +227,6 @@ export const TOOL_DECLARATIONS = [
           type: "integer",
           description: "End Y coordinate in screenshot pixel space.",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["x1", "y1", "x2", "y2"],
     },
@@ -272,7 +271,6 @@ export const TOOL_DECLARATIONS = [
           type: "number",
           description: "Timeout in seconds (default: 120).",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["command"],
     },
@@ -316,7 +314,6 @@ export const TOOL_DECLARATIONS = [
           type: "string",
           description: "Content to write to the file.",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["path", "content"],
     },
@@ -349,7 +346,6 @@ export const TOOL_DECLARATIONS = [
           type: "boolean",
           description: "If true, replace all occurrences of `target` instead of requiring a unique match.",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["path"],
     },
@@ -365,7 +361,6 @@ export const TOOL_DECLARATIONS = [
           type: "string",
           description: "HTTP, HTTPS, or workspace-scoped `file://` URL to open.",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["url"],
     },
@@ -546,7 +541,6 @@ export const TOOL_DECLARATIONS = [
           type: "string",
           description: "Visible option text label to select (used when `value` is omitted or does not match).",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["ref"],
     },
@@ -568,7 +562,6 @@ export const TOOL_DECLARATIONS = [
           items: { type: "string" },
           description: "Array of absolute file paths inside Bot's Ubuntu computer to upload.",
         },
-        risk: RISK_PROPERTY,
       },
       required: ["ref", "paths"],
     },
