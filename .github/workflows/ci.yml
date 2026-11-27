@@ -5,9 +5,23 @@ on:
     branches:
       - main
       - "feat/**"
+    paths-ignore:
+      - "README.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "LICENSE"
+      - "docs/**"
+      - ".agents/**"
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - "README.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "LICENSE"
+      - "docs/**"
+      - ".agents/**"
 
 permissions:
   contents: read
