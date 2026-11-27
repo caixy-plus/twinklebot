@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readWebSourceTs, renderFullAppHtml } from "./helpers/react-test-helpers.js";
+import { readWebSourceTs, renderAppHtml, renderFullAppHtml } from "./helpers/react-test-helpers.js";
 
 const html = renderFullAppHtml();
 const appJs = readWebSourceTs();
@@ -79,4 +79,97 @@ test("skills store supports optional platform MCP skill (kimi-cu) manual add, co
   assert.ok(appJs.includes("hostComputer"));
   assert.ok(appJs.includes("mcpServers"));
   assert.ok(appJs.includes("mcp__kimi_cu__"));
+});
+
+test("skills store renders kimi-cu as macOS-only disabled row sorted after supported skills on Windows", () => {
+  const baseCatalog = {
+    office: [
+      { id: "qqmail", name: "QQ 邮箱", desc: "收发邮件", installed: true, removable: true },
+      { id: "custom-mail", name: "通用邮箱", desc: "收发邮件", installed: true, removable: true },
+    ],
+    platform: [
+      {
+        id: "kimi-cu",
+        name: "KimiCU 桌面软件操控",
+        desc: "操控 Mac 软件",
+        category: "platform",
+        builtin: false,
+        removable: true,
+        supportedPlatforms: ["darwin"],
+        mcpServerId: "kimi-cu",
+        installed: false,
+        supported: false,
+      },
+      {
+        id: "feishu-bot",
+        name: "飞书机器人",
+        desc: "飞书对话渠道",
+        category: "platform",
+        builtin: false,
+        removable: true,
+        installed: false,
+        supported: true,
+      },
+      {
+        id: "telegram-bot",
+        name: "Telegram 机器人",
+        desc: "Telegram 对话渠道",
+        category: "platform",
+        builtin: false,
+        removable: true,
+        installed: false,
+        supported: true,
+      },
+    ],
+  };
+
+  const winHtml = renderAppHtml({
+    appsModalOpen: true,
+    skillsView: "store",
+    settings: {
+      hostPlatform: "win32",
+      hostComputer: { executionMode: "always" },
+      skillsCatalog: baseCatalog,
+      installedSkills: ["qqmail", "custom-mail"],
+      mailAccounts: [],
+    },
+  });
+
+  assert.ok(winHtml.includes('data-skill-id="kimi-cu"'));
+  assert.ok(winHtml.includes('data-skill-unsupported="true"'));
+  assert.ok(winHtml.includes("is-unsupported"));
+  assert.ok(winHtml.includes('title="该技能仅支持 macOS 宿主机，当前系统暂不支持添加"'));
+  assert.ok(winHtml.includes("当前系统暂不支持"));
+  const winKimiSlice = winHtml.slice(winHtml.indexOf('data-skill-id="kimi-cu"'));
+  assert.ok(winKimiSlice.includes('class="skill-pill-btn is-unsupported"'));
+  assert.ok(winKimiSlice.includes('disabled=""'));
+  assert.ok(winKimiSlice.includes(">添加</button>"));
+  assert.ok(
+    winHtml.indexOf('data-skill-id="feishu-bot"') < winHtml.indexOf('data-skill-id="kimi-cu"'),
+    "supported platform skills should appear before unsupported kimi-cu on Windows"
+  );
+
+  const macHtml = renderAppHtml({
+    appsModalOpen: true,
+    skillsView: "store",
+    settings: {
+      hostPlatform: "darwin",
+      hostComputer: { executionMode: "always" },
+      skillsCatalog: {
+        ...baseCatalog,
+        platform: baseCatalog.platform.map((s) =>
+          s.id === "kimi-cu" ? { ...s, supported: true } : s
+        ),
+      },
+      installedSkills: ["qqmail", "custom-mail"],
+      mailAccounts: [],
+    },
+  });
+
+  assert.ok(!macHtml.includes('data-skill-unsupported="true"'));
+  const macKimiSlice = macHtml.slice(
+    macHtml.indexOf('data-skill-id="kimi-cu"'),
+    macHtml.indexOf('data-skill-id="feishu-bot"')
+  );
+  assert.ok(macKimiSlice.includes(">添加</button>"));
 });

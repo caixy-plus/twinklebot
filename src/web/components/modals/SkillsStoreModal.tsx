@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { getLocalizedSkillMeta, inferMailServerPreset } from "/skills-catalog.js";
+import {
+  getLocalizedSkillMeta,
+  inferMailServerPreset,
+  isSkillSupportedOnPlatform,
+} from "/skills-catalog.js";
 import {
   closeAppsModal,
   commitSettingsPatch,
@@ -150,9 +154,16 @@ export function SkillsStoreModal() {
   const lanNodeOffline = useStore((s) => s.lanNodeOffline);
   const accountsState = useStore((s) => s.accountsState);
   const hostPlatform = resolveHostPlatformHint(
-    computerStatus?.hostComputer?.platform || diagnostics?.hostComputer?.platform
+    settings?.hostPlatform ||
+      computerStatus?.hostComputer?.platform ||
+      diagnostics?.hostComputer?.platform
   );
   const isNonMacHost = Boolean(hostPlatform && hostPlatform !== "darwin");
+  const isSkillUnsupported = (skill: any): boolean => {
+    if (!skill) return false;
+    if (skill.supported === false) return true;
+    return !isSkillSupportedOnPlatform(skill, hostPlatform);
+  };
   const defaultKimiConfig = getDefaultKimiCuConfig(hostPlatform);
   const remoteAccountOffline = isRemoteAccountOffline({
     accountsState,
@@ -721,6 +732,11 @@ export function SkillsStoreModal() {
   };
 
   const installSkill = async (skillId: string) => {
+    const targetSkill = getConfigurableSkillFromSettings(getState().settings, skillId);
+    if (targetSkill && isSkillUnsupported(targetSkill)) {
+      showToast(t("skills.unsupportedPlatformToast"));
+      return;
+    }
     try {
       const res = await apiJson(`/api/skills/${encodeURIComponent(skillId)}/install`, {
         method: "POST",
@@ -811,7 +827,9 @@ export function SkillsStoreModal() {
       return t("skills.toolCountSub", { count: skill.toolCount, desc: loc.desc });
     }
     if (!skill.installed) {
-      return t("skills.manualEnableSub", { desc: loc.desc });
+      return isSkillUnsupported(skill)
+        ? t("skills.macOnlyStoreSub", { desc: loc.desc })
+        : t("skills.manualEnableSub", { desc: loc.desc });
     }
     const srv = mcpStatusByServer?.[skill.mcpServerId || skill.id];
     if (srv?.connected) {
@@ -820,6 +838,9 @@ export function SkillsStoreModal() {
         ver,
         count: srv.toolCount || skill.toolCount,
       });
+    }
+    if (isSkillUnsupported(skill)) {
+      return t("skills.mcpUnsupportedSub");
     }
     if (srv?.binaryExists === false || srv?.binaryInstalled === false) {
       return isNonMacHost || srv?.unsupportedPlatform
@@ -853,10 +874,15 @@ export function SkillsStoreModal() {
     skillFilter === "all" || skillFilter === "office"
       ? catalog.office.filter((s: any) => skillMatchesSearch(s, searchTrim))
       : [];
-  const filteredPlatform =
+  const filteredPlatform = (
     skillFilter === "all" || skillFilter === "platform"
       ? visiblePlatform.filter((s: any) => skillMatchesSearch(s, searchTrim))
-      : [];
+      : []
+  ).sort((a: any, b: any) => {
+    const aUnsup = !a.installed && isSkillUnsupported(a) ? 1 : 0;
+    const bUnsup = !b.installed && isSkillUnsupported(b) ? 1 : 0;
+    return aUnsup - bUnsup;
+  });
 
   // Custom Skills calculations
   const enabledCustomCount = customSkills.filter((s: any) => s.enabled !== false).length;
@@ -2192,43 +2218,66 @@ export function SkillsStoreModal() {
                       <h4>{t("skills.filterPlatform")}</h4>
                     </div>
                     <div className="skills-grid">
-                      {filteredPlatform.map((s: any) => (
-                        <div key={s.id} className="skill-row">
-                          <div className="skill-row-icon" aria-hidden="true">
-                            <SkillIconGraphic skillId={s.id} rawIcon={s.icon} />
-                          </div>
-                          <div className="skill-row-info">
-                            <div className="skill-row-name">
-                              {getLocalizedSkillMeta(s, locale).name}
-                              {renderChannelPendingBadge(s.id, s)}
+                      {filteredPlatform.map((s: any) => {
+                        const unsupported = isSkillUnsupported(s);
+                        const unavailableToAdd = !s.installed && unsupported;
+                        return (
+                          <div
+                            key={s.id}
+                            className={`skill-row${unavailableToAdd ? " is-unsupported" : ""}`}
+                            data-skill-id={s.id}
+                            data-skill-unsupported={unsupported ? "true" : undefined}
+                          >
+                            <div className="skill-row-icon" aria-hidden="true">
+                              <SkillIconGraphic skillId={s.id} rawIcon={s.icon} />
                             </div>
-                            <div className="skill-row-desc">{platformSkillSubtitle(s)}</div>
-                          </div>
-                          {s.removable ? (
-                            s.installed ? (
-                              <button
-                                type="button"
-                                className="skill-pill-btn"
-                                onClick={() =>
-                                  openAppsModal("detail", { skillId: s.id, from: "store" })
-                                }
-                              >
-                                {t("skills.configureBtn")}
-                              </button>
+                            <div className="skill-row-info">
+                              <div className="skill-row-name">
+                                {getLocalizedSkillMeta(s, locale).name}
+                                {renderChannelPendingBadge(s.id, s)}
+                              </div>
+                              <div className="skill-row-desc">{platformSkillSubtitle(s)}</div>
+                            </div>
+                            {s.removable ? (
+                              s.installed ? (
+                                <button
+                                  type="button"
+                                  className="skill-pill-btn"
+                                  onClick={() =>
+                                    openAppsModal("detail", { skillId: s.id, from: "store" })
+                                  }
+                                >
+                                  {t("skills.configureBtn")}
+                                </button>
+                              ) : unsupported ? (
+                                <span
+                                  className="skill-pill-disabled-wrap"
+                                  title={t("skills.macOnlyTooltip")}
+                                >
+                                  <button
+                                    type="button"
+                                    className="skill-pill-btn is-unsupported"
+                                    disabled
+                                    aria-disabled="true"
+                                  >
+                                    {t("skills.addBtn")}
+                                  </button>
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="skill-pill-btn is-primary"
+                                  onClick={() => installSkill(s.id)}
+                                >
+                                  {t("skills.addBtn")}
+                                </button>
+                              )
                             ) : (
-                              <button
-                                type="button"
-                                className="skill-pill-btn is-primary"
-                                onClick={() => installSkill(s.id)}
-                              >
-                                {t("skills.addBtn")}
-                              </button>
-                            )
-                          ) : (
-                            <span className="skill-builtin-tag">{t("skills.builtinTag")}</span>
-                          )}
-                        </div>
-                      ))}
+                              <span className="skill-builtin-tag">{t("skills.builtinTag")}</span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </section>
                 )}

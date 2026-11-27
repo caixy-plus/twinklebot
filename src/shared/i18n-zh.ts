@@ -1128,6 +1128,8 @@ export const ZH_CN_MESSAGES = {
   "skills.filterAll": "全部",
   "skills.filterOffice": "办公",
   "skills.filterPlatform": "平台技能",
+  "skills.macOnlyStoreSub": "当前系统暂不支持 · 仅限 macOS 宿主机使用（{desc}）",
+  "skills.macOnlyTooltip": "该技能仅支持 macOS 宿主机，当前系统暂不支持添加",
   "skills.mailAccountStatsPart": " · 收件箱 {count} 封{unseenPart}",
   "skills.mailAccountTestFailFeedback": "❌ {email} 测试失败：{error}",
   "skills.mailAccountTestOkFeedback": "✓ {email} 连通正常（{ms}ms）：收件箱共 {count} 封{unseenInfo}。",
@@ -1260,6 +1262,7 @@ export const ZH_CN_MESSAGES = {
   "skills.testShortBtn": "测试",
   "skills.title": "技能商店",
   "skills.toolCountSub": "{count} 项工具 · {desc}",
+  "skills.unsupportedPlatformToast": "该技能仅支持 macOS，当前系统暂不支持添加",
 
   // Feishu & Telegram channel bots
   "channel.accountsListAria": "机器人实例列表",

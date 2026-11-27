@@ -13,6 +13,7 @@ export interface SkillMeta {
   category: "office" | "platform" | "builtin";
   builtin?: boolean;
   removable?: boolean;
+  supportedPlatforms?: readonly string[];
   mcpServerId?: string;
   toolCount?: number;
 }
@@ -122,6 +123,7 @@ export const PLATFORM_SKILLS: SkillMeta[] = [
     category: "platform",
     builtin: false,
     removable: true,
+    supportedPlatforms: ["darwin"],
     mcpServerId: "kimi-cu",
     toolCount: 20,
   },
@@ -218,6 +220,33 @@ export function isHiddenBuiltinSkill(skillOrId: unknown): boolean {
 
 export function isInstallableSkill(id: unknown): boolean {
   return INSTALLABLE_IDS.has(String(id || ""));
+}
+
+export function isSkillSupportedOnPlatform(
+  skillOrId: { id?: string; supportedPlatforms?: readonly string[] } | string | null | undefined,
+  platform?: string | null
+): boolean {
+  const meta =
+    typeof skillOrId === "string"
+      ? getSkillMeta(skillOrId)
+      : skillOrId && typeof skillOrId === "object"
+        ? Array.isArray(skillOrId.supportedPlatforms)
+          ? skillOrId
+          : skillOrId.id
+            ? getSkillMeta(skillOrId.id)
+            : null
+        : null;
+  const supported = meta?.supportedPlatforms;
+  if (!Array.isArray(supported) || supported.length === 0) return true;
+  const norm = String(platform || "").trim().toLowerCase();
+  if (!norm) return true;
+  const mapped =
+    norm === "macos" || norm === "mac"
+      ? "darwin"
+      : norm === "windows" || norm === "win"
+        ? "win32"
+        : norm;
+  return supported.includes(mapped);
 }
 
 export function getSkillMeta(id: string): SkillMeta | null {

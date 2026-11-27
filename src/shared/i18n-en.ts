@@ -1130,6 +1130,8 @@ export const EN_MESSAGES: Record<I18nKey, string> = {
   "skills.filterAll": "All",
   "skills.filterOffice": "Office",
   "skills.filterPlatform": "Platform",
+  "skills.macOnlyStoreSub": "Unavailable on this OS · macOS host only ({desc})",
+  "skills.macOnlyTooltip": "This skill requires a macOS host and cannot be added on the current OS",
   "skills.mailAccountStatsPart": " · {count} in inbox{unseenPart}",
   "skills.mailAccountTestFailFeedback": "❌ {email} test failed: {error}",
   "skills.mailAccountTestOkFeedback": "✓ {email} connected ({ms}ms): {count} messages in inbox{unseenInfo}.",
@@ -1262,6 +1264,7 @@ export const EN_MESSAGES: Record<I18nKey, string> = {
   "skills.testShortBtn": "Test",
   "skills.title": "Skills Store",
   "skills.toolCountSub": "{count} tools · {desc}",
+  "skills.unsupportedPlatformToast": "This skill is only supported on macOS and cannot be added on this OS",
 
   // Feishu & Telegram channel bots
   "channel.accountsListAria": "Bot instances",

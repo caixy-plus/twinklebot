@@ -23,8 +23,10 @@ import {
   CHANNEL_SKILL_IDS,
   INSTALLABLE_SKILL_IDS,
   MAIL_SKILL_IDS,
+  getSkillMeta,
   isBuiltinPlatformSkill,
   isInstallableSkill,
+  isSkillSupportedOnPlatform,
 } from "../../shared/skills-catalog.js";
 import { purgeProviderAccounts } from "../../lib/mail-accounts.js";
 import {
@@ -254,6 +256,18 @@ export async function handleSkillsRoutes(
             }
             if (!isInstallableSkill(skillId)) {
               return sendJson(res, 404, { error: "未找到该技能" });
+            }
+            if (isInstall) {
+              const skillMeta = getSkillMeta(skillId);
+              const hostPlatform = ctx.hostPlatform || process.platform;
+              if (!isSkillSupportedOnPlatform(skillMeta || skillId, hostPlatform)) {
+                return sendJson(res, 400, {
+                  error: `${skillMeta?.name || skillId} 仅支持 macOS，当前系统暂不支持添加`,
+                  code: "UNSUPPORTED_PLATFORM",
+                  supportedPlatforms: skillMeta?.supportedPlatforms || [],
+                  hostPlatform,
+                });
+              }
             }
             const current = ctx.getInstalledSkills();
             let purgeCredentials = url.searchParams.get("purgeCredentials") === "true";

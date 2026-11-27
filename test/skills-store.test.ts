@@ -11,7 +11,7 @@ import { normalizeMailAuthStore } from "../src/lib/mail-client.js";
 const SECRET_QQ = "qqsecretqqsecret";
 const SECRET_CM = "cmSuperSecretPw";
 
-async function boot(t: any) {
+async function boot(t: any, extraConfig: Record<string, any> = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gb-skills-"));
   const store = createStore(tmpDir);
   const broadcasts: any[] = [];
@@ -29,6 +29,7 @@ async function boot(t: any) {
       defaultModel: "gemini-4-argon",
       models: ["gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash"],
       writeRoots: [tmpDir],
+      ...extraConfig,
     },
   });
   await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
@@ -168,4 +169,50 @@ test("removing an account broadcasts skills_updated", async (t) => {
   const r = await call("DELETE", "/api/integrations/mail/accounts/cm1");
   assert.equal(r.status, 200);
   assert.ok(broadcasts.some((b) => b.type === "skills_updated"));
+});
+
+test("non-macOS hosts mark kimi-cu unsupported, block install, and allow removing migrated installs", async (t) => {
+  const win = await boot(t, { hostPlatform: "win32" });
+  const skillsRes = await win.call("GET", "/api/skills");
+  assert.equal(skillsRes.status, 200);
+  assert.equal(skillsRes.json.hostPlatform, "win32");
+
+  const winKimi = skillsRes.json.skillsCatalog.platform.find((s: any) => s.id === "kimi-cu");
+  const winFeishu = skillsRes.json.skillsCatalog.platform.find((s: any) => s.id === "feishu-bot");
+  const winTg = skillsRes.json.skillsCatalog.platform.find((s: any) => s.id === "telegram-bot");
+  assert.equal(winKimi?.supported, false);
+  assert.deepEqual(winKimi?.supportedPlatforms, ["darwin"]);
+  assert.equal(winFeishu?.supported, true);
+  assert.equal(winTg?.supported, true);
+
+  const settingsRes = await win.call("GET", "/api/settings");
+  assert.equal(settingsRes.status, 200);
+  assert.equal(settingsRes.json.hostPlatform, "win32");
+
+  const blocked = await win.call("POST", "/api/skills/kimi-cu/install");
+  assert.equal(blocked.status, 400);
+  assert.equal(blocked.json.code, "UNSUPPORTED_PLATFORM");
+  assert.deepEqual((await win.call("GET", "/api/skills")).json.installedSkills, [
+    "qqmail",
+    "custom-mail",
+  ]);
+
+  const linux = await boot(t, { hostPlatform: "linux" });
+  const linuxBlocked = await linux.call("POST", "/api/skills/kimi-cu/install");
+  assert.equal(linuxBlocked.status, 400);
+  assert.equal(linuxBlocked.json.code, "UNSUPPORTED_PLATFORM");
+
+  // Legacy/migrated config containing kimi-cu on Windows must still be removable
+  win.store.writeSettings({ installedSkills: ["qqmail", "custom-mail", "kimi-cu"] });
+  const removed = await win.call("DELETE", "/api/skills/kimi-cu");
+  assert.equal(removed.status, 200);
+  assert.ok(!removed.json.installedSkills.includes("kimi-cu"));
+
+  const mac = await boot(t, { hostPlatform: "darwin" });
+  const macSkills = await mac.call("GET", "/api/skills");
+  const macKimi = macSkills.json.skillsCatalog.platform.find((s: any) => s.id === "kimi-cu");
+  assert.equal(macKimi?.supported, true);
+  const macAdd = await mac.call("POST", "/api/skills/kimi-cu/install");
+  assert.equal(macAdd.status, 200);
+  assert.ok(macAdd.json.installedSkills.includes("kimi-cu"));
 });

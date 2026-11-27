@@ -72,6 +72,7 @@ export interface ServerContext {
   broadcastSkillsUpdated: () => void;
   getSanitizedMailState: () => any;
   sanitizeMcpServersMap: (rawMap: unknown) => Record<string, any>;
+  hostPlatform?: string;
   getHostDeviceInfo: (executionMode?: string) => Record<string, any>;
   resolveRawProviders: () => any[];
   hasUsableProviderConfig: (providers?: any[]) => boolean;

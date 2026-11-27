@@ -22,6 +22,7 @@ import {
 import {
   PLATFORM_SKILLS,
   OFFICE_SKILLS,
+  isSkillSupportedOnPlatform,
   resolveInstalledSkillIds,
 } from "../shared/skills-catalog.js";
 import { normalizeContextCompressionSettings } from "../shared/context-compression.js";
@@ -142,10 +143,12 @@ export function createServer({
   desktopController?: ServerContext["desktopController"];
   env?: Record<string, string | undefined>;
 } = {}): http.Server & { hostBridge?: any } {
+  const hostPlatform = String(config?.hostPlatform || process.platform);
   const activeMcpManager =
     mcpManager ??
     runner?.mcpManager ??
     createMcpManager({
+      platform: hostPlatform,
       getServersConfig: () => store?.readSettings?.()?.mcpServers || {},
     });
 
@@ -392,6 +395,7 @@ export function createServer({
           ...s,
           installed: isBuiltin ? true : installed.includes(s.id),
           removable: !isBuiltin,
+          supported: isSkillSupportedOnPlatform(s, hostPlatform),
           ...(chEntry
             ? {
                 configured,
@@ -461,7 +465,7 @@ export function createServer({
   function getHostDeviceInfo(executionMode = "always") {
     return {
       hostname: os.hostname(),
-      platform: process.platform,
+      platform: hostPlatform,
       arch: process.arch,
       release: os.release(),
       online: true,
@@ -518,6 +522,7 @@ export function createServer({
       hostComputer: {
         executionMode,
       },
+      hostPlatform,
       browserAutomation: normalizeBrowserAutomationSettings(raw.browserAutomation),
       contextCompression: normalizeContextCompressionSettings(raw.contextCompression),
       screenPool: normalizeScreenPoolSettings(
@@ -1005,6 +1010,7 @@ export function createServer({
     broadcastSkillsUpdated,
     getSanitizedMailState,
     sanitizeMcpServersMap,
+    hostPlatform,
     getHostDeviceInfo,
     resolveRawProviders,
     hasUsableProviderConfig,

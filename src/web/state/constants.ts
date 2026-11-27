@@ -383,6 +383,7 @@ export const SKILL_FALLBACK_CATALOG = {
       category: "platform",
       builtin: false,
       removable: true,
+      supportedPlatforms: ["darwin"],
       installed: false,
       mcpServerId: "kimi-cu",
       toolCount: 20,
