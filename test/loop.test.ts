@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createControl, runTask, truncateForDisplay } from "../src/agent/loop.js";
+import {
+  buildApprovalContextSummary,
+  createControl,
+  formatPreviousTurnCompletionHeader,
+  runTask,
+  truncateForDisplay,
+} from "../src/agent/loop.js";
 import { BOT_COLLAB_TOOL_DECLARATIONS, filterToolDeclarationsForSkills } from "../src/agent/bot-tools.js";
 import { createStore } from "../src/store/index.js";
 import { ExecutorError } from "../src/agent/executor-client.js";
@@ -1844,6 +1850,438 @@ test("Phase 3 P2-2: pause suspends queued tool calls until resume and long-think
     assert.deepEqual(execCalls, ["shell"]);
     assert.equal(turnCount, 3, "short reply '扫完' after >=800 thoughts triggers 1 self-check turn");
     assert.equal(res.text, "已完成全部检查并确认命令执行成功。");
+  } finally {
+    cleanup();
+  }
+});
+
+test("Phase 4 P0-1/P0-3/P0-5: keeps full tools on follow-up/tool history, persists tokenScale, and prunes old-turn screenshots cleanly", async () => {
+  const { store, cleanup } = createTestStore();
+  try {
+    const bot = store.ensureAdminBot();
+    const fakePng = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    );
+    // Prior turn with an old screenshot + function_call/function_result
+    store.saveHistory(bot.id, [
+      {
+        type: "user_input",
+        content: [
+          { type: "text", text: "上一轮检查服务" },
+          { type: "image", data: fakePng.toString("base64"), mime_type: "image/png" },
+        ],
+      },
+      { type: "function_call", id: "old_c1", name: "host_run_shell", arguments: { command: "ls" } },
+      { type: "function_result", call_id: "old_c1", name: "host_run_shell", result: "ok" },
+      { type: "model_output", content: [{ type: "text", text: "上一步中断" }] },
+    ]);
+    store.updateSession(bot.id, { status: "interrupted" });
+    store.writeSettings({ routing: { mode: "balanced", smartRouter: true } });
+
+    const seenInputs: any[] = [];
+    const seenToolNames: string[][] = [];
+    const model = {
+      async planTurn() {
+        return { text: "{}" };
+      },
+      async nextTurn(opts: any) {
+        seenInputs.push(opts.input);
+        seenToolNames.push((opts.tools || []).map((t: any) => String(t.name)));
+        return {
+          thoughts: [],
+          usage: { input: 240, output: 10 },
+          text: "已恢复继续执行完毕。",
+          calls: [],
+          outputSteps: [{ type: "model_output", text: "已恢复继续执行完毕。" }],
+        };
+      },
+    };
+
+    const res = await runTask({
+      sessionId: bot.id,
+      userText: "继续",
+      deps: {
+        model,
+        executor: createFakeExecutor(),
+        store,
+        enableBotTools: true,
+        autoRoute: true,
+        smartRouter: true,
+        config: { maxSteps: 3, settleMs: 0 },
+        emit: () => {},
+      },
+    });
+    assert.equal(res.status, "done");
+    // Old-turn screenshot must be stripped at turn boundary so it neither bloats nor pins visual
+    const hasOldImage = seenInputs[0][0].content.some((p: any) => p.type === "image");
+    assert.equal(hasOldImage, false, "old-turn screenshot must be pruned on new turn start");
+    // Follow-up / prior tool history must NOT strip host_run_shell/read_file
+    assert.equal(seenToolNames[0].includes("host_run_shell"), true);
+    assert.equal(seenToolNames[0].includes("read_file"), true);
+    // Token scale > 1 should persist to session record when real > estimate
+    const updatedBot = store.getSession(bot.id);
+    assert.ok((updatedBot?.tokenScale || 1) >= 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("Phase 5 P1-2 & P1-3 & P1-5: browser_* batch abort, paused final answer guard & lightweight scheduled run", async () => {
+  const { store, cleanup } = createTestStore();
+  try {
+    // 1. P1-2: batched browser_type failure aborts subsequent browser_click in same step
+    const bot1 = store.createSession({ title: "P1-2 Bot" });
+    const execCalls: any[] = [];
+    let step1Count = 0;
+    const resP12 = await runTask({
+      sessionId: bot1.id,
+      userText: "填写日期并提交表单",
+      deps: {
+        store,
+        model: {
+          async nextTurn() {
+            step1Count += 1;
+            if (step1Count === 1) {
+              return {
+                text: "",
+                calls: [
+                  { id: "b1", name: "browser_type", args: { ref: "e5", text: "bad-date" } },
+                  { id: "b2", name: "browser_click", args: { ref: "e9" } },
+                ],
+                outputSteps: [
+                  { type: "function_call", id: "b1", name: "browser_type", arguments: { ref: "e5", text: "bad-date" } },
+                  { type: "function_call", id: "b2", name: "browser_click", arguments: { ref: "e9" } },
+                ],
+                thoughts: [],
+              };
+            }
+            return { text: "日期校验失败，已停止点击提交。", calls: [], outputSteps: [], thoughts: [] };
+          },
+        },
+        executor: {
+          async call(route: string, body: any) {
+            execCalls.push({ route, body });
+            if (route === "/browser/type") {
+              return { ok: false, error: 'browser_type failed to set <input type="date"> value' };
+            }
+            if (route === "/browser/click") {
+              throw new Error("browser_click must NOT run after failed browser_type in same batch");
+            }
+            return { png_base64: Buffer.from("png").toString("base64") };
+          },
+        },
+        config: { maxSteps: 4, settleMs: 0 },
+      },
+    });
+    assert.equal(resP12.status, "done");
+    assert.equal(execCalls.some((c) => c.route === "/browser/click"), false);
+
+    // 2. P1-3: pause during in-flight final calls=[] step blocks answer & done; stop exits cleanly
+    const bot2 = store.createSession({ title: "P1-3 Bot" });
+    const ctrl = createControl();
+    const pauseEvents: any[] = [];
+    let resolveInflight!: (v: any) => void;
+    const inflightPromise = runTask({
+      sessionId: bot2.id,
+      userText: "总结汇报",
+      control: ctrl,
+      deps: {
+        store,
+        model: {
+          nextTurn() {
+            return new Promise((resolve) => {
+              resolveInflight = resolve;
+            });
+          },
+        },
+        executor: createFakeExecutor(),
+        config: { maxSteps: 3, settleMs: 0 },
+        emit: (e: any) => pauseEvents.push(e),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    ctrl.pause();
+    resolveInflight({
+      text: "不应该在暂停期间发送的最终回复",
+      calls: [],
+      outputSteps: [{ type: "model_output", text: "不应该在暂停期间发送的最终回复" }],
+      thoughts: [],
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(pauseEvents.some((e) => e.type === "answer"), false);
+    assert.equal(ctrl.isPaused(), true);
+    assert.notEqual(store.getSession(bot2.id)?.status, "done");
+    ctrl.stop();
+    const resP13 = await inflightPromise;
+    assert.equal(resP13.status, "stopped");
+    assert.equal(pauseEvents.some((e) => e.type === "answer"), false);
+
+    // 3. P1-5: scheduled run avoids stray desktop screenshot and omits >16K cold history while keeping full persisted history
+    const bot3 = store.createSession({ title: "P1-5 Bot" });
+    const hugeOldText = "A".repeat(32_000);
+    store.saveHistory(bot3.id, [
+      { type: "user_input", content: [{ type: "text", text: `历史1 ${hugeOldText}` }] },
+      { type: "model_output", content: [{ type: "text", text: "历史回复1" }] },
+      { type: "user_input", content: [{ type: "text", text: `历史2 ${hugeOldText}` }] },
+      { type: "model_output", content: [{ type: "text", text: "历史回复2" }] },
+      { type: "user_input", content: [{ type: "text", text: "历史3 较近对话" }] },
+      { type: "model_output", content: [{ type: "text", text: "历史回复3" }] },
+    ]);
+    let seenInputLen = 0;
+    let seenOldestText = "";
+    let seenInputSerialized = "";
+    let screenshotCalls = 0;
+    const resP15 = await runTask({
+      sessionId: bot3.id,
+      userText: "[例行任务：检查服务器]\n运行 df -h 检查磁盘",
+      deps: {
+        store,
+        model: {
+          async nextTurn(opts: any) {
+            seenInputLen = opts.input.length;
+            seenOldestText = String(opts.input[0]?.content?.[0]?.text || "");
+            seenInputSerialized = JSON.stringify(opts.input);
+            return { text: "磁盘正常。", calls: [], outputSteps: [], thoughts: [] };
+          },
+        },
+        executor: {
+          async call(route: string) {
+            if (route === "/screenshot") screenshotCalls += 1;
+            return { ok: true };
+          },
+        },
+        config: { maxSteps: 2, settleMs: 0 },
+      },
+    });
+    assert.equal(resP15.status, "done");
+    assert.equal(screenshotCalls, 0, "scheduled non-GUI run must not take initial desktop screenshot");
+    assert.match(seenOldestText, /Scheduled routine lightweight context/);
+    assert.equal(seenInputLen, 7, `expected 2 notice + 4 recent + 1 new = 7 steps, got ${seenInputLen}`);
+    assert.equal(seenInputSerialized.includes("历史1"), false, "omitted old prefix must not be sent to LLM");
+    const persisted = store.loadHistory(bot3.id);
+    assert.ok(
+      String(persisted[0]?.content?.[0]?.text || "").startsWith("历史1"),
+      "full interactive history prefix must remain persisted in store"
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("Phase 6 P2-2 & P2-7: approval context/draft reuse/reminder & on-demand prev-turn completion header", async () => {
+  const { store, cleanup } = createTestStore();
+  try {
+    // 1. buildApprovalContextSummary produces readable element label + page host
+    const labels = new Map<string, string>([["e12", "发布文章 (button)"]]);
+    const summary = buildApprovalContextSummary(
+      "browser_click",
+      { ref: "e12", risk: "high" },
+      { browserElements: labels, browserUrl: "https://mp.example.com/editor" }
+    );
+    assert.match(summary, /发布文章 \(button\)/);
+    assert.match(summary, /mp\.example\.com/);
+
+    // 2. Same-turn approved propose_draft skips duplicate high-risk browser_click confirmation
+    const bot1 = store.createSession({ title: "DraftReuse Bot" });
+    let draftStep = 0;
+    const approvalsSeen: any[] = [];
+    const draftEvents: any[] = [];
+    const ctrl1 = createControl();
+    const runDraftPromise = runTask({
+      sessionId: bot1.id,
+      userText: "发布文章",
+      control: ctrl1,
+      deps: {
+        store,
+        enableBotTools: true,
+        model: {
+          async nextTurn() {
+            draftStep += 1;
+            if (draftStep === 1) {
+              return {
+                text: "",
+                calls: [
+                  {
+                    id: "d_1",
+                    name: "propose_draft",
+                    args: { title: "发布动态", recipient: "博客", content: "正文内容" },
+                  },
+                ],
+                outputSteps: [
+                  {
+                    type: "function_call",
+                    id: "d_1",
+                    name: "propose_draft",
+                    arguments: { title: "发布动态", recipient: "博客", content: "正文内容" },
+                  },
+                ],
+                thoughts: [],
+              };
+            }
+            if (draftStep === 2) {
+              return {
+                text: "",
+                calls: [
+                  { id: "c_pub", name: "browser_click", args: { ref: "e12", risk: "high" } },
+                ],
+                outputSteps: [
+                  {
+                    type: "function_call",
+                    id: "c_pub",
+                    name: "browser_click",
+                    arguments: { ref: "e12", risk: "high" },
+                  },
+                ],
+                thoughts: [],
+              };
+            }
+            return { text: "已发布完成。", calls: [], outputSteps: [], thoughts: [] };
+          },
+        },
+        executor: {
+          async call(route: string) {
+            if (route === "/browser/click") return { ok: true, clicked: "e12" };
+            return { ok: true };
+          },
+        },
+        config: { maxSteps: 5, settleMs: 0 },
+        emit: (e: any) => {
+          draftEvents.push(e);
+          if (e.type === "approval_request") approvalsSeen.push(e);
+          if (e.type === "draft_request" && e.callId) {
+            setTimeout(() => ctrl1.resolveChoice(e.callId, { approved: true }), 10);
+          }
+        },
+      },
+    });
+    const draftRes = await runDraftPromise;
+    assert.equal(draftRes.status, "done");
+    assert.equal(approvalsSeen.length, 0, "approved propose_draft must suppress duplicate high-risk click card");
+
+    // 3. Approval reminder fires after approvalReminderMs while awaiting approval
+    const bot2 = store.createSession({ title: "Reminder Bot" });
+    let remStep = 0;
+    const remEvents: any[] = [];
+    const ctrl2 = createControl();
+    const resRem = await runTask({
+      sessionId: bot2.id,
+      userText: "执行危险操作",
+      control: ctrl2,
+      deps: {
+        store,
+        model: {
+          async nextTurn() {
+            remStep += 1;
+            if (remStep === 1) {
+              return {
+                text: "",
+                calls: [{ id: "rm_1", name: "host_run_shell", args: { command: "rm -rf /tmp/test-x" } }],
+                outputSteps: [
+                  {
+                    type: "function_call",
+                    id: "rm_1",
+                    name: "host_run_shell",
+                    arguments: { command: "rm -rf /tmp/test-x" },
+                  },
+                ],
+                thoughts: [],
+              };
+            }
+            return { text: "已取消。", calls: [], outputSteps: [], thoughts: [] };
+          },
+        },
+        executor: createFakeExecutor(),
+        config: { maxSteps: 3, settleMs: 0, hostExecutionMode: "ask", approvalReminderMs: 25 },
+        emit: (e: any) => {
+          remEvents.push(e);
+          if (e.type === "approval_request") {
+            assert.match(e.reason, /rm -rf \/tmp\/test-x/);
+            setTimeout(() => ctrl2.resolveApproval(e.callId, false), 70);
+          }
+        },
+      },
+    });
+    assert.equal(resRem.status, "done");
+    assert.ok(remEvents.some((e) => e.type === "approval_reminder" && e.callId === "rm_1"));
+
+    // 4. P2-7: <60s normal DM omits completion header; >=60s or approval/pause injects [上轮回复完成：…] in NEXT user header only
+    assert.equal(
+      formatPreviousTurnCompletionHeader({
+        lastTurnCompletedAt: "2026-11-27T02:00:00.000Z",
+        lastTurnDurationMs: 4000,
+        lastTurnHadPauseOrApproval: false,
+      }),
+      ""
+    );
+    const bot3 = store.createSession({ title: "TimeHeader Bot" });
+    // Quick <60s turn first
+    await runTask({
+      sessionId: bot3.id,
+      userText: "第一句短聊",
+      userMeta: { sentAt: "2026-11-27T02:00:00.000Z", clientTimeZone: "Asia/Shanghai" },
+      deps: {
+        store,
+        model: {
+          async nextTurn(opts: any) {
+            const firstText = String(opts.input.slice(-1)[0]?.content?.[0]?.text || "");
+            assert.equal(firstText.includes("[上轮回复完成："), false);
+            return { text: "短聊回复", calls: [], outputSteps: [{ type: "model_output", text: "短聊回复" }], thoughts: [] };
+          },
+        },
+        executor: createFakeExecutor(),
+        config: { maxSteps: 2, settleMs: 0 },
+      },
+    });
+    // Second turn must NOT receive completion header because previous turn was <60s and had no pause/approval
+    let secondSawHeader = false;
+    await runTask({
+      sessionId: bot3.id,
+      userText: "第二句追问",
+      userMeta: { sentAt: "2026-11-27T02:01:00.000Z", clientTimeZone: "Asia/Shanghai" },
+      deps: {
+        store,
+        model: {
+          async nextTurn(opts: any) {
+            const lastText = String(opts.input.slice(-1)[0]?.content?.[0]?.text || "");
+            secondSawHeader = lastText.includes("[上轮回复完成：");
+            return { text: "第二句回复", calls: [], outputSteps: [{ type: "model_output", text: "第二句回复" }], thoughts: [] };
+          },
+        },
+        executor: createFakeExecutor(),
+        config: { maxSteps: 2, settleMs: 0 },
+      },
+    });
+    assert.equal(secondSawHeader, false);
+
+    // Simulate previous turn took >= 60s -> third turn receives [上轮回复完成：…] in user header, leaving assistant text untouched
+    store.updateSession(bot3.id, {
+      lastTurnCompletedAt: "2026-11-27T02:05:30.000Z",
+      lastTurnDurationMs: 125_000,
+      lastTurnHadPauseOrApproval: false,
+    });
+    let thirdPromptText = "";
+    let thirdAllText = "";
+    await runTask({
+      sessionId: bot3.id,
+      userText: "刚才那步花了多久？",
+      userMeta: { sentAt: "2026-11-27T02:06:00.000Z", clientTimeZone: "Asia/Shanghai" },
+      deps: {
+        store,
+        model: {
+          async nextTurn(opts: any) {
+            const lastUser = opts.input[opts.input.length - 1];
+            thirdPromptText = String(lastUser?.content?.[0]?.text || "");
+            thirdAllText = JSON.stringify(opts.input.filter((s: any) => s.type === "model_output"));
+            return { text: "刚才花了 2 分 5 秒。", calls: [], outputSteps: [], thoughts: [] };
+          },
+        },
+        executor: createFakeExecutor(),
+        config: { maxSteps: 2, settleMs: 0 },
+      },
+    });
+    assert.match(thirdPromptText, /\[上轮回复完成：2026-11-27 10:05:30 \+08:00，耗时 2m5s\]/);
+    assert.equal(thirdAllText.includes("[上轮回复完成："), false, "assistant history must remain unpolluted");
   } finally {
     cleanup();
   }

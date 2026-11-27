@@ -24,6 +24,7 @@ import {
   parseFeishuSdkMessageEvent,
   parseFeishuWebhookPayload,
   parseTelegramUpdate,
+  redactSensitiveTokensInText,
   resolveFeishuSdkDomain,
   sanitizeAccountId,
   sanitizeChannelApiBaseUrl,
@@ -55,6 +56,31 @@ export interface ChannelRejectedSender {
   at: string;
 }
 
+/**
+ * Strips system-appended local `/api/workspace/file` attachment links before
+ * sending assistant text to external channels (Telegram / Feishu), so users
+ * do not see unreachable localhost URLs alongside uploaded media.
+ */
+export function stripLocalWorkspaceEmbedsForChannel(
+  text: string,
+  _mediaItems: ChannelOutboundMedia[] = []
+): string {
+  const raw = String(text || "");
+  if (!raw.trim()) return "";
+  const cleanedLines = raw
+    .split(/\r?\n/)
+    .map((line) => {
+      if (/^\s*\[文件附件:[^\]]*·\s*路径:[^\]]+\]\s*$/.test(line)) {
+        return "";
+      }
+      if (/^\s*!?\[[^\]]*\]\(\/api\/workspace\/file\?[^)]+\)\s*$/.test(line)) {
+        return "";
+      }
+      return line.replace(/!?\[([^\]]+)\]\(\/api\/workspace\/file\?[^)]+\)/g, "$1");
+    });
+  return cleanedLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export interface ChannelRuntimeState {
   connected: boolean;
   status: "stopped" | "connecting" | "connected" | "webhook_ready" | "error";
@@ -83,6 +109,26 @@ interface PendingChannelApproval {
   toolName: string;
 }
 
+interface PendingChannelChoiceQuestion {
+  question: string;
+  options: string[];
+  multiSelect: boolean;
+  allowCustom: boolean;
+}
+
+interface PendingChannelChoice {
+  kind: "choice" | "draft";
+  channel: ChannelSkillId;
+  accountId: string;
+  chatId: string;
+  sessionId: string;
+  callId: string;
+  questions?: PendingChannelChoiceQuestion[];
+  stepIndex?: number;
+  answers?: Record<string, any>;
+  draftTitle?: string;
+}
+
 interface ActiveChannelTurn {
   channel: ChannelSkillId;
   accountId: string;
@@ -95,6 +141,8 @@ interface ActiveChannelTurn {
   lastError: string;
   delivered: boolean;
   choiceNotified: boolean;
+  steeredCount?: number;
+  steerGraceTimer?: ReturnType<typeof setTimeout> | null;
   donePromise: Promise<void>;
   resolveDone: () => void;
 }
@@ -178,6 +226,7 @@ export function createChannelManager({
   const seenEventIds: string[] = [];
   const seenEventSet = new Set<string>();
   const pendingApprovals = new Map<string, PendingChannelApproval>();
+  const pendingChoices = new Map<string, PendingChannelChoice>();
   const activeTurns = new Map<string, ActiveChannelTurn>();
   const sessionChains = new Map<string, Promise<void>>();
 
@@ -212,6 +261,11 @@ export function createChannelManager({
     for (const [key, entry] of pendingApprovals.entries()) {
       if (entry.sessionId === sessionId && (!matchCallId || entry.callId === matchCallId)) {
         pendingApprovals.delete(key);
+      }
+    }
+    for (const [key, entry] of pendingChoices.entries()) {
+      if (entry.sessionId === sessionId && (!matchCallId || entry.callId === matchCallId)) {
+        pendingChoices.delete(key);
       }
     }
   }
@@ -268,21 +322,22 @@ export function createChannelManager({
     chatId: string,
     text: string
   ): Promise<void> {
+    const safeText = redactSensitiveTokensInText(text);
     const configs = readConfigs();
     if (channel === "telegram-bot") {
       const tgCfg = findAccount(configs.telegramAccounts, configs["telegram-bot"], accountId);
       if (!tgCfg) return;
-      await sendTelegramMessage(tgCfg, chatId, text, fetchImpl);
+      await sendTelegramMessage(tgCfg, chatId, safeText, fetchImpl);
     } else {
       const fsCfg = findAccount(configs.feishuAccounts, configs["feishu-bot"], accountId);
       if (!fsCfg) return;
       try {
-        await sendFeishuMessage(fsCfg, chatId, text, fetchImpl, getFeishuClient(fsCfg));
+        await sendFeishuMessage(fsCfg, chatId, safeText, fetchImpl, getFeishuClient(fsCfg));
       } catch (err: any) {
         const code = Number(err?.feishuCode);
         if (code === 99991663 || code === 99991664 || code === 99991661) {
           fsClients.delete(accountKey("feishu-bot", fsCfg.id));
-          await sendFeishuMessage(fsCfg, chatId, text, fetchImpl, getFeishuClient(fsCfg));
+          await sendFeishuMessage(fsCfg, chatId, safeText, fetchImpl, getFeishuClient(fsCfg));
           return;
         }
         throw err;
@@ -323,7 +378,7 @@ export function createChannelManager({
     accountId: string,
     chatId: string,
     media: ChannelOutboundMedia
-  ): Promise<boolean> {
+  ): Promise<{ ok: boolean; error?: string }> {
     const rt = getRuntime(channel, accountId);
     try {
       await sendChannelMedia(channel, accountId, chatId, media);
@@ -331,7 +386,7 @@ export function createChannelManager({
         rt.lastSendError = null;
         notifyStateChange();
       }
-      return true;
+      return { ok: true };
     } catch (err: any) {
       const errMsg = String(err?.message || err || "发送媒体文件失败").trim();
       console.warn(`[channel-manager] ${channel}:${accountId} media failed: ${errMsg}`);
@@ -339,7 +394,7 @@ export function createChannelManager({
         rt.lastSendError = errMsg;
         notifyStateChange();
       }
-      return false;
+      return { ok: false, error: errMsg };
     }
   }
 
@@ -449,12 +504,36 @@ export function createChannelManager({
     return Promise.resolve(runner.approve(callId, Boolean(allowed)));
   }
 
+  function invokeRunnerChoose(callId: string, selection: any): Promise<any> {
+    if (typeof runner?.choose !== "function") return Promise.resolve();
+    return Promise.resolve(runner.choose(callId, selection));
+  }
+
+  function formatChoiceQuestionPrompt(
+    q: PendingChannelChoiceQuestion,
+    stepIdx = 0,
+    totalSteps = 1
+  ): string {
+    const stepPrefix = totalSteps > 1 ? `(${stepIdx + 1}/${totalSteps}) ` : "";
+    const optionLines = q.options.map((opt, idx) => `${idx + 1}. ${opt}`).join("\n");
+    const hint = q.multiSelect
+      ? `请直接回复选项序号（可用逗号分隔多选，如 1,2）${q.allowCustom ? "，或直接输入自定义内容" : ""}。`
+      : `请直接回复数字序号（1-${q.options.length}）${q.allowCustom ? "或自定义回复内容" : ""}。`;
+    return `❓ ${stepPrefix}${q.question}\n${optionLines}\n\n${hint}`;
+  }
+
   function ensureRunnerSubscribed(): void {
     if (unsubscribeRunner || typeof runner?.subscribe !== "function") return;
     unsubscribeRunner = runner.subscribe((event: any) => {
       if (!event || !event.sessionId) return;
 
-      if (event.type === "approval" && event.callId) {
+      if (
+        (event.type === "approval" ||
+          event.type === "choice_resolved" ||
+          event.type === "choice_superseded" ||
+          event.type === "draft_resolved") &&
+        event.callId
+      ) {
         clearPendingApprovalsForSession(event.sessionId, event.callId);
       }
 
@@ -463,6 +542,14 @@ export function createChannelManager({
         if (event.type === "status" && TERMINAL_SESSION_STATUSES.has(String(event.status || ""))) {
           clearPendingApprovalsForSession(event.sessionId);
         }
+        return;
+      }
+
+      if (event.type === "status" && event.status === "running" && turn.steerGraceTimer) {
+        clearTimeout(turn.steerGraceTimer);
+        turn.steerGraceTimer = null;
+        turn.delivered = false;
+        turn.choiceNotified = false;
         return;
       }
 
@@ -497,13 +584,89 @@ export function createChannelManager({
         return;
       }
 
+      if (event.type === "approval_reminder" && event.callId) {
+        const toolLabel = String(event.name || "高危操作");
+        const reasonText = String(event.reason || "请确认是否执行");
+        void sendChannelReplyTracked(
+          turn.channel,
+          turn.accountId,
+          turn.chatId,
+          `⏰ 审批已等待较长时间（${toolLabel}）：${reasonText}\n请回复「允许」/「/approve」执行，或回复「拒绝」/「/deny」取消。`
+        );
+        return;
+      }
+
+      if (event.type === "choice_request" && event.callId) {
+        const rawQuestions =
+          Array.isArray(event.questions) && event.questions.length > 0
+            ? event.questions
+            : [
+                {
+                  question: event.question || "请选择",
+                  options: Array.isArray(event.options) ? event.options : [],
+                  multiSelect: Boolean(event.multiSelect),
+                  allowCustom: event.allowCustom !== false,
+                },
+              ];
+        const questions: PendingChannelChoiceQuestion[] = rawQuestions.map((q: any) => ({
+          question: String(q?.question || "请选择"),
+          options: Array.isArray(q?.options) ? q.options.map((o: any) => String(o)) : [],
+          multiSelect: Boolean(q?.multiSelect),
+          allowCustom: q?.allowCustom !== false,
+        }));
+        const choiceKey = `${turn.channel}:${turn.accountId}:${turn.chatId}`;
+        pendingChoices.set(choiceKey, {
+          kind: "choice",
+          channel: turn.channel,
+          accountId: turn.accountId,
+          chatId: turn.chatId,
+          sessionId: event.sessionId,
+          callId: String(event.callId),
+          questions,
+          stepIndex: 0,
+          answers: {},
+        });
+        turn.choiceNotified = true;
+        void sendChannelReplyTracked(
+          turn.channel,
+          turn.accountId,
+          turn.chatId,
+          formatChoiceQuestionPrompt(questions[0], 0, questions.length)
+        );
+        return;
+      }
+
+      if (event.type === "draft_request" && event.callId) {
+        const choiceKey = `${turn.channel}:${turn.accountId}:${turn.chatId}`;
+        const draftTitle = String(event.title || "待确认草稿");
+        pendingChoices.set(choiceKey, {
+          kind: "draft",
+          channel: turn.channel,
+          accountId: turn.accountId,
+          chatId: turn.chatId,
+          sessionId: event.sessionId,
+          callId: String(event.callId),
+          draftTitle,
+        });
+        turn.choiceNotified = true;
+        const recipientLine = event.recipient ? `\n对象：${event.recipient}` : "";
+        const previewBody = String(event.content || "").trim().slice(0, 500);
+        void sendChannelReplyTracked(
+          turn.channel,
+          turn.accountId,
+          turn.chatId,
+          `📝 待确认草稿：${draftTitle}${recipientLine}${previewBody ? `\n\n${previewBody}` : ""}\n\n请回复「1」或「确认」发送，回复「2」或「取消」放弃。`
+        );
+        return;
+      }
+
       if (event.type === "status" && event.status === "awaiting_choice" && !turn.choiceNotified) {
         turn.choiceNotified = true;
         void sendChannelReplyTracked(
           turn.channel,
           turn.accountId,
           turn.chatId,
-          "🔔 当前任务需要你在 TwinkleBot App 中完成交互选择、草稿确认或填写安全凭据。"
+          "🔔 当前任务需要你在 TwinkleBot App 中输入加密凭据或完成安全验证。"
         );
         return;
       }
@@ -539,6 +702,11 @@ export function createChannelManager({
         typeof event.text === "string" &&
         event.text.trim()
       ) {
+        if (turn.steerGraceTimer) {
+          clearTimeout(turn.steerGraceTimer);
+          turn.steerGraceTimer = null;
+          turn.delivered = false;
+        }
         turn.buffer.push(event.text.trim());
         return;
       }
@@ -557,7 +725,12 @@ export function createChannelManager({
         clearPendingApprovalsForSession(event.sessionId);
         if (!turn.delivered) {
           turn.delivered = true;
-          activeTurns.delete(event.sessionId);
+          const remainingSteers = Math.max(0, Number(turn.steeredCount) || 0);
+          if (remainingSteers === 0) {
+            activeTurns.delete(event.sessionId);
+          } else {
+            turn.steeredCount = remainingSteers - 1;
+          }
           const failed = String(event.status) === "error";
           void finalizeTurnReaction(turn, failed);
           const replyText =
@@ -567,19 +740,55 @@ export function createChannelManager({
               : event.status === "stopped"
                 ? "任务已停止。"
                 : "");
+          turn.buffer = [];
           const mediaItems = [...turn.pendingMedia];
+          turn.pendingMedia = [];
           const deliverAll = async () => {
-            if (replyText) {
-              await sendChannelReplyTracked(turn.channel, turn.accountId, turn.chatId, replyText);
+            const outboundText = stripLocalWorkspaceEmbedsForChannel(replyText, mediaItems);
+            if (outboundText) {
+              await sendChannelReplyTracked(turn.channel, turn.accountId, turn.chatId, outboundText);
             }
             for (const mediaItem of mediaItems) {
-              await sendChannelMediaTracked(turn.channel, turn.accountId, turn.chatId, mediaItem);
+              const mediaRes = await sendChannelMediaTracked(
+                turn.channel,
+                turn.accountId,
+                turn.chatId,
+                mediaItem
+              );
+              if (!mediaRes.ok) {
+                const fileLabel = mediaItem.name || path.basename(mediaItem.filePath) || "附件";
+                const errDetail = mediaRes.error || "未知错误";
+                const sizeHint = /too big|413|size|large|exceed|limit/i.test(errDetail)
+                  ? "（可能超过外部通道单文件大小限制）"
+                  : "";
+                await sendChannelReplyTracked(
+                  turn.channel,
+                  turn.accountId,
+                  turn.chatId,
+                  `⚠️ 文件发送失败（${fileLabel}）：${errDetail}${sizeHint}`
+                );
+              }
+            }
+          };
+          const finishTurn = () => {
+            if (remainingSteers > 0) {
+              if (turn.steerGraceTimer) clearTimeout(turn.steerGraceTimer);
+              turn.steerGraceTimer = setTimeout(() => {
+                turn.steerGraceTimer = null;
+                if (activeTurns.get(event.sessionId) === turn) {
+                  activeTurns.delete(event.sessionId);
+                }
+                turn.resolveDone();
+              }, 80);
+              turn.steerGraceTimer.unref?.();
+            } else {
+              turn.resolveDone();
             }
           };
           if (replyText || mediaItems.length > 0) {
-            void deliverAll().finally(() => turn.resolveDone());
+            void deliverAll().finally(finishTurn);
           } else {
-            turn.resolveDone();
+            finishTurn();
           }
         }
       }
@@ -827,7 +1036,135 @@ export function createChannelManager({
       }
     }
 
+    const pendingChoice = pendingChoices.get(pendingKey);
+    if (pendingChoice) {
+      const replyRaw = String(msg.text || "").trim();
+      if (pendingChoice.kind === "draft") {
+        let approved: boolean | null = parseApprovalCommand(replyRaw);
+        if (approved === null) {
+          if (/^(?:1|确认|发送|同意|ok|yes|confirm|send)$/i.test(replyRaw)) approved = true;
+          else if (/^(?:2|取消|拒绝|放弃|no|cancel)$/i.test(replyRaw)) approved = false;
+        }
+        if (approved !== null) {
+          pendingChoices.delete(pendingKey);
+          const runningTurn = activeTurns.get(pendingChoice.sessionId);
+          await invokeRunnerChoose(pendingChoice.callId, { approved });
+          await sendChannelReplyTracked(
+            msg.channel,
+            acct.id,
+            msg.chatId,
+            approved
+              ? `✅ 已确认草稿：${pendingChoice.draftTitle || ""}`.trim()
+              : `❌ 已取消草稿：${pendingChoice.draftTitle || ""}`.trim()
+          );
+          if (runningTurn) {
+            await Promise.race([runningTurn.donePromise, sleepMs(150)]);
+          }
+          return { handled: true };
+        }
+      } else if (Array.isArray(pendingChoice.questions) && pendingChoice.questions.length > 0) {
+        const qList = pendingChoice.questions;
+        const idx = pendingChoice.stepIndex || 0;
+        const curQ = qList[idx];
+        let parsedSelection: any = null;
+        if (curQ) {
+          if (curQ.multiSelect) {
+            const parts = replyRaw
+              .split(/[,，\s]+/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const resolved: string[] = [];
+            let allNumeric = parts.length > 0;
+            for (const p of parts) {
+              const n = /^\d+$/.test(p) ? Number(p) : NaN;
+              if (Number.isInteger(n) && n >= 1 && n <= curQ.options.length) {
+                resolved.push(curQ.options[n - 1]);
+              } else {
+                allNumeric = false;
+              }
+            }
+            if (allNumeric && resolved.length > 0) {
+              parsedSelection = Array.from(new Set(resolved));
+            } else if (curQ.options.includes(replyRaw)) {
+              parsedSelection = [replyRaw];
+            } else if (curQ.allowCustom && replyRaw) {
+              parsedSelection = [replyRaw];
+            }
+          } else {
+            const n = /^\d+$/.test(replyRaw) ? Number(replyRaw) : NaN;
+            if (Number.isInteger(n) && n >= 1 && n <= curQ.options.length) {
+              parsedSelection = curQ.options[n - 1];
+            } else if (curQ.options.includes(replyRaw)) {
+              parsedSelection = replyRaw;
+            } else if (curQ.allowCustom && replyRaw) {
+              parsedSelection = replyRaw;
+            }
+          }
+        }
+        if (parsedSelection !== null) {
+          const answers = pendingChoice.answers || {};
+          answers[curQ.question] = parsedSelection;
+          if (idx + 1 < qList.length) {
+            pendingChoice.stepIndex = idx + 1;
+            pendingChoice.answers = answers;
+            await sendChannelReplyTracked(
+              msg.channel,
+              acct.id,
+              msg.chatId,
+              formatChoiceQuestionPrompt(qList[idx + 1], idx + 1, qList.length)
+            );
+            return { handled: true };
+          }
+          pendingChoices.delete(pendingKey);
+          const payload = qList.length > 1 ? { answers } : parsedSelection;
+          const runningTurn = activeTurns.get(pendingChoice.sessionId);
+          await invokeRunnerChoose(pendingChoice.callId, payload);
+          const displayChosen = Array.isArray(parsedSelection)
+            ? parsedSelection.join("、")
+            : String(parsedSelection);
+          await sendChannelReplyTracked(
+            msg.channel,
+            acct.id,
+            msg.chatId,
+            `✅ 已选择：${displayChosen}`
+          );
+          if (runningTurn) {
+            await Promise.race([runningTurn.donePromise, sleepMs(150)]);
+          }
+          return { handled: true };
+        }
+      }
+    }
+
     const sessionId = resolveTargetSessionId(acct.defaultSessionId);
+    const activeTurn = activeTurns.get(sessionId);
+    if (
+      activeTurn &&
+      typeof runner?.isSessionBusy === "function" &&
+      runner.isSessionBusy(sessionId) &&
+      typeof runner?.enqueue === "function"
+    ) {
+      activeTurn.messageId = msg.messageId;
+      activeTurn.steeredCount = (activeTurn.steeredCount || 0) + 1;
+      const steerMeta = {
+        clientSource: {
+          deviceKind: "mobile" as const,
+          platform: msg.channel,
+        },
+        channelMeta: {
+          channel: msg.channel,
+          accountId: acct.id,
+          ...(acct.label ? { accountLabel: acct.label } : {}),
+          chatId: msg.chatId,
+          senderId: msg.senderId,
+          senderName: msg.senderName,
+        },
+      };
+      await runner.enqueue(sessionId, msg.text, steerMeta);
+      await Promise.race([activeTurn.donePromise, sleepMs(150)]);
+      return { handled: true };
+    }
+
     const donePromise = enqueueSessionChannelTurn(sessionId, acct.id, acct.label, msg);
     await Promise.race([donePromise, sleepMs(150)]);
     return { handled: true };

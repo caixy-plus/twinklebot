@@ -632,6 +632,7 @@ export function sanitizeChannelMeta(raw: unknown): SanitizedChannelMeta | null {
 export interface SanitizedClientSource {
   deviceKind: "mobile" | "desktop";
   platform?: string;
+  viaRelay?: boolean;
 }
 
 export function sanitizeClientSource(raw: unknown): SanitizedClientSource | null {
@@ -642,6 +643,7 @@ export function sanitizeClientSource(raw: unknown): SanitizedClientSource | null
   return {
     deviceKind: cs.deviceKind,
     ...(platform ? { platform } : {}),
+    ...(typeof cs.viaRelay === "boolean" ? { viaRelay: cs.viaRelay } : {}),
   };
 }
 
@@ -649,19 +651,26 @@ export function formatClientSourceHeader(clientSource: unknown): string {
   const cs = sanitizeClientSource(clientSource);
   if (!cs) return "";
   const p = (cs.platform || "").toLowerCase();
+  const relaySuffix =
+    cs.viaRelay === true
+      ? " · 云端中继"
+      : cs.viaRelay === false && cs.deviceKind === "mobile"
+        ? " · 局域网直连"
+        : "";
   if (cs.deviceKind === "mobile") {
-    if (p === "ios-web") return "[消息来源：TwinkleBot 手机网页端（iOS）]";
-    if (p === "android-web") return "[消息来源：TwinkleBot 手机网页端（Android）]";
-    if (p === "mobile-web" || p === "web") return "[消息来源：TwinkleBot 手机网页端]";
-    if (p === "ios") return "[消息来源：TwinkleBot 手机端（iOS）]";
-    if (p === "android") return "[消息来源：TwinkleBot 手机端（Android）]";
-    return "[消息来源：TwinkleBot 手机端]";
+    if (p === "ios-web") return `[消息来源：TwinkleBot 手机网页端（iOS）${relaySuffix}]`;
+    if (p === "android-web") return `[消息来源：TwinkleBot 手机网页端（Android）${relaySuffix}]`;
+    if (p === "mobile-web" || p === "web") return `[消息来源：TwinkleBot 手机网页端${relaySuffix}]`;
+    if (p === "ios") return `[消息来源：TwinkleBot 手机端（iOS）${relaySuffix}]`;
+    if (p === "android") return `[消息来源：TwinkleBot 手机端（Android）${relaySuffix}]`;
+    return `[消息来源：TwinkleBot 手机端${relaySuffix}]`;
   }
-  if (p === "web") return "[消息来源：TwinkleBot 桌面网页端]";
-  if (p === "darwin" || p === "macos") return "[消息来源：TwinkleBot 桌面端（macOS）]";
-  if (p === "win32" || p === "windows") return "[消息来源：TwinkleBot 桌面端（Windows）]";
-  if (p === "linux") return "[消息来源：TwinkleBot 桌面端（Linux）]";
-  return "[消息来源：TwinkleBot 桌面端]";
+  const desktopRelaySuffix = cs.viaRelay === true ? " · 云端中继" : "";
+  if (p === "web") return `[消息来源：TwinkleBot 桌面网页端${desktopRelaySuffix}]`;
+  if (p === "darwin" || p === "macos") return `[消息来源：TwinkleBot 桌面端（macOS）${desktopRelaySuffix}]`;
+  if (p === "win32" || p === "windows") return `[消息来源：TwinkleBot 桌面端（Windows）${desktopRelaySuffix}]`;
+  if (p === "linux") return `[消息来源：TwinkleBot 桌面端（Linux）${desktopRelaySuffix}]`;
+  return `[消息来源：TwinkleBot 桌面端${desktopRelaySuffix}]`;
 }
 
 export function formatChannelSourceHeader(channelMeta: unknown): string {
@@ -1962,7 +1971,21 @@ export function redactSensitiveTokensInText(text = ""): string {
     .replace(/\b\d{8,14}:[A-Za-z0-9_-]{30,}\b/g, "[REDACTED_TG_TOKEN]")
     .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "sk-[REDACTED]")
     .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GH_TOKEN]")
-    .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[REDACTED_GOOGLE_KEY]");
+    .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[REDACTED_GOOGLE_KEY]")
+    .replace(/\b(?:vless|vmess|trojan|ss|ssr|hysteria2?|tuic|socks5h?):\/\/[^\s"'`<>]+/gi, "[REDACTED_PROXY_URI]")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{16,}=*\b/gi, "$1[REDACTED]")
+    .replace(
+      /([?&](?:token|access_token|api_key|apikey|secret|key|auth|password|pwd)=)[^&\s"'`<>]{6,}/gi,
+      "$1[REDACTED]"
+    )
+    .replace(
+      /("(?:apiKey|api_key|appSecret|app_secret|botToken|bot_token|accessToken|refreshToken|clientSecret|relayToken|password|passwd|privateKey|private_key)"\s*:\s*")[^"]{6,}(")/gi,
+      "$1[REDACTED]$2"
+    )
+    .replace(
+      /(\b(?:API_KEY|ACCESS_TOKEN|BOT_TOKEN|APP_SECRET|CLIENT_SECRET|RELAY_TOKEN|PRIVATE_KEY|PASSWORD)\s*=\s*["']?)[^\s"'`]{8,}/gi,
+      "$1[REDACTED]"
+    );
 }
 
 const RASTER_IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);

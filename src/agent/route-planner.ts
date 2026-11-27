@@ -31,7 +31,7 @@ export const ROUTE_CATEGORIES = [
 const CATEGORY_SET = new Set<string>(ROUTE_CATEGORIES);
 
 const WORK_HINT_RE =
-  /(脚本|代码|日志|服务器|部署|排查|分析|统计|打开|点击|截图|邮件|邮箱|定时|每天|每小时|创建|bot|群|文件|安装|配置|为什么|为啥|怎么|如何|帮我|写|查|改|修|画|生成|\?|？|https?:\/\/)/i;
+  /(脚本|代码|日志|服务器|部署|排查|分析|统计|打开|点击|截图|邮件|邮箱|定时|每天|每小时|创建|bot|群|文件|安装|配置|发布|推送|上线|提交|删除|刷新|运行|执行|同步|构建|打包|链接|订阅|检查|重启|切换|查看|发送|为什么|为啥|怎么|如何|帮我|写|查|改|修|画|生成|\?|？|https?:\/\/)/i;
 
 const SIMPLE_FOLLOWUP_RE =
   /^(?:继续|好的|好吧|行|可以|嗯|收到|明白|ok|okay|yes|go\s*on|continue|再来|再试一次)[！!。.~～\s]*$/i;
@@ -54,6 +54,7 @@ export interface RoutePlan {
   category: string;
   confidence: number;
   reason: string;
+  isFollowUp?: boolean;
   step_plan?: readonly StepPlanItem[];
 }
 
@@ -334,6 +335,7 @@ export function buildPlannerPrompt({
     "- Direct frontend/SVG/HTML code drawing & preview (e.g., user asks to draw with code, generate SVG, or write an HTML/Canvas page): the chat UI natively previews ```svg``` / ```html``` blocks directly. NEVER plan opening a desktop browser or taking screenshots (set needs_visual=false, expected_steps=1); for detailed or complex artwork, assign directly to argon (medium) or carbon (high) in 1 step.",
     "- needs_visual: true ONLY when inspecting screen/window pixels or image contents is required. Standard webpage reading, clicking, scrolling, dropdown selection, file upload, or form filling should use screenshot-free browser_snapshot/browser_click/browser_type/browser_scroll/browser_wait/browser_select/browser_upload_file, so set needs_visual=false.",
     "- needs_planning: true when a multi-step plan is needed before acting.",
+    "- Scheduled routines (Trigger: scheduled routine): default needs_visual=false unless the prompt explicitly asks to inspect desktop/GUI pixels.",
     "- risk=high: sending emails/messages, deleting data, making payments, or publishing externally.",
     "- When uncertain, lower confidence instead of guessing high.",
     "- Output language for UI display fields: write `reason` (<=20 Chinese chars) and each `step_plan[].task` (<=24 Chinese chars) in concise Chinese.",
@@ -392,22 +394,22 @@ export async function planRoute({
     return { plan: null, source: "heuristic", latencyMs: 0, error: "model has no planTurn" };
   }
 
-  if (isTrivialChat(rawUserText, { hasAttachments })) {
-    return { plan: { ...TRIVIAL_PLAN }, source: "trivial", latencyMs: 0 };
-  }
-
   if (isSimpleFollowUp(rawUserText, { hasAttachments })) {
     return {
-      plan: { ...TRIVIAL_PLAN, reason: "简短追问（快速直通）" },
+      plan: { ...TRIVIAL_PLAN, isFollowUp: true, reason: "简短追问（快速直通）" },
       source: "trivial",
       latencyMs: 0,
     };
   }
 
+  if (isTrivialChat(rawUserText, { hasAttachments })) {
+    return { plan: { ...TRIVIAL_PLAN }, source: "trivial", latencyMs: 0 };
+  }
+
   const key = cacheKey(
     botId,
-    `${hasAttachments ? "[att]" : ""}${rawUserText}`,
-    recentContext
+    `${isScheduledRun ? "[sched]" : ""}${hasAttachments ? "[att]" : ""}${rawUserText}`,
+    isScheduledRun ? "" : recentContext
   );
   const cached = cacheGet(key, now);
   if (cached) {
@@ -448,7 +450,7 @@ export async function planRoute({
         : timeoutCtrl.signal;
     const turnPromise = model.planTurn({
       model: plannerModel,
-      thinkingLevel: "high",
+      thinkingLevel: "low",
       timeoutMs,
       systemInstruction:
         "You are an execution planner that outputs strict JSON including per-step model allocation.",

@@ -91,7 +91,7 @@ test("planner: trivial chat skips the model; valid JSON is normalized and cached
   assert.equal(first.usage!.input, 900);
   assert.equal(m.calls.length, 1);
   assert.equal(m.calls[0].model, "gemini-4-hydrogen");
-  assert.equal(m.calls[0].thinkingLevel, "high");
+  assert.equal(m.calls[0].thinkingLevel, "low");
 
   const second = await planRoute({
     model: m,
@@ -541,7 +541,7 @@ test("4 Hydrogen High generates step_plan allocating per-step models, and pure t
   assert.equal(res1.status, "done");
   assert.equal(planCalls.length, 1);
   assert.equal(planCalls[0].model, "gemini-4-hydrogen");
-  assert.equal(planCalls[0].thinkingLevel, "high");
+  assert.equal(planCalls[0].thinkingLevel, "low");
   assert.deepEqual(stepCalls, [
     { model: "gemini-4-carbon", thinkingLevel: "high" },
     { model: "gemini-4-argon", thinkingLevel: "medium" },
@@ -591,7 +591,7 @@ test("4 Hydrogen High generates step_plan allocating per-step models, and pure t
   });
   assert.equal(res2.status, "done");
   assert.deepEqual(chatCalls, [
-    { stage: "plan", model: "gemini-4-hydrogen", thinkingLevel: "high" },
+    { stage: "plan", model: "gemini-4-hydrogen", thinkingLevel: "low" },
     { stage: "exec", model: "gemini-4-hydrogen", thinkingLevel: "medium" },
   ]);
 });
@@ -687,4 +687,91 @@ test("isSimpleFollowUp skips planner and planCache separates identical inputs wi
     config: CFG,
   });
   assert.equal(planCalls, 2, "Different recentContext must not collide in planCache");
+});
+
+test("Phase 4 P0-1: WORK_HINT_RE protects short ops/release commands and isFollowUp flag preserves tool availability", async () => {
+  resetRoutePlanCache();
+  assert.equal(isTrivialChat("发布然后把链接给我"), false);
+  assert.equal(isTrivialChat("继续刷新"), false);
+  assert.equal(isTrivialChat("你好呀"), true);
+
+  const model = {
+    async planTurn() {
+      return { text: "{}" };
+    },
+  } as any;
+  const follow = await planRoute({ model, rawUserText: "继续", config: CFG });
+  assert.equal(follow.source, "trivial");
+  assert.equal(follow.plan?.isFollowUp, true);
+});
+
+test("Phase 5 P1-5: scheduled routines ignore changing recentContext in planCache key", async () => {
+  resetRoutePlanCache();
+  let calls = 0;
+  const model = {
+    async planTurn() {
+      calls += 1;
+      return {
+        text: JSON.stringify({
+          complexity: "standard",
+          needs_visual: false,
+          needs_planning: false,
+          expected_steps: 2,
+          risk: "low",
+          category: "ops",
+          confidence: 0.9,
+          reason: "例行检查",
+        }),
+      };
+    },
+  } as any;
+
+  const first = await planRoute({
+    model,
+    rawUserText: "[例行任务：每日巡检]\n检查服务状态",
+    recentContext: "User: 昨晚刚重启完",
+    botId: "ops-bot",
+    isScheduledRun: true,
+    config: CFG,
+  });
+  const second = await planRoute({
+    model,
+    rawUserText: "[例行任务：每日巡检]\n检查服务状态",
+    recentContext: "User: 今天上午刚聊过另一个话题",
+    botId: "ops-bot",
+    isScheduledRun: true,
+    config: CFG,
+  });
+
+  assert.equal(first.source, "model");
+  assert.equal(second.source, "cache");
+  assert.equal(calls, 1);
+});
+
+test("Phase 6 P2-1: formatTierPath renders real model names and decideEscalation protects >=60K hot cache", () => {
+  const rt = createRouteRuntime();
+  commitStepTier(rt, "fast", { model: "ds::deepseek-flash", thinkingLevel: "medium" });
+  commitStepTier(rt, "fast", { model: "ds::deepseek-flash", thinkingLevel: "high" });
+  commitStepTier(rt, "standard", { model: "ds::deepseek-v4-pro", thinkingLevel: "medium" });
+  assert.equal(
+    formatTierPath(rt.tierPath, { modelPath: rt.modelPath }),
+    "DS-Flash×2 → DS-V4-Pro"
+  );
+  // 1-arg form remains backward compatible
+  assert.equal(formatTierPath(rt.tierPath), "Hydrogen×2 → Argon");
+
+  // With hotCacheContext=true and 1 failure on fast/medium, elevate thinking on same model first
+  const rtHot = createRouteRuntime();
+  beginStep(rtHot);
+  recordToolOutcome(rtHot, { name: "run_shell", args: { command: "ls" }, result: { exit_code: 1 } });
+  const esc = decideEscalation(rtHot, {
+    baseTier: "fast",
+    hotCacheContext: true,
+    currentThinkingLevel: "medium",
+  });
+  assert.ok(esc);
+  assert.equal(esc!.tier, "fast");
+  assert.equal(esc!.thinkingLevel, "high");
+  assert.equal(esc!.promoteBase, undefined);
+  assert.match(esc!.reason, /热缓存保护/);
 });

@@ -319,7 +319,7 @@ export function buildHostShellSpawnSpec(
   }
   return {
     cmd: platform === "darwin" ? "/bin/zsh" : "/bin/sh",
-    args: [platform === "darwin" ? "-lc" : "-c", command],
+    args: platform === "darwin" ? ["-o", "nonomatch", "-lc", command] : ["-c", command],
     isPowerShell: false,
   };
 }

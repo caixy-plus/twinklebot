@@ -366,13 +366,54 @@
   background: var(--bg-card);
 }
 
-.upcoming-copy { flex: 1; min-width: 0; }
+.upcoming-copy { flex: 1; min-width: 0; min-inline-size: 0; overflow: hidden; }
 .upcoming-copy.is-editable,
 .private-skill-row .skill-row-info.is-editable {
   cursor: pointer;
 }
-.upcoming-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.upcoming-sub { font-size: 11.5px; color: var(--text-secondary); }
+.private-skill-row {
+  min-width: 0;
+}
+.private-skill-row .ios-switch {
+  flex-shrink: 0;
+}
+.private-skill-row .skill-row-info,
+.private-skill-card .skill-row-info {
+  min-inline-size: 0;
+  overflow: hidden;
+}
+.private-skill-row .skill-row-name,
+.private-skill-card .skill-row-name {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-inline-size: 0;
+}
+.inspector-section .private-skill-row {
+  gap: 8px;
+  padding: 10px 12px;
+}
+.private-skill-row .skill-row-info.is-editable:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+.upcoming-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.upcoming-sub {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 
 /* Grouped Card */

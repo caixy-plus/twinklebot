@@ -90,6 +90,7 @@ export async function handleCollabBotTool(
     executor,
     fetchImpl,
     config = {},
+    userMeta,
     senderSessionId,
     senderBot,
     hopDepth = 0,
@@ -190,6 +191,11 @@ export async function handleCollabBotTool(
         sessionId: senderSessionId,
       });
 
+      const channelMeta =
+        userMeta?.channelMeta && typeof userMeta.channelMeta === "object"
+          ? userMeta.channelMeta
+          : null;
+
       return {
         ok: true,
         name: staged.name,
@@ -203,6 +209,13 @@ export async function handleCollabBotTool(
         is_media: staged.isMedia,
         markdown: staged.markdown,
         ...(args.caption ? { caption: String(args.caption).trim() } : {}),
+        ...(channelMeta
+          ? {
+              channel_delivery: "queued_on_turn_end",
+              delivery_note:
+                "File staged and queued for automatic external channel upload at turn end. Do not poll or re-send; summarize directly.",
+            }
+          : {}),
       };
     } catch (err: any) {
       return {

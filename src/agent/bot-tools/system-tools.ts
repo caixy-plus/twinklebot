@@ -372,6 +372,7 @@ export async function handleSystemBotTool(
           scheduleLabel: s.scheduleLabel || "每天 10:00",
           repeat: s.repeat || "daily",
           ...(s.cron ? { cron: s.cron } : {}),
+          ...(s.intervalDays ? { intervalDays: s.intervalDays, anchorAt: s.anchorAt || null } : {}),
           prompt: s.prompt || "",
           nextRunAt: s.nextRunAt || null,
           lastRunAt: s.lastRunAt || null,
@@ -405,6 +406,26 @@ export async function handleSystemBotTool(
       };
 
       if (action === "list") {
+        const callerIsAdmin = Boolean(
+          senderBot?.isAdmin || (senderSessionId && store?.getSession?.(senderSessionId)?.isAdmin)
+        );
+        if (args.scope === "all") {
+          if (!callerIsAdmin) {
+            return {
+              ok: false,
+              error: '权限不足：仅管理员 Bot 可查看全盘例行任务（scope: "all"）。',
+            };
+          }
+          const scopedAll = allSchedules.filter(Boolean).map(slimSchedule);
+          return {
+            ok: true,
+            action: "list",
+            scope: "all",
+            count: scopedAll.length,
+            schedules: scopedAll,
+            allSchedulesCount: scopedAll.length,
+          };
+        }
         const botSchedules = allSchedules
           .filter((s) => s && s.sessionId === targetBotId)
           .map(slimSchedule);
@@ -428,6 +449,14 @@ export async function handleSystemBotTool(
             error: "创建例行任务需要提供 title（任务名称）与 prompt（到点执行的指令）",
           };
         }
+        const rawIntervalDays = Number(args.interval_days);
+        const intervalDays =
+          args.interval_days !== undefined &&
+          Number.isInteger(rawIntervalDays) &&
+          rawIntervalDays >= 2 &&
+          rawIntervalDays <= 365
+            ? rawIntervalDays
+            : undefined;
         const rawCron = typeof args.cron === "string" ? args.cron.trim() : "";
         const validRepeats = ["daily", "hourly", "weekly", "cron", "once"];
         const repeat = validRepeats.includes(args.repeat)
@@ -435,8 +464,9 @@ export async function handleSystemBotTool(
           : rawCron
             ? "cron"
             : "daily";
-        const defaultLabel =
-          repeat === "cron"
+        const defaultLabel = intervalDays
+          ? `每 ${intervalDays} 天 ${args.time || "10:00"}`
+          : repeat === "cron"
             ? ""
             : repeat === "hourly"
               ? "每小时"
@@ -459,13 +489,18 @@ export async function handleSystemBotTool(
         const normalizedCron = resolvedCron.cron;
         const scheduleLabel =
           String(args.schedule_label || "").trim() ||
-          (repeat === "cron" ? describeCronExpression(normalizedCron) : defaultLabel);
+          (intervalDays
+            ? defaultLabel
+            : repeat === "cron"
+              ? describeCronExpression(normalizedCron)
+              : defaultLabel);
         const nextRunAt = computeInitialNextRun({
           repeat,
           scheduleLabel,
           time: args.time,
           delayMinutes: args.delay_minutes,
           cron: normalizedCron,
+          ...(intervalDays ? { intervalDays } : {}),
         });
 
         const item = {
@@ -475,6 +510,7 @@ export async function handleSystemBotTool(
           scheduleLabel,
           repeat,
           ...(normalizedCron ? { cron: normalizedCron } : {}),
+          ...(intervalDays ? { intervalDays, anchorAt: nextRunAt } : {}),
           prompt,
           nextRunAt,
           enabled: args.enabled !== false,
@@ -532,12 +568,19 @@ export async function handleSystemBotTool(
           : hasCronArg
             ? "cron"
             : prev.repeat || "daily";
+        const rawIntervalDays =
+          args.interval_days !== undefined ? Number(args.interval_days) : Number(prev.intervalDays);
+        const intervalDays =
+          Number.isInteger(rawIntervalDays) && rawIntervalDays >= 2 && rawIntervalDays <= 365
+            ? rawIntervalDays
+            : undefined;
         const shouldRecomputeNextRun =
           args.time !== undefined ||
           args.delay_minutes !== undefined ||
           args.schedule_label !== undefined ||
           args.repeat !== undefined ||
-          args.cron !== undefined;
+          args.cron !== undefined ||
+          args.interval_days !== undefined;
         const resolvedCron = resolveScheduleCronConfig({
           repeat: nextRepeat,
           rawCron: args.cron,
@@ -569,6 +612,7 @@ export async function handleSystemBotTool(
               time: args.time,
               delayMinutes: args.delay_minutes,
               cron: normalizedCron,
+              ...(intervalDays ? { intervalDays } : {}),
             })
           : prev.nextRunAt;
 
@@ -581,6 +625,16 @@ export async function handleSystemBotTool(
           nextRunAt,
           ...(args.enabled !== undefined ? { enabled: Boolean(args.enabled) } : {}),
         };
+        if (intervalDays) {
+          updated.intervalDays = intervalDays;
+          updated.anchorAt =
+            args.interval_days !== undefined || args.time !== undefined || !prev.anchorAt
+              ? nextRunAt
+              : prev.anchorAt;
+        } else {
+          delete updated.intervalDays;
+          delete updated.anchorAt;
+        }
         if (normalizedCron) {
           updated.cron = normalizedCron;
         } else {
@@ -1033,6 +1087,15 @@ export async function handleSystemBotTool(
         return {
           ok: true,
           action: "status",
+          runtimeInfo: {
+            dataDir: store?.dataDir || config?.dataDir || "",
+            logDir:
+              process.env.TWINKLEBOT_LOG_DIR ||
+              (store?.dataDir ? path.join(store.dataDir, "logs") : ""),
+            coreBuild: process.env.TWINKLEBOT_CORE_BUILD || config?.coreBuild || "",
+            webBuild: process.env.TWINKLEBOT_WEB_BUILD || config?.webBuild || "",
+            appVersion: config?.appVersion || "",
+          },
           botComputer: {
             online: botComputerOnline,
             latencyMs: botComputerLatencyMs,

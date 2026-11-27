@@ -211,7 +211,7 @@ export function sanitizeOrphanedCalls(input: any[]): any[] {
   return input.filter((_, i) => keep[i]);
 }
 
-function isRealUserTurnStep(step: any): boolean {
+export function isRealUserTurnStep(step: any): boolean {
   return (
     step?.type === "user_input" &&
     !step.content?.some((p: any) => p?.type === "text" && p.text === "Current screen:")
@@ -666,6 +666,51 @@ export function pruneScreenshots(input: any[], keep?: number): any[] {
       ...step,
       content: newContent,
     };
+  });
+}
+
+/**
+ * Strips screenshot binaries from completed turns older than `keepRecentTurns`
+ * (used at turn boundaries so multi-day images neither break Prompt Cache mid-turn
+ * nor permanently pin visual routing).
+ */
+export function pruneScreenshotsOlderThanTurns(
+  input: any[],
+  keepRecentTurns = 1
+): any[] {
+  if (!Array.isArray(input) || input.length === 0) return [];
+  const realUserIndices: number[] = [];
+  for (let i = 0; i < input.length; i++) {
+    if (isRealUserTurnStep(input[i])) {
+      realUserIndices.push(i);
+    }
+  }
+  const safeKeep = Math.max(0, Math.floor(Number(keepRecentTurns) || 0));
+  const cutoffIdx =
+    safeKeep === 0
+      ? input.length
+      : realUserIndices.length >= safeKeep
+        ? realUserIndices[realUserIndices.length - safeKeep]
+        : 0;
+  if (cutoffIdx <= 0) {
+    return input.map((step) => (step && typeof step === "object" ? { ...step } : step));
+  }
+  return input.map((step, idx) => {
+    if (idx >= cutoffIdx || !step || !Array.isArray(step.content)) {
+      return step && typeof step === "object" ? { ...step } : step;
+    }
+    let changed = false;
+    const nextContent = step.content.map((part: any) => {
+      if (part && part.type === "image") {
+        changed = true;
+        return {
+          type: "text",
+          text: "[screenshot from an earlier turn omitted]",
+        };
+      }
+      return part;
+    });
+    return changed ? { ...step, content: nextContent } : { ...step };
   });
 }
 

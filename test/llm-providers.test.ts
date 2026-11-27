@@ -1028,3 +1028,30 @@ test("normalizeGeminiApiError unwraps array-wrapped err.body from opaque @google
   abortErr.name = "AbortError";
   assert.equal(normalizeGeminiApiError(abortErr), abortErr);
 });
+
+test("Phase 4 P0-3 & P0-6: canonicalToOpenAiMessages drops old-turn reasoning_content while keeping active turn; opaque 402 yields friendly error", () => {
+  const steps = [
+    userStep("turn 1", null),
+    { type: "thought", text: "huge old reasoning 1" },
+    { type: "model_output", content: [{ type: "text", text: "reply 1" }] },
+    userStep("turn 2", null),
+    { type: "thought", text: "active reasoning 2" },
+    { type: "function_call", id: "fc_active", name: "run_shell", arguments: { command: "ls" } },
+    { type: "function_result", call_id: "fc_active", name: "run_shell", result: "ok" },
+    { type: "thought", text: "active reasoning 3" },
+    { type: "model_output", content: [{ type: "text", text: "reply 2" }] },
+  ];
+  const msgs = canonicalToOpenAiMessages("sys", steps);
+  const assistants = msgs.filter((m) => m.role === "assistant");
+  assert.equal(assistants.length, 3);
+  assert.equal(assistants[0].reasoning_content, undefined, "completed turn reasoning must be omitted");
+  assert.equal(assistants[1].reasoning_content, "active reasoning 2");
+  assert.equal(assistants[2].reasoning_content, "active reasoning 3");
+
+  const opaqueEmpty402: any = new Error('402 API error occurred: {"httpMeta":{"response":{},"request":{}}}');
+  opaqueEmpty402.status = 402;
+  const friendly: any = normalizeGeminiApiError(opaqueEmpty402);
+  assert.equal(friendly.status, 402);
+  assert.equal(friendly.message.includes("httpMeta"), false);
+  assert.match(friendly.message, /402/);
+});

@@ -586,7 +586,7 @@ function normalizeCandidatePath(filePath: unknown): string {
   return path.resolve(slashNormalized);
 }
 
-function isPathDenied(filePath: unknown): boolean {
+function isPathDenied(filePath: unknown, dataDir?: string): boolean {
   const resolved = normalizeCandidatePath(filePath);
   if (!resolved) return false;
   const resolvedLower = resolved.toLowerCase();
@@ -604,9 +604,34 @@ function isPathDenied(filePath: unknown): boolean {
   }
 
   const base = path.basename(resolved).toLowerCase();
+  const isBenignEnvExample =
+    base === ".env.example" ||
+    base === ".env.sample" ||
+    base === ".env.template" ||
+    base === "example.env" ||
+    base === "sample.env" ||
+    base === "template.env";
   if (
-    base === ".env" ||
-    base.startsWith(".env.") ||
+    !isBenignEnvExample &&
+    (base === ".env" || base.startsWith(".env.") || base.endsWith(".env"))
+  ) {
+    return true;
+  }
+  if (base === "settings.json" || base === "settings.json.bak") {
+    if (/(?:^|[\\/])data[\\/]settings\.json(?:\.bak)?$/i.test(resolved)) {
+      return true;
+    }
+    if (dataDir) {
+      const resolvedDataDir = normalizeCandidatePath(dataDir).toLowerCase();
+      if (
+        resolvedDataDir &&
+        path.dirname(resolved).toLowerCase() === resolvedDataDir
+      ) {
+        return true;
+      }
+    }
+  }
+  if (
     base === "accounts.json" ||
     base === "desktop-config.json" ||
     base === "devices.json" ||
@@ -693,7 +718,7 @@ export function assessToolCall(
     name === "host_write_file" ||
     name === "host_edit_file"
   ) {
-    if (isPathDenied(safeArgs.path)) {
+    if (isPathDenied(safeArgs.path, config?.dataDir)) {
       return {
         decision: "deny",
         reason: `Access to sensitive path '${safeArgs.path}' is denied`,
@@ -735,7 +760,7 @@ export function assessToolCall(
     }
     let needsHostConfirm = false;
     for (const p of rawPaths) {
-      if (isPathDenied(p)) {
+      if (isPathDenied(p, config?.dataDir)) {
         return {
           decision: "deny",
           reason: `Uploading sensitive path '${p}' is denied`,
@@ -786,7 +811,7 @@ export function assessToolCall(
     }
     const shellTokens = extractCandidatePathsFromShellCommand(cmd);
     for (const tok of shellTokens) {
-      if (isPathDenied(tok)) {
+      if (isPathDenied(tok, config?.dataDir)) {
         return {
           decision: "deny",
           reason: `Shell access to sensitive path '${tok}' is denied`,

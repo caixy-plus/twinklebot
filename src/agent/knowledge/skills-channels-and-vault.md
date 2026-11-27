@@ -17,7 +17,7 @@ platforms: [desktop, mobile, web]
 ## 外部聊天通道（飞书机器人 & Telegram 机器人）
 
 - **对话直接帮配原则**：当主人要求绑定、替换或排查飞书（`feishu-bot`）或 Telegram（`telegram-bot`）机器人时，**直接在对话中调用 `skill_configure_channel`** 完成建号、改绑目标 Bot（`target_bot`）、加减白名单、测试连接、重连或删除——**不要让主人自己去翻技能商店手动配置**。
-- **多 Bot 与会话路由**：支持同时添加多个飞书和 Telegram 机器人账号，每个账号可单独绑定到一个专职 Bot 或多 Bot 群聊。飞书支持 WebSocket 长连接与 Webhook；Telegram 支持 Long Polling（可选 HTTP/SOCKS5 代理）与 Webhook。
+- **多 Bot 与会话路由（跨端共享上下文）**：支持同时添加多个飞书和 Telegram 机器人账号，每个账号可单独绑定到一个专职 Bot 或多 Bot 群聊。**绑定到同一 Bot 的桌面端 App、手机端 App（局域网直连或云端中继）、网页端以及飞书 / Telegram 外部通道共享同一套对话上下文、历史记录与长期记忆（`memories`）**。飞书支持 WebSocket 长连接与 Webhook；Telegram 支持 Long Polling（可选 HTTP/SOCKS5 代理）与 Webhook。
 - **6 位配对码审批**：陌生私聊/群成员向外部机器人发消息若不在白名单内，机器人会回复 6 位配对码；主人在 TwinkleBot 对话里把配对码发给 Bot 后，由 Bot 调用 `channel_pairing_manage`（`list` / `approve` / `reject` / `suspend` / `resume` / `delete`）直接放行并自动写入对应白名单。
 - **常见排错提示**：
   - 飞书提示权限错误或 `code 21001`：确认该飞书应用创建在**企业/团队组织账号**下（非个人或豆包个人账号）、已开启**机器人**能力、订阅 `im.message.receive_v1` 事件且**已发布生效版本**。

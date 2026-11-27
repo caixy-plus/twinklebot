@@ -252,3 +252,41 @@ test("nextTurn handles fallback step and usage structures", async () => {
   assert.deepEqual(turn.usage, { input: 120, output: 15 });
   assert.equal(turn.outputSteps!.length, 2);
 });
+
+test("Phase 5 P1-1: gemini driver sets thinking_summaries=none when thinkingLevel is minimal or none", async () => {
+  const seenConfigs: any[] = [];
+  const fakeClient = {
+    interactions: {
+      async create(params: any) {
+        seenConfigs.push(params.generation_config);
+        return {
+          outputs: [{ type: "text", text: "ok" }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        };
+      },
+    },
+  };
+
+  const model = createModel({ client: fakeClient });
+  await model.nextTurn({
+    model: "gemini-4-hydrogen",
+    thinkingLevel: "minimal",
+    input: [{ type: "user_input", content: [{ type: "text", text: "hi" }] }],
+  });
+  await model.nextTurn({
+    model: "gemini-4-hydrogen",
+    thinkingLevel: "none",
+    input: [{ type: "user_input", content: [{ type: "text", text: "hi" }] }],
+  });
+  await model.nextTurn({
+    model: "gemini-4-hydrogen",
+    thinkingLevel: "low",
+    input: [{ type: "user_input", content: [{ type: "text", text: "hi" }] }],
+  });
+
+  assert.deepEqual(seenConfigs, [
+    { thinking_summaries: "none", thinking_level: "minimal" },
+    { thinking_summaries: "none", thinking_level: "minimal" },
+    { thinking_summaries: "auto", thinking_level: "low" },
+  ]);
+});

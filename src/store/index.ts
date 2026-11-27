@@ -1,8 +1,63 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { redactSensitiveTokensInText } from "../lib/channel-integrations.js";
 import { createCustomSkillsRepo } from "../lib/custom-skills.js";
 import { createLocalCrypto } from "../lib/local-crypto.js";
+
+function redactPersistedValue(val: unknown): any {
+  if (typeof val === "string") {
+    return val.length > 0 ? redactSensitiveTokensInText(val) : val;
+  }
+  if (Array.isArray(val)) {
+    return val.map((item) => redactPersistedValue(item));
+  }
+  if (val && typeof val === "object" && !Buffer.isBuffer(val)) {
+    const obj = val as Record<string, any>;
+    // Never scan or mutate inline base64 screenshot/image blobs
+    if (obj.type === "image" && typeof obj.data === "string") {
+      return obj;
+    }
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === "data" && typeof v === "string" && v.length > 512) {
+        out[k] = v;
+      } else {
+        out[k] = redactPersistedValue(v);
+      }
+    }
+    return out;
+  }
+  return val;
+}
+
+export function normalizeLegacyMemoryList(list: unknown): {
+  list: any[];
+  changed: boolean;
+} {
+  if (!Array.isArray(list)) {
+    return { list: [], changed: false };
+  }
+  let changed = false;
+  const out = list.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return item;
+    }
+    const rec = item as Record<string, any>;
+    const hasLegacy = "desc" in rec || "instruction" in rec;
+    if (!hasLegacy) return item;
+    changed = true;
+    const canonicalContent = String(
+      rec.content || rec.instruction || rec.desc || ""
+    ).trim();
+    const { desc: _d, instruction: _i, ...rest } = rec;
+    return {
+      ...rest,
+      content: canonicalContent,
+    };
+  });
+  return { list: out, changed };
+}
 
 export function stripVaultItemSecret(item: any): Record<string, any> {
   if (!item || typeof item !== "object") return {};
@@ -193,7 +248,19 @@ export function createStore(dataDir: string) {
     const filePath = path.join(sessionsDir, `${id}.json`);
     if (!fs.existsSync(filePath)) return null;
     try {
-      return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      if (parsed && Array.isArray(parsed.memories)) {
+        const normalized = normalizeLegacyMemoryList(parsed.memories);
+        if (normalized.changed) {
+          parsed.memories = normalized.list;
+          try {
+            writeJsonAtomic(filePath, parsed);
+          } catch {
+            // ignore best-effort lazy migration write
+          }
+        }
+      }
+      return parsed;
     } catch {
       return null;
     }
@@ -225,6 +292,10 @@ export function createStore(dataDir: string) {
     const usage = cleanPatch.usage
       ? { ...prev.usage, ...cleanPatch.usage }
       : prev.usage;
+
+    if (Array.isArray(cleanPatch.memories)) {
+      cleanPatch.memories = normalizeLegacyMemoryList(cleanPatch.memories).list;
+    }
 
     const avatar = cleanPatch.avatar
       ? { ...(prev.avatar || {}), ...cleanPatch.avatar }
@@ -422,7 +493,8 @@ export function createStore(dataDir: string) {
     const seq = (seqMap.get(id) ?? 0) + 1;
     seqMap.set(id, seq);
     const at = new Date().toISOString();
-    const storedEvent = { ...event, seq, at };
+    const safeEvent = redactPersistedValue(event);
+    const storedEvent = { ...safeEvent, seq, at };
 
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.appendFileSync(ndjsonPath, JSON.stringify(storedEvent) + "\n", "utf-8");
@@ -623,7 +695,7 @@ export function createStore(dataDir: string) {
   function saveHistory(id: string, input: unknown): void {
     if (!isSafeId(id)) throw new Error(`Invalid session id: ${id}`);
     const historyPath = path.join(sessionsDir, `${id}.history.json`);
-    writeJsonAtomic(historyPath, input, { compact: true });
+    writeJsonAtomic(historyPath, redactPersistedValue(input), { compact: true });
   }
 
   function loadHistory(id: string): any[] {
@@ -823,11 +895,29 @@ export function createStore(dataDir: string) {
     }
   }
 
+  function migrateSettingsLegacyMemories(
+    data: Record<string, any>,
+    fileToUpdate?: string
+  ): Record<string, any> {
+    if (!data || !Array.isArray(data.globalMemories)) return data;
+    const normalized = normalizeLegacyMemoryList(data.globalMemories);
+    if (!normalized.changed) return data;
+    const next = { ...data, globalMemories: normalized.list };
+    if (fileToUpdate) {
+      try {
+        writeJsonAtomic(fileToUpdate, next);
+      } catch {
+        // ignore best-effort lazy migration write
+      }
+    }
+    return next;
+  }
+
   function readSettings(): Record<string, any> {
     const primary = tryParseSettingsFile(settingsFile);
-    if (primary.ok) return primary.data;
+    if (primary.ok) return migrateSettingsLegacyMemories(primary.data, settingsFile);
     const backup = tryParseSettingsFile(settingsBackupFile);
-    if (backup.ok) return backup.data;
+    if (backup.ok) return migrateSettingsLegacyMemories(backup.data);
     return {};
   }
 
@@ -857,7 +947,11 @@ export function createStore(dataDir: string) {
       }
     }
 
-    const updated = { ...existing, ...patch };
+    const cleanPatch = { ...patch };
+    if (Array.isArray(cleanPatch.globalMemories)) {
+      cleanPatch.globalMemories = normalizeLegacyMemoryList(cleanPatch.globalMemories).list;
+    }
+    const updated = migrateSettingsLegacyMemories({ ...existing, ...cleanPatch });
     if (primary.ok) {
       try {
         writeJsonAtomic(settingsBackupFile, existing);

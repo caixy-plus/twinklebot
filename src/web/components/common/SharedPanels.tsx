@@ -81,6 +81,7 @@ export function BotMemoriesList({
               )?.focus();
             });
           };
+          const memTitle = mem.name || t("memory.defaultName");
           return (
             <div key={mem.id || mem.name} className="private-skill-row">
               <div className="skill-row-icon" aria-hidden="true">
@@ -90,7 +91,7 @@ export function BotMemoriesList({
                 className="skill-row-info is-editable"
                 role="button"
                 tabIndex={0}
-                title={t("memory.clickEditTitle")}
+                title={`${memTitle} — ${t("memory.clickEditTitle")}`}
                 onClick={openEditMemory}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
@@ -99,7 +100,7 @@ export function BotMemoriesList({
                   }
                 }}
               >
-                <div className="skill-row-name">{mem.name || t("memory.defaultName")}</div>
+                <div className="skill-row-name">{memTitle}</div>
                 <div className="skill-row-desc">
                   {mem.instruction || mem.content || mem.desc || ""}
                 </div>

@@ -1102,7 +1102,21 @@ export class LocalChromeManager {
         const idx = typeof params.index === "number" && Number.isInteger(params.index) ? params.index : -1;
         const targets = await listPageTargets(sess.port, opts.signal);
         const hit = tid ? targets.find((t) => t.id === tid) : idx >= 0 ? targets[idx] : undefined;
-        if (!hit) return { ok: false, error: `tab ${tid || idx} not found` };
+        if (!hit) {
+          return {
+            ok: false,
+            error: `tab ${tid || idx} not found`,
+            active_target_id: curTargetId || null,
+            tab_count: targets.length,
+            tabs: targets.map((t, i) => ({
+              index: i,
+              target_id: t.id,
+              url: t.url || "",
+              title: t.title || "",
+              active: t.id === curTargetId,
+            })),
+          };
+        }
         this.setSessionTargetId(sess, callerKey, hit.id);
         try {
           await fetchJsonWithTimeout(`http://127.0.0.1:${sess.port}/json/activate/${encodeURIComponent(hit.id)}`, {
@@ -1274,6 +1288,10 @@ export class LocalChromeManager {
               }
               const val = ${JSON.stringify(text)};
               const shouldClear = ${JSON.stringify(clear)};
+              const tag = (el.tagName || '').toLowerCase();
+              const inputType = tag === 'input' ? String(el.type || 'text').toLowerCase() : '';
+              const nativePickerTypes = ['date', 'time', 'month', 'week', 'datetime-local', 'color', 'range'];
+              const isNativePicker = tag === 'input' && nativePickerTypes.includes(inputType);
               if (el.isContentEditable) {
                 el.textContent = shouldClear ? val : ((el.textContent || '') + val);
                 el.dispatchEvent(new InputEvent('input', { bubbles: true, data: val }));
@@ -1285,8 +1303,28 @@ export class LocalChromeManager {
                 else el.value = nextVal;
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
+                if (isNativePicker) {
+                  el.dispatchEvent(new Event('blur', { bubbles: true }));
+                }
               }
-              return { ok: true };
+              const actualValue = el.isContentEditable ? String(el.textContent || '') : String(el.value ?? '');
+              if (val.length > 0 && actualValue.length === 0) {
+                return {
+                  ok: false,
+                  error: 'browser_type failed to set value on <' + tag + (inputType ? ' type="' + inputType + '"' : '') + '> (actual value remained empty; verify expected format)'
+                };
+              }
+              if (isNativePicker && val.length > 0 && shouldClear) {
+                const trimmed = val.trim();
+                const temporalTypes = ['date', 'time', 'month', 'week', 'datetime-local'];
+                if ((temporalTypes.includes(inputType) && actualValue !== trimmed) || (inputType === 'color' && actualValue.toLowerCase() !== trimmed.toLowerCase())) {
+                  return {
+                    ok: false,
+                    error: 'browser_type failed to set <input type="' + inputType + '"> value to ' + JSON.stringify(val) + ' (actual value: ' + JSON.stringify(actualValue) + '; verify required format)'
+                  };
+                }
+              }
+              return { ok: true, actualValue: ${JSON.stringify(sensitive)} ? undefined : actualValue, inputType };
             })()`
           );
           if (!typed?.ok) return typed;
@@ -1309,7 +1347,12 @@ export class LocalChromeManager {
             await this.waitForSettle(call, opts.signal, 12);
           }
           const snap = await this.collectSnapshotOnCall(call, sess);
-          return { ...snap, typed_ref: ref, submitted: submit };
+          return {
+            ...snap,
+            typed_ref: ref,
+            submitted: submit,
+            ...(typeof typed?.actualValue === "string" ? { actual_value: typed.actualValue } : {}),
+          };
         },
         opts.signal
       );

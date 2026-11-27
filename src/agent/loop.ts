@@ -10,6 +10,7 @@ import {
 import { resolveEffectiveLocale } from "../shared/i18n.js";
 import { getDefaultLocalChromeManager } from "../lib/local-chrome-cdp.js";
 import {
+  formatLocalTimestampWithOffset,
   formatMessageSourceHeader,
   formatMessageTimeHeader,
   redactSensitiveTokensInText,
@@ -54,7 +55,9 @@ import {
   estimateStepTokens,
   estimateTextTokens,
   isContextOverflowError,
+  isRealUserTurnStep,
   pruneScreenshots,
+  pruneScreenshotsOlderThanTurns,
   sanitizeOrphanedCalls,
   trimHistoryToTokenBudget,
 } from "./context.js";
@@ -104,14 +107,28 @@ import { USD_TO_CNY } from "./pricing.js";
 const MAX_SESSION_TOKEN_SCALES = 256;
 const sessionTokenScaleMap = new Map<string, number>();
 
-function getSessionTokenScale(sessionId: string): number {
-  return sessionTokenScaleMap.get(sessionId) ?? 1;
+function getSessionTokenScale(sessionId: string, store?: any): number {
+  const cached = sessionTokenScaleMap.get(sessionId);
+  if (cached !== undefined) return cached;
+  try {
+    const persisted = Number(store?.getSession?.(sessionId)?.tokenScale);
+    if (Number.isFinite(persisted) && persisted > 1) {
+      const clamped = Math.min(2.5, Math.max(1, persisted));
+      sessionTokenScaleMap.set(sessionId, clamped);
+      return clamped;
+    }
+  } catch {
+    // ignore store lookup failures
+  }
+  return 1;
 }
 
 function updateSessionTokenScale(
   sessionId: string,
   rawEstimatedInput: number,
-  actualInputTokens: unknown
+  actualInputTokens: unknown,
+  store?: any,
+  skipPersist = false
 ): void {
   const actual = Number(actualInputTokens);
   if (!sessionId || !Number.isFinite(actual) || actual <= 0 || rawEstimatedInput <= 0) {
@@ -121,6 +138,7 @@ function updateSessionTokenScale(
   if (actual < rawEstimatedInput * 0.5) {
     return;
   }
+  const prevScale = getSessionTokenScale(sessionId, store);
   const nextScale = Math.min(2.5, Math.max(1, actual / rawEstimatedInput));
   if (
     !sessionTokenScaleMap.has(sessionId) &&
@@ -130,6 +148,20 @@ function updateSessionTokenScale(
     if (oldestKey !== undefined) sessionTokenScaleMap.delete(oldestKey);
   }
   sessionTokenScaleMap.set(sessionId, nextScale);
+  if (
+    !skipPersist &&
+    store?.updateSession &&
+    Math.abs(nextScale - prevScale) >= 0.05
+  ) {
+    try {
+      store.updateSession(sessionId, {
+        tokenScale: Number(nextScale.toFixed(3)),
+        touch: false,
+      });
+    } catch {
+      // ignore missing/transient session persist error
+    }
+  }
 }
 
 function isPathInsideWriteRoots(targetPath: string, writeRoots: string[] = []): boolean {
@@ -404,6 +436,92 @@ async function withOptionalMutex<T>(
 }
 
 /**
+ * Formats an on-demand completion header for the *previous* turn to inject into the
+ * next `user` prompt ONLY when the prior turn took >= 60s or paused/awaited approval.
+ */
+export function formatPreviousTurnCompletionHeader(
+  prevTurn?: {
+    lastTurnCompletedAt?: string;
+    lastTurnDurationMs?: number;
+    lastTurnHadPauseOrApproval?: boolean;
+  } | null,
+  clientTimeZone?: string
+): string {
+  if (!prevTurn || !prevTurn.lastTurnCompletedAt) return "";
+  const completedMs = Date.parse(String(prevTurn.lastTurnCompletedAt));
+  if (!Number.isFinite(completedMs)) return "";
+  const durMs = Math.max(0, Number(prevTurn.lastTurnDurationMs) || 0);
+  const hadPause = Boolean(prevTurn.lastTurnHadPauseOrApproval);
+  if (durMs < 60_000 && !hadPause) return "";
+  const totalSec = Math.max(1, Math.round(durMs / 1000));
+  const hours = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  const durLabel =
+    hours > 0
+      ? `${hours}h${mins}m${secs}s`
+      : mins > 0
+        ? `${mins}m${secs}s`
+        : `${secs}s`;
+  const formattedTs = formatLocalTimestampWithOffset(completedMs, clientTimeZone);
+  return `[上轮回复完成：${formattedTs}，耗时 ${durLabel}]`;
+}
+
+/**
+ * Builds a concise human-readable summary of an approval target (button label/URL,
+ * shell command, file path, or mail recipient) so ApprovalCards never show bare refs alone.
+ */
+export function buildApprovalContextSummary(
+  toolName: string,
+  args: Record<string, any> = {},
+  ctx: { browserElements?: Map<string, string>; browserUrl?: string } = {}
+): string {
+  const safeArgs = args && typeof args === "object" ? args : {};
+  if (
+    toolName === "browser_click" ||
+    toolName === "browser_type" ||
+    toolName === "browser_select" ||
+    toolName === "browser_upload_file"
+  ) {
+    const ref = String(safeArgs.ref || "").trim();
+    const label = ref && ctx.browserElements ? ctx.browserElements.get(ref) : "";
+    let hostHint = "";
+    if (ctx.browserUrl) {
+      try {
+        const u = new URL(ctx.browserUrl);
+        hostHint = u.host || ctx.browserUrl.slice(0, 60);
+      } catch {
+        hostHint = String(ctx.browserUrl).slice(0, 60);
+      }
+    }
+    const pagePart = hostHint ? ` · 页面：${hostHint}` : "";
+    if (label && ref) return `元素：「${label}」(${ref})${pagePart}`;
+    if (ref && hostHint) return `元素 ${ref}${pagePart}`;
+    if (hostHint) return `页面：${hostHint}`;
+    return "";
+  }
+  if (toolName === "host_run_shell" || toolName === "run_shell") {
+    const cmd = String(safeArgs.command || "").replace(/\s+/g, " ").trim().slice(0, 140);
+    return cmd ? `命令：${cmd}` : "";
+  }
+  if (
+    toolName === "write_file" ||
+    toolName === "edit_file" ||
+    toolName === "host_write_file" ||
+    toolName === "host_edit_file"
+  ) {
+    const p = String(safeArgs.path || "").trim();
+    return p ? `文件：${p}` : "";
+  }
+  if (toolName === "mail_send_message") {
+    const to = String(safeArgs.to || "").trim();
+    const subj = String(safeArgs.subject || "").trim().slice(0, 60);
+    if (to || subj) return `收件人：${to || "未指定"}${subj ? ` · 主题：${subj}` : ""}`;
+  }
+  return "";
+}
+
+/**
  * Public entry point: runs a turn and records Smart Router v2 outcome stats (L4) on every exit path.
  */
 export async function runTask(opts: Record<string, any> = {}): Promise<{ status: string; text: string }> {
@@ -423,7 +541,9 @@ export async function runTask(opts: Record<string, any> = {}): Promise<{ status:
         mode: routeTrace.mode,
         baseTier: routeTrace.initialBaseTier,
         tierPath: routeTrace.runtime?.tierPath || [],
-        tierPathLabel: formatTierPath(routeTrace.runtime?.tierPath || []),
+        tierPathLabel: formatTierPath(routeTrace.runtime?.tierPath || [], {
+          modelPath: routeTrace.runtime?.modelPath,
+        }),
         steps: routeTrace.runtime?.tierPath?.length || 0,
         errors: routeTrace.runtime?.errorsTotal || 0,
         softFailures: routeTrace.runtime?.softFailuresTotal || 0,
@@ -520,6 +640,11 @@ async function runTaskInner({
     }
   }
 
+  const turnStartedAtMs = Date.now();
+  let turnHadPauseOrApproval = false;
+  const prevTurnSnapshot =
+    !speakerBot && !promptText && store?.getSession ? store.getSession(sessionId) || null : null;
+
   const validClientTimeZone = sanitizeClientTimeZone(userMeta?.clientTimeZone);
   const parsedSentAt = userMeta?.sentAt ? Date.parse(String(userMeta.sentAt)) : NaN;
   const resolvedSentAt = Number.isFinite(parsedSentAt)
@@ -558,6 +683,9 @@ async function runTaskInner({
         deviceKind: userMeta.clientSource.deviceKind,
         ...(userMeta.clientSource.platform
           ? { platform: String(userMeta.clientSource.platform).slice(0, 32) }
+          : {}),
+        ...(typeof userMeta.clientSource.viaRelay === "boolean"
+          ? { viaRelay: userMeta.clientSource.viaRelay }
           : {}),
       };
     }
@@ -648,8 +776,10 @@ async function runTaskInner({
     return inflightScreenLeasePromise;
   };
   let smart: Record<string, any> | null = null;
+  let consecutiveErrors = 0;
   let lastSummaryDomain = "";
   let lastModelSummaryStep = 0;
+  let lastModelSummaryAt = 0;
   const classifySummaryDomain = (calls: any[] = []): string => {
     const first = String(calls?.[0]?.name || "");
     if (!first) return "init";
@@ -671,13 +801,17 @@ async function runTaskInner({
   }) => {
     if (ctrl.stopped || runEnded) return;
     const summaryDomain = classifySummaryDomain(calls);
-    const hasThoughts = Array.isArray(thoughts) && thoughts.some((t) => typeof t === "string" && t.trim());
+    const isDomainChanged = Boolean(lastSummaryDomain && summaryDomain !== lastSummaryDomain);
+    const hasNewError = consecutiveErrors > 0;
+    const elapsedSinceLast = lastModelSummaryAt > 0 ? Date.now() - lastModelSummaryAt : Infinity;
+    const reachedCadence = stepNo - lastModelSummaryStep >= 3 || elapsedSinceLast >= 12_000;
     if (
       stepNo > 1 &&
-      !hasThoughts &&
       Array.isArray(calls) &&
       calls.length > 0 &&
-      (summaryDomain === lastSummaryDomain || stepNo - lastModelSummaryStep < 2)
+      !isDomainChanged &&
+      !hasNewError &&
+      !reachedCadence
     ) {
       lastSummaryDomain = summaryDomain;
       const initialSettings = store?.readSettings?.() || {};
@@ -738,6 +872,7 @@ async function runTaskInner({
         if (res?.source === "model") {
           hasModelSummary = true;
           lastModelSummaryStep = stepNo;
+          lastModelSummaryAt = Date.now();
           lastSummaryDomain = summaryDomain;
         } else if (hasModelSummary) {
           return;
@@ -811,7 +946,12 @@ async function runTaskInner({
       ...(botWorkspaceSessionId ? { botWorkspaceSessionId } : {}),
     };
 
-    function formatContextualUserText(rawText: string, meta: any, includeAttachments = false): string {
+    function formatContextualUserText(
+      rawText: string,
+      meta: any,
+      includeAttachments = false,
+      prevTurnHeader = ""
+    ): string {
       let out = String(rawText || "");
       const effectiveMeta = meta && typeof meta === "object" ? meta : {};
       const prefixParts: string[] = [];
@@ -822,6 +962,9 @@ async function runTaskInner({
       const timeHeader = formatMessageTimeHeader(effectiveMeta);
       if (timeHeader) {
         prefixParts.push(timeHeader);
+      }
+      if (prevTurnHeader) {
+        prefixParts.push(prevTurnHeader);
       }
       if (effectiveMeta.replyTo?.snippet) {
         prefixParts.push(
@@ -863,9 +1006,13 @@ async function runTaskInner({
           }
         : userMeta;
 
+    const prevTurnCompletionHeader = formatPreviousTurnCompletionHeader(
+      prevTurnSnapshot,
+      validClientTimeZone
+    );
     let contextualUserText = promptText
       ? userText
-      : formatContextualUserText(userText, initialMetaForPrompt, false);
+      : formatContextualUserText(userText, initialMetaForPrompt, false, prevTurnCompletionHeader);
 
     const hasUserAttachments = Boolean(
       Array.isArray(userMeta?.attachments) && userMeta.attachments.length > 0
@@ -882,6 +1029,7 @@ async function runTaskInner({
     );
     let effectiveInputText = promptText || contextualUserText;
 
+    const isScheduledRun = /^\[例行任务/.test(String(userText || ""));
     // ---- Smart Router v2 (L0/L1): model-assisted task profiling ----
     const routingSettings = normalizeRoutingSettings(store?.readSettings?.()?.routing);
     const smartCandidate = Boolean(autoRoute && smartRouter && routingSettings.smartRouter);
@@ -903,7 +1051,7 @@ async function runTaskInner({
           botId: routeBot?.id || sessionId,
           botRole: routeBot?.rolePrompt || "",
           hasAttachments: hasUserAttachments,
-          isScheduledRun: /^\[例行任务/.test(String(userText || "")),
+          isScheduledRun,
           config: { ...config, routing: routingSettings },
           signal: planSignal,
         });
@@ -957,7 +1105,8 @@ async function runTaskInner({
             plan.needs_visual &&
             !hasMacHostGuiIntent(userText) &&
             !(userAttachmentImages.length > 0 && plan.category !== "gui") &&
-            !(plan.category === "creative" && !hasDesktopIntent(userText)),
+            !(plan.category === "creative" && !hasDesktopIntent(userText)) &&
+            !(isScheduledRun && plan.category !== "gui" && !hasDesktopIntent(userText)),
         };
         Object.assign(routeTrace, {
           active: true,
@@ -997,8 +1146,10 @@ async function runTaskInner({
     const shouldCaptureInitialScreen = smart
       ? smart.captureScreen
       : autoRoute
-        ? initialRoute!.captureInitialScreen && userAttachmentImages.length === 0
-        : userAttachmentImages.length === 0;
+        ? initialRoute!.captureInitialScreen &&
+          userAttachmentImages.length === 0 &&
+          !(isScheduledRun && !hasDesktopIntent(userText))
+        : userAttachmentImages.length === 0 && !(isScheduledRun && !hasDesktopIntent(userText));
 
     const initialSettings = store?.readSettings?.() || {};
     const initialHostMode =
@@ -1030,6 +1181,8 @@ async function runTaskInner({
     }
 
     let history: any[] = [];
+    let preservedScheduledPrefix: any[] = [];
+    const SCHEDULED_LIGHTWEIGHT_MARKER = "[System Notice: Scheduled routine lightweight context";
     if (!skipHistorySave) {
       try {
         if (store?.loadHistory) {
@@ -1042,6 +1195,75 @@ async function runTaskInner({
         // ignore
       }
     }
+    if (
+      isScheduledRun &&
+      !skipHistorySave &&
+      history.length > 0 &&
+      Math.round(estimateEffectiveHistoryTokens(history) * getSessionTokenScale(sessionId, store)) >
+        16_000
+    ) {
+      let recentRealTurns = 0;
+      let cutIdx = -1;
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (isRealUserTurnStep(history[i])) {
+          recentRealTurns += 1;
+          if (recentRealTurns >= 2) {
+            cutIdx = i;
+            break;
+          }
+        }
+      }
+      if (cutIdx > 0) {
+        preservedScheduledPrefix = history.slice(0, cutIdx);
+        history = [
+          {
+            type: "user_input",
+            content: [
+              {
+                type: "text",
+                text: `${SCHEDULED_LIGHTWEIGHT_MARKER} — older interactive history omitted to avoid cold-loading stale context; retaining the most recent 2 turns.]`,
+              },
+            ],
+          },
+          {
+            type: "model_output",
+            content: [
+              {
+                type: "text",
+                text: "Understood. Proceeding with the scheduled routine using recent context.",
+              },
+            ],
+          },
+          ...history.slice(cutIdx),
+        ];
+      }
+    }
+    const recentToolHistoryDetected = (() => {
+      let realCount = 0;
+      let startIdx = 0;
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (isRealUserTurnStep(history[i])) {
+          realCount += 1;
+          if (realCount >= 2) {
+            startIdx = i;
+            break;
+          }
+        }
+      }
+      for (let i = startIdx; i < history.length; i++) {
+        const st = history[i];
+        if (st?.type === "function_call" || st?.type === "function_result") {
+          return true;
+        }
+      }
+      const prevStatus = String(store?.getSession?.(sessionId)?.status || "");
+      return (
+        prevStatus === "error" ||
+        prevStatus === "interrupted" ||
+        prevStatus === "max_steps" ||
+        prevStatus === "stopped"
+      );
+    })();
     if (history.length === 0) {
       sessionTokenScaleMap.delete(sessionId);
     } else if (history[history.length - 1]?.type === "user_input") {
@@ -1064,6 +1286,8 @@ async function runTaskInner({
     } else {
       history.push(userStep(effectiveInputText, initialPng));
     }
+    // Strip screenshots belonging to completed earlier turns while keeping all images from this active turn
+    history = pruneScreenshotsOlderThanTurns(history, 1);
 
     const maxSteps = config?.maxSteps ?? 60;
     const rawCompression =
@@ -1072,7 +1296,6 @@ async function runTaskInner({
         ? initialSettings.contextCompression
         : {};
     let compressionRules = normalizeContextCompressionSettings(rawCompression);
-    const keepScreenshots = config?.keepScreenshots ?? DEFAULT_KEEP_SCREENSHOTS;
     const settleMs = config?.settleMs ?? 150;
     const defaultModel = resolveUtilityModels(config, Date.now(), routingSettings).fallbackModel;
     const allTools = enableBotTools
@@ -1093,12 +1316,27 @@ async function runTaskInner({
       "custom_skill_manage",
       "self_update",
     ]);
-    let fullToolsUnlocked = false;
+    let fullToolsUnlocked = Boolean(
+      recentToolHistoryDetected ||
+        smart?.plan?.isFollowUp ||
+        isBotHandoff ||
+        isScheduledRun
+    );
     let frozenSystemInstruction: string | null = null;
+    const keepScreenshots = config?.keepScreenshots ?? DEFAULT_KEEP_SCREENSHOTS;
+    const persistSessionHistory = (stepsToSave: any[], maxScreens = keepScreenshots) => {
+      if (skipHistorySave || !store?.saveHistory) return;
+      let mergedSteps = stepsToSave;
+      if (preservedScheduledPrefix.length > 0) {
+        const firstText = String(stepsToSave?.[0]?.content?.[0]?.text || "");
+        if (firstText.startsWith(SCHEDULED_LIGHTWEIGHT_MARKER)) {
+          mergedSteps = [...preservedScheduledPrefix, ...stepsToSave.slice(2)];
+        }
+      }
+      store.saveHistory(sessionId, pruneScreenshots(mergedSteps, maxScreens));
+    };
 
-    if (!skipHistorySave && store?.saveHistory) {
-      store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
-    }
+    persistSessionHistory(history);
 
     const appendSteeredMessages = (messages: any[]): boolean => {
       if (!Array.isArray(messages) || messages.length === 0) return false;
@@ -1142,9 +1380,7 @@ async function runTaskInner({
       }
       fullToolsUnlocked = true;
       frozenSystemInstruction = null;
-      if (!skipHistorySave && store?.saveHistory) {
-        store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
-      }
+      persistSessionHistory(history);
       setStatus("running");
       emitTagged({
         type: "thinking_summary",
@@ -1193,7 +1429,7 @@ async function runTaskInner({
       const result = await compressContextHistory(history, compressionRules, {
         contextWindow,
         overheadTokens,
-        tokenScale: getSessionTokenScale(sessionId),
+        tokenScale: getSessionTokenScale(sessionId, store),
         keepScreenshots: force ? Math.min(keepScreenshots, 1) : keepScreenshots,
         inTurnStep,
         force,
@@ -1261,17 +1497,12 @@ async function runTaskInner({
       });
 
       if (!result.changed) {
-        // Guard against unbounded screenshot buildup mid-turn while leaving a +2 buffer for Prompt Cache
-        if (countHistoryImages(history) > keepScreenshots + 2) {
-          history = pruneScreenshots(history, keepScreenshots);
-        }
+        // Leave mid-turn history append-only unless real compression triggers so Prompt Cache prefix stays intact.
         return false;
       }
 
       history = result.history;
-      if (!skipHistorySave && store?.saveHistory) {
-        store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
-      }
+      persistSessionHistory(history);
       emitTagged({
         type: "context_compressed",
         strategy: result.strategy,
@@ -1286,7 +1517,6 @@ async function runTaskInner({
       return true;
     };
 
-    let consecutiveErrors = 0;
     let shortReplyRetried = false;
     let executedToolCount = 0;
     const recentExecutedTools: string[] = [];
@@ -1299,6 +1529,11 @@ async function runTaskInner({
       fallbackNotice?: string;
     }> = [];
     const deliveredFileEmbeds: Array<{ path?: string; url?: string; markdown: string }> = [];
+    const browserElementLabels = new Map<string, string>();
+    let lastBrowserUrl = "";
+    const approvedDraftsInTurn: Array<{ title: string; recipient: string; kind: string }> = [];
+    let lastStepCachedTokens = 0;
+    let lastStepThinkingLevel = "";
 
     for (let stepNo = 1; stepNo <= maxSteps; stepNo++) {
       if (ctrl.stopped) {
@@ -1306,6 +1541,9 @@ async function runTaskInner({
         return { status: "stopped", text: "" };
       }
 
+      if (ctrl.isPaused?.()) {
+        turnHadPauseOrApproval = true;
+      }
       const pauseState = await ctrl.waitIfPaused();
       if (pauseState === "stopped" || ctrl.stopped) {
         setStatus("stopped");
@@ -1361,6 +1599,10 @@ async function runTaskInner({
           budget: smart.budget,
           deepCap: smart.deepCap,
           sameFastStandard: Boolean(smart.sameFastStandard),
+          hotCacheContext:
+            lastStepCachedTokens >= 60_000 ||
+            (lastStepCachedTokens >= 30_000 && estimateEffectiveHistoryTokens(history) >= 60_000),
+          currentThinkingLevel: lastStepThinkingLevel,
         });
         if (smartEsc?.promoteBase && tierRank(smartEsc.tier) > tierRank(smart.baseTier)) {
           smart.baseTier = smartEsc.tier;
@@ -1371,11 +1613,21 @@ async function runTaskInner({
         beginStep(smart.runtime);
       }
 
-      const hasScreenInHistoryBeforeCompress = sanitizeOrphanedCalls(history).some(
-        (step) =>
-          Array.isArray(step?.content) &&
-          step.content.some((part: any) => part && part.type === "image")
-      );
+      const sanitizedForVisual = sanitizeOrphanedCalls(history);
+      let currentTurnStartIdx = 0;
+      for (let i = sanitizedForVisual.length - 1; i >= 0; i--) {
+        if (isRealUserTurnStep(sanitizedForVisual[i])) {
+          currentTurnStartIdx = i;
+          break;
+        }
+      }
+      const hasScreenInHistoryBeforeCompress = sanitizedForVisual
+        .slice(currentTurnStartIdx)
+        .some(
+          (step) =>
+            Array.isArray(step?.content) &&
+            step.content.some((part: any) => part && part.type === "image")
+        );
 
       let stepRoute: Record<string, any>;
       if (smart) {
@@ -1662,9 +1914,7 @@ async function runTaskInner({
             if (trimmed.length < nextPruned.length || estimateEffectiveHistoryTokens(trimmed) < beforeOverflowTokens) {
               history = trimmed;
               nextPruned = sanitizeOrphanedCalls(history);
-              if (!skipHistorySave && store?.saveHistory) {
-                store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
-              }
+              persistSessionHistory(history);
               emitTagged({
                 type: "context_compressed",
                 strategy: "trim",
@@ -1695,7 +1945,7 @@ async function runTaskInner({
           stepNo -= 1;
           continue;
         }
-        if (!skipHistorySave && store?.saveHistory) {
+        if (!skipHistorySave) {
           history.push({
             type: "model_output",
             content: [
@@ -1705,11 +1955,14 @@ async function runTaskInner({
               },
             ],
           });
-          store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
+          persistSessionHistory(history);
         }
-        emitTagged({ type: "error", message: err.message });
+        if (smart?.runtime) {
+          smart.runtime.errorsTotal = (smart.runtime.errorsTotal || 0) + 1;
+        }
+        emitTagged({ type: "error", message: redactSensitiveTokensInText(err.message) });
         setStatus("error");
-        return { status: "error", text: err.message };
+        return { status: "error", text: redactSensitiveTokensInText(err.message) };
       } finally {
         ctrl.setStepAbort(null);
       }
@@ -1720,15 +1973,20 @@ async function runTaskInner({
       }
 
       if (turn?.usage) {
-        updateSessionTokenScale(sessionId, rawEstimatedInput, turn.usage.input);
+        updateSessionTokenScale(sessionId, rawEstimatedInput, turn.usage.input, store, skipHistorySave);
       }
 
       const actualUsedModel = turn?.usedModel || requestedModel;
+      if (turn?.usage) {
+        lastStepCachedTokens = Number(turn.usage.cached) || 0;
+      }
+      lastStepThinkingLevel = String(stepRoute?.thinkingLevel || "");
 
       if (smart) {
         commitStepTier(smart.runtime, stepRoute.tier, {
           usedEscalation: Boolean(smartEsc),
           thinkingLevel: stepRoute.thinkingLevel,
+          model: actualUsedModel,
         });
         if (turn?.usage) smart.budget.add(actualUsedModel, turn.usage);
         const noticeLevel = smart.budget.takeNotice();
@@ -1755,7 +2013,7 @@ async function runTaskInner({
           if (thought && typeof thought === "string" && thought.trim()) {
             emitTagged({
               type: "thought",
-              text: thought,
+              text: redactSensitiveTokensInText(thought),
               ...(autoRoute
                 ? {
                     routeTier: stepRoute.tier,
@@ -1778,7 +2036,13 @@ async function runTaskInner({
                 routeTier: stepRoute.tier,
                 routeLabel: stepRoute.label,
                 ...(stepRoute.reason ? { routeReason: stepRoute.reason } : {}),
-                ...(smart ? { tierPath: formatTierPath(smart.runtime.tierPath) } : {}),
+                ...(smart
+                  ? {
+                      tierPath: formatTierPath(smart.runtime.tierPath, {
+                        modelPath: smart.runtime.modelPath,
+                      }),
+                    }
+                  : {}),
               }
             : {}),
           input: turn.usage.input ?? 0,
@@ -1786,6 +2050,17 @@ async function runTaskInner({
           ...(turn.usage.cached ? { cached: turn.usage.cached } : {}),
           ...(turn.usage.thoughts ? { thoughts: turn.usage.thoughts } : {}),
         });
+      }
+
+      if (ctrl.isPaused?.()) {
+        const postModelPause = await ctrl.waitIfPaused();
+        if (postModelPause === "stopped" || ctrl.stopped) {
+          setStatus("stopped");
+          return { status: "stopped", text: "" };
+        }
+        if (postModelPause === "steered" || postModelPause === "resumed") {
+          setStatus("running");
+        }
       }
 
       // If a follow-up user message arrived right as the model returned tool calls,
@@ -1836,7 +2111,7 @@ async function runTaskInner({
             turn?.finishReason === "length"
               ? "模型输出连续触达长度上限且未返回有效内容，任务已中止，请重试或切换模型。"
               : "模型连续返回空响应（未输出文本或工具调用），任务未能继续，请重试或切换模型。";
-          if (!skipHistorySave && store?.saveHistory) {
+          if (!skipHistorySave) {
             history.push({
               type: "model_output",
               content: [
@@ -1846,7 +2121,10 @@ async function runTaskInner({
                 },
               ],
             });
-            store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
+            persistSessionHistory(history);
+          }
+          if (smart?.runtime) {
+            smart.runtime.errorsTotal = (smart.runtime.errorsTotal || 0) + 1;
           }
           emitTagged({ type: "error", message: emptyErrMessage });
           setStatus("error");
@@ -1901,10 +2179,7 @@ async function runTaskInner({
           );
           continue;
         }
-        const prunedFinal = pruneScreenshots(history, keepScreenshots);
-        if (!skipHistorySave && store?.saveHistory) {
-          store.saveHistory(sessionId, prunedFinal);
-        }
+        persistSessionHistory(history);
         let answerText = turn?.text ?? "";
         const normalizeEmbedRef = (raw?: string): string => {
           const s = String(raw || "").trim();
@@ -1983,12 +2258,27 @@ async function runTaskInner({
                 snippet: String(userText || "").replace(/\s+/g, " ").slice(0, 72),
               }
             : null);
+        const redactedAnswer = redactSensitiveTokensInText(answerText);
         emitTagged({
           type: "answer",
-          text: answerText,
+          text: redactedAnswer,
           ...(effectiveReplyAnchor ? { replyTo: effectiveReplyAnchor } : {}),
         });
         setStatus("done");
+        if (!skipHistorySave && !speakerBot && store?.updateSession) {
+          try {
+            if (store?.getSession?.(sessionId)) {
+              store.updateSession(sessionId, {
+                lastTurnCompletedAt: new Date().toISOString(),
+                lastTurnDurationMs: Math.max(0, Date.now() - turnStartedAtMs),
+                lastTurnHadPauseOrApproval: turnHadPauseOrApproval,
+                touch: false,
+              });
+            }
+          } catch {
+            // ignore turn timing persistence failure
+          }
+        }
         if (
           enableBotTools &&
           !memoryManagedInTurn &&
@@ -2005,7 +2295,7 @@ async function runTaskInner({
             sessionId,
             botSession: sessionObj,
             userText: latestUserText,
-            assistantText: answerText,
+            assistantText: redactedAnswer,
             config: { ...config, routing: postRouting },
             emit: emitTagged,
             onUsage: (info) => {
@@ -2016,7 +2306,7 @@ async function runTaskInner({
             broadcastGlobal,
           }).catch(() => {});
         }
-        return { status: "done", text: answerText };
+        return { status: "done", text: redactedAnswer };
       }
 
       if (ctrl.isPaused?.()) {
@@ -2091,10 +2381,10 @@ async function runTaskInner({
           continue;
         }
 
-        if (abortRemainingGuiBatch && BATCHED_GUI_ACTIONS.has(call.name)) {
+        if (abortRemainingGuiBatch && (BATCHED_GUI_ACTIONS.has(call.name) || isBrowserAutomationTool(call.name))) {
           const skipRes = {
             error:
-              "skipped remaining batched GUI action after prior GUI failure or verification challenge",
+              "skipped remaining batched GUI/browser action after prior failure, page change, or verification challenge",
           };
           emitTagged({
             type: "result",
@@ -2189,6 +2479,24 @@ async function runTaskInner({
             onDispatchBotTurn,
             onDispatchGroupTurn,
           });
+          if (
+            call.name === "propose_draft" ||
+            call.name === "ask_user_choice" ||
+            call.name === "request_credential"
+          ) {
+            turnHadPauseOrApproval = true;
+          }
+          if (
+            call.name === "propose_draft" &&
+            collabResult?.ok &&
+            collabResult?.approved === true
+          ) {
+            approvedDraftsInTurn.push({
+              title: String(collabResult.title || ""),
+              recipient: String(collabResult.recipient || ""),
+              kind: String(collabResult.kind || ""),
+            });
+          }
           if (smart) {
             recordToolOutcome(smart.runtime, { name: call.name, args: call.args, result: collabResult });
           }
@@ -2382,10 +2690,32 @@ async function runTaskInner({
           return sandboxOut;
         };
 
+        const DRAFT_REUSE_ELIGIBLE_TOOLS = new Set([
+          "browser_click",
+          "browser_type",
+          "click",
+          "key",
+          "mail_send_message",
+        ]);
+        const reuseApprovedDraft =
+          decision === "confirm" &&
+          approvedDraftsInTurn.length > 0 &&
+          DRAFT_REUSE_ELIGIBLE_TOOLS.has(call.name) &&
+          reason === "Action is flagged as high risk";
+
         if (decision === "deny") {
           toolResult = { error: `denied by policy: ${reason}` };
           screenshotBuf = null;
-        } else if (decision === "confirm") {
+        } else if (decision === "confirm" && !reuseApprovedDraft) {
+          turnHadPauseOrApproval = true;
+          const contextSummary = buildApprovalContextSummary(call.name, call.args, {
+            browserElements: browserElementLabels,
+            browserUrl: lastBrowserUrl,
+          });
+          const enrichedReason =
+            contextSummary && !reason.includes(contextSummary)
+              ? `${reason}（${contextSummary}）`
+              : reason;
           const approvalPromise = ctrl.requestApproval(call.id);
 
           emitTagged({
@@ -2393,11 +2723,39 @@ async function runTaskInner({
             callId: call.id,
             name: call.name,
             args: call.args,
-            reason,
+            reason: enrichedReason,
+            ...(contextSummary ? { contextSummary } : {}),
           });
           setStatus("awaiting_approval");
 
-          const allowed = await approvalPromise;
+          const approvalReminderMs =
+            typeof config?.approvalReminderMs === "number"
+              ? config.approvalReminderMs
+              : 120_000;
+          let reminderTimer: ReturnType<typeof setTimeout> | null = null;
+          if (approvalReminderMs > 0 && Number.isFinite(approvalReminderMs)) {
+            reminderTimer = setTimeout(() => {
+              if (runEnded || ctrl.stopped) return;
+              emitTagged({
+                type: "approval_reminder",
+                callId: call.id,
+                name: call.name,
+                reason: enrichedReason,
+                waitedMs: approvalReminderMs,
+              });
+            }, approvalReminderMs);
+            reminderTimer.unref?.();
+          }
+
+          let allowed = false;
+          try {
+            allowed = await approvalPromise;
+          } finally {
+            if (reminderTimer) {
+              clearTimeout(reminderTimer);
+              reminderTimer = null;
+            }
+          }
           const approvalSuperseded = ctrl.wasApprovalSuperseded(call.id);
           emitTagged({
             type: "approval",
@@ -2426,6 +2784,10 @@ async function runTaskInner({
             toolResult = runRes.result;
             screenshotBuf = runRes.screenshot;
           }
+        } else if (decision === "confirm" && reuseApprovedDraft) {
+          const runRes = await executeApprovedCall(true);
+          toolResult = runRes.result;
+          screenshotBuf = runRes.screenshot;
         } else {
           const runRes = await executeApprovedCall(false);
           toolResult = runRes.result;
@@ -2445,9 +2807,41 @@ async function runTaskInner({
         if (smart) {
           recordToolOutcome(smart.runtime, { name: call.name, args: call.args, result: toolResult });
         }
+        if (isBrowserAutomationTool(call.name) && toolResult && typeof toolResult === "object") {
+          if (typeof toolResult.url === "string" && toolResult.url.trim()) {
+            lastBrowserUrl = toolResult.url.trim();
+          }
+          if (Array.isArray(toolResult.elements)) {
+            browserElementLabels.clear();
+            for (const el of toolResult.elements) {
+              if (!el || typeof el !== "object") continue;
+              const elRef = String(el.ref || "").trim();
+              if (!elRef) continue;
+              const textPart = String(el.name || el.text || el.label || el.placeholder || "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 48);
+              const tagPart = String(el.tag || el.role || "").trim();
+              const labelStr = textPart
+                ? tagPart
+                  ? `${textPart} (${tagPart})`
+                  : textPart
+                : tagPart;
+              if (labelStr) {
+                browserElementLabels.set(elRef, labelStr);
+              }
+            }
+          }
+        }
         if (
-          (BATCHED_GUI_ACTIONS.has(call.name) || isBrowserAutomationTool(call.name)) &&
-          (toolResult?.error || toolResult?.challenge_detected === true)
+          ((BATCHED_GUI_ACTIONS.has(call.name) || isBrowserAutomationTool(call.name)) &&
+            (toolResult?.error ||
+              toolResult?.ok === false ||
+              toolResult?.challenge_detected === true)) ||
+          ((call.name === "browser_click" || call.name === "browser_type") &&
+            (toolResult?.switched_to_new_tab ||
+              toolResult?.submitted === true ||
+              toolResult?.typed?.submit === true))
         ) {
           abortRemainingGuiBatch = true;
         }
@@ -2483,9 +2877,7 @@ async function runTaskInner({
         history.push(...deferredScreenSteps);
       }
 
-      if (!skipHistorySave && store?.saveHistory) {
-        store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
-      }
+      persistSessionHistory(history);
     }
 
     const recentUnique = [...new Set(recentExecutedTools.slice(-8))].slice(-4);
@@ -2510,7 +2902,7 @@ async function runTaskInner({
           ],
         });
       }
-      store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
+      persistSessionHistory(history);
     }
 
     emitTagged({

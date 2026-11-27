@@ -826,3 +826,21 @@ test("P1-3 & P1-6: Shell sensitive path closure, PowerShell rules, sandboxMode=f
     "allow"
   );
 });
+
+test("Phase 4 P0-2: denies data/settings.json and *.env files while allowing project .vscode/settings.json and .env.example", () => {
+  const secCfg = {
+    sandboxMode: "full",
+    hostExecutionMode: "always",
+    dataDir: "/tmp/custom-tb-home",
+    writeRoots: ["/tmp/proj"],
+  };
+
+  assert.equal(assessToolCall("host_read_file", { path: "/Users/foo/twinklebot/data/settings.json" }, secCfg).decision, "deny");
+  assert.equal(assessToolCall("host_read_file", { path: "/tmp/custom-tb-home/settings.json" }, secCfg).decision, "deny");
+  assert.equal(assessToolCall("host_read_file", { path: "/tmp/proj/subscription.env" }, secCfg).decision, "deny");
+  assert.equal(assessToolCall("host_run_shell", { command: "cat prod.env" }, secCfg).decision, "deny");
+
+  // Unrelated project settings or template env files remain allowed
+  assert.equal(assessToolCall("host_read_file", { path: "/tmp/proj/.vscode/settings.json" }, secCfg).decision, "allow");
+  assert.equal(assessToolCall("host_read_file", { path: "/tmp/proj/.env.example" }, secCfg).decision, "allow");
+});

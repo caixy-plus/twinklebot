@@ -2,11 +2,15 @@ import type { ExecutorClient } from "../shared/config.js";
 
 export class ExecutorError extends Error {
   status: number;
+  details?: Record<string, any>;
 
-  constructor(message: string, status = 0) {
+  constructor(message: string, status = 0, details?: Record<string, any>) {
     super(message);
     this.name = "ExecutorError";
     this.status = status;
+    if (details && typeof details === "object") {
+      this.details = details;
+    }
   }
 }
 
@@ -151,10 +155,14 @@ export function createExecutorClient({
 
     if (!res.ok) {
       let errorMessage: string | undefined;
+      let errorDetails: Record<string, any> | undefined;
       try {
         const data: any = await res.json();
-        if (data && typeof data === "object" && typeof data.error === "string") {
-          errorMessage = data.error;
+        if (data && typeof data === "object") {
+          errorDetails = data;
+          if (typeof data.error === "string") {
+            errorMessage = data.error;
+          }
         }
       } catch {
         // Response was not JSON
@@ -162,7 +170,7 @@ export function createExecutorClient({
       if (!errorMessage) {
         errorMessage = res.statusText || `HTTP ${res.status}`;
       }
-      throw new ExecutorError(errorMessage, res.status);
+      throw new ExecutorError(errorMessage, res.status, errorDetails);
     }
 
     try {

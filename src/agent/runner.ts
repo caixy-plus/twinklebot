@@ -57,13 +57,14 @@ export function createRunner({
     createMcpManager({
       getServersConfig: () => store?.readSettings?.()?.mcpServers || {},
     });
-  // Per-session active run map: sessionId -> { state, control, onSteer }
+  // Per-session active run map: sessionId -> { state, control, onSteer, replyListeners }
   const activeRuns = new Map<
     string,
     {
       state: string;
       control: ReturnType<typeof createControl>;
       onSteer?: ((msg: { text: string; userMeta: any }) => void) | null;
+      replyListeners?: Array<(res: { status?: string; text?: string; error?: string }) => void>;
     }
   >();
   // Queued follow-up messages (user messages + inter-Bot handoffs arriving while target Bot is busy)
@@ -307,17 +308,28 @@ export function createRunner({
     return (pendingUserQueue.get(sessionId) || []).length;
   }
 
-  function enqueue(sessionId: string, text: string, userMeta: any = null) {
+  function enqueue(
+    sessionId: string,
+    text: string,
+    userMeta: any = null,
+    opts?: { onComplete?: ((res: { status?: string; text?: string; error?: string }) => void) | null }
+  ) {
     const session = store?.getSession?.(sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
     }
     const effectiveMeta = ensureServerSentAt(userMeta);
     if (!activeRuns.has(sessionId)) {
-      startInternal(sessionId, text, { userMeta: effectiveMeta });
+      startInternal(sessionId, text, {
+        userMeta: effectiveMeta,
+        ...(opts?.onComplete ? { onReplyComplete: opts.onComplete } : {}),
+      });
       return { queued: false, steered: false, queueLength: 0 };
     }
     const entry = activeRuns.get(sessionId);
+    if (opts?.onComplete && entry?.replyListeners) {
+      entry.replyListeners.push(opts.onComplete);
+    }
     // Live-steer the running task immediately instead of blocking behind a queue
     recordUserMessage(sessionId, text, effectiveMeta);
     entry?.onSteer?.({ text, userMeta: effectiveMeta });
@@ -612,19 +624,26 @@ export function createRunner({
 
     const currentControl = createControl();
     const groupSteers: Array<{ text: string; userMeta?: any }> = [];
+    const replyListeners: Array<(res: { status?: string; text?: string; error?: string }) => void> = [];
+    if (typeof options.onReplyComplete === "function") {
+      replyListeners.push(options.onReplyComplete);
+    }
     let replyNotified = false;
     const notifyReply = (payload: { status?: string; text?: string; error?: string }) => {
       if (replyNotified) return;
       replyNotified = true;
-      try {
-        options.onReplyComplete?.(payload);
-      } catch {
-        // ignore reply listener errors
+      for (const listener of [...replyListeners]) {
+        try {
+          listener(payload);
+        } catch {
+          // ignore reply listener errors
+        }
       }
     };
     activeRuns.set(sessionId, {
       state: "running",
       control: currentControl,
+      replyListeners,
       ...(session.type === "group"
         ? {
             onSteer: (msg: { text: string; userMeta: any }) => {
@@ -650,9 +669,7 @@ export function createRunner({
 
     const isDefaultRunTask = runTaskImpl === runTask;
 
-    const effectiveUserMeta = options.isBotHandoff
-      ? options.userMeta || null
-      : ensureServerSentAt(options.userMeta);
+    const effectiveUserMeta = ensureServerSentAt(options.userMeta);
 
     Promise.resolve()
       .then(() => {
@@ -796,8 +813,20 @@ export function createRunner({
       });
   }
 
-  function start(sessionId: string, text: string, userMeta: any = null): void {
-    return startInternal(sessionId, text, { userMeta });
+  function start(
+    sessionId: string,
+    text: string,
+    userMeta: any = null,
+    opts?: {
+      onComplete?: ((res: { status?: string; text?: string; error?: string }) => void) | null;
+      isBotHandoff?: boolean;
+    }
+  ): void {
+    return startInternal(sessionId, text, {
+      userMeta,
+      ...(opts?.isBotHandoff ? { isBotHandoff: true } : {}),
+      ...(opts?.onComplete ? { onReplyComplete: opts.onComplete } : {}),
+    });
   }
 
   function resolveTargetEntry(

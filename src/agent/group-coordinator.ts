@@ -4,6 +4,7 @@
  */
 
 import {
+  formatLocalTimestampWithOffset,
   formatMessageSourceHeader,
   formatMessageTimeHeader,
 } from "../lib/channel-integrations.js";
@@ -245,7 +246,11 @@ export function buildGroupPromptContext(
     } else {
       const speaker = ev.botName || "Bot";
       const body = `${ev.text || ""}${summarizeGroupAttachments(ev.attachments)}`;
-      lines.push(`[${speaker}]: ${body}`);
+      const replyRawTs = ev.at || ev.sentAt;
+      const replyTs = replyRawTs
+        ? formatLocalTimestampWithOffset(replyRawTs, ev.clientTimeZone)
+        : "";
+      lines.push(replyTs ? `[${speaker} · ${replyTs}]: ${body}` : `[${speaker}]: ${body}`);
     }
   }
 

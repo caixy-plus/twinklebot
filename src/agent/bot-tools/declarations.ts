@@ -710,6 +710,17 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
           description:
             "Optional Bot name or ID if managing schedules for another Bot (defaults to the current Bot).",
         },
+        scope: {
+          type: "string",
+          enum: ["bot", "all"],
+          description:
+            "Optional scope for action='list'. Pass scope='all' (Admin Bot only) to list all Bots' scheduled tasks across the system.",
+        },
+        interval_days: {
+          type: "number",
+          description:
+            "Optional fixed N-day recurrence interval (integer 2-365, e.g. 3 for every 3 days anchored cleanly across month boundaries without 31->1 jitter).",
+        },
       },
       required: ["action"],
     },

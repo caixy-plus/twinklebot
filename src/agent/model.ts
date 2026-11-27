@@ -93,6 +93,25 @@ function compactResultForModel(result: unknown): string {
   if (typeof copy.content === "string" && copy.content.length > 6000) {
     copy.content = cleanTerminalStream(copy.content, 6000);
   }
+  if (typeof copy.text === "string" && copy.text.length > 12_000) {
+    copy.text = cleanTerminalStream(copy.text, 12_000);
+  }
+  if (typeof copy.snapshot === "string" && copy.snapshot.length > 12_000) {
+    copy.snapshot = cleanTerminalStream(copy.snapshot, 12_000);
+  }
+  if (copy.structuredContent && typeof copy.structuredContent === "object") {
+    try {
+      const s = JSON.stringify(copy.structuredContent);
+      if (s.length > 12_000) {
+        copy.structuredContent = {
+          _truncated: true,
+          preview: cleanTerminalStream(s, 8000),
+        };
+      }
+    } catch {
+      // ignore non-serializable
+    }
+  }
   return JSON.stringify(copy);
 }
 
@@ -359,8 +378,17 @@ export function createModel({
       } catch (err) {
         if (signal?.aborted) throw err;
         if (hasDistinctFallback && !sameProviderFallback && isModelUnavailableError(err)) {
+          const errStatus = Number((err as any)?.status ?? (err as any)?.statusCode ?? 0);
+          const errMsg = String((err as any)?.message || err || "").toLowerCase();
+          const isBillingQuota =
+            errStatus === 402 ||
+            errMsg.includes("402") ||
+            errMsg.includes("payment required") ||
+            errMsg.includes("insufficient balance") ||
+            errMsg.includes("insufficient_quota");
           markModelUnavailable(model, {
             permanent: isPermanentModelError(err),
+            ...(isBillingQuota ? { cooldownMs: 15 * 60_000 } : {}),
           });
           const fb = resolveTargetDriver(fallbackModel);
           const fbRes = await fb.driver.nextTurn({

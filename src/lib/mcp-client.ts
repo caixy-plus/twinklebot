@@ -480,11 +480,30 @@ function createStdioSession(
         }
       }
 
-      const combinedText = textParts.join("\n").trim();
-      const structured =
+      const rawCombinedText = textParts.join("\n").trim();
+      const MAX_MCP_TEXT_CHARS = 12_000;
+      const combinedText =
+        rawCombinedText.length > MAX_MCP_TEXT_CHARS
+          ? `${rawCombinedText.slice(0, 6000)}\n...[truncated ${rawCombinedText.length - MAX_MCP_TEXT_CHARS} MCP chars]...\n${rawCombinedText.slice(-6000)}`
+          : rawCombinedText;
+      let structured =
         rpcRes?.structuredContent && typeof rpcRes.structuredContent === "object"
           ? rpcRes.structuredContent
           : undefined;
+      if (structured) {
+        try {
+          const serialized = JSON.stringify(structured);
+          if (serialized.length > MAX_MCP_TEXT_CHARS) {
+            structured = {
+              _truncated: true,
+              originalLength: serialized.length,
+              preview: `${serialized.slice(0, 6000)}...${serialized.slice(-2000)}`,
+            };
+          }
+        } catch {
+          // keep as-is if non-serializable
+        }
+      }
 
       if (rpcRes?.isError) {
         return {

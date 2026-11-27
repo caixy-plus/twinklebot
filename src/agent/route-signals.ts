@@ -5,6 +5,7 @@
  * and decides when to escalate (Hydrogen → Argon → Carbon) or step back down.
  */
 import crypto from "node:crypto";
+import { getModelPricing, normalizeModelId } from "./pricing.js";
 import type { RouteTier } from "./router.js";
 
 export const MAX_ESCALATION_REQUESTS = 2;
@@ -51,7 +52,7 @@ export const ROUTE_ESCALATE_TOOL_DECLARATION = {
   type: "function",
   name: "route_escalate",
   description:
-    "Request higher reasoning depth or a stronger model for the NEXT step when stuck or tackling a tricky step: need=think: elevate Hydrogen to xhigh thinking without switching models; need=plan: Carbon multi-step plan; need=rescue: diagnose repeated errors; need=visual: switch to Argon for dense chart/document reading or high-precision GUI grounding. Limited to 2 requests per turn and subject to the per-turn budget.",
+    "Request higher reasoning depth, a stronger model, or unlock the full shell/file/browser toolset (when currently in trimmed chat mode) for the NEXT step when stuck or needing execution tools: need=think: elevate Hydrogen to xhigh thinking and unlock full tools; need=plan: Carbon multi-step plan; need=rescue: diagnose repeated errors; need=visual: switch to Argon for dense chart/document reading or high-precision GUI grounding. Limited to 2 requests per turn and subject to the per-turn budget.",
   parameters: {
     type: "object",
     properties: {
@@ -83,6 +84,7 @@ export interface RouteRuntime {
   consecutiveOkSteps: number;
   autoEscalations: number;
   tierPath: RouteTier[];
+  modelPath: string[];
   errorsTotal: number;
   softFailuresTotal: number;
   escalationEvents: Array<{ need: string; reason: string }>;
@@ -110,6 +112,7 @@ export function createRouteRuntime(): RouteRuntime {
     consecutiveOkSteps: 0,
     autoEscalations: 0,
     tierPath: [],
+    modelPath: [],
     errorsTotal: 0,
     softFailuresTotal: 0,
     escalationEvents: [],
@@ -278,16 +281,41 @@ export function decideEscalation(
     budget,
     deepCap = 3,
     sameFastStandard = false,
+    hotCacheContext = false,
+    currentThinkingLevel = "",
   }: {
     baseTier?: RouteTier;
     budget?: TurnBudgetLike;
     deepCap?: number;
     sameFastStandard?: boolean;
+    hotCacheContext?: boolean;
+    currentThinkingLevel?: string;
   } = {}
 ): EscalationDecision | null {
   const deepAllowed = (!budget || budget.canUseDeep()) && rt.deepStepsUsed < deepCap;
   const rescueAllowed = !budget || budget.canUseDeep();
   const canSubstituteXhigh = baseTier === "fast" && (!budget || budget.canEscalate());
+  const maybeHotCacheSameModelBump = (nudge?: string): EscalationDecision | null => {
+    if (!hotCacheContext) return null;
+    const lvl = String(currentThinkingLevel || "").toLowerCase();
+    if (baseTier === "fast" && lvl !== "xhigh") {
+      return {
+        tier: "fast",
+        reason: "热缓存保护 · 同模型提升思考深度",
+        thinkingLevel: lvl === "high" ? "xhigh" : "high",
+        ...(nudge ? { nudge } : {}),
+      };
+    }
+    if (baseTier === "standard" && lvl !== "high" && lvl !== "xhigh") {
+      return {
+        tier: "standard",
+        reason: "热缓存保护 · 同模型提升思考深度",
+        thinkingLevel: "high",
+        ...(nudge ? { nudge } : {}),
+      };
+    }
+    return null;
+  };
 
   // 0. CAPTCHA / verification challenge or 4+ consecutive unchanged GUI steps → immediate takeover fuse
   if (rt.challengeStallDetected || rt.consecutiveUnchangedGuiSteps >= 4) {
@@ -332,12 +360,16 @@ export function decideEscalation(
 
   // 2. Repeated identical or alternating A->B->A->B call → one-shot re-plan with a nudge
   if (rt.repeatCount >= 2 || rt.cycleDetected) {
+    const repeatNudge =
+      "Warning: You have repeated the exact same action or cycle multiple times with no progress. Try a different approach or explain the blocker directly to the user.";
+    const hotBump = maybeHotCacheSameModelBump(repeatNudge);
+    if (hotBump) return hotBump;
     if (deepAllowed) {
       return {
         tier: "deep",
         reason: "重复操作 · 重新规划",
         thinkingLevel: "high",
-        nudge: "Warning: You have repeated the exact same action or cycle multiple times with no progress. Try a different approach or explain the blocker directly to the user.",
+        nudge: repeatNudge,
       };
     }
     if (canSubstituteXhigh && !budget?.canUseDeep?.()) {
@@ -345,7 +377,7 @@ export function decideEscalation(
         tier: "fast",
         reason: "预算保护 · Hydrogen XHigh 重规划",
         thinkingLevel: "xhigh",
-        nudge: "Warning: You have repeated the exact same action or cycle multiple times with no progress. Try a different approach or explain the blocker directly to the user.",
+        nudge: repeatNudge,
       };
     }
     if (rt.cycleDetected) {
@@ -360,11 +392,15 @@ export function decideEscalation(
 
   // 3. No progress (observation-only loop)
   if (rt.noProgressSteps >= 4 && deepAllowed) {
+    const hotBump = maybeHotCacheSameModelBump();
+    if (hotBump) return hotBump;
     return { tier: "deep", reason: "无进展 · 重新规划", thinkingLevel: "medium" };
   }
 
   // 4. Pending deep steps (initial planning or model self-request)
   if (rt.pendingDeepSteps > 0 && deepAllowed) {
+    const hotBump = maybeHotCacheSameModelBump();
+    if (hotBump) return hotBump;
     return { tier: "deep", reason: rt.pendingDeepReason || "深度规划", thinkingLevel: "high" };
   }
 
@@ -375,6 +411,8 @@ export function decideEscalation(
 
   // 6. Hydrogen had a failure → step up to Argon (or raise thinking when fast === standard)
   if (baseTier === "fast" && (rt.lastStepHadFailure || rt.consecutiveErrors >= 1 || rt.softFailures >= 1)) {
+    const hotBump = maybeHotCacheSameModelBump();
+    if (hotBump) return hotBump;
     if (sameFastStandard) {
       return { tier: "fast", reason: "执行受阻 · 提升思考深度", thinkingLevel: "high" };
     }
@@ -404,9 +442,13 @@ export function decideEscalation(
 export function commitStepTier(
   rt: RouteRuntime,
   tier: RouteTier,
-  opts: { usedEscalation?: boolean; thinkingLevel?: string } = {}
+  opts: { usedEscalation?: boolean; thinkingLevel?: string; model?: string } = {}
 ): void {
   rt.tierPath.push(tier);
+  if (typeof opts.model === "string" && opts.model.trim()) {
+    if (!Array.isArray(rt.modelPath)) rt.modelPath = [];
+    rt.modelPath.push(opts.model.trim());
+  }
   if (opts.usedEscalation) {
     rt.autoEscalations += 1;
   }
@@ -436,12 +478,22 @@ export function commitStepTier(
   }
 }
 
-/** Compresses a tier path into a readable label, e.g. `Hydrogen → Argon → Carbon×2 → Argon`. */
-export function formatTierPath(path: RouteTier[] = []): string {
-  const names: Record<string, string> = { fast: "Hydrogen", standard: "Argon", deep: "Carbon" };
+/** Compresses a tier/model path into a readable label, e.g. `DS-Flash×2 → DS-V4-Pro`. */
+export function formatTierPath(
+  path: RouteTier[] = [],
+  opts: { modelPath?: string[]; tierLabels?: Partial<Record<RouteTier, string>> } = {}
+): string {
+  const defaultNames: Record<string, string> = { fast: "Hydrogen", standard: "Argon", deep: "Carbon" };
+  const modelSeq = Array.isArray(opts.modelPath) ? opts.modelPath.filter(Boolean) : [];
+  const items =
+    modelSeq.length > 0
+      ? modelSeq.map((m) => {
+          const clean = normalizeModelId(m);
+          return getModelPricing(m).shortLabel || clean;
+        })
+      : path.map((t) => opts.tierLabels?.[t] || defaultNames[t] || t);
   const out: Array<{ name: string; count: number }> = [];
-  for (const t of path) {
-    const n = names[t] || t;
+  for (const n of items) {
     const last = out[out.length - 1];
     if (last && last.name === n) last.count += 1;
     else out.push({ name: n, count: 1 });

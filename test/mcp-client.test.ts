@@ -340,3 +340,49 @@ test("PI-009: createMcpManager on Windows never leaks macOS /Applications/KimiCU
   assert.ok(!String(st.error || "").includes("/Applications/KimiCU.app"));
   assert.ok(!String(st.error || "").includes("KimiCU.app"));
 });
+
+test("Phase 4 P0-5: createMcpManager caps oversized MCP text and structuredContent payloads", async (t) => {
+  const hugeScript = `
+    let buf = "";
+    process.stdin.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      const lines = buf.split("\\n");
+      buf = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.method === "initialize") {
+          process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", serverInfo: { name: "huge", version: "1.0" }, capabilities: { tools: {} } } }) + "\\n");
+        } else if (msg.method === "tools/list") {
+          process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "dump", description: "dump", inputSchema: { type: "object", properties: {} } }] } }) + "\\n");
+        } else if (msg.method === "tools/call") {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            result: {
+              content: [{ type: "text", text: "X".repeat(30000) }],
+              structuredContent: { big: "Y".repeat(20000) }
+            }
+          }) + "\\n");
+        }
+      }
+    });
+  `;
+  const mgr = createMcpManager({
+    getServersConfig: () => ({
+      "huge-mcp": {
+        type: "stdio",
+        command: process.execPath,
+        args: ["--input-type=module", "-e", hugeScript],
+      },
+    }),
+  });
+  t.after(() => mgr.closeAll());
+
+  const res = await mgr.callTool("mcp__huge_mcp__dump", {});
+  assert.equal(res.result.ok, true);
+  const resText = String((res.result as any).text || "");
+  assert.ok(resText.length < 13000);
+  assert.match(resText, /truncated 18000 MCP chars/);
+  assert.equal(res.result.structuredContent._truncated, true);
+});

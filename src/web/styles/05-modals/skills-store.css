@@ -443,8 +443,15 @@
   width: 19px;
   height: 19px;
 }
-.skill-row-info { flex: 1; min-width: 0; }
-.skill-row-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.skill-row-info { flex: 1; min-width: 0; min-inline-size: 0; overflow: hidden; }
+.skill-row-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .skill-row-desc {
   margin-top: 2px;
   font-size: 12px;

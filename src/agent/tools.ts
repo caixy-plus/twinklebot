@@ -727,8 +727,10 @@ export async function runTool(
 
     return { result: res, screenshot };
   } catch (err: any) {
+    const extraTabs =
+      Array.isArray(err?.details?.tabs) ? { ...err.details } : {};
     return {
-      result: { error: err?.message || String(err) },
+      result: { ...extraTabs, error: err?.message || String(err) },
       screenshot: null,
     };
   }

@@ -15,6 +15,7 @@ import {
   encodeFeishuPbFrame,
   extractFeishuMessageText,
   formatFeishuApiError,
+  formatClientSourceHeader,
   formatLocalTimestampWithOffset,
   formatMessageSourceHeader,
   formatMessageTimeHeader,
@@ -35,13 +36,18 @@ import {
   summarizeChannelStatusForBot,
   testFeishuChannel,
 } from "../src/lib/channel-integrations.js";
-import { createChannelManager } from "../src/lib/channel-manager.js";
+import {
+  createChannelManager,
+  stripLocalWorkspaceEmbedsForChannel,
+} from "../src/lib/channel-manager.js";
 import { redactToolArgsForDisplay, runBotCollabTool } from "../src/agent/bot-tools.js";
 import { createModel } from "../src/agent/model.js";
 import { buildGroupPromptContext } from "../src/agent/group-coordinator.js";
 import { createRunner } from "../src/agent/runner.js";
 import { createStore } from "../src/store/index.js";
+import { Readable } from "node:stream";
 import { createServer } from "../src/server/index.js";
+import { handleSessionRoutes } from "../src/server/routes/sessions.js";
 
 function encryptFeishuPayloadForTest(obj: Record<string, any>, encryptKey: string): string {
   const key = crypto.createHash("sha256").update(encryptKey, "utf8").digest();
@@ -2707,4 +2713,391 @@ test("channel-manager passes send_file & generate_image outputs through to Teleg
   assert.ok(apiCalls.some((c) => c.url.includes("/open-apis/im/v1/files")));
   assert.ok(apiCalls.some((c) => c.body.includes("img_k1")));
   assert.ok(apiCalls.some((c) => c.body.includes("file_k1")));
+});
+
+test("Phase 4 P0-4 & P0-2: channelManager bridges choice_request/draft_request replies, live-steers active sessions, and redacts outbound tokens", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-ch-p04-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const store = createStore(tmpDir);
+  const adminBot = store.ensureAdminBot();
+  store.writeChannelsAuth({
+    "telegram-bot": {
+      enabled: true,
+      connectionMode: "webhook",
+      botToken: "123456:TG_P04_TEST_TOKEN",
+      webhookSecret: "wh_sec",
+      apiBaseUrl: "",
+      defaultSessionId: adminBot.id,
+      allowedSenderIds: ["u_p04"],
+      approvalMode: "channel_and_app",
+    },
+  });
+
+  const sentTexts: string[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes("/sendMessage")) {
+      const parsed = JSON.parse(String(init?.body || "{}"));
+      sentTexts.push(String(parsed.text || ""));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 101 } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 });
+  };
+
+  let steeredText = "";
+  let sessionBusy = false;
+  const chosenResults: Array<{ callId: string; selection: any }> = [];
+  const subscribers = new Set<(ev: any) => void>();
+  let releaseTurn!: () => void;
+  const mockRunner: any = {
+    subscribe: (fn: (ev: any) => void) => {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
+    },
+    isSessionBusy: () => sessionBusy,
+    enqueue: async (_sid: string, text: string) => {
+      if (text === "请先改用简洁模式") {
+        steeredText = text;
+        for (const fn of subscribers) {
+          fn({
+            sessionId: adminBot.id,
+            type: "choice_request",
+            callId: "ch_call_1",
+            question: "选择目标环境",
+            options: ["测试环境", "生产环境"],
+            multiSelect: false,
+            allowCustom: true,
+          });
+        }
+        return;
+      }
+      sessionBusy = true;
+    },
+    choose: (callId: string, selection: any) => {
+      chosenResults.push({ callId, selection });
+      if (callId === "ch_call_1") {
+        for (const fn of subscribers) {
+          fn({
+            sessionId: adminBot.id,
+            type: "draft_request",
+            callId: "dr_call_2",
+            title: "发布通知",
+            recipient: "全员群",
+            content: "今晚 22:00 发布",
+          });
+        }
+      } else if (callId === "dr_call_2") {
+        const leakKey = ["sk-", "live99999999998888888888"].join("");
+        sessionBusy = false;
+        for (const fn of subscribers) {
+          fn({
+            sessionId: adminBot.id,
+            type: "answer",
+            text: `已发送，密钥为 ${leakKey}`,
+          });
+          fn({ sessionId: adminBot.id, type: "status", status: "done" });
+        }
+        releaseTurn?.();
+      }
+    },
+  };
+  new Promise<void>((r) => {
+    releaseTurn = r;
+  });
+
+  const mgr = createChannelManager({
+    store,
+    runner: mockRunner,
+    getInstalledSkills: () => ["telegram-bot"],
+    fetchImpl,
+  });
+  t.after(() => mgr.stopAll());
+  mgr.syncFromStore();
+
+  // 1. Trigger initial turn -> session becomes busy (waiting before emitting choice_request)
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    eventId: "tg:p04-1",
+    chatId: "chat_p04",
+    senderId: "u_p04",
+    senderName: "测试",
+    text: "帮我发布",
+  });
+  await new Promise((r) => setTimeout(r, 20));
+
+  // 2. Live steer while busy must call runner.enqueue immediately without blocking
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    eventId: "tg:p04-steer",
+    chatId: "chat_p04",
+    senderId: "u_p04",
+    senderName: "测试",
+    text: "请先改用简洁模式",
+  });
+  assert.equal(steeredText, "请先改用简洁模式");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(sentTexts.some((t) => t.includes("1. 测试环境") && t.includes("2. 生产环境")));
+
+  // 3. Reply "2" to resolve choice_request -> triggers draft_request
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    eventId: "tg:p04-choice",
+    chatId: "chat_p04",
+    senderId: "u_p04",
+    senderName: "测试",
+    text: "2",
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(chosenResults[0], { callId: "ch_call_1", selection: "生产环境" });
+  assert.ok(sentTexts.some((t) => t.includes("待确认草稿：发布通知")));
+
+  // 4. Reply "确认" to approve draft_request -> finishes turn and redacts outbound sk-
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    eventId: "tg:p04-draft",
+    chatId: "chat_p04",
+    senderId: "u_p04",
+    senderName: "测试",
+    text: "确认",
+  });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.deepEqual(chosenResults[1], { callId: "dr_call_2", selection: { approved: true } });
+  const finalSent = sentTexts.find((t) => t.includes("已发送，密钥为"));
+  assert.ok(finalSent);
+  assert.equal(finalSent!.includes("live99999999998888888888"), false);
+  assert.match(finalSent!, /sk-\[REDACTED\]/);
+});
+
+test("Phase 5 P1-4: external channel send_file receipt, /api/workspace/file stripping & failure notice", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-ch-p14-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const store = createStore(tmpDir);
+  const bot = store.createSession({ title: "TG 文件助手" });
+
+  // 1. send_file includes channel_delivery: queued_on_turn_end when channelMeta is present
+  const wsFile = path.join(tmpDir, "workspaces", `bot_${bot.id}`, "report.zip");
+  fs.mkdirSync(path.dirname(wsFile), { recursive: true });
+  fs.writeFileSync(wsFile, Buffer.from("PK-zip-mock"));
+  const sendRes: any = await runBotCollabTool(
+    "send_file",
+    { path: wsFile, title: "report.zip" },
+    {
+      store,
+      senderSessionId: bot.id,
+      senderBot: bot,
+      config: { writeRoots: [path.join(tmpDir, "workspaces")] },
+      userMeta: {
+        channelMeta: {
+          channel: "telegram-bot",
+          accountId: "tg1",
+          chatId: "chat_p14",
+        },
+      },
+    }
+  );
+  assert.equal(sendRes.ok, true);
+  assert.equal(sendRes.channel_delivery, "queued_on_turn_end");
+
+  // 2. stripLocalWorkspaceEmbedsForChannel removes local embed lines and rewrites inline links
+  const rawReply = [
+    "压缩包已准备好！",
+    "",
+    `[文件附件: report.zip · 路径: ${wsFile}]`,
+    "![preview](/api/workspace/file?path=%2Ftmp%2Fpreview.png)",
+    "另参考 [日志归档](/api/workspace/file?path=%2Ftmp%2Flogs.txt&download=1) 获取详情。",
+  ].join("\n");
+  const stripped = stripLocalWorkspaceEmbedsForChannel(rawReply);
+  assert.equal(stripped.includes("/api/workspace/file"), false);
+  assert.equal(stripped.includes("[文件附件:"), false);
+  assert.ok(stripped.includes("压缩包已准备好！"));
+  assert.ok(stripped.includes("另参考 日志归档 获取详情。"));
+
+  // 3. When Telegram media upload fails (e.g. too big), channel chat receives explicit failure warning
+  store.writeChannelsAuth({
+    telegramAccounts: [
+      {
+        id: "tg1",
+        label: "TG1",
+        enabled: true,
+        botToken: "12345:tg-token-p14",
+        dmPolicy: "open",
+        allowFrom: [],
+        approvedChats: [{ chatId: "chat_p14", userId: "u_p14", approvedAt: new Date().toISOString() }],
+      },
+    ],
+  });
+
+  const sentTexts: string[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (String(url).includes("/sendMessage")) {
+      const body = JSON.parse(String(init?.body || "{}"));
+      sentTexts.push(String(body.text || ""));
+      return new Response(JSON.stringify({ ok: true, result: { message_id: sentTexts.length } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (String(url).includes("/sendDocument") || String(url).includes("/sendPhoto")) {
+      return new Response(
+        JSON.stringify({ ok: false, description: "Request Entity Too Large (413): file is too big" }),
+        { status: 413, headers: { "content-type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ ok: true, result: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  let subCb: ((ev: any) => void) | null = null;
+  const mgr = createChannelManager({
+    store,
+    runner: {
+      isSessionBusy: () => false,
+      subscribe(cb: any) {
+        subCb = cb;
+        return () => {};
+      },
+      enqueue(sessionId: string) {
+        setTimeout(() => {
+          subCb?.({
+            type: "result",
+            sessionId,
+            name: "send_file",
+            result: sendRes,
+          });
+          subCb?.({
+            type: "answer",
+            sessionId,
+            text: rawReply,
+          });
+          subCb?.({ type: "status", sessionId, status: "done" });
+        }, 5);
+        return { ok: true, sessionId };
+      },
+    },
+    getInstalledSkills: () => ["telegram-bot"],
+    fetchImpl,
+  });
+  t.after(() => mgr.stopAll());
+  mgr.syncFromStore();
+
+  await mgr.handleInboundMessage({
+    channel: "telegram-bot",
+    eventId: "tg:p14-1",
+    chatId: "chat_p14",
+    senderId: "u_p14",
+    senderName: "测试",
+    text: "把压缩包发我",
+  });
+  await new Promise((r) => setTimeout(r, 60));
+
+  assert.ok(sentTexts.some((t) => t.includes("压缩包已准备好") && !t.includes("/api/workspace/file")));
+  assert.ok(
+    sentTexts.some((t) => t.includes("文件发送失败") && t.includes("report.zip") && t.includes("大小限制")),
+    `Expected failure notice in ${JSON.stringify(sentTexts)}`
+  );
+});
+
+test("Phase 6 P2-5 & P2-7: viaRelay [消息来源], group Bot reply timestamps & isBotHandoff sentAt", async (t) => {
+  // 1. formatClientSourceHeader distinguishes 云端中继 vs 局域网直连 when viaRelay boolean is present
+  assert.equal(
+    formatClientSourceHeader({ deviceKind: "mobile", platform: "ios", viaRelay: true }),
+    "[消息来源：TwinkleBot 手机端（iOS） · 云端中继]"
+  );
+  assert.equal(
+    formatClientSourceHeader({ deviceKind: "mobile", platform: "android", viaRelay: false }),
+    "[消息来源：TwinkleBot 手机端（Android） · 局域网直连]"
+  );
+  // Omitted viaRelay keeps legacy string unchanged
+  assert.equal(
+    formatClientSourceHeader({ deviceKind: "mobile", platform: "ios" }),
+    "[消息来源：TwinkleBot 手机端（iOS）]"
+  );
+
+  // 2. handleSessionRoutes stamps req.__twinkleRelayIngress onto userMeta.clientSource.viaRelay
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-p25-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const store = createStore(tmpDir);
+  const bot = store.createSession({ title: "Relay Source Bot" });
+  const enqueuedMeta: any[] = [];
+  const fakeReq: any = Readable.from([
+    Buffer.from(
+      JSON.stringify({
+        text: "测试中继来源",
+        clientSource: { deviceKind: "mobile", platform: "ios" },
+      })
+    ),
+  ]);
+  fakeReq.__twinkleRelayIngress = true;
+  fakeReq.headers = { "content-type": "application/json" };
+  let respStatus = 0;
+  const fakeRes: any = {
+    writeHead(st: number) {
+      respStatus = st;
+    },
+    end() {},
+    setHeader() {},
+  };
+  await handleSessionRoutes(
+    fakeReq,
+    fakeRes,
+    new URL(`http://127.0.0.1:3230/api/sessions/${bot.id}/messages`),
+    `/api/sessions/${bot.id}/messages`,
+    "POST",
+    {
+      store,
+      runner: {
+        isSessionBusy: () => false,
+        enqueue(_id: string, _text: string, meta: any) {
+          enqueuedMeta.push(meta);
+          return { queued: false, steered: false, queueLength: 0 };
+        },
+      },
+      finalConfig: {},
+      model: null,
+    } as any
+  );
+  assert.equal(respStatus, 202);
+  assert.equal(enqueuedMeta[0]?.clientSource?.viaRelay, true);
+
+  // 3. buildGroupPromptContext includes local timestamp on Bot answer lines when ev.at is present
+  const groupCtx = buildGroupPromptContext(
+    [
+      {
+        type: "user",
+        text: "开始协作",
+        sentAt: "2026-11-27T02:00:00.000Z",
+        clientTimeZone: "Asia/Shanghai",
+      },
+      {
+        type: "answer",
+        botName: "博客管理员",
+        text: "已整理好初稿。",
+        at: "2026-11-27T02:03:15.000Z",
+        clientTimeZone: "Asia/Shanghai",
+      },
+    ],
+    "下一步",
+    10
+  );
+  assert.match(groupCtx, /\[博客管理员 · 2026-11-27 10:03:15 \+08:00\]: 已整理好初稿。/);
+
+  // 4. createRunner still injects sentAt on isBotHandoff turns
+  let handoffMeta: any = null;
+  const runner = createRunner({
+    store,
+    model: {},
+    executor: { call: async () => ({}) },
+    config: {},
+    runTaskImpl: async (opts: any) => {
+      handoffMeta = opts.userMeta;
+      return { status: "done", text: "ok" };
+    },
+  });
+  t.after(() => runner.stop());
+  runner.start(bot.id, "跨 Bot 接力任务", undefined, { isBotHandoff: true });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(handoffMeta?.sentAt && Number.isFinite(Date.parse(handoffMeta.sentAt)));
 });

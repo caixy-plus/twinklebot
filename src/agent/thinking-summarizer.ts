@@ -214,7 +214,7 @@ export async function summarizeThinkingProgress({
     const turnPromise = model.summarizeTurn({
       model: targetModel,
       fallbackModel,
-      thinkingLevel: "low",
+      thinkingLevel: "minimal",
       timeoutMs,
       systemInstruction:
         "You summarize an AI assistant's in-progress work into a single ultra-short Chinese phrase under 10 characters with zero punctuation marks, without technical commands, file paths, or tool names.",

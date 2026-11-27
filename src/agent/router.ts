@@ -53,11 +53,15 @@ export function isPermanentModelError(err: any): boolean {
 export function isModelUnavailableError(err: any): boolean {
   if (isPermanentModelError(err)) return true;
   const msg = String(err?.message || err || "").toLowerCase();
-  const status = err?.status ?? err?.statusCode ?? err?.code;
-  if (status === 429 || status === 503 || status === 504) {
+  const status = Number(err?.status ?? err?.statusCode ?? err?.code ?? 0);
+  if (status === 402 || status === 429 || status === 503 || status === 504) {
     return true;
   }
   return (
+    msg.includes("402") ||
+    msg.includes("payment required") ||
+    msg.includes("insufficient balance") ||
+    msg.includes("insufficient_quota") ||
     msg.includes("timed out") ||
     msg.includes("timeout") ||
     msg.includes("aborted") ||

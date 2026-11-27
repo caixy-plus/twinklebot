@@ -26,6 +26,8 @@ import {
 import { buildSessionCostSummary } from "../../agent/pricing.js";
 import { detectSemanticStopIntent } from "../../agent/stop-detector.js";
 import { sanitizeClientTimeZone } from "../../lib/channel-integrations.js";
+import { isLoopbackAddress } from "../../lib/device-auth.js";
+import { isRelayIngressRequest } from "./relay.js";
 import {
   VALID_BOT_BROWSER_MODES,
   normalizeBotBrowserMode,
@@ -503,6 +505,9 @@ export async function handleSessionRoutes(
                 ? rawClientSource.deviceKind
                 : null;
             const validClientTimeZone = sanitizeClientTimeZone(body.clientTimeZone);
+            const viaRelay = isRelayIngressRequest(req);
+            const remoteAddr = req?.socket?.remoteAddress || req?.connection?.remoteAddress || "";
+            const isLanRemote = !viaRelay && Boolean(remoteAddr) && !isLoopbackAddress(remoteAddr);
             const serverSentAt = new Date().toISOString();
             const userMeta = {
               sentAt: serverSentAt,
@@ -518,12 +523,21 @@ export async function handleSessionRoutes(
                 ? {
                     clientSource: {
                       deviceKind: validDeviceKind,
+                      ...(viaRelay ? { viaRelay: true } : isLanRemote ? { viaRelay: false } : {}),
                       ...(rawClientSource.platform
                         ? { platform: String(rawClientSource.platform).slice(0, 32) }
                         : {}),
                     },
                   }
-                : {}),
+                : viaRelay
+                  ? {
+                      clientSource: {
+                        deviceKind: "mobile" as const,
+                        platform: "relay",
+                        viaRelay: true,
+                      },
+                    }
+                  : {}),
             };
             const cleanMeta = Object.keys(userMeta).length > 0 ? userMeta : null;
 

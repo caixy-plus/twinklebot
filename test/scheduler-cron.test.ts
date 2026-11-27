@@ -439,3 +439,119 @@ test("Phase 3 P2-3: scheduler enqueues busy sessions when available or records 5
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("Phase 4 P0-6: scheduler tracks async completion status and schedules 1 delayed retry on error", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-sched-async-"));
+  try {
+    const store = createStore(tmpDir);
+    const adminBot = store.ensureAdminBot();
+    const pastIso = new Date(Date.now() - 5000).toISOString();
+    store.writeSchedules([
+      {
+        id: "sched-async-err",
+        sessionId: adminBot.id,
+        title: "异步失败检查",
+        prompt: "拉取状态",
+        repeat: "daily",
+        cron: "0 9 * * *",
+        nextRunAt: pastIso,
+        enabled: true,
+      },
+    ]);
+
+    let capturedOnComplete: ((res: any) => void) | null = null;
+    const sched = createScheduler({
+      store,
+      runner: {
+        isSessionBusy: () => false,
+        start: (_sid: string, _msg: string, _meta?: any, opts?: any) => {
+          capturedOnComplete = opts?.onComplete || null;
+        },
+      },
+    });
+
+    assert.deepEqual(sched.tick(), ["sched-async-err"]);
+    assert.ok(capturedOnComplete);
+    (capturedOnComplete as any)({ status: "error", error: "HTTP 402 Payment Required" });
+
+    const afterErr = store.readSchedules()[0];
+    assert.equal(afterErr.lastRunStatus, "error");
+    assert.equal(afterErr.lastRunError, "HTTP 402 Payment Required");
+    assert.equal(afterErr.retryCount, 1);
+    assert.ok(Date.parse(afterErr.nextRunAt) <= Date.now() + 3 * 60_000);
+
+    // Succeeding afterwards resets retryCount
+    (capturedOnComplete as any)({ status: "done", text: "ok" });
+    const afterOk = store.readSchedules()[0];
+    assert.equal(afterOk.lastRunStatus, "done");
+    assert.equal(afterOk.retryCount, 0);
+    assert.equal(afterOk.lastRunError, undefined);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("Phase 6 P2-4: fixed N-day interval avoids month-end jitter, admin schedule scope='all', and diagnostics runtimeInfo", async () => {
+  // 1. 3-day fixed interval anchored at 2026-01-30 10:00 -> advances to 2026-02-02 10:00 (not 2026-02-01!)
+  const anchorLocal = new Date(2026, 0, 30, 10, 0, 0, 0);
+  const nextIso = computeNextRun("daily", anchorLocal, "每 3 天 10:00", "", {
+    intervalDays: 3,
+    anchorAt: anchorLocal.toISOString(),
+  });
+  assert.ok(nextIso);
+  const nextDate = new Date(nextIso!);
+  assert.equal(nextDate.getMonth(), 1); // Feb
+  assert.equal(nextDate.getDate(), 2); // Feb 2
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-p24-"));
+  try {
+    const store = createStore(tmpDir);
+    const admin = store.createSession({ title: "Twinkle", isAdmin: true });
+    const worker = store.createSession({ title: "Nori" });
+    await runBotCollabTool(
+      "schedule_manage",
+      { action: "create", title: "Worker每3天任务", prompt: "执行同步", time: "10:00", interval_days: 3 },
+      { store, senderSessionId: worker.id, senderBot: worker }
+    );
+
+    // Non-admin scope='all' denied
+    const deniedList: any = await runBotCollabTool(
+      "schedule_manage",
+      { action: "list", scope: "all" },
+      { store, senderSessionId: worker.id, senderBot: worker }
+    );
+    assert.equal(deniedList.ok, false);
+
+    // Admin scope='all' sees all bots' schedules
+    const adminList: any = await runBotCollabTool(
+      "schedule_manage",
+      { action: "list", scope: "all" },
+      { store, senderSessionId: admin.id, senderBot: admin }
+    );
+    assert.equal(adminList.ok, true);
+    assert.equal(adminList.scope, "all");
+    assert.equal(adminList.count, 1);
+    assert.equal(adminList.schedules[0].intervalDays, 3);
+    assert.equal(adminList.schedules[0].botName, "Nori");
+
+    // system_diagnostics exposes runtimeInfo (dataDir, logDir, coreBuild, webBuild)
+    const diag: any = await runBotCollabTool(
+      "system_diagnostics",
+      { action: "status" },
+      {
+        store,
+        senderSessionId: admin.id,
+        senderBot: admin,
+        executor: { call: async () => ({ ok: true }) },
+        config: { coreBuild: "20261127.01", webBuild: "20261127.02", appVersion: "1.0.6" },
+      }
+    );
+    assert.equal(diag.ok, true);
+    assert.equal(diag.runtimeInfo.dataDir, store.dataDir);
+    assert.ok(diag.runtimeInfo.logDir.endsWith("logs"));
+    assert.ok(typeof diag.runtimeInfo.coreBuild === "string");
+    assert.ok(typeof diag.runtimeInfo.webBuild === "string");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

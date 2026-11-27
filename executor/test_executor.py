@@ -1950,6 +1950,103 @@ class TestAutomationUpgrades(unittest.TestCase):
             self.assertEqual(attempts["n"], 2)
             self.assertEqual(retried["element_count"], 1)
 
+    def test_browser_type_native_date_input_and_readback_validation(self):
+        # 1. Valid native <input type="date"> write uses HTMLInputElement.prototype setter + readback
+        def ok_date_session(fn):
+            def fake_call(method, params=None):
+                if method == "Input.insertText":
+                    raise AssertionError("native date input must not use raw Input.insertText")
+                if method == "Runtime.evaluate":
+                    expr = str((params or {}).get("expression") or "")
+                    if "is_native_value_input" in expr:
+                        return {
+                            "result": {
+                                "value": {
+                                    "ok": True,
+                                    "visible": True,
+                                    "before_url": "https://form.test",
+                                    "x": 120,
+                                    "y": 80,
+                                    "tag": "input",
+                                    "input_type": "date",
+                                    "is_native_value_input": True,
+                                }
+                            }
+                        }
+                    if "HTMLInputElement.prototype" in expr:
+                        return {"result": {"value": {"ok": True, "actual_value": "1995-01-01", "input_type": "date"}}}
+                    if "collectGbSnapshot" in expr:
+                        return {
+                            "result": {
+                                "value": {
+                                    "ok": True,
+                                    "url": "https://form.test",
+                                    "title": "Form",
+                                    "element_count": 1,
+                                    "elements": [{"ref": "e5", "tag": "input"}],
+                                }
+                            }
+                        }
+                return {}
+
+            return fn(fake_call)
+
+        act_ok = Actions(FakeRun(), cdp_session=ok_date_session)
+        res_ok = act_ok.browser_type("e5", "1995-01-01")
+        self.assertTrue(res_ok["ok"])
+        self.assertEqual(res_ok["typed"]["value"], "1995-01-01")
+
+        # 2. If browser rejects invalid/unwritten date and el.value remains empty -> explicit error
+        def bad_date_session(fn):
+            def fake_call(method, params=None):
+                if method == "Runtime.evaluate":
+                    expr = str((params or {}).get("expression") or "")
+                    if "is_native_value_input" in expr:
+                        return {
+                            "result": {
+                                "value": {
+                                    "ok": True,
+                                    "visible": False,
+                                    "before_url": "https://form.test",
+                                    "x": 0,
+                                    "y": 0,
+                                    "tag": "input",
+                                    "input_type": "date",
+                                    "is_native_value_input": True,
+                                }
+                            }
+                        }
+                    if "HTMLInputElement.prototype" in expr:
+                        return {"result": {"value": {"ok": True, "actual_value": "", "input_type": "date"}}}
+                return {}
+
+            return fn(fake_call)
+
+        act_bad = Actions(FakeRun(), cdp_session=bad_date_session)
+        res_bad = act_bad.browser_type("e5", "01/01/1995")
+        self.assertFalse(res_bad["ok"])
+        self.assertIn("failed to set", res_bad["error"])
+
+    def test_manage_bot_tabs_returns_live_tabs_on_missing_target_id(self):
+        fake_tabs = [
+            {"id": "tab-1", "type": "page", "url": "https://a.test", "title": "Page A"},
+            {"id": "tab-2", "type": "page", "url": "https://b.test", "title": "Page B"},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            mgr = DisplayManager(
+                map_path=os.path.join(td, "display-map.json"),
+                targets_fn=lambda port=9222, timeout=2.5: fake_tabs,
+                window_for_target_fn=lambda tid, port=9222, timeout=2.0: {"windowId": 101},
+            )
+            mgr._bot_windows["bot-x"] = 101
+            mgr._bot_targets["bot-x"] = "tab-1"
+
+            res = mgr.manage_bot_tabs("bot-x", action="switch", target_id="stale-999")
+            self.assertFalse(res["ok"])
+            self.assertIn("stale-999", res["error"])
+            self.assertEqual(res["tab_count"], 2)
+            self.assertEqual([t["target_id"] for t in res["tabs"]], ["tab-1", "tab-2"])
+
 
 if __name__ == "__main__":
     unittest.main()

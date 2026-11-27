@@ -73,9 +73,26 @@ export function isSensitiveFilePath(targetPath: unknown): boolean {
   if (!targetPath || typeof targetPath !== "string") return true;
   const resolved = path.resolve(targetPath);
   const base = path.basename(resolved).toLowerCase();
+  const isBenignEnvExample =
+    base === ".env.example" ||
+    base === ".env.sample" ||
+    base === ".env.template" ||
+    base === "example.env" ||
+    base === "sample.env" ||
+    base === "template.env";
   if (
-    base === ".env" ||
-    base.startsWith(".env.") ||
+    !isBenignEnvExample &&
+    (base === ".env" || base.startsWith(".env.") || base.endsWith(".env"))
+  ) {
+    return true;
+  }
+  if (
+    (base === "settings.json" || base === "settings.json.bak") &&
+    /(?:^|[\\/])data[\\/]settings\.json(?:\.bak)?$/i.test(resolved)
+  ) {
+    return true;
+  }
+  if (
     /.*auth.*\.json$/i.test(base) ||
     base === "credentials.json" ||
     base === "vault.json" ||

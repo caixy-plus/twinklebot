@@ -1762,9 +1762,28 @@ class TabManager:
             }
 
         if act == "switch":
-            chosen = _pick_target(win_tabs, target_id, index)
+            try:
+                chosen = _pick_target(win_tabs, target_id, index)
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "action": "switch",
+                    "error": str(exc),
+                    "window_id": wid,
+                    "active_target_id": active_tid,
+                    "tab_count": len(win_tabs),
+                    "tabs": _format_tabs(win_tabs, active_tid),
+                }
             if chosen is None:
-                raise ValueError("switch requires target_id or index")
+                return {
+                    "ok": False,
+                    "action": "switch",
+                    "error": "switch requires target_id or index",
+                    "window_id": wid,
+                    "active_target_id": active_tid,
+                    "tab_count": len(win_tabs),
+                    "tabs": _format_tabs(win_tabs, active_tid),
+                }
             cid = str(chosen["id"])
             with self._lock:
                 self._bot_targets[bot_key] = cid
@@ -1799,7 +1818,18 @@ class TabManager:
                 "tabs": _format_tabs(win_tabs, active_tid),
                 "error": "cannot close the last remaining tab in this bot's window; navigate it instead",
             }
-        chosen = _pick_target(win_tabs, target_id, index)
+        try:
+            chosen = _pick_target(win_tabs, target_id, index)
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "action": "close",
+                "error": str(exc),
+                "window_id": wid,
+                "active_target_id": active_tid,
+                "tab_count": len(win_tabs),
+                "tabs": _format_tabs(win_tabs, active_tid),
+            }
         if chosen is None:
             for t in win_tabs:
                 if str(t.get("id") or "") == active_tid:
@@ -3495,12 +3525,14 @@ if (!editable) {{
     error: 'element ' + ref + ' (<' + tag + '>) is not an editable input field; call browser_snapshot and pick an input ref'
   }};
 }}
+const inputType = tag === 'input' ? String(el.type || 'text').toLowerCase() : '';
+const isNativeValueInput = tag === 'input' && ['date', 'time', 'month', 'week', 'datetime-local', 'color', 'range'].includes(inputType);
 const r = el.getBoundingClientRect();
 const visible = r && r.width >= 1 && r.height >= 1;
 const x = visible ? (r.left + hit.offsetX + r.width / 2) : 0;
 const y = visible ? (r.top + hit.offsetY + r.height / 2) : 0;
 try {{ el.focus(); }} catch (e) {{}}
-return {{ ok: true, visible: Boolean(visible), before_url: beforeUrl, x: x, y: y }};
+return {{ ok: true, visible: Boolean(visible), before_url: beforeUrl, x: x, y: y, tag: tag, input_type: inputType, is_native_value_input: isNativeValueInput }};
 }})()"""
                 info = _eval_on_session(call, locate_expr)
                 if not isinstance(info, dict):
@@ -3509,12 +3541,55 @@ return {{ ok: true, visible: Boolean(visible), before_url: beforeUrl, x: x, y: y
                     return info
                 if info.get("is_select"):
                     return {"_delegate_select": True}
-                if info.get("visible"):
-                    self._dispatch_mouse_click(call, info.get("x", 0), info.get("y", 0))
-                if clear:
-                    _eval_on_session(
+                actual_value = None
+                if info.get("is_native_value_input"):
+                    native_res = _eval_on_session(
                         call,
                         f"""(function() {{
+{_JS_FIND_REF_HELPER}
+const hit = findGbRef({json.dumps(norm_ref)});
+if (!hit || !hit.el) return {{ ok: false, error: 'element not found' }};
+const el = hit.el;
+const nextVal = {json.dumps(text)};
+const proto = (hit.win && hit.win.HTMLInputElement && hit.win.HTMLInputElement.prototype) || HTMLInputElement.prototype;
+const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+if (desc && desc.set) {{
+  desc.set.call(el, nextVal);
+}} else {{
+  el.value = nextVal;
+}}
+try {{
+  el.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: nextVal }}));
+}} catch (e) {{
+  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+}}
+el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+return {{ ok: true, actual_value: String(el.value ?? ''), input_type: String(el.type || '').toLowerCase() }};
+}})()""",
+                    )
+                    if not isinstance(native_res, dict) or not native_res.get("ok"):
+                        return native_res if isinstance(native_res, dict) else {"ok": False, "error": "Failed to set native input value"}
+                    input_type = str(native_res.get("input_type") or info.get("input_type") or "date")
+                    actual_value = str(native_res.get("actual_value") or "")
+                    text_str = str(text or "")
+                    text_trimmed = text_str.strip()
+                    if text_str and (
+                        actual_value == ""
+                        or (input_type in ("date", "time", "month", "week", "datetime-local") and clear and actual_value != text_trimmed)
+                        or (input_type == "color" and actual_value.lower() != text_trimmed.lower())
+                    ):
+                        return {
+                            "ok": False,
+                            "error": f'browser_type failed to set <input type="{input_type}"> value to {text_str!r} (actual value: {actual_value!r}); verify required format (e.g. YYYY-MM-DD for date)',
+                        }
+                else:
+                    if info.get("visible"):
+                        self._dispatch_mouse_click(call, info.get("x", 0), info.get("y", 0))
+                    if clear:
+                        _eval_on_session(
+                            call,
+                            f"""(function() {{
 {_JS_FIND_REF_HELPER}
 const hit = findGbRef({json.dumps(norm_ref)});
 if (!hit || !hit.el) return;
@@ -3529,10 +3604,41 @@ if (el.isContentEditable) {{
   try {{ el.select(); }} catch (e) {{}}
 }}
 }})()""",
-                    )
-                    self._dispatch_key_press(call, "Backspace", "Backspace", 8)
-                if text:
-                    call("Input.insertText", {"text": text})
+                        )
+                        self._dispatch_key_press(call, "Backspace", "Backspace", 8)
+                    if text:
+                        call("Input.insertText", {"text": text})
+                        if not submit:
+                            verify_res = _eval_on_session(
+                                call,
+                                f"""(function() {{
+{_JS_FIND_REF_HELPER}
+const hit = findGbRef({json.dumps(norm_ref)});
+if (!hit || !hit.el) return {{ checked: false }};
+const el = hit.el;
+const current = el.isContentEditable ? String(el.textContent || '') : String(el.value ?? '');
+if (current === '' && !el.isContentEditable) {{
+  const nextVal = {json.dumps(text)};
+  const proto = (el.tagName || '').toLowerCase() === 'textarea'
+    ? ((hit.win && hit.win.HTMLTextAreaElement && hit.win.HTMLTextAreaElement.prototype) || HTMLTextAreaElement.prototype)
+    : ((hit.win && hit.win.HTMLInputElement && hit.win.HTMLInputElement.prototype) || HTMLInputElement.prototype);
+  const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+  if (desc && desc.set) desc.set.call(el, nextVal);
+  else el.value = nextVal;
+  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  return {{ checked: true, actual_value: String(el.value ?? '') }};
+}}
+return {{ checked: true, actual_value: current }};
+}})()""",
+                            )
+                            if isinstance(verify_res, dict) and verify_res.get("checked") is True:
+                                actual_value = str(verify_res.get("actual_value") or "")
+                                if actual_value == "":
+                                    return {
+                                        "ok": False,
+                                        "error": f"browser_type wrote empty value to element {norm_ref}; element rejected typed text",
+                                    }
                 if submit:
                     self._dispatch_key_press(call, "Enter", "Enter", 13, text="\r")
                 time.sleep(0.3)
@@ -3552,7 +3658,7 @@ return collectGbSnapshot(80, 3000);
                 before_url = info.get("before_url") or ""
                 if submit and before_url and snap.get("url") and snap.get("url") != before_url and snap.get("element_count", 0) == 0:
                     return {"_navigated_retry": True}
-                snap["typed"] = {"ref": norm_ref, "submit": submit}
+                snap["typed"] = {"ref": norm_ref, "submit": submit, **({"value": actual_value} if actual_value is not None else {})}
                 return snap
 
             res = self.cdp_session(run_type)
@@ -3587,6 +3693,9 @@ if (!hit || !hit.el) {{
 const el = hit.el;
 el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
 try {{ el.focus(); }} catch (e) {{}}
+const tag = (el.tagName || '').toLowerCase();
+const inputType = tag === 'input' ? String(el.type || 'text').toLowerCase() : '';
+const isNativeValueInput = tag === 'input' && ['date', 'time', 'month', 'week', 'datetime-local', 'color', 'range'].includes(inputType);
 
 const nextVal = clear ? text : (String(el.value || '') + text);
 if (el.isContentEditable) {{
@@ -3608,6 +3717,25 @@ try {{
   el.dispatchEvent(new Event('input', {{ bubbles: true }}));
 }}
 el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+if (isNativeValueInput) {{
+  el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+}}
+const actualValue = el.isContentEditable ? String(el.textContent || '') : String(el.value ?? '');
+if (text.length > 0 && actualValue.length === 0) {{
+  return {{
+    ok: false,
+    error: 'browser_type failed to set value on <' + tag + (inputType ? ' type="' + inputType + '"' : '') + '> (actual value remained empty; verify expected format)'
+  }};
+}}
+if (isNativeValueInput && text.length > 0 && clear) {{
+  const trimmed = text.trim();
+  if ((['date', 'time', 'month', 'week', 'datetime-local'].includes(inputType) && actualValue !== trimmed) || (inputType === 'color' && actualValue.toLowerCase() !== trimmed.toLowerCase())) {{
+    return {{
+      ok: false,
+      error: 'browser_type failed to set <input type="' + inputType + '"> value to ' + JSON.stringify(text) + ' (actual value: ' + JSON.stringify(actualValue) + '; verify required format)'
+    }};
+  }}
+}}
 
 if (submit) {{
   for (const evType of ['keydown', 'keypress', 'keyup']) {{
@@ -4335,7 +4463,19 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                 if acquired_tab and dm is not None and acquired_bot_key:
                     dm.release_bot_tab_in_flight(acquired_bot_key)
 
-            self.send_json(200, res)
+            if (
+                path == "/browser/tabs"
+                and isinstance(res, dict)
+                and res.get("ok") is False
+                and (
+                    "not found" in str(res.get("error") or "")
+                    or "out of range" in str(res.get("error") or "")
+                    or "requires target_id" in str(res.get("error") or "")
+                )
+            ):
+                self.send_json(400, res)
+            else:
+                self.send_json(200, res)
 
         except (ValueError, TypeError, KeyError) as e:
             self.send_json(400, {"error": str(e)})

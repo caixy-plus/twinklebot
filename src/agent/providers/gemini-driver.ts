@@ -210,6 +210,20 @@ export function normalizeGeminiApiError(err: unknown): unknown {
   }
 
   if (!extracted?.message) {
+    if (hasOpaqueHttpMetaMsg) {
+      const friendlyMsg =
+        httpStatus === 402
+          ? "HTTP 402 Payment Required（模型服务余额不足或配额受限）"
+          : httpStatus === 429
+            ? "HTTP 429 Too Many Requests（请求触发上游限流）"
+            : httpStatus
+              ? `HTTP ${httpStatus} 上游模型服务返回异常`
+              : "上游模型服务返回异常（无详细响应体）";
+      const friendlyErr: any = new Error(friendlyMsg);
+      if (httpStatus !== undefined) friendlyErr.status = httpStatus;
+      friendlyErr.cause = err;
+      return friendlyErr;
+    }
     return err;
   }
 
@@ -654,6 +668,10 @@ export function createGeminiDriver({
         normalizedThinking === "none" || normalizedThinking === "off"
           ? "minimal"
           : normalizedThinking || "low";
+      const disableThinkingSummaries =
+        normalizedThinking === "none" ||
+        normalizedThinking === "off" ||
+        effectiveThinkingLevel === "minimal";
       const buildParams = (targetModel: string, sanitizedInput: any) => ({
         model: targetModel,
         system_instruction: systemInstruction,
@@ -661,7 +679,7 @@ export function createGeminiDriver({
         input: sanitizedInput,
         store: false,
         generation_config: {
-          thinking_summaries: "auto",
+          thinking_summaries: disableThinkingSummaries ? "none" : "auto",
           thinking_level: effectiveThinkingLevel,
         },
       });

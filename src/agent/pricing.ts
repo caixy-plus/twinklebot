@@ -38,6 +38,18 @@ export interface ModelPricingEntry {
 }
 
 export const MODEL_PRICING_CATALOG: Record<string, ModelPricingEntry> = {
+  "gemini-4-neon": {
+    model: "gemini-4-neon",
+    label: "Gemini 4 Neon",
+    shortLabel: "Neon",
+    role: "旗舰推理",
+    accent: "violet",
+    inputPer1M: 2.0,
+    cachedInputPer1M: 0.1,
+    outputPer1M: 10.0,
+    standardInputPer1M: 4.0,
+    standardOutputPer1M: 20.0,
+  },
   "gemini-4-carbon": {
     model: "gemini-4-carbon",
     label: "Gemini 4 Carbon",
@@ -358,6 +370,13 @@ export function getModelPricing(modelName = ""): ModelPricingEntry {
       ...MODEL_PRICING_CATALOG["gemini-3.1-flash-image"],
       model: id,
       label: id,
+    };
+  }
+  if (lower.includes("neon")) {
+    return {
+      ...MODEL_PRICING_CATALOG["gemini-4-neon"],
+      model: id,
+      label: lower === "gemini-4-neon" ? "Gemini 4 Neon" : id,
     };
   }
   if (lower.includes("carbon")) {

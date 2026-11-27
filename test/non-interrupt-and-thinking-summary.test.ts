@@ -112,7 +112,7 @@ test("summarizeThinkingProgress uses gemini-4-hydrogen (low thinking) and saniti
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].model, "gemini-4-hydrogen");
-  assert.equal(calls[0].thinkingLevel, "low");
+  assert.equal(calls[0].thinkingLevel, "minimal");
   assert.equal(res.text, "正在查看服务器日志");
   assert.ok(Array.from(res.text).length < 10);
   assert.equal(/[\p{P}\p{S}\s]/u.test(res.text), false);
@@ -228,7 +228,7 @@ test("runTask emits single-sentence thinking_summary via gemini-4-hydrogen (low)
       },
       async summarizeTurn(args: any) {
         assert.equal(args.model, "gemini-4-hydrogen");
-        assert.equal(args.thinkingLevel, "low");
+        assert.equal(args.thinkingLevel, "minimal");
         return {
           text: "正在核查磁盘空间！",
           usedModel: "gemini-4-hydrogen",
@@ -720,6 +720,80 @@ test("live mid-turn steering supersedes awaiting_choice cleanly while keeping fu
     assert.ok(secondCallInputs.some((step: any) => step.type === "function_result" && step.call_id === "call_choice_1"));
     assert.ok(JSON.stringify(secondCallInputs).includes("直接用方案 B 并加上测试"));
     assert.ok(events.some((e) => e.type === "answer" && e.text.includes("方案 B")));
+  } finally {
+    cleanup();
+  }
+});
+
+test("Phase 5 P1-1: thinking-summarizer throttles consecutive same-domain steps even when thoughts are present", async () => {
+  const { store, cleanup } = createTempEnv();
+  try {
+    const s = store.createSession({ title: "Summary Throttle" });
+    const summaryCalls: any[] = [];
+    const emitted: any[] = [];
+    let turnIdx = 0;
+
+    const model = {
+      async nextTurn() {
+        turnIdx += 1;
+        if (turnIdx <= 3) {
+          return {
+            thoughts: [`Thinking deeply on shell step ${turnIdx}`],
+            text: "",
+            calls: [{ id: `c_${turnIdx}`, name: "run_shell", args: { command: `echo step_${turnIdx}` } }],
+            outputSteps: [
+              { id: `c_${turnIdx}`, type: "function_call", name: "run_shell", args: { command: `echo step_${turnIdx}` } },
+            ],
+            usage: { input: 20, output: 10 },
+          };
+        }
+        return {
+          thoughts: [],
+          text: "全部执行完成。",
+          calls: [],
+          outputSteps: [{ type: "model_output", text: "全部执行完成。" }],
+          usage: { input: 25, output: 15 },
+        };
+      },
+      async summarizeTurn(args: any) {
+        summaryCalls.push(args);
+        return {
+          text: "正在执行脚本检查",
+          usedModel: "gemini-4-hydrogen",
+          usage: { input: 20, output: 4 },
+        };
+      },
+    };
+
+    const executor = {
+      async call(route: any) {
+        if (route === "/shell") {
+          return { exit_code: 0, stdout: "ok", stderr: "" };
+        }
+        return { png_base64: Buffer.from("png").toString("base64"), width: 1440, height: 900 };
+      },
+    };
+
+    const res = await runTask({
+      sessionId: s.id,
+      userText: "帮我检查一下几个服务器状态",
+      deps: {
+        model,
+        executor,
+        store,
+        config: {
+          fastModel: "gemini-4-hydrogen",
+          thinkingSummaryModel: "gemini-4-hydrogen",
+          settleMs: 0,
+        },
+        emit: (e: any) => emitted.push(e),
+      },
+    });
+    assert.equal(res.status, "done");
+    // Step 1 init + step 2 domain change init->shell call summarizeTurn, step 3 (same domain shell, <3 steps & <12s) uses fallback!
+    assert.equal(summaryCalls.length, 2);
+    assert.equal(summaryCalls[0].thinkingLevel, "minimal");
+    assert.ok(emitted.some((e) => e.type === "thinking_summary" && e.source === "fallback"));
   } finally {
     cleanup();
   }

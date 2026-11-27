@@ -147,7 +147,38 @@ export function canonicalToOpenAiMessages(
     return round.deferredSteps;
   };
 
-  const processStep = (step: any) => {
+  const steps = Array.isArray(inputSteps) ? inputSteps : [];
+  // Find the last real user turn index: DeepSeek/OpenAI reasoning models only need
+  // reasoning_content within the active turn's tool-call loop, never from older finished turns.
+  let lastRealUserIdx = 0;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (s?.type !== "user_input") continue;
+    const rawParts = Array.isArray(s.content)
+      ? s.content
+      : typeof s.content === "string"
+        ? [{ type: "text", text: s.content }]
+        : [];
+    const txt = rawParts
+      .filter((p: any) => p?.type === "text")
+      .map((p: any) => String(p.text || "").trim())
+      .join("\n")
+      .trim();
+    if (
+      txt &&
+      txt !== "Current screen:" &&
+      txt !== "Current desktop screen:" &&
+      !txt.startsWith("[Auto Context Summary]") &&
+      !txt.startsWith("[自动上下文压缩摘要]") &&
+      !txt.startsWith("[System Notice") &&
+      !txt.startsWith("[系统提示")
+    ) {
+      lastRealUserIdx = i;
+      break;
+    }
+  }
+
+  const processStep = (step: any, stepIdx = steps.length - 1) => {
     if (!step) return;
 
     if (activeToolRound) {
@@ -170,7 +201,7 @@ export function canonicalToOpenAiMessages(
           if (activeToolRound.totalAnswered >= activeToolRound.totalExpected) {
             const deferred = closeActiveToolRound();
             for (const d of deferred) {
-              processStep(d);
+              processStep(d, stepIdx);
             }
           }
         }
@@ -182,7 +213,7 @@ export function canonicalToOpenAiMessages(
         // finalize the prior round (stripping unanswered tool_calls) and replay deferred steps.
         const deferred = closeActiveToolRound();
         for (const d of deferred) {
-          processStep(d);
+          processStep(d, stepIdx);
         }
       } else {
         // Defer non-tool steps (e.g. interleaved "Current screen:" user_input) until all
@@ -229,6 +260,9 @@ export function canonicalToOpenAiMessages(
     }
 
     if (step.type === "thought") {
+      if (stepIdx < lastRealUserIdx) {
+        return;
+      }
       const assistant = ensurePendingAssistant();
       const t =
         typeof step.summary === "string"
@@ -291,15 +325,15 @@ export function canonicalToOpenAiMessages(
     }
   };
 
-  for (const step of Array.isArray(inputSteps) ? inputSteps : []) {
-    processStep(step);
+  for (let stepIdx = 0; stepIdx < steps.length; stepIdx++) {
+    processStep(steps[stepIdx], stepIdx);
   }
 
   flushAssistant();
   if (activeToolRound) {
     const deferred = closeActiveToolRound();
     for (const d of deferred) {
-      processStep(d);
+      processStep(d, steps.length - 1);
     }
     flushAssistant();
     if (activeToolRound) {

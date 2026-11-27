@@ -362,6 +362,19 @@ test("host_read_file slices lines, host_edit_file replaces/appends safely, and W
     assert.deepEqual(wslSpec.args, ["-d", "Ubuntu-24.04", "--", "bash", "-lc", "git status | tail -n 5"]);
     assert.equal(wslSpec.isPowerShell, false);
 
+    // Phase 5 P1-5: macOS zsh passes -o nonomatch so unmatched globs do not fail exit 1 prematurely
+    const macSpec = buildHostShellSpawnSpec("ls /tmp/*.nonexistent_glob_test 2>/dev/null || true", {
+      platform: "darwin",
+    });
+    assert.equal(macSpec.cmd, "/bin/zsh");
+    assert.deepEqual(macSpec.args, [
+      "-o",
+      "nonomatch",
+      "-lc",
+      "ls /tmp/*.nonexistent_glob_test 2>/dev/null || true",
+    ]);
+    assert.equal(macSpec.isPowerShell, false);
+
     const noisyClixml = `#< CLIXML\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><PR N="Progress"><T>Completed</T></PR></Objs>`;
     assert.equal(cleanPowerShellClixmlStderr(noisyClixml), "");
 

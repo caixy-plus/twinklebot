@@ -676,3 +676,13 @@ test("DeepSeek exact billing: V4/Flash catalog rates, cache-hit pricing, Beijing
   assert.equal(histAgg.estimatedCostCny, 1.729);
   assert.equal(histAgg.cachedTokens, 1_850_000);
 });
+
+test("Phase 6 P2-1: pricing catalog includes gemini-4-neon without falling back to custom model", () => {
+  const neon = getModelPricing("gemini-4-neon");
+  assert.equal(neon.model, "gemini-4-neon");
+  assert.equal(neon.shortLabel, "Neon");
+  assert.notEqual(neon.role, "自定义模型");
+  assert.equal(neon.inputPer1M, 2.0);
+  assert.equal(neon.cachedInputPer1M, 0.1);
+  assert.equal(neon.outputPer1M, 10.0);
+});
