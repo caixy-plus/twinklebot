@@ -20,7 +20,7 @@ export const CURRENT_API_CAPABILITIES = [
 ] as const;
 
 export const DEFAULT_GITHUB_OWNER = "caixy-plus";
-export const DEFAULT_GITHUB_REPO = "caixy-plus/twinklebot-releases";
+export const DEFAULT_GITHUB_REPO = "caixy-plus/twinklebot";
 export const OTA_CHANNEL_TAG = "ota-channel";
 
 export type UpdateTargetPlatform = "desktop" | "android" | "ios" | "web";

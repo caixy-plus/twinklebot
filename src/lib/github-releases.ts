@@ -77,7 +77,13 @@ export function isTrustedGithubReleaseUrl(
       const p = u.pathname.toLowerCase();
       if (githubRepo) {
         const repoPrefix = `/${String(githubRepo).toLowerCase()}/releases/`;
-        return p.startsWith(repoPrefix);
+        if (p.startsWith(repoPrefix)) return true;
+        const repoOwner = String(githubRepo).split("/")[0]?.trim().toLowerCase();
+        if (repoOwner && repoOwner === DEFAULT_GITHUB_OWNER.toLowerCase()) {
+          const ownerRe = new RegExp(`^/${repoOwner}/[a-z0-9._-]+/releases/`);
+          return ownerRe.test(p);
+        }
+        return false;
       }
       const configuredPrefix = `/${resolveConfiguredGithubRepo().toLowerCase()}/releases/`;
       if (p.startsWith(configuredPrefix)) return true;

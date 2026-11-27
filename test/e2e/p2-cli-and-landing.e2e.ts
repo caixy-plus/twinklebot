@@ -348,16 +348,16 @@ test("P2 Suite 9: CLI Tool (Providers / Interactive Approval / Max-Steps & Doubl
             }
             return new Response(JSON.stringify([{
               tag_name: 'v1.9.9',
-              html_url: 'https://github.com/caixy-plus/twinklebot-releases/releases/tag/v1.9.9',
+              html_url: 'https://github.com/caixy-plus/twinklebot/releases/tag/v1.9.9',
               draft: false,
               prerelease: false,
               assets: [
-                { name: 'TwinkleBot-1.9.9-arm64.dmg', browser_download_url: 'https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.9.9/TwinkleBot-1.9.9-arm64.dmg' },
-                { name: 'TwinkleBot-Setup-1.9.9.exe', browser_download_url: 'https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.9.9/TwinkleBot-Setup-1.9.9.exe' },
-                { name: 'TwinkleBot-1.9.9-win.zip', browser_download_url: 'https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.9.9/TwinkleBot-1.9.9-win.zip' },
-                { name: 'TwinkleBot-1.9.9.AppImage', browser_download_url: 'https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.9.9/TwinkleBot-1.9.9.AppImage' },
-                { name: 'TwinkleBot-1.9.9-linux.tar.gz', browser_download_url: 'https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.9.9/TwinkleBot-1.9.9-linux.tar.gz' },
-                { name: 'TwinkleBot-1.9.9-release.apk', browser_download_url: 'https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.9.9/TwinkleBot-1.9.9-release.apk' }
+                { name: 'TwinkleBot-1.9.9-arm64.dmg', browser_download_url: 'https://github.com/caixy-plus/twinklebot/releases/download/v1.9.9/TwinkleBot-1.9.9-arm64.dmg' },
+                { name: 'TwinkleBot-Setup-1.9.9.exe', browser_download_url: 'https://github.com/caixy-plus/twinklebot/releases/download/v1.9.9/TwinkleBot-Setup-1.9.9.exe' },
+                { name: 'TwinkleBot-1.9.9-win.zip', browser_download_url: 'https://github.com/caixy-plus/twinklebot/releases/download/v1.9.9/TwinkleBot-1.9.9-win.zip' },
+                { name: 'TwinkleBot-1.9.9.AppImage', browser_download_url: 'https://github.com/caixy-plus/twinklebot/releases/download/v1.9.9/TwinkleBot-1.9.9.AppImage' },
+                { name: 'TwinkleBot-1.9.9-linux.tar.gz', browser_download_url: 'https://github.com/caixy-plus/twinklebot/releases/download/v1.9.9/TwinkleBot-1.9.9-linux.tar.gz' },
+                { name: 'TwinkleBot-1.9.9-release.apk', browser_download_url: 'https://github.com/caixy-plus/twinklebot/releases/download/v1.9.9/TwinkleBot-1.9.9-release.apk' }
               ]
             }]), { status: 200, headers: { 'Content-Type': 'application/json' } });
           }

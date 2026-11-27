@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "baselineVersion": "1.0.0",
-  "githubRepo": "caixy-plus/twinklebot-releases",
+  "githubRepo": "caixy-plus/twinklebot",
   "otaChannelTag": "ota-channel",
   "shells": {
     "desktop": {

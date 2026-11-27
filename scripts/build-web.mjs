@@ -103,7 +103,7 @@ export function readVersionPolicy() {
   return {
     schemaVersion: 1,
     baselineVersion: "1.0.0",
-    githubRepo: "caixy-plus/twinklebot-releases",
+    githubRepo: "caixy-plus/twinklebot",
     otaChannelTag: "ota-channel",
     shells: {
       desktop: { version: "1.0.0", minVersionForOta: "1.0.0" },
@@ -174,7 +174,7 @@ export function readProjectShellMetadata() {
     policyApiCapabilities: Array.isArray(policy.backend?.apiCapabilities)
       ? policy.backend.apiCapabilities.map(String)
       : [...FALLBACK_API_CAPABILITIES],
-    githubRepo: String(policy.githubRepo || "caixy-plus/twinklebot-releases"),
+    githubRepo: String(policy.githubRepo || "caixy-plus/twinklebot"),
     otaChannelTag: String(policy.otaChannelTag || "ota-channel"),
   };
 }

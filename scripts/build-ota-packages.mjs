@@ -117,6 +117,47 @@ function parseCliArgs(argv) {
   return opts;
 }
 
+export function rewriteManifestRepoUrls(manifest, fromRepo, toRepo) {
+  const fromNorm = String(fromRepo || "").trim().replace(/^\/+|\/+$/g, "");
+  const toNorm = String(toRepo || "").trim().replace(/^\/+|\/+$/g, "");
+  const cloned = JSON.parse(JSON.stringify(manifest));
+  if (!fromNorm || !toNorm || fromNorm.toLowerCase() === toNorm.toLowerCase()) {
+    return cloned;
+  }
+  const fromPrefix = `https://github.com/${fromNorm}/releases/`;
+  const toPrefix = `https://github.com/${toNorm}/releases/`;
+  const rewriteUrl = (val) => {
+    const s = typeof val === "string" ? val : "";
+    if (!s) return val;
+    if (s.toLowerCase().startsWith(fromPrefix.toLowerCase())) {
+      return `${toPrefix}${s.slice(fromPrefix.length)}`;
+    }
+    return s;
+  };
+  if (cloned.releaseUrl) cloned.releaseUrl = rewriteUrl(cloned.releaseUrl);
+  if (cloned.shells && typeof cloned.shells === "object") {
+    for (const shell of Object.values(cloned.shells)) {
+      if (!shell || typeof shell !== "object") continue;
+      if (shell.downloadUrl) shell.downloadUrl = rewriteUrl(shell.downloadUrl);
+      if (shell.assets && typeof shell.assets === "object") {
+        for (const asset of Object.values(shell.assets)) {
+          if (asset && typeof asset === "object" && asset.downloadUrl) {
+            asset.downloadUrl = rewriteUrl(asset.downloadUrl);
+          }
+        }
+      }
+    }
+  }
+  if (cloned.bundles && typeof cloned.bundles === "object") {
+    for (const bundle of Object.values(cloned.bundles)) {
+      if (bundle && typeof bundle === "object" && bundle.bundleUrl) {
+        bundle.bundleUrl = rewriteUrl(bundle.bundleUrl);
+      }
+    }
+  }
+  return cloned;
+}
+
 export async function buildOtaPackages({
   mode = process.env.OTA_BUILD_MODE || "full",
   outDir = DEFAULT_OUT_DIR,

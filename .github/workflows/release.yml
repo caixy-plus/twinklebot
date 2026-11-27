@@ -118,7 +118,11 @@ jobs:
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           RELEASE_NOTES: ${{ steps.meta.outputs.release_notes }}
         run: |
-          gh release delete "$RELEASE_TAG" --repo "$TARGET_REPO" --cleanup-tag --yes || true
+          if [ "$TARGET_REPO" = "$GITHUB_REPOSITORY" ]; then
+            gh release delete "$RELEASE_TAG" --repo "$TARGET_REPO" --yes || true
+          else
+            gh release delete "$RELEASE_TAG" --repo "$TARGET_REPO" --cleanup-tag --yes || true
+          fi
           NOTES_TEXT="${RELEASE_NOTES:-TwinkleBot ${RELEASE_TAG} 全平台正式发布}"
           gh release create "$RELEASE_TAG" \
             --repo "$TARGET_REPO" \
@@ -220,9 +224,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          LEGACY_REPO: ${{ vars.LEGACY_RELEASE_REPO || '' }}
         run: |
           gh release download ota-channel --repo "$TARGET_REPO" -p "version-manifest.json" -O prev-manifest.json || \
-          gh release download --repo "$TARGET_REPO" -p "version-manifest.json" -O prev-manifest.json || true
+          gh release download --repo "$TARGET_REPO" -p "version-manifest.json" -O prev-manifest.json || \
+          { [ -n "$LEGACY_REPO" ] && gh release download ota-channel --repo "$LEGACY_REPO" -p "version-manifest.json" -O prev-manifest.json; } || true
 
       - name: Build OTA bundles & manifest
         env:
@@ -267,6 +273,41 @@ jobs:
             --prerelease \
             --title "TwinkleBot Authoritative Update Channel" \
             --notes "Active version-manifest.json pointer (${{ needs.prepare.outputs.release_tag }})."
+
+      - name: Mirror OTA release & manifest to legacy repository (transitional)
+        if: ${{ vars.LEGACY_RELEASE_REPO != '' && vars.LEGACY_RELEASE_REPO != (vars.RELEASE_REPO || github.repository) }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          PRIMARY_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          LEGACY_REPO: ${{ vars.LEGACY_RELEASE_REPO }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          mkdir -p dist-ota-legacy
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import { rewriteManifestRepoUrls } from "./scripts/build-ota-packages.mjs";
+            const raw = JSON.parse(fs.readFileSync("dist-ota/version-manifest.json", "utf8"));
+            const rewritten = rewriteManifestRepoUrls(raw, process.env.PRIMARY_REPO, process.env.LEGACY_REPO);
+            fs.writeFileSync("dist-ota-legacy/version-manifest.json", JSON.stringify(rewritten, null, 2));
+          '
+          gh release delete "$RELEASE_TAG" --repo "$LEGACY_REPO" --cleanup-tag --yes || true
+          gh release create "$RELEASE_TAG" \
+            dist-ota-legacy/version-manifest.json \
+            dist-ota/twinklebot-core-desktop.tar.gz \
+            dist-ota/twinklebot-web-desktop.tar.gz \
+            dist-ota/twinklebot-web-mobile.tar.gz \
+            --repo "$LEGACY_REPO" \
+            --target main \
+            --prerelease \
+            --title "TwinkleBot Core + Frontend OTA (${RELEASE_TAG})" \
+            --notes "Mirrored OTA update from ${PRIMARY_REPO} (${RELEASE_TAG})."
+          gh release delete ota-channel --repo "$LEGACY_REPO" --cleanup-tag --yes || true
+          gh release create ota-channel dist-ota-legacy/version-manifest.json \
+            --repo "$LEGACY_REPO" \
+            --target main \
+            --prerelease \
+            --title "TwinkleBot Authoritative Update Channel" \
+            --notes "Active version-manifest.json pointer (${RELEASE_TAG})."
 
   build-desktop:
     name: Build Desktop (${{ matrix.platform }})
@@ -500,6 +541,41 @@ jobs:
           gh release create ota-channel dist-ota/version-manifest.json \
             --repo "$TARGET_REPO" \
             --target "$TARGET_REF" \
+            --prerelease \
+            --title "TwinkleBot Authoritative Update Channel" \
+            --notes "Active version-manifest.json pointer (${RELEASE_TAG})."
+
+      - name: Mirror full release & manifest to legacy repository (transitional)
+        if: ${{ vars.LEGACY_RELEASE_REPO != '' && vars.LEGACY_RELEASE_REPO != (vars.RELEASE_REPO || github.repository) }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          PRIMARY_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          LEGACY_REPO: ${{ vars.LEGACY_RELEASE_REPO }}
+          RELEASE_TAG: "${{ needs.prepare.outputs.release_tag }}"
+          RELEASE_NOTES: "${{ needs.prepare.outputs.release_notes }}"
+        run: |
+          mkdir -p legacy-mirror-assets
+          gh release download "$RELEASE_TAG" --repo "$PRIMARY_REPO" --dir legacy-mirror-assets
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import { rewriteManifestRepoUrls } from "./scripts/build-ota-packages.mjs";
+            const manifestPath = "legacy-mirror-assets/version-manifest.json";
+            const raw = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+            const rewritten = rewriteManifestRepoUrls(raw, process.env.PRIMARY_REPO, process.env.LEGACY_REPO);
+            fs.writeFileSync(manifestPath, JSON.stringify(rewritten, null, 2));
+          '
+          NOTES_TEXT="${RELEASE_NOTES:-TwinkleBot ${RELEASE_TAG} 全平台正式发布（同步自 ${PRIMARY_REPO}）}"
+          gh release delete "$RELEASE_TAG" --repo "$LEGACY_REPO" --cleanup-tag --yes || true
+          gh release create "$RELEASE_TAG" legacy-mirror-assets/* \
+            --repo "$LEGACY_REPO" \
+            --target main \
+            --latest \
+            --title "TwinkleBot ${RELEASE_TAG}" \
+            --notes "$NOTES_TEXT"
+          gh release delete ota-channel --repo "$LEGACY_REPO" --cleanup-tag --yes || true
+          gh release create ota-channel legacy-mirror-assets/version-manifest.json \
+            --repo "$LEGACY_REPO" \
+            --target main \
             --prerelease \
             --title "TwinkleBot Authoritative Update Channel" \
             --notes "Active version-manifest.json pointer (${RELEASE_TAG})."

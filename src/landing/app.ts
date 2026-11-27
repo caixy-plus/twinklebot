@@ -1,4 +1,4 @@
-const REPO = "caixy-plus/twinklebot-releases";
+const REPO = "caixy-plus/twinklebot";
 const FALLBACK_VERSION = "v1.0.0";
 const RELEASES_PAGE = `https://github.com/${REPO}/releases`;
 

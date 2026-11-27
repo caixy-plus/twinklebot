@@ -1,13 +1,13 @@
-# TwinkleBot (v1.0.0)
+# TwinkleBot
 
 TwinkleBot 是一个跨平台 **Multi-Bot AI 桌面与移动端智能体**：支持在单机或局域网/云端架构下协同调度多位专属 Bot 与群聊，支持通过 OrbStack Ubuntu XFCE 沙箱桌面（`:1`，1440×900）与宿主机执行桥（Host Executor）完成文件处理、终端命令、浏览器自动化及日常任务。
 
 ## 安装包下载（GitHub Releases）
 
-桌面端预编译安装包（macOS `.dmg`/`.zip`、Windows `.exe`/`.zip`、Linux `.AppImage`/`.tar.gz`）发布在 [GitHub Releases](https://github.com/caixy-plus/twinklebot-releases/releases)：
+桌面端预编译安装包（macOS `.dmg`/`.zip`、Windows `.exe`/`.zip`、Linux `.AppImage`/`.tar.gz`）与 Android APK 发布在 [GitHub Releases](https://github.com/caixy-plus/twinklebot/releases)：
 
-- **最新版本**：[Latest Release](https://github.com/caixy-plus/twinklebot-releases/releases/latest)
-- **全部版本**：[github.com/caixy-plus/twinklebot-releases/releases](https://github.com/caixy-plus/twinklebot-releases/releases)
+- **最新版本**：[Latest Release](https://github.com/caixy-plus/twinklebot/releases/latest)
+- **全部版本**：[github.com/caixy-plus/twinklebot/releases](https://github.com/caixy-plus/twinklebot/releases)
 
 ## 核心能力
 

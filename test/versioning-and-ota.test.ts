@@ -27,7 +27,10 @@ import {
   clearGithubManifestCacheForTest,
   fetchLatestGithubManifest,
   isTrustedGithubReleaseUrl,
+  validateGithubManifestUrls,
 } from "../src/lib/github-releases.js";
+// @ts-expect-error scripts helper is plain ESM JS without .d.ts
+import { rewriteManifestRepoUrls } from "../../scripts/build-ota-packages.mjs";
 import { createServer } from "../src/server/index.js";
 
 const _UP_ONE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -343,11 +346,11 @@ test("buildOtaPackages supports both full mode (per-OS SHA-256 asset scan) and o
     // Shell download URLs & SHA-256 still point to v1.2.0 installers!
     assert.equal(
       otaManifest.shells.desktop?.assets?.["win32-x64"]?.downloadUrl,
-      "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.2.0/TwinkleBot-Setup-1.2.0.exe"
+      "https://github.com/caixy-plus/twinklebot/releases/download/v1.2.0/TwinkleBot-Setup-1.2.0.exe"
     );
     assert.equal(
       otaManifest.shells.android?.downloadUrl,
-      "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.2.0/TwinkleBot-mobile-release.apk"
+      "https://github.com/caixy-plus/twinklebot/releases/download/v1.2.0/TwinkleBot-mobile-release.apk"
     );
     // While OTA bundles point to the new ota-20261118.1 tag!
     assert.match(
@@ -951,4 +954,154 @@ test("createCoreOtaManager enforces GitHub URL trust, SHA-256, minShellVersion, 
     fs.rmSync(badShellArchive, { force: true });
     fs.rmSync(path.join(srcV2, "..", "core-v3.tar.gz"), { force: true });
   }
+});
+
+test("cross-repo same-owner trust validation and rewriteManifestRepoUrls support smooth repo consolidation", () => {
+  // 1. Official owner cross-repo URLs (caixy-plus/twinklebot <-> caixy-plus/twinklebot-releases) are both accepted
+  assert.equal(
+    isTrustedGithubReleaseUrl(
+      "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.0.6/TwinkleBot-1.0.6-arm64.dmg",
+      "caixy-plus/twinklebot"
+    ),
+    true
+  );
+  assert.equal(
+    isTrustedGithubReleaseUrl(
+      "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-1.0.7-arm64.dmg",
+      "caixy-plus/twinklebot-releases"
+    ),
+    true
+  );
+
+  // 2. Third-party owners remain strictly rejected, and custom fork repos remain locked to themselves
+  assert.equal(
+    isTrustedGithubReleaseUrl(
+      "https://github.com/other-org/twinklebot/releases/download/v1.0.7/TwinkleBot.dmg",
+      "caixy-plus/twinklebot"
+    ),
+    false
+  );
+  assert.equal(
+    isTrustedGithubReleaseUrl(
+      "https://github.com/other-org/twinklebot/releases/download/v1.0.7/TwinkleBot.dmg",
+      "custom-fork/twinklebot"
+    ),
+    false
+  );
+  assert.equal(
+    isTrustedGithubReleaseUrl(
+      "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot.dmg",
+      "custom-fork/twinklebot"
+    ),
+    false
+  );
+
+  // 3. rewriteManifestRepoUrls updates all manifest URLs cleanly while preserving SHA-256, sizes, and capabilities
+  const manifest: VersionManifest = {
+    schemaVersion: 1,
+    generatedAt: "2026-11-27T06:00:00.000Z",
+    releaseTag: "v1.0.7",
+    releaseUrl: "https://github.com/caixy-plus/twinklebot/releases/tag/v1.0.7",
+    webBuild: "20261127.060000-web123456",
+    coreBuild: "20261127.060000-core123456",
+    shells: {
+      desktop: {
+        latestVersion: "1.0.7",
+        minVersionForOta: "1.0.7",
+        minVersionForCoreOta: "1.0.7",
+        fileName: "TwinkleBot-1.0.7-arm64.dmg",
+        downloadUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-1.0.7-arm64.dmg",
+        sha256: "a".repeat(64),
+        sizeBytes: 123456,
+        assets: {
+          "darwin-arm64": {
+            fileName: "TwinkleBot-1.0.7-arm64.dmg",
+            downloadUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-1.0.7-arm64.dmg",
+            sha256: "a".repeat(64),
+            sizeBytes: 123456,
+          },
+          "win32-x64": {
+            fileName: "TwinkleBot-Setup-1.0.7.exe",
+            downloadUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-Setup-1.0.7.exe",
+            sha256: "b".repeat(64),
+            sizeBytes: 654321,
+          },
+        },
+      },
+      android: {
+        latestVersion: "1.0.7",
+        latestBuildCode: 8,
+        minVersionForOta: "1.0.7",
+        minBuildCodeForOta: 8,
+        fileName: "TwinkleBot-mobile-release.apk",
+        downloadUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-mobile-release.apk",
+        sha256: "c".repeat(64),
+        sizeBytes: 4200000,
+      },
+    },
+    backend: {
+      latestVersion: "1.0.7",
+      minCompatibleVersion: "1.0.0",
+      apiCapabilities: [...CURRENT_API_CAPABILITIES],
+    },
+    bundles: {
+      desktop: {
+        target: "desktop",
+        webBuild: "20261127.060000-web123456",
+        bundleUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/twinklebot-web-desktop.tar.gz",
+        sha256: "d".repeat(64),
+        sizeBytes: 450000,
+      },
+      desktopCore: {
+        target: "desktop",
+        coreBuild: "20261127.060000-core123456",
+        coreVersion: "1.0.7",
+        webBuild: "20261127.060000-web123456",
+        bundleUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/twinklebot-core-desktop.tar.gz",
+        sha256: "e".repeat(64),
+        sizeBytes: 1850000,
+      },
+      mobile: {
+        target: "mobile",
+        webBuild: "20261127.060000-web123456",
+        bundleUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/twinklebot-web-mobile.tar.gz",
+        sha256: "f".repeat(64),
+        sizeBytes: 450000,
+      },
+    },
+  };
+
+  assert.equal(validateGithubManifestUrls(manifest, "caixy-plus/twinklebot-releases"), true);
+
+  const mirrored = rewriteManifestRepoUrls(
+    manifest,
+    "caixy-plus/twinklebot",
+    "caixy-plus/twinklebot-releases"
+  ) as VersionManifest;
+
+  assert.equal(
+    mirrored.releaseUrl,
+    "https://github.com/caixy-plus/twinklebot-releases/releases/tag/v1.0.7"
+  );
+  assert.equal(
+    mirrored.shells.desktop?.downloadUrl,
+    "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.0.7/TwinkleBot-1.0.7-arm64.dmg"
+  );
+  assert.equal(
+    mirrored.shells.desktop?.assets?.["win32-x64"]?.downloadUrl,
+    "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.0.7/TwinkleBot-Setup-1.0.7.exe"
+  );
+  assert.equal(
+    mirrored.shells.android?.downloadUrl,
+    "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.0.7/TwinkleBot-mobile-release.apk"
+  );
+  assert.equal(
+    mirrored.bundles?.desktopCore?.bundleUrl,
+    "https://github.com/caixy-plus/twinklebot-releases/releases/download/v1.0.7/twinklebot-core-desktop.tar.gz"
+  );
+  assert.equal(mirrored.shells.desktop?.sha256, manifest.shells.desktop?.sha256);
+  assert.equal(mirrored.bundles?.mobile?.sha256, manifest.bundles?.mobile?.sha256);
+  assert.deepEqual(mirrored.backend?.apiCapabilities, manifest.backend?.apiCapabilities);
+  // Strict legacy v1.0.6 check (exact-repo match) also succeeds on mirrored manifest!
+  assert.equal(validateGithubManifestUrls(mirrored, "caixy-plus/twinklebot-releases"), true);
 });
