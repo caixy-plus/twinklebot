@@ -1,0 +1,54 @@
+name: Migrate Historical Releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_repo:
+        description: "Source release repository"
+        required: true
+        default: "caixy-plus/twinklebot-releases"
+        type: string
+      tags:
+        description: "Optional comma-separated tags (leave empty for all v* + active OTA)"
+        required: false
+        default: ""
+        type: string
+      force:
+        description: "Overwrite existing target releases if present"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    name: Migrate Releases to Current Repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run scripts/migrate-releases.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FROM_REPO: ${{ inputs.from_repo || 'caixy-plus/twinklebot-releases' }}
+          TAGS_INPUT: ${{ inputs.tags || '' }}
+          FORCE_FLAG: ${{ inputs.force && '--force' || '' }}
+          TARGET_REPO: ${{ github.repository }}
+        run: |
+          ARGS=("--from=${FROM_REPO}" "--to=${TARGET_REPO}")
+          if [ -n "$TAGS_INPUT" ]; then
+            ARGS+=("--tags=${TAGS_INPUT}")
+          fi
+          if [ -n "$FORCE_FLAG" ]; then
+            ARGS+=("$FORCE_FLAG")
+          fi
+          node scripts/migrate-releases.mjs "${ARGS[@]}"
+          gh release list --repo "$TARGET_REPO" --limit 20
