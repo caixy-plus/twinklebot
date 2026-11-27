@@ -64,7 +64,7 @@ const SENSITIVE_SYSTEM_DIR_PREFIXES = [
 ];
 
 const PIPE_TO_SHELL_RE =
-  /(?:^|[;&|\n]\s*)(?:curl|wget)\b[^|\n]*\|\s*(?:env\s+)?(?:ba|z|da|k)?sh\b/i;
+  /(?:^|[;&|\n]\s*)(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^|\n]*\|\s*(?:env\s+)?(?:(?:ba|z|da|k)?sh|pwsh|powershell(?:\.exe)?|iex|invoke-expression)\b/i;
 
 const SHELL_WRAPPER_CMDS = new Set([
   "command",
@@ -81,6 +81,8 @@ const DANGEROUS_COMMAND_NAMES = new Set([
   "doas",
   "su",
   "rm",
+  "rd",
+  "rmdir",
   "unlink",
   "shred",
   "srm",
@@ -88,6 +90,16 @@ const DANGEROUS_COMMAND_NAMES = new Set([
   "ri",
   "del",
   "erase",
+  "clear-content",
+  "clc",
+  "set-content",
+  "reg",
+  "bcdedit",
+  "schtasks",
+  "icacls",
+  "takeown",
+  "iex",
+  "invoke-expression",
   "mkfs",
   "fdisk",
   "parted",
@@ -97,6 +109,50 @@ const DANGEROUS_COMMAND_NAMES = new Set([
   "reboot",
   "halt",
   "poweroff",
+]);
+
+const READ_ONLY_SHELL_CMDS = new Set([
+  "ls",
+  "dir",
+  "get-childitem",
+  "gci",
+  "pwd",
+  "get-location",
+  "gl",
+  "cat",
+  "type",
+  "get-content",
+  "gc",
+  "head",
+  "tail",
+  "wc",
+  "rg",
+  "grep",
+  "select-string",
+  "sls",
+  "which",
+  "where",
+  "where.exe",
+  "whoami",
+  "hostname",
+  "uname",
+  "echo",
+  "write-output",
+  "stat",
+  "file",
+  "tree",
+]);
+
+const READ_ONLY_GIT_SUBS = new Set([
+  "status",
+  "log",
+  "diff",
+  "show",
+  "branch",
+  "rev-parse",
+  "tag",
+  "remote",
+  "ls-files",
 ]);
 
 function isSensitiveConfigPath(filePath: unknown): boolean {
@@ -128,20 +184,40 @@ function stripShellQuotesForScan(command: string): {
   sanitized: string;
   nestedPayloads: string[];
   quotedRedirectTargets: string[];
+  quotedTokens: string[];
 } {
   let out = "";
   const nestedPayloads: string[] = [];
   const quotedRedirectTargets: string[] = [];
+  const quotedTokens: string[] = [];
   let i = 0;
   const n = command.length;
 
   while (i < n) {
+    // PowerShell here-strings: @' ... '@ or @" ... "@
+    if (command[i] === "@" && (command[i + 1] === "'" || command[i + 1] === '"')) {
+      const q = command[i + 1];
+      i += 2;
+      let literal = "";
+      out += " ";
+      while (i < n) {
+        if (command[i] === q && command[i + 1] === "@") {
+          i += 2;
+          break;
+        }
+        literal += command[i];
+        i += 1;
+      }
+      if (literal.trim()) quotedTokens.push(literal.trim());
+      continue;
+    }
+
     const ch = command[i];
     if (ch === "'" || ch === '"') {
       const quote = ch;
       const before = out.trimEnd();
       const isInlineShellExec =
-        /(?:^|[;&|\n(]\s*)(?:(?:\/[\w./-]*\/)?(?:ba|z|da|k)?sh\s+-[a-z]*c|eval)\s*$/i.test(before);
+        /(?:^|[;&|\n(]\s*)(?:(?:\/[\w./-]*\/)?(?:ba|z|da|k)?sh\s+-[a-z]*c|eval|pwsh(?:\s+-[a-z]+)*\s+-command|powershell(?:\.exe)?(?:\s+-[a-z]+)*\s+-command)\s*$/i.test(before);
       const isRedirectTarget = /(?:^|[\s\d&])>{1,2}$/.test(before);
       i += 1;
       let literal = "";
@@ -174,6 +250,13 @@ function stripShellQuotesForScan(command: string): {
           continue;
         }
         if (quote === '"' && c === "`") {
+          // PowerShell backtick-escaped character vs POSIX backtick substitution
+          const nextCh = command[i + 1];
+          if (nextCh && /[a-zA-Z0-9`"'$]/.test(nextCh) && !command.slice(i + 1).includes("`")) {
+            literal += nextCh;
+            i += 2;
+            continue;
+          }
           let sub = "`";
           i += 1;
           while (i < n && command[i] !== "`") {
@@ -191,6 +274,9 @@ function stripShellQuotesForScan(command: string): {
         literal += c;
         i += 1;
       }
+      if (literal.trim()) {
+        quotedTokens.push(literal.trim());
+      }
       if (isInlineShellExec && literal.trim()) {
         nestedPayloads.push(literal);
       }
@@ -199,11 +285,16 @@ function stripShellQuotesForScan(command: string): {
       }
       continue;
     }
+    // Strip PowerShell inline backtick escape when unquoted (e.g. `r`m` -> `rm`, `i`ex` -> `iex`)
+    if (ch === "`" && i + 1 < n && /[a-zA-Z]/.test(command[i + 1])) {
+      i += 1;
+      continue;
+    }
     out += ch;
     i += 1;
   }
 
-  return { sanitized: out, nestedPayloads, quotedRedirectTargets };
+  return { sanitized: out, nestedPayloads, quotedRedirectTargets, quotedTokens };
 }
 
 function isDangerousShellCommand(
@@ -353,6 +444,83 @@ function isDangerousShellCommand(
   return false;
 }
 
+function normalizeCommandBaseName(rawToken: string): string {
+  // Handle both '/' and '\\' on macOS/Linux tests as well as Windows paths
+  const parts = String(rawToken || "").split(/[/\\]+/).filter(Boolean);
+  return (parts[parts.length - 1] || "").toLowerCase();
+}
+
+export function isReadOnlyHostShellCommand(command: unknown): boolean {
+  if (typeof command !== "string" || !command.trim()) return false;
+  if (DENIED_KEYCHAIN_SHELL_RE.test(command)) return false;
+  if (isDangerousShellCommand(command, { allowNormalMv: false })) return false;
+  if (/(?:^|[\s\d&])>{1,2}/.test(command)) return false;
+
+  const { sanitized, nestedPayloads } = stripShellQuotesForScan(command);
+  if (nestedPayloads.length > 0) return false;
+
+  const segments = sanitized.split(/(?:&&|\|\||[;\n|&`]|\$\(|\))/);
+  let sawCmd = false;
+  for (const rawSeg of segments) {
+    let seg = rawSeg.trim();
+    if (!seg) continue;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/.test(seg)) {
+      seg = seg.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "").trim();
+    }
+    if (!seg) continue;
+    const tokens = seg.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) continue;
+    sawCmd = true;
+    const cmdBase = normalizeCommandBaseName(tokens[0]);
+    const rest = tokens.slice(1);
+    if (READ_ONLY_SHELL_CMDS.has(cmdBase)) {
+      continue;
+    }
+    if (cmdBase === "find") {
+      if (rest.some((t) => t === "-delete" || t === "-exec" || t === "-execdir")) return false;
+      continue;
+    }
+    if (cmdBase === "git") {
+      let gi = 0;
+      while (gi < rest.length && rest[gi].startsWith("-")) {
+        const fl = rest[gi];
+        gi += 1;
+        if ((fl === "-C" || fl === "-c" || fl === "--git-dir" || fl === "--work-tree") && gi < rest.length) {
+          gi += 1;
+        }
+      }
+      const sub = (rest[gi] || "").toLowerCase();
+      if (!READ_ONLY_GIT_SUBS.has(sub)) return false;
+      continue;
+    }
+    if (cmdBase === "wsl" || cmdBase === "wsl.exe") {
+      if (rest.some((t) => t === "-l" || t === "--list" || t === "--status")) continue;
+      return false;
+    }
+    return false;
+  }
+  return sawCmd;
+}
+
+function extractCandidatePathsFromShellCommand(command: string): string[] {
+  const { sanitized, quotedTokens } = stripShellQuotesForScan(command);
+  const candidates = new Set<string>();
+  const rawChunks = [sanitized, ...quotedTokens];
+  for (const chunk of rawChunks) {
+    const pieces = String(chunk || "").split(/[\s;|&><=`()'",]+/);
+    for (const piece of pieces) {
+      const tok = piece.trim();
+      if (!tok || tok.startsWith("-")) continue;
+      candidates.add(tok);
+      const eqIdx = tok.indexOf("=");
+      if (eqIdx > 0 && eqIdx < tok.length - 1) {
+        candidates.add(tok.slice(eqIdx + 1));
+      }
+    }
+  }
+  return Array.from(candidates);
+}
+
 export function isHostShellSafeForAlwaysMode(command: unknown): boolean {
   if (typeof command !== "string" || !command.trim()) return false;
   if (DENIED_KEYCHAIN_SHELL_RE.test(command)) return false;
@@ -368,6 +536,7 @@ const SANDBOX_INTERNAL_AUTO_ALLOW_TOOLS = new Set([
   "run_shell",
   "read_file",
   "write_file",
+  "edit_file",
   "open_url",
   "browser_snapshot",
   "browser_tabs",
@@ -407,10 +576,14 @@ function normalizeCandidatePath(filePath: unknown): string {
   const trimmed = filePath.trim();
   if (!trimmed) return "";
   if (trimmed === "~") return HOME_DIR;
-  if (trimmed.startsWith("~/")) {
-    return path.resolve(HOME_DIR, trimmed.slice(2));
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+    return path.resolve(HOME_DIR, trimmed.slice(2).replace(/\\/g, "/"));
   }
-  return path.resolve(trimmed);
+  // Support scanning Windows paths cleanly even on POSIX hosts/tests
+  const slashNormalized = /^[A-Za-z]:\\/.test(trimmed)
+    ? trimmed
+    : trimmed.replace(/\\/g, "/");
+  return path.resolve(slashNormalized);
 }
 
 function isPathDenied(filePath: unknown): boolean {
@@ -515,8 +688,10 @@ export function assessToolCall(
   if (
     name === "read_file" ||
     name === "write_file" ||
+    name === "edit_file" ||
     name === "host_read_file" ||
-    name === "host_write_file"
+    name === "host_write_file" ||
+    name === "host_edit_file"
   ) {
     if (isPathDenied(safeArgs.path)) {
       return {
@@ -551,7 +726,7 @@ export function assessToolCall(
     const isLocalHostBrowser =
       Boolean(config?.browserAutomationMode) &&
       config?.browserAutomationMode !== "bot_computer";
-    const hostMode = String(config?.hostExecutionMode || "ask");
+    const hostMode = hostExecutionMode;
     if (isLocalHostBrowser && hostMode === "off") {
       return {
         decision: "deny",
@@ -608,6 +783,29 @@ export function assessToolCall(
         decision: "deny",
         reason: "禁止通过命令行导出 macOS 钥匙串明文密码",
       };
+    }
+    const shellTokens = extractCandidatePathsFromShellCommand(cmd);
+    for (const tok of shellTokens) {
+      if (isPathDenied(tok)) {
+        return {
+          decision: "deny",
+          reason: `Shell access to sensitive path '${tok}' is denied`,
+        };
+      }
+      if (
+        config?.botWorkspaceSessionId &&
+        config?.baseWorkspaceRoot &&
+        isOtherBotPrivateWorkspacePath(
+          tok,
+          [config.baseWorkspaceRoot],
+          config.botWorkspaceSessionId
+        )
+      ) {
+        return {
+          decision: "confirm",
+          reason: "Shell 命令涉及其他 Bot 的专属工作区/资料库，需用户确认后方可访问",
+        };
+      }
     }
   }
 
@@ -667,10 +865,12 @@ export function assessToolCall(
     (hostExecutionMode === "always" &&
       (READ_ONLY_HOST_AND_MCP_TOOLS.has(name) ||
         name === "host_open" ||
-        (name === "host_write_file" &&
+        ((name === "host_write_file" || name === "host_edit_file") &&
           Boolean(normalizeCandidatePath(safeArgs.path)) &&
           !isSensitiveConfigPath(safeArgs.path)) ||
-        (name === "host_run_shell" && isHostShellSafeForAlwaysMode(safeArgs.command))));
+        (name === "host_run_shell" &&
+          (isHostShellSafeForAlwaysMode(safeArgs.command) ||
+            isReadOnlyHostShellCommand(safeArgs.command)))));
   if (autoAuditEnabled && safeArgs.risk === "high" && !ignoreSpuriousHighRisk) {
     return {
       decision: "confirm",
@@ -678,13 +878,37 @@ export function assessToolCall(
     };
   }
 
-  // 4. Sandbox high-privilege mode (default "full"): Bot Computer tools run freely inside isolated sandbox
+  // 4. Sandbox high-privilege mode (default "full"): Bot Computer tools run inside isolated sandbox
   if (sandboxMode === "full" && SANDBOX_TOOLS.has(name) && !isLocalHostAction) {
-    if (name === "write_file" && !normalizeCandidatePath(safeArgs.path)) {
-      return {
-        decision: "confirm",
-        reason: `Missing or invalid file path for ${name}`,
-      };
+    if (name === "write_file" || name === "edit_file") {
+      const resolvedPath = normalizeCandidatePath(safeArgs.path);
+      if (!resolvedPath) {
+        return {
+          decision: "confirm",
+          reason: `Missing or invalid file path for ${name}`,
+        };
+      }
+      const allowedSandboxRoots = [
+        ...(Array.isArray(config?.writeRoots) ? config.writeRoots : []),
+        ...(config?.botWorkspaceRoot ? [config.botWorkspaceRoot] : []),
+      ];
+      if (allowedSandboxRoots.length > 0) {
+        const tempRoots = [os.tmpdir(), "/tmp", "/var/tmp"];
+        const insideAllowed = [...allowedSandboxRoots, ...tempRoots].some((root: unknown) => {
+          const resolvedRoot = normalizeCandidatePath(root);
+          if (!resolvedRoot) return false;
+          return (
+            resolvedPath === resolvedRoot ||
+            resolvedPath.startsWith(resolvedRoot + path.sep)
+          );
+        });
+        if (!insideAllowed) {
+          return {
+            decision: "confirm",
+            reason: `Write path '${safeArgs.path}' is outside allowed write roots`,
+          };
+        }
+      }
     }
     return {
       decision: "allow",
@@ -725,7 +949,12 @@ export function assessToolCall(
   }
 
   // 7. File write path validation & writeRoots boundary
-  if (name === "write_file" || name === "host_write_file") {
+  if (
+    name === "write_file" ||
+    name === "edit_file" ||
+    name === "host_write_file" ||
+    name === "host_edit_file"
+  ) {
     const filePath = safeArgs.path;
     const resolvedPath = normalizeCandidatePath(filePath);
     if (!resolvedPath) {
@@ -737,7 +966,7 @@ export function assessToolCall(
     // When "你的电脑" is set to "始终允许" ("always"), allow non-sensitive host file writes
     // outside writeRoots without prompting, while still confirming sensitive shell/system configs
     // (hardcoded credential paths remain strictly denied in step 1).
-    if (name === "host_write_file" && hostExecutionMode === "always") {
+    if ((name === "host_write_file" || name === "host_edit_file") && hostExecutionMode === "always") {
       if (isSensitiveConfigPath(filePath)) {
         return {
           decision: "confirm",

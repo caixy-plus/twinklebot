@@ -34,8 +34,19 @@ export const HOST_TOOL_DECLARATIONS = [
         command: {
           type: "string",
           description: IS_WIN_HOST
-            ? "Windows PowerShell command/script to execute on the user's Windows PC (UTF-8 & WSL_UTF8=1 already enabled)."
+            ? "Command/script to execute on the user's Windows PC (PowerShell 5.1 syntax by default, or bash syntax when `shell: 'wsl'`; UTF-8 & WSL_UTF8=1 pre-enabled)."
             : "zsh command line to execute on the user's Mac.",
+        },
+        shell: {
+          type: "string",
+          enum: ["auto", "powershell", "wsl"],
+          description: IS_WIN_HOST
+            ? "Optional Windows shell selector: 'auto'/'powershell' runs PowerShell 5.1; 'wsl' invokes `wsl.exe -- bash -lc` directly so Linux commands/quotes/pipes work without PowerShell escaping."
+            : "Optional shell selector (ignored on macOS/Linux hosts).",
+        },
+        wsl_distro: {
+          type: "string",
+          description: "Optional WSL distribution name (e.g. 'Ubuntu') when `shell='wsl'` on Windows.",
         },
         cwd: {
           type: "string",
@@ -81,13 +92,21 @@ export const HOST_TOOL_DECLARATIONS = [
   {
     type: "function",
     name: "host_read_file",
-    description: `Read a UTF-8 text file directly from the user's ${HOST_OS_LABEL} ('你的电脑').`,
+    description: `Read a UTF-8 text file directly from the user's ${HOST_OS_LABEL} ('你的电脑'). Supports optional 1-based \`start_line\` / \`end_line\` slice reading with line numbers.`,
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
           description: `File path on the user's ${HOST_OS_LABEL} (supports ~ expansion).`,
+        },
+        start_line: {
+          type: "integer",
+          description: "Optional 1-based start line number (inclusive).",
+        },
+        end_line: {
+          type: "integer",
+          description: "Optional 1-based end line number (inclusive).",
         },
       },
       required: ["path"],
@@ -116,6 +135,39 @@ export const HOST_TOOL_DECLARATIONS = [
   },
   {
     type: "function",
+    name: "host_edit_file",
+    description:
+      `Edit an existing UTF-8 file on the user's ${HOST_OS_LABEL} ('你的电脑') via exact \`target\` -> \`replacement\` substitution or \`append: true\`. Strongly preferred over overwriting large files with \`host_write_file\` or PowerShell/shell piping.`,
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: `File path on the user's ${HOST_OS_LABEL} (supports ~ expansion).`,
+        },
+        target: {
+          type: "string",
+          description: "Exact existing substring to replace (required unless `append: true`).",
+        },
+        replacement: {
+          type: "string",
+          description: "Replacement text (or text to append when `append: true`).",
+        },
+        append: {
+          type: "boolean",
+          description: "If true, append `replacement` to the end of the file (creates file if missing).",
+        },
+        replace_all: {
+          type: "boolean",
+          description: "If true, replace all occurrences of `target` instead of requiring a unique match.",
+        },
+        risk: RISK_PROP,
+      },
+      required: ["path"],
+    },
+  },
+  {
+    type: "function",
     name: "host_record_screen",
     description:
       "Record a short screen video (1-60 seconds) of the user's local physical computer ('客户端主机') and save it as a deliverable MP4/MOV file.",
@@ -137,6 +189,31 @@ export const HOST_TOOL_DECLARATIONS = [
 ];
 
 const HOST_TOOL_NAMES = new Set(HOST_TOOL_DECLARATIONS.map((t) => t.name));
+
+const hostFileEditLocks = new Map<string, Promise<unknown>>();
+
+async function withHostFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+  const prev = hostFileEditLocks.get(filePath) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  const tail = next.catch(() => {});
+  hostFileEditLocks.set(filePath, tail);
+  try {
+    return await next;
+  } finally {
+    if (hostFileEditLocks.get(filePath) === tail) {
+      hostFileEditLocks.delete(filePath);
+    }
+  }
+}
+
+function parsePositiveLineNumber(val: unknown, field: string): number | undefined {
+  if (val === undefined || val === null || val === "") return undefined;
+  const n = Number(val);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`${field} must be a positive 1-based integer`);
+  }
+  return n;
+}
 
 export function isHostTool(name: string): boolean {
   return HOST_TOOL_NAMES.has(name);
@@ -175,17 +252,93 @@ function killHostChildTree(child: ReturnType<typeof spawn>, isWin: boolean) {
   } catch {}
 }
 
-function buildWindowsPowerShellEncodedCommand(command: string): string {
+export function cleanPowerShellClixmlStderr(rawStderr: string): string {
+  const s = String(rawStderr || "");
+  if (!s.includes("#< CLIXML") && !s.includes("<Objs ")) return s;
+  const errorMsgs: string[] = [];
+  const errRe = /<S\s+S="Error">([\s\S]*?)<\/S>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = errRe.exec(s)) !== null) {
+    const decoded = m[1]
+      .replace(/_x000D__x000A_/gi, "\n")
+      .replace(/_x000A_/gi, "\n")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, "&")
+      .trim();
+    if (decoded) errorMsgs.push(decoded);
+  }
+  const stripped = s
+    .replace(/#< CLIXML\r?\n?/g, "")
+    .replace(/<Objs\b[\s\S]*?<\/Objs>/gi, "")
+    .trim();
+  return [stripped, ...errorMsgs].filter(Boolean).join("\n").trim();
+}
+
+export function buildWindowsPowerShellEncodedCommand(command: string): string {
   const normalized = /^\s*"[^"]+"\s+\S/.test(command) ? `& ${command}` : command;
   const prelude =
     "$ProgressPreference = 'SilentlyContinue'; " +
+    "$ErrorActionPreference = 'Continue'; " +
+    "$PSNativeCommandUseErrorActionPreference = $false; " +
     "[Console]::InputEncoding = [Console]::OutputEncoding = $OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n";
   return Buffer.from(`${prelude}${normalized}`, "utf16le").toString("base64");
 }
 
+export function buildHostShellSpawnSpec(
+  command: string,
+  {
+    platform = process.platform,
+    shell = "auto",
+    wslDistro = "",
+  }: { platform?: string; shell?: string; wslDistro?: string } = {}
+): { cmd: string; args: string[]; isPowerShell: boolean } {
+  const normShell = String(shell || "auto").trim().toLowerCase();
+  if (platform === "win32") {
+    if (normShell === "wsl") {
+      const args: string[] = [];
+      const distro = String(wslDistro || "").trim();
+      if (distro) args.push("-d", distro);
+      args.push("--", "bash", "-lc", command);
+      return { cmd: "wsl.exe", args, isPowerShell: false };
+    }
+    return {
+      cmd: "powershell.exe",
+      args: [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        buildWindowsPowerShellEncodedCommand(command),
+      ],
+      isPowerShell: true,
+    };
+  }
+  return {
+    cmd: platform === "darwin" ? "/bin/zsh" : "/bin/sh",
+    args: [platform === "darwin" ? "-lc" : "-c", command],
+    isPowerShell: false,
+  };
+}
+
 function runHostShellCommand(
   command: string,
-  { cwd, timeoutSec = 60, signal }: { cwd?: string; timeoutSec?: number; signal?: AbortSignal } = {}
+  {
+    cwd,
+    timeoutSec = 60,
+    signal,
+    shell,
+    wslDistro,
+  }: {
+    cwd?: string;
+    timeoutSec?: number;
+    signal?: AbortSignal;
+    shell?: string;
+    wslDistro?: string;
+  } = {}
 ): Promise<HostShellResult> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -200,32 +353,16 @@ function runHostShellCommand(
       ...buildScrubbedEnv(),
       ...(isWin ? { WSL_UTF8: "1", PYTHONIOENCODING: "utf-8" } : {}),
     } as NodeJS.ProcessEnv;
-    const child = isWin
-      ? spawn(
-          "powershell.exe",
-          [
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            buildWindowsPowerShellEncodedCommand(command),
-          ],
-          {
-            cwd: resolvedCwd,
-            env: childEnv,
-            stdio: ["ignore", "pipe", "pipe"],
-          }
-        )
-      : spawn(
-          process.platform === "darwin" ? "/bin/zsh" : "/bin/sh",
-          [process.platform === "darwin" ? "-lc" : "-c", command],
-          {
-            cwd: resolvedCwd,
-            env: childEnv,
-            stdio: ["ignore", "pipe", "pipe"],
-          }
-        );
+    const spec = buildHostShellSpawnSpec(command, {
+      platform: process.platform,
+      shell,
+      wslDistro,
+    });
+    const child = spawn(spec.cmd, spec.args, {
+      cwd: resolvedCwd,
+      env: childEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     let stdout = "";
     let stderr = "";
@@ -273,14 +410,15 @@ function runHostShellCommand(
       clearTimeout(timer);
       if (signal && onAbort) signal.removeEventListener("abort", onAbort);
       if (signal?.aborted) return;
+      const cleanedStderr = spec.isPowerShell ? cleanPowerShellClixmlStderr(stderr) : stderr;
       resolve({
         ok: !timedOut && code === 0,
         exitCode: code ?? -1,
         timedOut,
         stdout,
         stderr: timedOut
-          ? `${stderr}${stderr ? "\n" : ""}[Command timed out after ${clampedSec}s]`
-          : stderr,
+          ? `${cleanedStderr}${cleanedStderr ? "\n" : ""}[Command timed out after ${clampedSec}s]`
+          : cleanedStderr,
       });
     });
   });
@@ -372,6 +510,8 @@ export async function runHostTool(
       cwd: safeArgs.cwd,
       timeoutSec: safeArgs.timeout ?? shellTimeoutSec,
       signal,
+      shell: safeArgs.shell,
+      wslDistro: safeArgs.wsl_distro,
     });
     return { result: res, screenshot: null };
   }
@@ -433,13 +573,48 @@ export async function runHostTool(
       return { result: { ok: false, error: "path is required" }, screenshot: null };
     }
     try {
+      const startLine = parsePositiveLineNumber(safeArgs.start_line, "start_line");
+      const endLine = parsePositiveLineNumber(safeArgs.end_line, "end_line");
+      if (startLine !== undefined && endLine !== undefined && endLine < startLine) {
+        return {
+          result: { ok: false, path: filePath, error: "end_line must be >= start_line" },
+          screenshot: null,
+        };
+      }
       const raw = await fs.readFile(filePath, "utf8");
       const maxLen = 100_000;
+      if (startLine !== undefined || endLine !== undefined) {
+        const lines = raw.split(/\r?\n/);
+        const totalLines = lines.length;
+        const effectiveStart = Math.min(startLine ?? 1, Math.max(totalLines, 1));
+        const effectiveEnd = Math.min(endLine ?? Math.min(effectiveStart + 399, totalLines), totalLines);
+        const sliced = totalLines === 0 ? [] : lines.slice(effectiveStart - 1, effectiveEnd);
+        const numbered = sliced.map((line, i) => `${effectiveStart + i}: ${line}`).join("\n");
+        const truncated = numbered.length > maxLen;
+        return {
+          result: {
+            ok: true,
+            path: filePath,
+            startLine: effectiveStart,
+            endLine: totalLines === 0 ? 0 : effectiveEnd,
+            totalLines,
+            hasMore: effectiveEnd < totalLines,
+            content: truncated
+              ? `${numbered.slice(0, maxLen)}\n...[truncated ${numbered.length - maxLen} chars]...`
+              : numbered,
+            truncated,
+          },
+          screenshot: null,
+        };
+      }
       const truncated = raw.length > maxLen;
+      const totalLines = raw.length === 0 ? 0 : raw.split(/\r?\n/).length;
       return {
         result: {
           ok: true,
           path: filePath,
+          totalLines,
+          hasMore: truncated,
           content: truncated
             ? `${raw.slice(0, maxLen)}\n...[truncated ${raw.length - maxLen} chars]...`
             : raw,
@@ -472,6 +647,66 @@ export async function runHostTool(
         },
         screenshot: null,
       };
+    } catch (err: any) {
+      return {
+        result: { ok: false, path: filePath, error: err?.message || String(err) },
+        screenshot: null,
+      };
+    }
+  }
+
+  if (name === "host_edit_file") {
+    const filePath = expandHostPath(safeArgs.path);
+    if (!filePath) {
+      return { result: { ok: false, error: "path is required" }, screenshot: null };
+    }
+    const appendMode = Boolean(safeArgs.append);
+    const replaceAll = Boolean(safeArgs.replace_all);
+    const replacement =
+      typeof safeArgs.replacement === "string"
+        ? safeArgs.replacement
+        : String(safeArgs.replacement ?? "");
+    try {
+      const res = await withHostFileLock(filePath, async () => {
+        if (appendMode) {
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.appendFile(filePath, replacement, "utf8");
+          return {
+            ok: true,
+            path: filePath,
+            mode: "append",
+            bytesAppended: Buffer.byteLength(replacement, "utf8"),
+          };
+        }
+        const target = typeof safeArgs.target === "string" ? safeArgs.target : "";
+        if (!target) {
+          return { ok: false, path: filePath, error: "target is required unless append=true" };
+        }
+        const existing = await fs.readFile(filePath, "utf8");
+        const occurrences = existing.split(target).length - 1;
+        if (occurrences === 0) {
+          return { ok: false, path: filePath, error: "target not found in file" };
+        }
+        if (occurrences > 1 && !replaceAll) {
+          return {
+            ok: false,
+            path: filePath,
+            error: `target matched ${occurrences} times; provide more context or set replace_all=true`,
+          };
+        }
+        const updated = replaceAll
+          ? existing.split(target).join(replacement)
+          : existing.replace(target, replacement);
+        await fs.writeFile(filePath, updated, "utf8");
+        return {
+          ok: true,
+          path: filePath,
+          mode: "replace",
+          replacements: replaceAll ? occurrences : 1,
+          bytesWritten: Buffer.byteLength(updated, "utf8"),
+        };
+      });
+      return { result: res, screenshot: null };
     } catch (err: any) {
       return {
         result: { ok: false, path: filePath, error: err?.message || String(err) },

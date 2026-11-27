@@ -48,7 +48,7 @@
 | **P0** | `P0-SEC-02` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Interactive Approval | ApprovalCard 审批闭环：单次允许、暂不允许与 Escape 快捷键拒绝 |
 | **P0** | `P0-SEC-03` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Policy AllowRules | ApprovalCard 始终允许持久化 allowRules 与 risk=high 不可绕过保护 |
 | **P0** | `P0-SEC-04` | `F1×D2` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Credential Secret Ref & Vault Secret | CredentialCard + vault-secret-v1 全链路零泄漏：AES加密落盘、/reveal、vault_manage(get_secret)、browser_type 与 OS type_text 注入及跳过/OTP |
-| **P0** | `P0-SEC-05` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Dual-Computer Policy Matrix | 双电脑权限策略矩阵(PI-010/011)：宿主机 always/ask/off、只读放行、高危命令确认、沙盒 full vs restricted 与跨 Bot 工作区确认 |
+| **P0** | `P0-SEC-05` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Dual-Computer Policy Matrix | 双电脑权限策略矩阵(PI-010/011)：宿主机 always/ask/off、只读放行、edit_file/host_edit_file、高危命令确认、沙盒 full vs restricted 与跨 Bot 工作区确认 |
 | **P0** | `P0-BOT-01` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Bot Lifecycle | 新建单聊 Bot(语义头像自动匹配)、右键克隆、清空历史与删除清理私有目录 |
 | **P0** | `P0-BOT-02` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Admin Bot Guard | 管理员 Bot 固顶与禁删双重保护(UI隐藏删除 + API 403/400) |
 | **P0** | `P0-BOT-03` | `F1×D1` | `test/e2e/p0-security-multibot-and-pairing.e2e.ts` | Workspace Isolation | 单 Bot 私有工作区目录隔离：跨 Bot 文件读取 403 与资料库隔离 |
@@ -134,7 +134,7 @@
 | **P2** | `P2-LAND-02` | `F3×D1` | `test/e2e/p2-cli-and-landing.e2e.ts` | Landing Hydration & Copy | Landing 官网全部 7 个 GitHub Release 资产链接水合、403 限流静态兜底与一键复制「已复制 ✓」反馈 |
 | **P3** | `P3-X11-01` | `F2×D3` | `executor/test_e2e_x11_desktop.py` | Physical X11 Input & Sensitive Clipboard | Ubuntu 真实 X11 物理事件验证：左/右/双击、中文剪贴板、sensitive 敏感输入后剪贴板擦除、按键、四向滚轮与拖拽 |
 | **P3** | `P3-X11-02` | `F3×D3` | `executor/test_e2e_x11_desktop.py` | Physical X11 Windows & Screenshot | Ubuntu 真实 X11 窗口管理：wmctrl /windows 枚举双窗口、/focus 切换激活与非空白物理截屏 |
-| **P3** | `P3-X11-03` | `F3×D3` | `executor/test_e2e_x11_desktop.py` | Executor Full HTTP & Security Matrix | Executor 全 21 端点 HTTP 契约与安全边界：Bearer 401、/displays 生命周期、/read\|/write 禁区 403 与截断、/shell 隔离与超时 124、/open_url 与错误码 |
+| **P3** | `P3-X11-03` | `F3×D3` | `executor/test_e2e_x11_desktop.py` | Executor Full HTTP & Security Matrix | Executor 端点 HTTP 契约与安全边界：Bearer 401、/displays 生命周期、/read\|/write\|/edit 禁区 403 与截断、/shell 隔离与超时 124、/open_url 与错误码 |
 | **P3** | `P3-ELEC-02` | `F3×D2` | `test/e2e/p3-tray-resilience-and-chaos.e2e.ts` | Electron Tray & Menu Commands | Electron 托盘 UI(electron/tray.html)实时状态推送/全按钮交互 + 全部 8 项原生菜单指令联动渲染层 |
 | **P3** | `P3-RES-01` | `F2×D2` | `test/e2e/p3-tray-resilience-and-chaos.e2e.ts` | Agent Loop Resilience | Agent 死循环重复检测告警(repeatCount>=2)、finishReason='length' 截断工具拦截重试、markInterrupted 与孤立调用清洗 |
 | **P3** | `P3-RES-02` | `F2×D2` | `test/e2e/p3-tray-resilience-and-chaos.e2e.ts` | Built-in Tools & Security Headers | web_search(DDG→Bing 回退)、web_fetch 正文抽取、workspace_search / library_manage 及 /api/workspace/file(.html/.svg/download)安全响应头 |

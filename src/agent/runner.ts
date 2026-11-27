@@ -57,8 +57,15 @@ export function createRunner({
     createMcpManager({
       getServersConfig: () => store?.readSettings?.()?.mcpServers || {},
     });
-  // Per-session active run map: sessionId -> { state, control }
-  const activeRuns = new Map<string, { state: string; control: ReturnType<typeof createControl> }>();
+  // Per-session active run map: sessionId -> { state, control, onSteer }
+  const activeRuns = new Map<
+    string,
+    {
+      state: string;
+      control: ReturnType<typeof createControl>;
+      onSteer?: ((msg: { text: string; userMeta: any }) => void) | null;
+    }
+  >();
   // Queued follow-up messages (user messages + inter-Bot handoffs arriving while target Bot is busy)
   const pendingUserQueue = new Map<string, Array<{ text: string; userMeta: any; skipUserEvent?: boolean }>>();
   const pendingBotInbox = new Map<string, any[]>();
@@ -197,12 +204,14 @@ export function createRunner({
     exchangeId,
     message,
     hopDepth = 1,
+    onReplyComplete = null,
   }: {
     targetBotId: string;
     fromBot?: any;
     exchangeId?: string;
     message: string;
     hopDepth?: number;
+    onReplyComplete?: ((res: { status?: string; text?: string; error?: string }) => void) | null;
   }): void {
     const promptForTarget =
       `[Inter-Bot Handoff · From "${fromBot?.title || "Bot"}"]\n` +
@@ -216,6 +225,7 @@ export function createRunner({
       skipUserEvent: true,
       exchangeId,
       fromBot,
+      onReplyComplete,
     };
 
     if (activeRuns.has(targetBotId)) {
@@ -310,6 +320,7 @@ export function createRunner({
     const entry = activeRuns.get(sessionId);
     // Live-steer the running task immediately instead of blocking behind a queue
     recordUserMessage(sessionId, text, effectiveMeta);
+    entry?.onSteer?.({ text, userMeta: effectiveMeta });
     if (typeof entry?.control?.steer === "function") {
       entry.control.steer({ text, userMeta: effectiveMeta });
       return { queued: false, steered: true, queueLength: 0 };
@@ -357,6 +368,8 @@ export function createRunner({
     emit,
     initiatorBot = null,
     skipUserEvent = false,
+    hopDepth = 0,
+    groupSteers = [],
   }: {
     groupSession: any;
     userText: string;
@@ -366,6 +379,8 @@ export function createRunner({
     emit: (event: any) => void;
     initiatorBot?: any;
     skipUserEvent?: boolean;
+    hopDepth?: number;
+    groupSteers?: Array<{ text: string; userMeta?: any }>;
   }) {
     const allSessions = store?.listSessions?.() || [];
     const memberIds: string[] = Array.isArray(groupSession.memberBotIds)
@@ -403,37 +418,62 @@ export function createRunner({
     }
     emit({ type: "status", status: "running" });
 
+    let activeUserText = userText;
+    let activeUserMeta = userMeta;
     let pendingSpeakers = selectGroupSpeakers({
-      text: userText,
+      text: activeUserText,
       memberBots,
       excludeBotId: initiatorBot?.id || null,
-      replyToBotId: userMeta?.replyTo?.botId || null,
+      replyToBotId: activeUserMeta?.replyTo?.botId || null,
       maxSpeakers: 2,
     });
 
     let turnsTaken = 0;
     const spokenSet = new Set<string>();
 
+    const applyPendingGroupSteers = () => {
+      if (!Array.isArray(groupSteers) || groupSteers.length === 0) return false;
+      const batch = groupSteers.splice(0, groupSteers.length);
+      const merged = batch
+        .map((m) => String(m?.text || "").trim())
+        .filter(Boolean)
+        .join("\n\n");
+      const latestMeta =
+        [...batch].reverse().find((m) => m?.userMeta)?.userMeta || activeUserMeta;
+      if (merged) activeUserText = merged;
+      activeUserMeta = latestMeta;
+      spokenSet.clear();
+      pendingSpeakers = selectGroupSpeakers({
+        text: activeUserText,
+        memberBots,
+        excludeBotId: null,
+        replyToBotId: activeUserMeta?.replyTo?.botId || null,
+        maxSpeakers: 2,
+      });
+      return true;
+    };
+
     while (
-      pendingSpeakers.length > 0 &&
+      (pendingSpeakers.length > 0 || groupSteers.length > 0) &&
       turnsTaken < MAX_GROUP_TURNS &&
       !control.stopped
     ) {
+      applyPendingGroupSteers();
       const speaker = pendingSpeakers.shift();
       if (!speaker) continue;
       turnsTaken += 1;
       spokenSet.add(speaker.id);
 
       const eventsSoFar = store?.readEvents?.(groupSession.id) || [];
-      let enrichedUserText = userText;
+      let enrichedUserText = activeUserText;
       const sourcePrefixParts: string[] = [];
-      const chHeader = formatMessageSourceHeader(userMeta);
+      const chHeader = formatMessageSourceHeader(activeUserMeta);
       if (chHeader) sourcePrefixParts.push(chHeader);
-      const timeHeader = formatMessageTimeHeader(userMeta);
+      const timeHeader = formatMessageTimeHeader(activeUserMeta);
       if (timeHeader) sourcePrefixParts.push(timeHeader);
-      if (userMeta?.replyTo?.snippet) {
+      if (activeUserMeta?.replyTo?.snippet) {
         sourcePrefixParts.push(
-          `[Replying to ${userMeta.replyTo.author || "message"}: "${userMeta.replyTo.snippet}"]`
+          `[Replying to ${activeUserMeta.replyTo.author || "message"}: "${activeUserMeta.replyTo.snippet}"]`
         );
       }
       if (sourcePrefixParts.length > 0) {
@@ -464,8 +504,8 @@ export function createRunner({
 
       const res = await runTaskImpl({
         sessionId: groupSession.id,
-        userText,
-        userMeta,
+        userText: activeUserText,
+        userMeta: activeUserMeta,
         promptText: groupPrompt,
         modelName,
         deps: {
@@ -485,6 +525,7 @@ export function createRunner({
           autoRoute: runTaskImpl === runTask,
           smartRouter: runTaskImpl === runTask,
           enableBotTools: runTaskImpl === runTask,
+          hopDepth,
           desktopMutex: speakerMutex,
           acquireScreenLease: speakerAcquireScreenLease,
           speakerBot: speaker,
@@ -497,7 +538,7 @@ export function createRunner({
               ? {
                   seq: userEvtSeq,
                   author: "你",
-                  snippet: String(userText || "").replace(/\s+/g, " ").slice(0, 64),
+                  snippet: String(activeUserText || "").replace(/\s+/g, " ").slice(0, 64),
                 }
               : null,
           skipUserEvent: true,
@@ -520,6 +561,11 @@ export function createRunner({
         },
         control,
       });
+
+      if (control.stopped) break;
+      if (applyPendingGroupSteers()) {
+        continue;
+      }
 
       if (res?.text && turnsTaken < MAX_GROUP_TURNS) {
         const mentionedFollowUps = extractMentionedBots(res.text, memberBots).filter(
@@ -565,9 +611,27 @@ export function createRunner({
     }
 
     const currentControl = createControl();
+    const groupSteers: Array<{ text: string; userMeta?: any }> = [];
+    let replyNotified = false;
+    const notifyReply = (payload: { status?: string; text?: string; error?: string }) => {
+      if (replyNotified) return;
+      replyNotified = true;
+      try {
+        options.onReplyComplete?.(payload);
+      } catch {
+        // ignore reply listener errors
+      }
+    };
     activeRuns.set(sessionId, {
       state: "running",
       control: currentControl,
+      ...(session.type === "group"
+        ? {
+            onSteer: (msg: { text: string; userMeta: any }) => {
+              groupSteers.push(msg);
+            },
+          }
+        : {}),
     });
 
     const liveSettings = store?.readSettings?.() || {};
@@ -602,6 +666,8 @@ export function createRunner({
             emit,
             initiatorBot: options.initiatorBot || null,
             skipUserEvent: Boolean(options.skipUserEvent),
+            hopDepth: options.hopDepth || 0,
+            groupSteers,
           });
         }
 
@@ -694,12 +760,15 @@ export function createRunner({
             });
           }
         }
+        notifyReply({ status: res?.status || "done", text: res?.text || "" });
       })
       .catch((err) => {
         emit({ type: "error", message: err?.message || String(err) });
         emit({ type: "status", status: "error" });
+        notifyReply({ status: "error", error: err?.message || String(err) });
       })
       .finally(() => {
+        notifyReply({ status: currentControl.stopped ? "stopped" : "done", text: "" });
         if (activeRuns.get(sessionId)?.control === currentControl) {
           activeRuns.delete(sessionId);
           const leftoverSteered =
@@ -820,10 +889,7 @@ export function createRunner({
         return;
       }
     }
-    const [, first] = resolveTargetEntry();
-    if (first) {
-      first.control.resolveApproval(callId, Boolean(allowed));
-    }
+    console.warn(`[runner] approve ignored: no active run matched callId=${callId}`);
   }
 
   function choose(callId: string, selection: any): void {
@@ -833,10 +899,7 @@ export function createRunner({
         return;
       }
     }
-    const [, first] = resolveTargetEntry();
-    if (first) {
-      first.control.resolveChoice(callId, selection);
-    }
+    console.warn(`[runner] choose ignored: no active run matched callId=${callId}`);
   }
 
   const runnerApi = {

@@ -533,6 +533,16 @@ test("P0 Suite 2: Security Redlines, Approvals, Secret Zero-Leak, Multi-Bot Core
         "hostExecutionMode=always must allow host_write_file outside writeRoots (PI-010)"
       );
       assert.equal(
+        assessToolCall("host_edit_file", { path: outsidePath, target: "a", replacement: "b" }, alwaysCfg).decision,
+        "allow",
+        "hostExecutionMode=always must allow host_edit_file outside writeRoots"
+      );
+      assert.equal(
+        assessToolCall("edit_file", { path: "/opt/outside-forbidden/cfg.txt", target: "a", replacement: "b" }, alwaysCfg).decision,
+        "confirm",
+        "sandbox edit_file outside writeRoots must still require confirmation even under sandboxMode=full"
+      );
+      assert.equal(
         assessToolCall("host_run_shell", { command: "rm -rf /tmp/foo", risk: "medium" }, alwaysCfg).decision,
         "confirm",
         "Dangerous shell rm must still require confirmation in always mode"

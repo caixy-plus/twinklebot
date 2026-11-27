@@ -30,9 +30,9 @@ function fakeClient(routes: any = {}) {
   };
 }
 
-test("TOOL_DECLARATIONS has expected shape and covers all 20 action tools", () => {
+test("TOOL_DECLARATIONS has expected shape and covers all 21 action tools", () => {
   assert.ok(Array.isArray(TOOL_DECLARATIONS), "TOOL_DECLARATIONS must be an array");
-  assert.equal(TOOL_DECLARATIONS.length, 20);
+  assert.equal(TOOL_DECLARATIONS.length, 21);
 
   const expectedTools = [
     "screenshot",
@@ -46,6 +46,7 @@ test("TOOL_DECLARATIONS has expected shape and covers all 20 action tools", () =
     "run_shell",
     "read_file",
     "write_file",
+    "edit_file",
     "open_url",
     "browser_snapshot",
     "browser_click",
@@ -201,6 +202,7 @@ test("all 20 tools map to their correct executor routes", async () => {
     run_shell: "/shell",
     read_file: "/read",
     write_file: "/write",
+    edit_file: "/edit",
     open_url: "/open_url",
     browser_snapshot: "/browser/snapshot",
     browser_click: "/browser/click",
@@ -374,6 +376,28 @@ test("runTool resolves ephemeral credential secret_ref in host memory for browse
   const blockedShell = await runTool("run_shell", { command: `echo ${osSecretRef}` }, client, { settleMs: 0 });
   assert.match(blockedShell.result.error || "", /Refusing to inject credential secret_ref/);
   const blockedKey = await runTool("key", { combo: osSecretRef }, client, { settleMs: 0 });
-  assert.match(blockedKey.result.error || "", /Refusing to inject credential secret_ref/);
+  assert.equal(blockedKey.result.error || "", "Refusing to inject credential secret_ref outside browser_type / type_text; pass secret_ref directly as `text` to browser_type(ref, text) or OS-level type_text(text) instead.");
   assert.equal(client.calls.length, prevCalls, "disallowed tools with secret_ref must not reach executor");
+});
+
+test("read_file declares optional start_line/end_line and edit_file dispatches to /edit", async () => {
+  const readDecl = TOOL_DECLARATIONS.find((t) => t.name === "read_file");
+  const editDecl = TOOL_DECLARATIONS.find((t) => t.name === "edit_file");
+  assert.ok(readDecl?.parameters?.properties?.start_line);
+  assert.ok(readDecl?.parameters?.properties?.end_line);
+  assert.ok(editDecl?.parameters?.properties?.target);
+  assert.ok(editDecl?.parameters?.properties?.append);
+
+  const client = fakeClient({
+    "/edit": { ok: true, mode: "replace", replacements: 1 },
+  });
+  const editRes = await runTool(
+    "edit_file",
+    { path: "/tmp/ws/a.txt", target: "old", replacement: "new", risk: "low" },
+    client,
+    { settleMs: 0 }
+  );
+  assert.equal(editRes.result.ok, true);
+  assert.equal(client.calls[0].route, "/edit");
+  assert.equal(client.calls[0].body.target, "old");
 });

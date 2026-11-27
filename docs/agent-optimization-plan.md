@@ -2,7 +2,7 @@
 
 > **文档性质**：基于真实用户运行日志（`%APPDATA%\TwinkleBot\data\`，2026-11-17 至 2026-11-26）与仓库 `main` 分支源码联合核验输出的可执行改造规划。  
 > **安全与隐私声明**：全篇严格执行零密钥、零 Token、零密码、零个人手机号/邮箱/公网 IP/Chat ID/敏感完整 URL 脱敏规范；所有改造均只针对框架架构与通用能力。  
-> **实施状态**：**Phase 1（`P0-1`–`P0-4`）已完成**（commit `1b671a4`）；Phase 2（`P1-1`–`P1-6`）与 Phase 3（`P2-1`–`P2-4`）待实施。
+> **实施状态**：**Phase 1（`P0-1`–`P0-4`）已完成**（commit `1b671a4`）；**Phase 2（`P1-1`–`P1-6`）已完成**（工作区已验证）；**Phase 3（`P2-1`–`P2-4`）已完成**（工作区已验证）。
 
 ---
 
@@ -136,9 +136,9 @@
 
 ---
 
-### 【P1 级：高频体验与工具工程提效（减少审批弹窗、消除读写报错与降延迟）】
+### 【P1 级：高频体验与工具工程提效（减少审批弹窗、消除读写报错与降延迟）】— **已完成 (working tree)**
 
-#### P1-1：新增分片 `read_file`/`host_read_file` 与局部精确 `edit_file`/`host_edit_file` 工具
+#### P1-1：新增分片 `read_file`/`host_read_file` 与局部精确 `edit_file`/`host_edit_file` 工具 ✅ `已完成`
 1. **现象与痛点**：修改较大文件（如 `docs/product-issues.md`）必须整文件覆写，既浪费输出 Token 又频频触发敏感写入审批弹窗；读取大文件缺乏行号范围过滤。
 2. **数据实证**：会话 A 调用 `host_write_file` 11 次**全部**为整文件覆写 `docs/product-issues.md`，11 次全部弹审批（最长等 `151.3s`）；模型因缺局部读取和编辑工具，193 次高频依赖 `host_run_shell` + `Get-Content`/PowerShell 拼接脚本读写。
 3. **精确 `file:line` 根因**：
@@ -152,7 +152,7 @@
 
 ---
 
-#### P1-2：按需裁剪工具 Schema 声明，消除非 Admin Bot 越权与纯对话工具膨胀
+#### P1-2：按需裁剪工具 Schema 声明，消除非 Admin Bot 越权与纯对话工具膨胀 ✅ `已完成`
 1. **现象与痛点**：每轮无论任务类型和 Bot 权限，均无差异注入 42–48 个工具的完整 JSON Schema，增大 `overheadTokens` 与误调用率。
 2. **数据实证**：纯寒暄“你好”仍携带全套 40+ 工具（`阿B管理员` `seq=1258` 收到“你好”后竟主动调 `browser_snapshot` 打开后台）；普通 Bot 可看到标有 `ADMIN-BOT EXCLUSIVE` 的工具并在运行时被拒。
 3. **精确 `file:line` 根因**：
@@ -166,7 +166,7 @@
 
 ---
 
-#### P1-3：优化 Windows `host_run_shell`（WSL 直通、CLIXML 误报消除与只读命令降噪）
+#### P1-3：优化 Windows `host_run_shell`（WSL 直通、CLIXML 误报消除与只读命令降噪） ✅ `已完成`
 1. **现象与痛点**：Windows 下模型频繁将 Linux `| tail`、WSL bash 引号混入 PowerShell 导致崩溃；Git/WSL 输出 CLIXML 到 stderr 引起 `exitCode=1` 误判；`Get-ChildItem` 等只读命令也弹确认。
 2. **数据实证**：`博客管理员` 出现 6 次 PS↔WSL 转义报错并诱发 2 次 Carbon 救援；会话 A `host_run_shell` 7 次失败中有 6 次为 PowerShell CLIXML stderr 误报（实际命令已成功）；`博客管理员` `seq=26` 执行 `Get-ChildItem` 触发人工审批。
 3. **精确 `file:line` 根因**：
@@ -181,7 +181,7 @@
 
 ---
 
-#### P1-4：精简记忆存储结构与双轨触发守卫（去冗余、防删后回写、补齐主控画像）
+#### P1-4：精简记忆存储结构与双轨触发守卫（去冗余、防删后回写、补齐主控画像） ✅ `已完成`
 1. **现象与痛点**：① `globalMemories` 与 `privateSkills` 双份同存；② 每条记忆三字段重复 `desc === instruction === content`；③ 删除/关闭某条记忆同轮结束仍可能被后台重新提取写回；④ 超过 24 字普通指令即触发后台 LLM 提取；⑤ `Twinkle` 主控无 `rolePrompt`。
 2. **数据实证**：`settings.json` 双份存储 4 条全局记忆；23 条记忆持久化体积膨胀 3 倍；两主会话均出现过记忆自相矛盾、乱记一次性 Issue 细节及漏记核心身份，用户多次喊停“整理记忆”。
 3. **精确 `file:line` 根因**：
@@ -197,7 +197,7 @@
 
 ---
 
-#### P1-5：提升 `browser_snapshot` 稳定性、支持本地预览与跨 Bot 工作区路径自认知
+#### P1-5：提升 `browser_snapshot` 稳定性、支持本地预览与跨 Bot 工作区路径自认知 ✅ `已完成`
 1. **现象与痛点**：复杂 SPA 页面 `browser_snapshot` 频繁返回 `element_count: 0` 或 36s 超时；`open_url` 拒绝 `file://` 迫使模型自启 HTTP 服务看图；跨 Bot 读交付物不知道宿主机/WSL 挂载映射路径导致全盘 `find /` 超时 60s。
 2. **数据实证**：`阿B管理员` 出现 3 次 `element_count: 0`、1 次 `browser_snapshot` 36.2s 超时（后触发 `stopped`）、1 次 `open_url` 报 `invalid scheme: file`、1 次 `find / -maxdepth 6` 60s 超时。
 3. **精确 `file:line` 根因**：
@@ -213,7 +213,7 @@
 
 ---
 
-#### P1-6：安全策略闭环（封堵 Shell 读敏感路径、补齐 PowerShell 规则与模式一致性）
+#### P1-6：安全策略闭环（封堵 Shell 读敏感路径、补齐 PowerShell 规则与模式一致性） ✅ `已完成`
 1. **现象与痛点**：文件工具严防死守的 `.ssh`/`vault.json`/`.env` 及跨 Bot 私有目录，可被 `run_shell` / `host_run_shell` 用 `cat`/`Get-Content` 直接读取；PowerShell 高危命令扫描存在盲区；`sandboxMode="full"` 短路了 `write_file` 的 `writeRoots` 校验。
 2. **数据实证**：`agent-code-map.md` 与 `policy.ts` 源码审计直接确认的 4 处策略不一致缺陷（含 `policy.ts:497 vs 554`、`604-612`、`681-693`）。
 3. **精确 `file:line` 根因**：
@@ -232,7 +232,7 @@
 
 ### 【P2 级：长期质量、协同与底座健壮性（控制流、跨 Bot、检索与存储）】
 
-#### P2-1：跨 Bot 协同升级（动态防环跳数、回执合并与事件等待回调）
+#### P2-1：跨 Bot 协同升级（动态防环跳数、回执合并与事件等待回调）（已完成）
 1. **现象与痛点**：`MAX_BOT_HOPS = 4` 硬限制阻断正常业务多轮对齐；跨 Bot 发消息后发起方立即返回，模型只得 `run_shell("sleep 25")` 干等；同一 Bot 2 秒内连续发双回执浪费配额。
 2. **数据实证**：`ex_9320769ca26aec76` 中 `阿B管理员` 两次因 `Maximum inter-Bot hop depth (4) reached`（`seq=599, 633`）丢掉关键原图路径；`Twinkle` 发消息后紧跟 `sleep 25`；`ex_1aa548d7` / `ex_9320769c` 多次出现 2–3 秒双回执。
 3. **精确 `file:line` 根因**：
@@ -247,7 +247,7 @@
 
 ---
 
-#### P2-2：修复控制流边界毛刺（`pause` 即时止动、长思考短输出拦截、清理历史过时文案）
+#### P2-2：修复控制流边界毛刺（`pause` 即时止动、长思考短输出拦截、清理历史过时文案）（已完成）
 1. **现象与痛点**：用户点击暂停后，已在途的模型步在返回后依然继续执行写操作；模型耗尽 2,348 thoughts tokens 后仅输出 `"扫完"` 2 字就结束；工具声明和提示词仍残留 `"Mac"`/`"Finder"`/`"1440x900"`/`"Nori"` 等陈旧字样。
 2. **数据实证**：会话 A 在 `14:24:40` 触发 `paused` 后，在途步于 `14:24:42-44` 继续运行 `host_run_shell` 创建了 GitHub Issue；会话 A 第 289 步 `thoughts=2,348` 后只吐 `"扫完"` 2 字导致用户追问 `"怎么停下了"`。
 3. **精确 `file:line` 根因**：
@@ -263,7 +263,7 @@
 
 ---
 
-#### P2-3：优化 `web_search` 中文时效检索排序与定时任务执行保障
+#### P2-3：优化 `web_search` 中文时效检索排序与定时任务执行保障（已完成）
 1. **现象与痛点**：国内网络无 Google 时 `web_search` 默认首选 Bing，导致中文 + `freshness="day"` 查询返回首页全为静态百科/教程页，污染定时简报并曾导致 Bot 误报代码缺陷；定时任务在会话忙时直接静默跳过。
 2. **数据实证**：`2026-11-26` 早上 8 点定时简报两次 `web_search` 均被 Bing 静态百科污染，靠 `web_fetch` 门户首页兜底；该问题亦直接诱发了 `Twinkle` 向项目管家误派 Issue #20。
 3. **精确 `file:line` 根因**：
@@ -277,7 +277,7 @@
 
 ---
 
-#### P2-4：群聊协同连贯性、审批精准路由与存储层锁/I/O 性能加固
+#### P2-4：群聊协同连贯性、审批精准路由与存储层锁/I/O 性能加固（已完成）
 1. **现象与痛点**：群聊存在历史上下文断层、与 `steer` 割裂及无边界 `@` 误匹配；`approve`/`choose` 未命中 `callId` 时误落回首个活跃会话；`store` 全量同步写盘无互斥锁且每步重序列化 3.3MB 历史。
 2. **数据实证**：`sessions/` 已有 3.32MB / 1,230 条的 `.history.json`，每步全量写盘已成热点；源码审计定位了 4 处跨模块并发/状态错位隐患。
 3. **精确 `file:line` 根因**：
@@ -300,8 +300,8 @@
 | 阶段 | 状态 | 目标定位 | 纳入优化项 | 预期收益 |
 |---|---|---|---|---|
 | **Phase 1：止血降本与防死循环**（第 1 周） | **已完成 (`1b671a4`)** | 优先切断 550K 费用热点、辅助翻倍开销、渠道媒体断层与 GUI 死循环 | **P0-1**（上下文 160K 甜点上限 + 轮内冻结 System Prompt）<br>**P0-2**（同模折叠 + `summary`/`router` 降频 + 预算/埋点闭环）<br>**P0-3**（Telegram/飞书 `send_file` 媒体透传 + Token 脱敏）<br>**P0-4**（`A-B-A-B` 检测 + 观察工具补全 + 验证码接管熔断） | • 综合 LLM 费用下降 **50%+**<br>• 辅助调用占比降至 **≤20%**<br>• 外部渠道交付闭环打通<br>• 消除 50+ 步验证码空转 |
-| **Phase 2：工具提效与安全加固**（第 2 周） | 待实施 | 减少高频工具失败与审批打断，补齐安全边界 | **P1-1**（分片 `read_file` + `edit_file` / `host_edit_file`）<br>**P1-2**（按角色/场景裁剪工具声明）<br>**P1-3**（`host_run_shell` `shell:"wsl"` + CLIXML 消除 + 只读降噪）<br>**P1-4**（记忆去冗余 + 严格提取守卫 + `Twinkle` 人设补全）<br>**P1-5**（`browser_snapshot` 稳态化 + 共享路径认知）<br>**P1-6**（Shell 敏感路径拦截 + PowerShell 规则 + 策略对齐） | • 写文件审批弹窗大幅减少<br>• Windows WSL 失败率下降 **80%+**<br>• 闲聊工具 `overheadTokens` 减半<br>• 消除 Shell 读取敏感文件安全漏洞 |
-| **Phase 3：协同、调度与底座健壮**（第 3 周） | 待实施 | 完善多 Bot 协同、控制流毛刺与存储层高并发性能 | **P2-1**（`MAX_BOT_HOPS=8` + 去重 + 协作等待/回执合并）<br>**P2-2**（`pause` 即时止动 + 长思考短回复自检 + 文案清理）<br>**P2-3**（`web_search` 中文时效优先百度 + 定时忙时排队）<br>**P2-4**（审批精准路由 + 群聊连贯性 + `store` 缓存/压缩/互斥） | • 消除 `pause` 越界落盘与审批串线<br>• 跨 Bot 协作摆脱 `sleep 25` 盲等<br>• `.history.json` 读写耗时显著下降 |
+| **Phase 2：工具提效与安全加固**（第 2 周） | **已完成 (working tree)** | 减少高频工具失败与审批打断，补齐安全边界 | **P1-1**（分片 `read_file` + `edit_file` / `host_edit_file`）<br>**P1-2**（按角色/场景裁剪工具声明）<br>**P1-3**（`host_run_shell` `shell:"wsl"` + CLIXML 消除 + 只读降噪）<br>**P1-4**（记忆去冗余 + 严格提取守卫 + `Twinkle` 人设补全）<br>**P1-5**（`browser_snapshot` 稳态化 + 共享路径认知）<br>**P1-6**（Shell 敏感路径拦截 + PowerShell 规则 + 策略对齐） | • 写文件审批弹窗大幅减少<br>• Windows WSL 失败率下降 **80%+**<br>• 闲聊工具 `overheadTokens` 减半<br>• 消除 Shell 读取敏感文件安全漏洞 |
+| **Phase 3：协同、调度与底座健壮**（第 3 周） | **已完成 (working tree)** | 完善多 Bot 协同、控制流毛刺与存储层高并发性能 | **P2-1**（`MAX_BOT_HOPS=8` + 去重 + 协作等待/回执合并）<br>**P2-2**（`pause` 即时止动 + 长思考短回复自检 + 文案清理）<br>**P2-3**（`web_search` 中文时效优先百度 + 定时忙时排队）<br>**P2-4**（审批精准路由 + 群聊连贯性 + `store` 缓存/压缩/互斥） | • 消除 `pause` 越界落盘与审批串线<br>• 跨 Bot 协作摆脱 `sleep 25` 盲等<br>• `.history.json` 读写耗时显著下降 |
 
 ### 4.2 自动化验证矩阵（单测 + Executor 测 + Tiered E2E）
 

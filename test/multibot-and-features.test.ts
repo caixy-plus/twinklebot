@@ -20,6 +20,7 @@ import {
 import {
   extractMentionedBots,
   selectGroupSpeakers,
+  buildGroupPromptContext,
 } from "../src/agent/group-coordinator.js";
 import { createScheduler } from "../src/agent/scheduler.js";
 
@@ -512,4 +513,142 @@ test("fresh-install store and HTTP APIs return empty globalMemories, schedules, 
   assert.equal(sessionsJson.sessions.length, 1);
   assert.equal(sessionsJson.sessions[0].isAdmin, true);
   assert.equal((sessionsJson.sessions[0].memories || []).length, 0);
+});
+
+test("Phase 3 P2-1: MAX_BOT_HOPS=8, 3s coalesce debounce, 3-msg similarity loop guard, and await_reply", async () => {
+  assert.equal(MAX_BOT_HOPS, 8);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "p2-1-collab-"));
+  try {
+    const store = createStore(tmpDir);
+    const admin = store.ensureAdminBot();
+    const helper = store.createSession({ title: "协作伙伴B", rolePrompt: "专职执行" });
+
+    let dispatches = 0;
+    // 1. 3s same-pair similar delivery coalesced cleanly
+    const first = await runBotCollabTool(
+      "send_bot_message",
+      { target_bot: helper.id, message: "请检查生产环境日志状态并汇报" },
+      {
+        store,
+        senderSessionId: admin.id,
+        senderBot: admin,
+        onDispatchBotTurn: () => {
+          dispatches += 1;
+        },
+      }
+    );
+    assert.equal(first.ok, true);
+    const dup = await runBotCollabTool(
+      "send_bot_message",
+      { target_bot: helper.id, message: "请检查生产环境日志状态并汇报！" },
+      {
+        store,
+        senderSessionId: admin.id,
+        senderBot: admin,
+        onDispatchBotTurn: () => {
+          dispatches += 1;
+        },
+      }
+    );
+    assert.equal(dup.coalesced, true);
+    assert.equal(dup.deduplicated, true);
+    assert.equal(dispatches, 1);
+
+    // 2. await_reply resolves cleanly when onReplyComplete fires
+    const awaited = await runBotCollabTool(
+      "send_bot_message",
+      {
+        target_bot: helper.id,
+        message: "另外请同步导出最新财务报表 summary.xlsx",
+        await_reply: true,
+        await_timeout_sec: 5,
+      },
+      {
+        store,
+        senderSessionId: admin.id,
+        senderBot: admin,
+        onDispatchBotTurn: ({ onReplyComplete }: any) => {
+          setTimeout(() => onReplyComplete?.({ status: "done", text: "已导出 summary.xlsx" }), 10);
+        },
+      }
+    );
+    assert.equal(awaited.ok, true);
+    assert.equal(awaited.awaitReply, true);
+    assert.equal(awaited.timedOut, false);
+    assert.equal(awaited.replyText, "已导出 summary.xlsx");
+
+    // 3. Consecutive 3 messages > 0.85 similarity in exchange triggers loop block
+    const botX = store.createSession({ title: "PingX", rolePrompt: "X" });
+    const botY = store.createSession({ title: "PingY", rolePrompt: "Y" });
+    store.recordExchangeMessage({
+      fromBot: botX,
+      toBot: botY,
+      text: "SYNC_LOOP_PAYLOAD_ALPHA_12345",
+    });
+    store.recordExchangeMessage({
+      fromBot: botY,
+      toBot: botX,
+      text: "SYNC_LOOP_PAYLOAD_ALPHA_12345",
+    });
+    const loopRes = await runBotCollabTool(
+      "send_bot_message",
+      { target_bot: botY.id, message: "SYNC_LOOP_PAYLOAD_ALPHA_12345" },
+      {
+        store,
+        senderSessionId: botX.id,
+        senderBot: botX,
+        hopDepth: 2,
+      }
+    );
+    assert.equal(loopRes.ok, false);
+    assert.equal(loopRes.loopBlocked, true);
+    assert.match(String(loopRes.error || ""), /hop loop/i);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("Phase 3 P2-4: group coordinator @boundary regex, Admin zero-score fallback, and tool/attachment context", () => {
+  const admin = { id: "admin", title: "Twinkle", rolePrompt: "协调", isAdmin: true };
+  const ops = { id: "ops", title: "Ops", rolePrompt: "运维服务器监控" };
+  const blog = { id: "blog", title: "博客管理员", rolePrompt: "博客部署" };
+
+  assert.deepEqual(
+    extractMentionedBots("联系 ops@example.com 或 @OpsTeam", [admin, ops]),
+    []
+  );
+  assert.deepEqual(
+    extractMentionedBots("请 @Ops 和 @博客管理员！确认一下", [admin, ops, blog]).map((b) => b.id),
+    ["ops", "blog"]
+  );
+
+  // Zero-score message picks Admin Bot only (1 speaker) rather than spraying 2 bots
+  assert.deepEqual(
+    selectGroupSpeakers({ text: "嗯嗯收到", memberBots: [ops, admin, blog], maxSpeakers: 2 }).map(
+      (b) => b.id
+    ),
+    ["admin"]
+  );
+
+  // Zero-score without admin picks only 1 fallback speaker
+  assert.equal(
+    selectGroupSpeakers({ text: "hello there", memberBots: [ops, blog], maxSpeakers: 2 }).length,
+    1
+  );
+
+  const ctx = buildGroupPromptContext([
+    {
+      type: "user",
+      text: "看看这个报告",
+      attachments: [{ name: "report.pdf" }],
+    },
+    {
+      type: "result",
+      botName: "博客管理员",
+      name: "send_file",
+      result: { title: "summary.docx", path: "/tmp/summary.docx" },
+    },
+  ]);
+  assert.match(ctx, /\[Attachments: report\.pdf\]/);
+  assert.match(ctx, /\[Tool 博客管理员 · send_file\]: summary\.docx \(\/tmp\/summary\.docx\)/);
 });

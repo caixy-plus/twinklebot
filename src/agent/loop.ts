@@ -224,6 +224,9 @@ export function createControl() {
     get paused() {
       return _paused;
     },
+    isPaused() {
+      return _paused;
+    },
     get signal() {
       return abortController.signal;
     },
@@ -1075,7 +1078,22 @@ async function runTaskInner({
     const allTools = enableBotTools
       ? [...TOOL_DECLARATIONS, ...BOT_COLLAB_TOOL_DECLARATIONS]
       : TOOL_DECLARATIONS;
-
+    const TRIVIAL_CHAT_CORE_TOOLS = new Set([
+      "memory_manage",
+      "app_knowledge",
+      "web_search",
+      "web_fetch",
+      "schedule_manage",
+      "vault_manage",
+      "list_bots",
+      "send_bot_message",
+      "ask_user_choice",
+      "propose_draft",
+      "route_escalate",
+      "custom_skill_manage",
+      "self_update",
+    ]);
+    let fullToolsUnlocked = false;
     let frozenSystemInstruction: string | null = null;
 
     if (!skipHistorySave && store?.saveHistory) {
@@ -1122,6 +1140,7 @@ async function runTaskInner({
       if (hasVisualSteer && smart) {
         smart.plan.needs_visual = true;
       }
+      fullToolsUnlocked = true;
       frozenSystemInstruction = null;
       if (!skipHistorySave && store?.saveHistory) {
         store.saveHistory(sessionId, pruneScreenshots(history, keepScreenshots));
@@ -1268,6 +1287,7 @@ async function runTaskInner({
     };
 
     let consecutiveErrors = 0;
+    let shortReplyRetried = false;
     let executedToolCount = 0;
     const recentExecutedTools: string[] = [];
     let lastScreenSha1 = hashScreenshot(initialPng);
@@ -1529,14 +1549,28 @@ async function runTaskInner({
           : config.botIdentity,
       };
 
-      const stepTools = enableBotTools
+      const filteredBotTools = filterToolDeclarationsForSkills(allTools, installedSkills, {
+        isAdminBot: Boolean(sessionObj?.isAdmin),
+      });
+      const rawStepTools = enableBotTools
         ? [
-            ...filterToolDeclarationsForSkills(allTools, installedSkills),
+            ...filteredBotTools,
             ...(hostExecutionMode !== "off" ? HOST_TOOL_DECLARATIONS : []),
             ...activeMcpTools,
             ...(smart ? [ROUTE_ESCALATE_TOOL_DECLARATION] : []),
           ]
         : allTools;
+      const shouldTrimTrivialChatTools =
+        enableBotTools &&
+        !fullToolsUnlocked &&
+        Boolean(smart) &&
+        smart?.plan?.complexity === "trivial" &&
+        smart?.plan?.category === "chat" &&
+        !smart?.plan?.needs_visual &&
+        !hasUserAttachments;
+      const stepTools = shouldTrimTrivialChatTools
+        ? rawStepTools.filter((t: any) => TRIVIAL_CHAT_CORE_TOOLS.has(String(t?.name || "")))
+        : rawStepTools;
 
       const requestedModel = autoRoute ? stepRoute.model : modelName || defaultModel;
       if (stepNo === maxSteps && maxSteps >= 4 && !ctrl.hasSteeredMessages()) {
@@ -1842,6 +1876,31 @@ async function runTaskInner({
             continue;
           }
         }
+        // Self-check when the model spent substantial reasoning (>= 800 thoughts tokens)
+        // yet emitted an ultra-terse (< 7 char) non-acknowledgment reply.
+        const thoughtTokens = Number(turn?.usage?.thoughts) || 0;
+        const isShortAckReply =
+          /^(?:ok|okay|done|yes|no|好的|好|收到|嗯|明白|完成|已处理|已发|行|是|对)[.!。！]?$/i.test(
+            trimmedTurnText
+          );
+        if (
+          !shortReplyRetried &&
+          !hasPendingEmbeds &&
+          thoughtTokens >= 800 &&
+          trimmedTurnText.length > 0 &&
+          trimmedTurnText.length <= 6 &&
+          !isShortAckReply &&
+          stepNo < maxSteps
+        ) {
+          shortReplyRetried = true;
+          history.push(
+            userStep(
+              `[System Notice: Your reply ("${trimmedTurnText}") after extensive reasoning was unusually brief. Expand with a clear, complete summary of your findings, result, or next step for the user.]`,
+              null
+            )
+          );
+          continue;
+        }
         const prunedFinal = pruneScreenshots(history, keepScreenshots);
         if (!skipHistorySave && store?.saveHistory) {
           store.saveHistory(sessionId, prunedFinal);
@@ -1960,8 +2019,19 @@ async function runTaskInner({
         return { status: "done", text: answerText };
       }
 
+      if (ctrl.isPaused?.()) {
+        const preCallPause = await ctrl.waitIfPaused();
+        if (preCallPause === "stopped" || ctrl.stopped) {
+          setStatus("stopped");
+          return { status: "stopped", text: "" };
+        }
+        if (preCallPause === "steered" || preCallPause === "resumed") {
+          setStatus("running");
+        }
+      }
+
       // GrokBot conversational UX: emit natural pre-action acknowledgment bubble before running tools
-      if (typeof turn?.text === "string" && turn.text.trim()) {
+      if (typeof turn?.text === "string" && turn.text.trim() && !ctrl.hasSteeredMessages()) {
         emitTagged({
           type: "assistant_text",
           text: turn.text.trim(),
@@ -1995,6 +2065,17 @@ async function runTaskInner({
         if (ctrl.stopped) {
           setStatus("stopped");
           return { status: "stopped", text: "" };
+        }
+
+        if (ctrl.isPaused?.()) {
+          const midCallPause = await ctrl.waitIfPaused();
+          if (midCallPause === "stopped" || ctrl.stopped) {
+            setStatus("stopped");
+            return { status: "stopped", text: "" };
+          }
+          if (midCallPause === "steered" || midCallPause === "resumed") {
+            setStatus("running");
+          }
         }
 
         if (ctrl.hasSteeredMessages()) {
@@ -2053,6 +2134,7 @@ async function runTaskInner({
 
         // Smart Router v2: model self-escalation request (handled host-side, no executor round-trip)
         if (call.name === "route_escalate") {
+          fullToolsUnlocked = true;
           const escResult = smart
             ? requestEscalation(smart.runtime, call.args || {}, {
                 budget: smart.budget,
@@ -2073,7 +2155,12 @@ async function runTaskInner({
         if (enableBotTools && isBotCollabTool(call.name)) {
           executedToolCount += 1;
           recentExecutedTools.push(call.name);
-          if (call.name === "memory_manage" && call.args?.action === "save") {
+          if (
+            call.name === "memory_manage" &&
+            (call.args?.action === "save" ||
+              call.args?.action === "remove" ||
+              call.args?.action === "toggle")
+          ) {
             memoryManagedInTurn = true;
           }
           const collabResult: any = await runBotCollabTool(call.name, call.args, {
@@ -2237,7 +2324,9 @@ async function runTaskInner({
             await ensureTaskScreenLease(ctrl.signal);
           }
           if (
-            (call.name === "run_shell" || call.name === "write_file") &&
+            (call.name === "run_shell" ||
+              call.name === "write_file" ||
+              call.name === "edit_file") &&
             botWorkspaceRoot &&
             hasConfiguredWriteRoots
           ) {
@@ -2272,6 +2361,7 @@ async function runTaskInner({
                           settings: browserAutomationSettings,
                           dataDir: store?.dataDir || config?.dataDir,
                           blockedLocalPorts: [Number(config?.port) || 3230, 7300],
+                          allowedFileRoots: botWorkspaceRoot ? [botWorkspaceRoot] : [],
                           signal: toolSignal,
                         }),
                     }
@@ -2279,7 +2369,9 @@ async function runTaskInner({
               })
           );
           if (
-            (call.name === "write_file" || call.name === "run_shell") &&
+            (call.name === "write_file" ||
+              call.name === "edit_file" ||
+              call.name === "run_shell") &&
             !sandboxOut?.result?.error
           ) {
             broadcastGlobal?.({

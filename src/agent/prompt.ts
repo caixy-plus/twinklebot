@@ -1,3 +1,4 @@
+import path from "node:path";
 import { renderPromptTemplate } from "./prompt-loader.js";
 
 export const MAX_PROMPT_MEMORY_SECTION_CHARS = 2500;
@@ -93,14 +94,19 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
 
   const botWorkspaceRoot =
     typeof config.botWorkspaceRoot === "string" ? config.botWorkspaceRoot.trim() : "";
+  const botsParentRoot = botWorkspaceRoot ? path.dirname(botWorkspaceRoot) : "";
 
   sections.push(`Desktop & Coordinates:
 - Display resolution is ${width}x${height} pixels.
 - Use real pixel coordinates: x in [0, ${width - 1}] and y in [0, ${height - 1}]. Coordinates are real pixel coordinates, not normalized.${
     botWorkspaceRoot
-      ? `\n- Dedicated Bot Workspace & Library (shown in this Bot's right sidebar under "资料库"): \`${botWorkspaceRoot}\`. All files, reports, downloads, images, and notes you create for this Bot MUST stay inside this dedicated workspace (isolated per Bot).`
+      ? `\n- Dedicated Bot Workspace & Library (shown in this Bot's right sidebar under "资料库"): \`${botWorkspaceRoot}\`. All files, reports, downloads, images, and notes you create for this Bot MUST stay inside this dedicated workspace (isolated per Bot).` +
+        (botsParentRoot
+          ? `\n- Multi-Bot Shared Parent Workspace: Other Bots' workspaces live under sibling folders of \`${botsParentRoot}/<botId>\` (call \`list_bots\` to see their \`workspace_dir\` paths instead of running full-disk \`find /\`; on Windows with WSL, host \`C:\\...\` maps to \`/mnt/c/...\`).`
+          : "")
       : ""
   }
+- File Reading & Editing Efficiency: Prefer \`read_file\` / \`host_read_file\` with \`start_line\`/\`end_line\` for large files, and \`edit_file\` / \`host_edit_file\` for targeted replacements or appends instead of rewriting whole files with \`write_file\`/\`host_write_file\` or spawning shell scripts.
 - Primary workspace roots: ${writeRootsStr}. Always avoid sensitive credential/system paths (\`.ssh\`, \`.aws\`, \`.gnupg\`, \`.env\`, Keychains, \`vault.json\`).`);
 
   if (config.enableBotTools) {

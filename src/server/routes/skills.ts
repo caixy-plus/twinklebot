@@ -115,7 +115,7 @@ export async function handleSkillsRoutes(
                 prevGlobal.unshift(item);
                 ctx.store?.writeSettings?.({
                   globalMemories: prevGlobal,
-                  privateSkills: prevGlobal,
+                  privateSkills: [],
                 });
                 ctx.broadcastSkillsUpdated();
               }

@@ -103,7 +103,7 @@ export const TOOL_DECLARATIONS = [
   {
     type: "function",
     name: "screenshot",
-    description: "Take a screenshot of the current desktop display (1440x900).",
+    description: "Take a screenshot of the current desktop display.",
     parameters: {
       type: "object",
       properties: {},
@@ -119,11 +119,11 @@ export const TOOL_DECLARATIONS = [
       properties: {
         x: {
           type: "integer",
-          description: "X coordinate (0-1439).",
+          description: "X coordinate in screenshot pixel space.",
         },
         y: {
           type: "integer",
-          description: "Y coordinate (0-899).",
+          description: "Y coordinate in screenshot pixel space.",
         },
         button: {
           type: "string",
@@ -185,11 +185,11 @@ export const TOOL_DECLARATIONS = [
       properties: {
         x: {
           type: "integer",
-          description: "X coordinate (0-1439).",
+          description: "X coordinate in screenshot pixel space.",
         },
         y: {
           type: "integer",
-          description: "Y coordinate (0-899).",
+          description: "Y coordinate in screenshot pixel space.",
         },
         direction: {
           type: "string",
@@ -213,19 +213,19 @@ export const TOOL_DECLARATIONS = [
       properties: {
         x1: {
           type: "integer",
-          description: "Start X coordinate (0-1439).",
+          description: "Start X coordinate in screenshot pixel space.",
         },
         y1: {
           type: "integer",
-          description: "Start Y coordinate (0-899).",
+          description: "Start Y coordinate in screenshot pixel space.",
         },
         x2: {
           type: "integer",
-          description: "End X coordinate (0-1439).",
+          description: "End X coordinate in screenshot pixel space.",
         },
         y2: {
           type: "integer",
-          description: "End Y coordinate (0-899).",
+          description: "End Y coordinate in screenshot pixel space.",
         },
         risk: RISK_PROPERTY,
       },
@@ -280,13 +280,22 @@ export const TOOL_DECLARATIONS = [
   {
     type: "function",
     name: "read_file",
-    description: "Read content from a file (up to 200,000 characters).",
+    description:
+      "Read UTF-8 content from a file (up to 200,000 characters). Optionally pass 1-based `start_line` and `end_line` to read only a slice with line numbers.",
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
           description: "Absolute file path to read.",
+        },
+        start_line: {
+          type: "integer",
+          description: "Optional 1-based start line number (inclusive).",
+        },
+        end_line: {
+          type: "integer",
+          description: "Optional 1-based end line number (inclusive).",
         },
       },
       required: ["path"],
@@ -314,14 +323,47 @@ export const TOOL_DECLARATIONS = [
   },
   {
     type: "function",
+    name: "edit_file",
+    description:
+      "Edit an existing file in place using exact `target` -> `replacement` substitution (fails if `target` is missing or ambiguous unless `replace_all: true`), or append text when `append: true`. Strongly preferred over rewriting whole files with `write_file` or piping shell commands.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute file path to edit or append.",
+        },
+        target: {
+          type: "string",
+          description: "Exact existing text block to replace (required unless `append: true`).",
+        },
+        replacement: {
+          type: "string",
+          description: "Replacement text (or text to append when `append: true`).",
+        },
+        append: {
+          type: "boolean",
+          description: "If true, append `replacement` to the end of the file (creates file if missing).",
+        },
+        replace_all: {
+          type: "boolean",
+          description: "If true, replace all occurrences of `target` instead of requiring a unique match.",
+        },
+        risk: RISK_PROPERTY,
+      },
+      required: ["path"],
+    },
+  },
+  {
+    type: "function",
     name: "open_url",
-    description: "Open a URL in this Bot's dedicated Google Chrome tab (sharing the Primary Profile login state via CDP).",
+    description: "Open an HTTP/HTTPS URL (or safe local preview `file://` path inside this Bot's workspace) in this Bot's dedicated Google Chrome tab (sharing the Primary Profile login state via CDP).",
     parameters: {
       type: "object",
       properties: {
         url: {
           type: "string",
-          description: "HTTP or HTTPS URL to open.",
+          description: "HTTP, HTTPS, or workspace-scoped `file://` URL to open.",
         },
         risk: RISK_PROPERTY,
       },
@@ -338,7 +380,7 @@ export const TOOL_DECLARATIONS = [
       properties: {
         url: {
           type: "string",
-          description: "Optional HTTP/HTTPS URL to open or navigate to before taking the DOM snapshot.",
+          description: "Optional HTTP/HTTPS URL (or workspace-scoped `file://` preview path) to open before taking the DOM snapshot.",
         },
         max_elements: {
           type: "integer",
@@ -347,6 +389,10 @@ export const TOOL_DECLARATIONS = [
         max_text: {
           type: "integer",
           description: "Maximum characters of visible page text to return (100-20000, default: 3000).",
+        },
+        wait_ms: {
+          type: "integer",
+          description: "Optional extra wait in milliseconds (0-5000) before capturing DOM snapshot on SPAs.",
         },
       },
       required: [],
@@ -551,6 +597,7 @@ const ROUTE_MAP: Record<string, string> = {
   run_shell: "/shell",
   read_file: "/read",
   write_file: "/write",
+  edit_file: "/edit",
   open_url: "/open_url",
   browser_snapshot: "/browser/snapshot",
   browser_click: "/browser/click",

@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   HOST_TOOL_DECLARATIONS,
+  buildHostShellSpawnSpec,
+  cleanPowerShellClixmlStderr,
   isHostTool,
   runHostTool,
 } from "../src/agent/host-tools.js";
@@ -15,16 +17,22 @@ import {
 } from "../src/lib/bot-computer-updater.js";
 import { createLocalAwareExecutorClient } from "../src/lib/bot-computer-provisioner.js";
 
-test("HOST_TOOL_DECLARATIONS defines 5 host tools and scopes risk parameter to mutating tools", () => {
+test("HOST_TOOL_DECLARATIONS defines 6 host tools and scopes risk parameter to mutating tools", () => {
   const names = HOST_TOOL_DECLARATIONS.map((t) => t.name);
   assert.deepEqual(names, [
     "host_run_shell",
     "host_open",
     "host_read_file",
     "host_write_file",
+    "host_edit_file",
     "host_record_screen",
   ]);
-  const mutatingRiskTools = new Set(["host_run_shell", "host_write_file", "host_record_screen"]);
+  const mutatingRiskTools = new Set([
+    "host_run_shell",
+    "host_write_file",
+    "host_edit_file",
+    "host_record_screen",
+  ]);
   for (const decl of HOST_TOOL_DECLARATIONS) {
     assert.equal(decl.type, "function");
     assert.equal(isHostTool(decl.name), true);
@@ -295,4 +303,71 @@ test("createExecutorAutoSyncController & createLocalAwareExecutorClient auto-syn
   assert.equal(rCloud.synced, false);
   assert.equal(cloudUpd, 0);
   cloudCtrl.dispose();
+});
+
+test("host_read_file slices lines, host_edit_file replaces/appends safely, and Windows WSL/CLIXML helpers work", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-host-edit-"));
+  try {
+    const filePath = path.join(tmpDir, "notes.txt");
+    fs.writeFileSync(filePath, "line1\nline2\ntarget line\ntarget line\nline5", "utf8");
+
+    const slice = await runHostTool("host_read_file", {
+      path: filePath,
+      start_line: 2,
+      end_line: 3,
+    });
+    assert.equal(slice.result.ok, true);
+    assert.equal(slice.result.startLine, 2);
+    assert.equal(slice.result.endLine, 3);
+    assert.equal(slice.result.totalLines, 5);
+    assert.equal(slice.result.hasMore, true);
+    assert.equal(slice.result.content, "2: line2\n3: target line");
+
+    const ambiguous = await runHostTool("host_edit_file", {
+      path: filePath,
+      target: "target line",
+      replacement: "edited",
+    });
+    assert.equal(ambiguous.result.ok, false);
+    assert.match(ambiguous.result.error, /matched 2 times/);
+
+    const replaceAll = await runHostTool("host_edit_file", {
+      path: filePath,
+      target: "target line",
+      replacement: "edited line",
+      replace_all: true,
+    });
+    assert.equal(replaceAll.result.ok, true);
+    assert.equal(replaceAll.result.replacements, 2);
+
+    const appended = await runHostTool("host_edit_file", {
+      path: filePath,
+      append: true,
+      replacement: "\nline6",
+    });
+    assert.equal(appended.result.ok, true);
+    assert.equal(appended.result.mode, "append");
+    assert.equal(
+      fs.readFileSync(filePath, "utf8"),
+      "line1\nline2\nedited line\nedited line\nline5\nline6"
+    );
+
+    // Windows WSL passthrough & CLIXML noise cleanup
+    const wslSpec = buildHostShellSpawnSpec("git status | tail -n 5", {
+      platform: "win32",
+      shell: "wsl",
+      wslDistro: "Ubuntu-24.04",
+    });
+    assert.equal(wslSpec.cmd, "wsl.exe");
+    assert.deepEqual(wslSpec.args, ["-d", "Ubuntu-24.04", "--", "bash", "-lc", "git status | tail -n 5"]);
+    assert.equal(wslSpec.isPowerShell, false);
+
+    const noisyClixml = `#< CLIXML\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><PR N="Progress"><T>Completed</T></PR></Objs>`;
+    assert.equal(cleanPowerShellClixmlStderr(noisyClixml), "");
+
+    const realErrClixml = `#< CLIXML\n<Objs Version="1.1.0.1"><S S="Error">fatal: not a git repo_x000D__x000A_</S></Objs>`;
+    assert.equal(cleanPowerShellClixmlStderr(realErrClixml), "fatal: not a git repo");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

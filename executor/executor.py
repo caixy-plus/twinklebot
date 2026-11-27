@@ -2601,6 +2601,21 @@ def resolve_default_browser(explicit=None) -> str:
     return DEFAULT_BROWSER
 
 
+SAFE_LOCAL_PREVIEW_EXTS = {
+    ".html",
+    ".htm",
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".pdf",
+    ".txt",
+    ".md",
+}
+
+
 class Actions:
     BUTTON_MAP = {
         "left": "1",
@@ -2633,11 +2648,13 @@ class Actions:
         list_window_targets_fn=None,
         on_target_switch_fn=None,
         cwd: str = None,
+        bot_workspace: str = None,
     ):
         self.display = str(display or ":1")
         self.cdp_port = int(cdp_port or DEFAULT_CDP_PORT)
         self.profile_dir = profile_dir
         self.cwd = str(cwd or "").strip() or None
+        self.bot_workspace = str(bot_workspace or "").strip() or self.cwd
         self.target_id = str(target_id or "").strip() or None
         self.target_ws_url = str(target_ws_url or "").strip() or None
         self.window_id = window_id
@@ -2864,9 +2881,33 @@ class Actions:
             "truncated": truncated,
         }
 
-    def read_file(self, path):
+    def read_file(self, path, start_line=None, end_line=None):
         check_read_path_allowed(path)
+        for fname, fval in (("start_line", start_line), ("end_line", end_line)):
+            if fval is not None:
+                if type(fval) is not int or isinstance(fval, bool) or fval < 1:
+                    raise ValueError(f"{fname} must be a positive 1-based integer")
+        if start_line is not None and end_line is not None and end_line < start_line:
+            raise ValueError("end_line must be >= start_line")
+
         with open(path, "r", encoding="utf-8", errors="replace") as f:
+            if start_line is not None or end_line is not None:
+                all_lines = f.read().splitlines()
+                total_lines = len(all_lines)
+                eff_start = min(start_line or 1, max(total_lines, 1))
+                eff_end = min(end_line or min(eff_start + 399, total_lines), total_lines)
+                sliced = [] if total_lines == 0 else all_lines[eff_start - 1 : eff_end]
+                numbered = "\n".join(f"{eff_start + i}: {line}" for i, line in enumerate(sliced))
+                truncated = len(numbered) > MAX_FILE_CHARS
+                return {
+                    "content": numbered[:MAX_FILE_CHARS],
+                    "truncated": truncated,
+                    "startLine": eff_start,
+                    "endLine": 0 if total_lines == 0 else eff_end,
+                    "totalLines": total_lines,
+                    "hasMore": eff_end < total_lines,
+                }
+
             content = f.read(MAX_FILE_CHARS + 1)
 
         truncated = len(content) > MAX_FILE_CHARS
@@ -2887,18 +2928,80 @@ class Actions:
             f.write(content)
         return {"bytes": len(content.encode("utf-8"))}
 
-    def open_url(self, url):
+    def edit_file(self, path, target=None, replacement="", append=False, replace_all=False):
+        check_read_path_allowed(path)
+        if replacement is None:
+            replacement = ""
+        if not isinstance(replacement, str):
+            raise TypeError("replacement must be a string")
+
+        if append:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(replacement)
+            return {
+                "ok": True,
+                "path": path,
+                "mode": "append",
+                "bytes": len(replacement.encode("utf-8")),
+            }
+
+        if not isinstance(target, str) or not target:
+            raise ValueError("target must be a non-empty string unless append=True")
+        with open(path, "r", encoding="utf-8") as f:
+            existing = f.read()
+        occurrences = existing.count(target)
+        if occurrences == 0:
+            raise ValueError("target not found in file")
+        if occurrences > 1 and not replace_all:
+            raise ValueError(
+                f"target matched {occurrences} times; provide more context or set replace_all=True"
+            )
+        updated = existing.replace(target, replacement) if replace_all else existing.replace(target, replacement, 1)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+        return {
+            "ok": True,
+            "path": path,
+            "mode": "replace",
+            "replacements": occurrences if replace_all else 1,
+            "bytes": len(updated.encode("utf-8")),
+        }
+
+    def _validate_browser_url(self, url, allow_local_file: bool = False):
         if not isinstance(url, str):
             raise TypeError("url must be a string")
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            raise ValueError(f"invalid scheme: {parsed.scheme}")
+        parsed = urllib.parse.urlparse(url.strip())
+        if parsed.scheme in ("http", "https"):
+            return url
+        if parsed.scheme == "file" and allow_local_file:
+            ws_root = str(self.bot_workspace or self.cwd or "").strip()
+            if not ws_root:
+                raise ValueError("file:// preview requires an active Bot workspace")
+            local_path = urllib.parse.unquote(parsed.path or "")
+            if not local_path or not os.path.isabs(local_path):
+                raise ValueError("invalid file:// url path")
+            check_read_path_allowed(local_path)
+            real_target = os.path.realpath(local_path)
+            real_root = os.path.realpath(ws_root)
+            if not (real_target == real_root or real_target.startswith(real_root + os.sep)):
+                raise PermissionError(f"access to {local_path} is denied outside Bot workspace")
+            ext = os.path.splitext(real_target)[1].lower()
+            if ext not in SAFE_LOCAL_PREVIEW_EXTS:
+                raise ValueError(f"unsupported local file:// preview extension: {ext or 'none'}")
+            return url
+        raise ValueError(f"invalid scheme: {parsed.scheme}")
+
+    def open_url(self, url):
+        validated = self._validate_browser_url(url, allow_local_file=True)
 
         if self.target_id and self._custom_cdp_eval is None:
-            self.cdp_session(lambda call: call("Page.navigate", {"url": url}))
+            self.cdp_session(lambda call: call("Page.navigate", {"url": validated}))
             return {"ok": True, "target_id": self.target_id}
 
-        self.spawn([self.browser, url], start_new_session=True)
+        self.spawn([self.browser, validated], start_new_session=True)
         return {"ok": True}
 
     def _dispatch_mouse_click(self, call, x: float, y: float):
@@ -3023,19 +3126,15 @@ class Actions:
             snap.setdefault("target_id", self.target_id)
         return snap
 
-    def browser_snapshot(self, url=None, max_elements=80, max_text=3000):
+    def browser_snapshot(self, url=None, max_elements=80, max_text=3000, wait_ms=0):
         if url is not None:
-            if not isinstance(url, str):
-                raise TypeError("url must be a string")
-            parsed = urllib.parse.urlparse(url)
-            if parsed.scheme not in ("http", "https"):
-                raise ValueError(f"invalid scheme: {parsed.scheme}")
+            validated_url = self._validate_browser_url(url, allow_local_file=True)
             if self.cdp_eval is default_cdp_eval:
                 # Navigate this Bot's dedicated CDP tab (or active page when standalone) instead of spawning rogue tabs.
                 if self.target_id or self._has_active_cdp_page():
-                    self.cdp_session(lambda call: call("Page.navigate", {"url": url}))
+                    self.cdp_session(lambda call: call("Page.navigate", {"url": validated_url}))
                 else:
-                    self.open_url(url)
+                    self.open_url(validated_url)
                 self._wait_for_page_settle(max_polls=32, poll_sec=0.25, require_content=True)
                 if not self.target_id:
                     close_redundant_blank_tabs(port=self.cdp_port)
@@ -3045,31 +3144,72 @@ class Actions:
                         protected_ids=self.protected_targets_fn(),
                     )
             else:
-                self.open_url(url)
+                self.open_url(validated_url)
 
         if type(max_elements) is not int or isinstance(max_elements, bool) or not (1 <= max_elements <= 200):
             raise ValueError("max_elements must be an integer between 1 and 200")
         if type(max_text) is not int or isinstance(max_text, bool) or not (100 <= max_text <= 20000):
             raise ValueError("max_text must be an integer between 100 and 20000")
+        if wait_ms is None:
+            wait_ms = 0
+        if type(wait_ms) is not int or isinstance(wait_ms, bool) or not (0 <= wait_ms <= 5000):
+            raise ValueError("wait_ms must be an integer between 0 and 5000")
+        if wait_ms > 0:
+            time.sleep(wait_ms / 1000.0)
 
         expr = f"""(function() {{
 {_JS_SNAPSHOT_HELPER}
 return collectGbSnapshot({max_elements}, {max_text});
 }})()"""
-        if self.cdp_eval is default_cdp_eval:
-            try:
-                res = self.cdp_session(lambda call: _eval_on_session(call, expr))
-            except Exception as exc:
-                msg = str(exc)
-                if "Execution context" in msg or "Cannot find context" in msg or "scrollHeight" in msg:
-                    self._wait_for_page_settle(max_polls=16, poll_sec=0.2, require_content=True)
-                    res = self.cdp_session(lambda call: _eval_on_session(call, expr))
-                else:
+
+        def _eval_snap():
+            if self.cdp_eval is default_cdp_eval:
+                call_kw = {"timeout": 15.0} if self._custom_cdp_session is None else {}
+                try:
+                    return self.cdp_session(
+                        lambda call: _eval_on_session(call, expr), **call_kw
+                    )
+                except Exception as exc:
+                    msg = str(exc)
+                    if "Execution context" in msg or "Cannot find context" in msg or "scrollHeight" in msg:
+                        self._wait_for_page_settle(max_polls=16, poll_sec=0.2, require_content=True)
+                        return self.cdp_session(
+                            lambda call: _eval_on_session(call, expr), **call_kw
+                        )
                     raise
-        else:
-            res = self.cdp_eval(expr)
+            return self.cdp_eval(expr)
+
+        try:
+            res = _eval_snap()
+        except (TimeoutError, socket.timeout, RuntimeError) as exc:
+            msg = str(exc).lower()
+            if "timed out" in msg or "timeout" in msg or isinstance(exc, (TimeoutError, socket.timeout)):
+                return self._attach_snapshot_meta(
+                    {
+                        "ok": True,
+                        "degraded": True,
+                        "timeout_truncated": True,
+                        "error": str(exc),
+                        "element_count": 0,
+                        "elements": [],
+                        "text_excerpt": "",
+                    }
+                )
+            raise
+
         if not isinstance(res, dict):
             raise RuntimeError("Failed to collect browser snapshot")
+
+        # Brief SPA hydration retry when initial snapshot sees zero interactive elements and near-empty body
+        if int(res.get("element_count") or 0) == 0 and len(str(res.get("text_excerpt") or "").strip()) < 20:
+            time.sleep(0.8)
+            try:
+                retry_res = _eval_snap()
+                if isinstance(retry_res, dict):
+                    res = retry_res
+            except Exception:
+                pass
+
         return self._attach_snapshot_meta(res)
 
     def browser_click(self, ref):
@@ -4070,11 +4210,25 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                 elif path == "/read":
                     if "path" not in body:
                         raise ValueError("missing path")
-                    res = actions.read_file(body["path"])
+                    res = actions.read_file(
+                        body["path"],
+                        start_line=body.get("start_line"),
+                        end_line=body.get("end_line"),
+                    )
                 elif path == "/write":
                     if "path" not in body or "content" not in body:
                         raise ValueError("missing path or content")
                     res = actions.write_file(body["path"], body["content"])
+                elif path == "/edit":
+                    if "path" not in body:
+                        raise ValueError("missing path")
+                    res = actions.edit_file(
+                        body["path"],
+                        target=body.get("target"),
+                        replacement=body.get("replacement", ""),
+                        append=bool(body.get("append", False)),
+                        replace_all=bool(body.get("replace_all", False)),
+                    )
                 elif path == "/open_url":
                     if "url" not in body:
                         raise ValueError("missing url")
@@ -4083,7 +4237,13 @@ class ExecutorHandler(http.server.BaseHTTPRequestHandler):
                     url = body.get("url")
                     max_elements = body.get("max_elements", 80)
                     max_text = body.get("max_text", 3000)
-                    res = actions.browser_snapshot(url=url, max_elements=max_elements, max_text=max_text)
+                    wait_ms = body.get("wait_ms", 0)
+                    res = actions.browser_snapshot(
+                        url=url,
+                        max_elements=max_elements,
+                        max_text=max_text,
+                        wait_ms=wait_ms,
+                    )
                 elif path == "/browser/click":
                     if "ref" not in body:
                         raise ValueError("missing ref")
@@ -4199,7 +4359,7 @@ class ExecutorServer(http.server.ThreadingHTTPServer):
         "/browser/upload",
     }
     _X11_ROUTES = {"/screenshot", "/click", "/type", "/key", "/scroll", "/drag", "/windows", "/focus"}
-    _FILE_ROUTES = {"/read", "/write"}
+    _FILE_ROUTES = {"/read", "/write", "/edit"}
 
     def __init__(self, server_address, RequestHandlerClass, actions, token, display_manager=None):
         super().__init__(server_address, RequestHandlerClass)
@@ -4207,9 +4367,10 @@ class ExecutorServer(http.server.ThreadingHTTPServer):
         self.token = token
         self.display_manager = display_manager
 
-    def _make_tab_actions(self, tab_info: dict) -> Actions:
+    def _make_tab_actions(self, tab_info: dict, bot_workspace: str = "") -> Actions:
         dm = self.display_manager
         bot_key = tab_info.get("bot_key")
+        ws = str(bot_workspace or "").strip() or None
         return Actions(
             run=self.actions.run,
             browser=self.actions.browser,
@@ -4234,6 +4395,7 @@ class ExecutorServer(http.server.ThreadingHTTPServer):
                 if dm is not None and bot_key
                 else None
             ),
+            bot_workspace=ws,
         )
 
     def _make_shell_actions(self, bot_workspace: str = "") -> Actions:
@@ -4256,6 +4418,7 @@ class ExecutorServer(http.server.ThreadingHTTPServer):
             targets_fn=self.actions.targets_fn,
             protected_targets_fn=self.actions.protected_targets_fn,
             cwd=ws,
+            bot_workspace=ws,
         )
 
     def acquire_actions_for_request(
@@ -4270,7 +4433,7 @@ class ExecutorServer(http.server.ThreadingHTTPServer):
 
         if route in self._BROWSER_ROUTES:
             tab_info = dm.acquire_bot_tab(bot_id, is_admin=is_admin, activate=False)
-            return self._make_tab_actions(tab_info), tab_info.get("bot_key"), True
+            return self._make_tab_actions(tab_info, bot_workspace=bot_workspace), tab_info.get("bot_key"), True
 
         return self.actions, None, False
 

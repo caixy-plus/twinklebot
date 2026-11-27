@@ -164,7 +164,7 @@ export async function handleSystemBotTool(
         } else {
           store.writeSettings?.({
             globalMemories: nextList,
-            privateSkills: nextList,
+            privateSkills: [],
           });
           broadcastGlobal?.({ type: "skills_updated" });
         }
@@ -247,11 +247,10 @@ export async function handleSystemBotTool(
         let created = false;
         if (targetIdx >= 0) {
           const prev = activeList[targetIdx];
+          const { desc: _d, instruction: _i, ...restPrev } = prev || {};
           savedItem = {
-            ...prev,
+            ...restPrev,
             name: rawName || prev.name,
-            desc: rawContent,
-            instruction: rawContent,
             content: rawContent,
             enabled: args.enabled !== undefined ? Boolean(args.enabled) : prev.enabled !== false,
             updatedAt: new Date().toISOString(),
@@ -262,8 +261,6 @@ export async function handleSystemBotTool(
           savedItem = {
             id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             name: rawName,
-            desc: rawContent,
-            instruction: rawContent,
             content: rawContent,
             enabled: args.enabled !== false,
             source: effectiveTrigger,

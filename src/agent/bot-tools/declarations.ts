@@ -43,7 +43,7 @@ import {
 } from "../../lib/channel-integrations.js";
 
 
-export const MAX_BOT_HOPS = 4;
+export const MAX_BOT_HOPS = 8;
 
 export const VALID_SHAPES = [
   "blob", "cloud", "square", "sparkle", "clover", "heart",
@@ -141,6 +141,16 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
         message: {
           type: "string",
           description: "Message or task instructions to send to the target Bot.",
+        },
+        await_reply: {
+          type: "boolean",
+          description:
+            "Optional: wait until the target Bot finishes its handoff turn and return its reply text (default: false).",
+        },
+        await_timeout_sec: {
+          type: "integer",
+          description:
+            "Optional timeout in seconds when await_reply=true (default: 60, range 5-180).",
         },
       },
       required: ["target_bot", "message"],
@@ -325,14 +335,14 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "send_file",
     description:
-      "Send/deliver a document or binary file (.docx, .pdf, .xlsx, .pptx, .csv, .md, .html, .zip, or image) directly as an interactive attachment card in the chat stream so the user can open, reveal in Finder, or download it with one click. Works for both local Mac paths (e.g. '~/Downloads/report.docx') and files created in Bot's Ubuntu computer.",
+      "Send/deliver a document or binary file (.docx, .pdf, .xlsx, .pptx, .csv, .md, .html, .zip, or image) directly as an interactive attachment card in the chat stream so the user can open, reveal in file manager, or download it with one click. Works for both local computer paths (e.g. '~/Downloads/report.docx') and files created in Bot's Ubuntu computer.",
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
           description:
-            "File path on the local Mac (supports ~/... e.g. '~/Downloads/report.docx') or in Bot's Ubuntu computer.",
+            "File path on the local computer (supports ~/... e.g. '~/Downloads/report.docx') or in Bot's Ubuntu computer.",
         },
         title: {
           type: "string",
@@ -824,7 +834,7 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
         },
         target_bot: {
           type: "string",
-          description: "Target TwinkleBot Bot or Bot Group name/ID to route inbound messages to (e.g. '节点刷新员', '博客管理员', or '' / 'admin' for Admin Bot Nori).",
+          description: "Target TwinkleBot Bot or Bot Group name/ID to route inbound messages to (e.g. '节点刷新员', '博客管理员', or '' / 'admin' for Admin Bot Twinkle).",
         },
         require_pairing: {
           type: "boolean",
@@ -1029,7 +1039,7 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "system_diagnostics",
     description:
-      "Inspect real-time TwinkleBot runtime diagnostics or trigger self-healing: check the status of 「Bot 的电脑」(Ubuntu Executor), 「你的电脑」(local Mac host), `KimiCU` MCP server, and current session token/cost statistics (`action: 'status'`); reconnect the `kimi-cu` MCP server (`action: 'reconnect_mcp'`); or sync & restart the Ubuntu Executor (`action: 'update_bot_computer'`).",
+      "Inspect real-time TwinkleBot runtime diagnostics or trigger self-healing: check the status of 「Bot 的电脑」(Ubuntu Executor), 「你的电脑」(local computer host), `KimiCU` MCP server, and current session token/cost statistics (`action: 'status'`); reconnect the `kimi-cu` MCP server (`action: 'reconnect_mcp'`); or sync & restart the Ubuntu Executor (`action: 'update_bot_computer'`).",
     parameters: {
       type: "object",
       properties: {
@@ -1183,16 +1193,38 @@ export function getInstalledSkillIds(store: any) {
 
 export function filterToolDeclarationsForSkills(
   declarations: any[] = [],
-  installedSkillIds: string[] = []
+  installedSkillIds: string[] = [],
+  options: { isAdminBot?: boolean } = {}
 ) {
   const hasMailSkill = installedSkillIds.some((id) => MAIL_SKILL_IDS.includes(id));
   const hasChannelSkill =
     installedSkillIds.includes("feishu-bot") || installedSkillIds.includes("telegram-bot");
-  return declarations.filter((d) => {
+  const isAdminBot = options.isAdminBot !== false;
+  return declarations.flatMap((d) => {
     const name = String(d?.name || "");
-    if (!hasMailSkill && name.startsWith("mail_")) return false;
-    if (!hasChannelSkill && name === "channel_pairing_manage") return false;
-    return true;
+    if (!hasMailSkill && name.startsWith("mail_")) return [];
+    if (!hasChannelSkill && name === "channel_pairing_manage") return [];
+    if (!isAdminBot && (name === "computer_provision" || name === "account_manage")) {
+      return [];
+    }
+    if (!isAdminBot && name === "self_update" && d?.parameters?.properties?.action) {
+      return [
+        {
+          ...d,
+          parameters: {
+            ...d.parameters,
+            properties: {
+              ...d.parameters.properties,
+              action: {
+                ...d.parameters.properties.action,
+                enum: ["check", "status"],
+              },
+            },
+          },
+        },
+      ];
+    }
+    return [d];
   });
 }
 

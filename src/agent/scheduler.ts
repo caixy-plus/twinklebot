@@ -154,6 +154,55 @@ export function createScheduler({
       if (Number.isNaN(dueTime) || now < dueTime) continue;
 
       if (runner.isSessionBusy?.(item.sessionId)) {
+        if (typeof runner.enqueue === "function") {
+          try {
+            runner.enqueue(item.sessionId, `[例行任务 · ${item.title}] ${item.prompt}`);
+            triggered.push(item.id);
+            item.lastRunAt = new Date(now).toISOString();
+            item.lastRunStatus = "queued_busy";
+            delete item.lastRunError;
+            delete item.deferredUntil;
+            const nextIso = computeNextRun(
+              item.repeat,
+              new Date(now),
+              item.scheduleLabel,
+              item.cron
+            );
+            if (nextIso) {
+              item.nextRunAt = nextIso;
+            } else {
+              item.enabled = false;
+            }
+            dirty = true;
+          } catch (err: any) {
+            item.lastRunStatus = "error";
+            item.lastRunError = err?.message || String(err);
+            dirty = true;
+          }
+        } else {
+          const deferredUntilMs = item.deferredUntil ? Date.parse(item.deferredUntil) : NaN;
+          if (!Number.isFinite(deferredUntilMs)) {
+            item.deferredUntil = new Date(now + 5 * 60_000).toISOString();
+            item.lastRunStatus = "deferred_busy";
+            dirty = true;
+          } else if (now > deferredUntilMs) {
+            item.lastRunStatus = "skipped_busy_timeout";
+            item.lastRunError = "Session remained busy past 5-minute deferral window";
+            delete item.deferredUntil;
+            const nextIso = computeNextRun(
+              item.repeat,
+              new Date(now),
+              item.scheduleLabel,
+              item.cron
+            );
+            if (nextIso) {
+              item.nextRunAt = nextIso;
+            } else {
+              item.enabled = false;
+            }
+            dirty = true;
+          }
+        }
         continue;
       }
 
@@ -161,6 +210,9 @@ export function createScheduler({
         runner.start(item.sessionId, `[例行任务 · ${item.title}] ${item.prompt}`);
         triggered.push(item.id);
         item.lastRunAt = new Date(now).toISOString();
+        item.lastRunStatus = "started";
+        delete item.lastRunError;
+        delete item.deferredUntil;
         const nextIso = computeNextRun(
           item.repeat,
           new Date(now),
@@ -173,8 +225,10 @@ export function createScheduler({
           item.enabled = false;
         }
         dirty = true;
-      } catch {
-        // session busy or missing; retry next tick
+      } catch (err: any) {
+        item.lastRunStatus = "error";
+        item.lastRunError = err?.message || String(err);
+        dirty = true;
       }
     }
 

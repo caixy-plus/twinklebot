@@ -169,7 +169,7 @@ export async function handleCollabBotTool(
         const shellRes = await executor.call("/shell", { command: b64Script });
         const b64 = String(shellRes?.stdout || "").trim();
         if (!shellRes?.ok && !b64) {
-          throw new Error(`file not found on Mac or Bot computer: ${rawPath}`);
+          throw new Error(`file not found on local computer or Bot's Ubuntu computer: ${rawPath}`);
         }
         const buf = Buffer.from(b64, "base64");
         if (!buf.length) {
@@ -226,15 +226,23 @@ export async function handleCollabBotTool(
   switch (name) {
     case "list_bots": {
       const all = store.listSessions();
+      const writeRoots = Array.isArray(config?.writeRoots) ? config.writeRoots : [];
       const bots = all
         .filter((s: any) => s.type !== "group")
-        .map((s: any) => ({
-          id: s.id,
-          name: s.title,
-          role_prompt: s.rolePrompt || "",
-          status: s.status || "idle",
-          avatar: s.avatar || null,
-        }));
+        .map((s: any) => {
+          const wsDir =
+            writeRoots.length > 0
+              ? resolveBotWorkspaceRoot({ writeRoots, sessionId: s.id })
+              : "";
+          return {
+            id: s.id,
+            name: s.title,
+            role_prompt: s.rolePrompt || "",
+            status: s.status || "idle",
+            avatar: s.avatar || null,
+            ...(wsDir ? { workspace_dir: wsDir } : {}),
+          };
+        });
       const groups = all
         .filter((s: any) => s.type === "group")
         .map((s: any) => ({
@@ -242,7 +250,14 @@ export async function handleCollabBotTool(
           title: s.title,
           memberBotIds: s.memberBotIds || [],
         }));
-      return { ok: true, bots, groups };
+      const botsWorkspaceRoot =
+        writeRoots.length > 0 ? path.join(path.resolve(String(writeRoots[0])), "bots") : "";
+      return {
+        ok: true,
+        bots,
+        groups,
+        ...(botsWorkspaceRoot ? { bots_workspace_root: botsWorkspaceRoot } : {}),
+      };
     }
 
     case "create_bot": {
@@ -324,10 +339,16 @@ export async function handleCollabBotTool(
         toBot: target,
         message: text,
         hopDepth,
+        awaitReply: Boolean(args.await_reply),
+        awaitTimeoutSec: args.await_timeout_sec,
+        signal: control?.signal || null,
         broadcastGlobal,
         onDispatchBotTurn,
       });
 
+      if (delivery?.error) {
+        return { ok: false, ...delivery };
+      }
       return { ok: true, ...delivery };
     }
 
@@ -788,12 +809,58 @@ export async function handleCollabBotTool(
   }
 }
 
+const INTER_BOT_DEBOUNCE_MS = 3_000;
+const EXCHANGE_LOOP_SIMILARITY_THRESHOLD = 0.85;
+const recentInterBotDeliveries = new Map<
+  string,
+  { at: number; message: string; result: Record<string, any> }
+>();
+
+function normalizeCollabText(input: unknown): string {
+  return String(input || "")
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, " ")
+    .trim();
+}
+
+function computeTextSimilarity(a: unknown, b: unknown): number {
+  const na = normalizeCollabText(a);
+  const nb = normalizeCollabText(b);
+  if (!na && !nb) return 1;
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  if (na.length < 2 || nb.length < 2) return na === nb ? 1 : 0;
+  const toBigrams = (s: string) => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const bg = s.slice(i, i + 2);
+      map.set(bg, (map.get(bg) || 0) + 1);
+    }
+    return map;
+  };
+  const mapA = toBigrams(na);
+  const mapB = toBigrams(nb);
+  let overlap = 0;
+  let totalA = 0;
+  let totalB = 0;
+  for (const v of mapA.values()) totalA += v;
+  for (const v of mapB.values()) totalB += v;
+  for (const [k, va] of mapA.entries()) {
+    const vb = mapB.get(k);
+    if (vb) overlap += Math.min(va, vb);
+  }
+  return (2 * overlap) / (totalA + totalB);
+}
+
 export async function deliverInterBotMessage({
   store,
   fromBot,
   toBot,
   message,
   hopDepth = 0,
+  awaitReply = false,
+  awaitTimeoutSec,
+  signal = null,
   broadcastGlobal,
   onDispatchBotTurn,
 }: {
@@ -802,9 +869,56 @@ export async function deliverInterBotMessage({
   toBot: any;
   message: string;
   hopDepth?: number;
+  awaitReply?: boolean;
+  awaitTimeoutSec?: number;
+  signal?: AbortSignal | null;
   broadcastGlobal?: ((evt: any) => void) | null;
   onDispatchBotTurn?: ((opts: any) => void) | null;
 }) {
+  const pairKey = `${fromBot.id}::${toBot.id}`;
+  const nowMs = Date.now();
+  if (recentInterBotDeliveries.size > 200) {
+    for (const [k, entry] of recentInterBotDeliveries.entries()) {
+      if (nowMs - entry.at > 60_000) recentInterBotDeliveries.delete(k);
+    }
+  }
+  const recent = recentInterBotDeliveries.get(pairKey);
+  if (
+    recent &&
+    nowMs - recent.at < INTER_BOT_DEBOUNCE_MS &&
+    computeTextSimilarity(recent.message, message) >= EXCHANGE_LOOP_SIMILARITY_THRESHOLD
+  ) {
+    return {
+      ...recent.result,
+      coalesced: true,
+      deduplicated: true,
+    };
+  }
+
+  const pairId = store.pairExchangeId?.(fromBot.id, toBot.id);
+  const existingExchange = pairId ? store.getExchange?.(pairId) : null;
+  const prevMsgs: any[] = Array.isArray(existingExchange?.messages)
+    ? existingExchange.messages
+    : [];
+  if (prevMsgs.length >= 2) {
+    const m1 = prevMsgs[prevMsgs.length - 2];
+    const m2 = prevMsgs[prevMsgs.length - 1];
+    const recentWindow =
+      hopDepth >= 1 ||
+      (m2?.at && Number.isFinite(Date.parse(m2.at)) && nowMs - Date.parse(m2.at) < 120_000);
+    if (
+      recentWindow &&
+      computeTextSimilarity(m1?.text, m2?.text) > EXCHANGE_LOOP_SIMILARITY_THRESHOLD &&
+      computeTextSimilarity(m2?.text, message) > EXCHANGE_LOOP_SIMILARITY_THRESHOLD &&
+      computeTextSimilarity(m1?.text, message) > EXCHANGE_LOOP_SIMILARITY_THRESHOLD
+    ) {
+      return {
+        error: `Inter-Bot hop loop detected: 3 consecutive messages in exchange ${pairId} exceed 85% similarity; summarize progress back to the user instead.`,
+        loopBlocked: true,
+        exchangeId: pairId,
+      };
+    }
+  }
   const exchange = store.recordExchangeMessage({
     fromBot,
     toBot,
@@ -847,19 +961,76 @@ export async function deliverInterBotMessage({
   broadcastGlobal?.({ sessionId: fromBot.id, ...senderExchangeEvent });
   broadcastGlobal?.({ sessionId: toBot.id, ...targetExchangeEvent });
 
+  let replyPromise: Promise<{
+    status?: string;
+    text?: string;
+    error?: string;
+    timedOut?: boolean;
+  }> | null = null;
+  let onReplyComplete:
+    | ((res: { status?: string; text?: string; error?: string }) => void)
+    | undefined;
+  if (awaitReply && onDispatchBotTurn) {
+    const timeoutMs =
+      Math.max(5, Math.min(180, Math.round(Number(awaitTimeoutSec) || 60))) * 1000;
+    replyPromise = new Promise((resolve) => {
+      let settled = false;
+      const settle = (val: {
+        status?: string;
+        text?: string;
+        error?: string;
+        timedOut?: boolean;
+      }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener?.("abort", onAbort);
+        resolve(val);
+      };
+      const timer = setTimeout(() => settle({ timedOut: true }), timeoutMs);
+      const onAbort = () => settle({ status: "aborted", timedOut: true });
+      if (signal?.aborted) {
+        settle({ status: "aborted", timedOut: true });
+        return;
+      }
+      signal?.addEventListener?.("abort", onAbort, { once: true });
+      onReplyComplete = (res) => settle(res || { status: "done", text: "" });
+    });
+  }
+
   onDispatchBotTurn?.({
     targetBotId: toBot.id,
     fromBot,
     exchangeId: exchange.id,
     message,
     hopDepth: hopDepth + 1,
+    ...(onReplyComplete ? { onReplyComplete } : {}),
   });
 
-  return {
+  const baseResult: Record<string, any> = {
     exchangeId: exchange.id,
     targetBotId: toBot.id,
     targetBotName: toBot.title,
     messageCount,
   };
+  recentInterBotDeliveries.set(pairKey, {
+    at: nowMs,
+    message,
+    result: baseResult,
+  });
+
+  if (replyPromise) {
+    const awaited = await replyPromise;
+    return {
+      ...baseResult,
+      awaitReply: true,
+      timedOut: Boolean(awaited.timedOut),
+      ...(awaited.status ? { replyStatus: awaited.status } : {}),
+      ...(awaited.text !== undefined ? { replyText: awaited.text } : {}),
+      ...(awaited.error ? { replyError: awaited.error } : {}),
+    };
+  }
+
+  return baseResult;
 }
 

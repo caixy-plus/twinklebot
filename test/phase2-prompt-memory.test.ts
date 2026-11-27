@@ -302,10 +302,13 @@ test("Auto memory extractor: pre-filter skips chatter, fast-tier post-turn extra
   assert.equal(extracted1[0].name, "代码注释语言");
   assert.equal(emitted.length, 0, "post-turn extractor must NOT emit memory_suggestion card");
   assert.ok(broadcasts.some((b) => b.type === "skills_updated"));
-  // Silently persisted directly into globalMemories!
+  // Saved memory uses single `content` field and stops mirroring to `privateSkills`
   const savedGlobal = store.readSettings().globalMemories || [];
   assert.equal(savedGlobal.length, 1);
   assert.match(savedGlobal[0].content, /英文撰写/);
+  assert.equal(savedGlobal[0].desc, undefined, "must not duplicate desc");
+  assert.equal(savedGlobal[0].instruction, undefined, "must not duplicate instruction");
+  assert.deepEqual(store.readSettings().privateSkills || [], [], "must not double-write privateSkills");
 
   // Running again in the same session must deduplicate against persisted globalMemories
   const extracted2 = await runPostTurnMemoryExtraction({
@@ -321,4 +324,44 @@ test("Auto memory extractor: pre-filter skips chatter, fast-tier post-turn extra
   assert.equal(extracted2.length, 0, "already persisted memory must not be saved twice");
   assert.equal(emitted.length, 0);
   assert.equal((store.readSettings().globalMemories || []).length, 1);
+
+  // Tightened extraction guard rejects ordinary 25-char task commands lacking preference cues
+  assert.equal(
+    shouldRunMemoryExtraction("帮我打开浏览器访问一下 GitHub 查看最新的 issues", "好的，已打开"),
+    false
+  );
+  assert.equal(
+    shouldRunMemoryExtraction(
+      "这个接口文档的结构其实不对，以后提交类似分析时请改成表格+结论的格式输出",
+      "明白"
+    ),
+    true
+  );
+
+  // ensureAdminBot populates default non-empty rolePrompt & list_bots/prompt expose workspace awareness
+  const admin = store.ensureAdminBot();
+  assert.ok(String(admin.rolePrompt || "").trim().length > 10, "Admin Bot must have non-empty default rolePrompt");
+
+  const botsListRes = await runBotCollabTool(
+    "list_bots",
+    {},
+    {
+      store,
+      senderSessionId: admin.id,
+      senderBot: admin,
+      config: { writeRoots: [dir] },
+    }
+  );
+  assert.equal(botsListRes.ok, true);
+  assert.ok(String(botsListRes.bots_workspace_root || "").endsWith(path.join(dir, "bots")));
+  assert.ok(botsListRes.bots.every((b: any) => typeof b.workspace_dir === "string" && b.workspace_dir.includes(b.id)));
+
+  const wsPrompt = buildSystemInstruction({
+    enableBotTools: true,
+    botWorkspaceRoot: path.join(dir, "bots", bot.id),
+    writeRoots: [dir],
+  });
+  assert.match(wsPrompt, /Multi-Bot Shared Parent Workspace/);
+  assert.match(wsPrompt, /\/mnt\/c\//);
+  assert.match(wsPrompt, /edit_file/);
 });

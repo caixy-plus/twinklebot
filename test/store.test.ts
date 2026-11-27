@@ -310,3 +310,42 @@ test("markInterrupted flips live sessions only", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("Phase 3 P2-4: saveHistory compact output, eventsCache/readEventsTail, and skipUserEvent truncate alignment", () => {
+  const dir = makeTempDir();
+  try {
+    const store = createStore(dir);
+    const s = store.createSession({ title: "PerfStore" });
+
+    // Compact history output
+    store.saveHistory(s.id, [
+      { type: "user_input", content: [{ type: "text", text: "first turn" }] },
+      { type: "model_output", content: [{ type: "text", text: "first answer" }] },
+      { type: "user_input", content: [{ type: "text", text: "[Inter-Bot Handoff · From \"A\"]\nhi" }] },
+      { type: "model_output", content: [{ type: "text", text: "handoff answer" }] },
+      { type: "user_input", content: [{ type: "text", text: "second turn" }] },
+      { type: "model_output", content: [{ type: "text", text: "second answer" }] },
+    ]);
+    const rawHistory = fs.readFileSync(path.join(dir, "sessions", `${s.id}.history.json`), "utf-8");
+    assert.equal(rawHistory.includes("\n  "), false, "history.json should be compact");
+
+    // Events cache + readEventsTail
+    const e1 = store.appendEvent(s.id, { type: "user", text: "first turn" });
+    store.appendEvent(s.id, { type: "answer", text: "first answer" });
+    const e3 = store.appendEvent(s.id, { type: "user", text: "second turn" });
+    store.appendEvent(s.id, { type: "answer", text: "second answer" });
+    assert.equal(store.readEventsTail(s.id, 2).length, 2);
+    assert.equal(store.readEventsTail(s.id, 2)[0].seq, e3.seq);
+
+    // Truncate at second turn preserves first turn + inter-bot handoff before second turn,
+    // without miscounting the inter-bot handoff step as a real user event
+    const trunc = store.truncateSessionFromSeq(s.id, e3.seq);
+    assert.ok(trunc);
+    assert.equal(trunc.keptEvents.length, 2);
+    assert.equal(trunc.keptEvents[0].seq, e1.seq);
+    assert.equal(store.loadHistory(s.id).length, 4);
+    assert.equal(store.readEventsTail(s.id, 10).length, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -358,3 +358,84 @@ test("HTTP /api/schedules & schedule_manage tool support cron creation, validati
   assert.equal(toolUpdate.ok, true);
   assert.equal(toolUpdate.schedule.cron, "0 10 */3 * *");
 });
+
+test("Phase 3 P2-3: scheduler enqueues busy sessions when available or records 5m deferred_busy status", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-sched-busy-"));
+  try {
+    const store = createStore(tmpDir);
+    const adminBot = store.ensureAdminBot();
+    const pastIso = new Date(Date.now() - 5000).toISOString();
+
+    // 1. Busy session with runner.enqueue queues & marks queued_busy
+    store.writeSchedules([
+      {
+        id: "sched-busy-q",
+        sessionId: adminBot.id,
+        title: "忙时排队任务",
+        prompt: "执行汇总",
+        repeat: "cron",
+        cron: "0 10 * * *",
+        nextRunAt: pastIso,
+        enabled: true,
+      },
+    ]);
+    const queuedCalls: string[] = [];
+    const schedQueue = createScheduler({
+      store,
+      runner: {
+        isSessionBusy: () => true,
+        enqueue: (sid: string, msg: string) => {
+          queuedCalls.push(`${sid}:${msg}`);
+        },
+        start: () => {
+          throw new Error("should not call start when busy");
+        },
+      },
+    });
+    assert.deepEqual(schedQueue.tick(), ["sched-busy-q"]);
+    assert.equal(queuedCalls.length, 1);
+    const afterQueue = store.readSchedules()[0];
+    assert.equal(afterQueue.lastRunStatus, "queued_busy");
+    assert.ok(Date.parse(afterQueue.nextRunAt) > Date.now());
+
+    // 2. Busy session without runner.enqueue records deferred_busy then skipped_busy_timeout after 5m
+    store.writeSchedules([
+      {
+        id: "sched-busy-def",
+        sessionId: adminBot.id,
+        title: "无队列忙任务",
+        prompt: "检查状态",
+        repeat: "cron",
+        cron: "0 12 * * *",
+        nextRunAt: pastIso,
+        enabled: true,
+      },
+    ]);
+    const schedDefer = createScheduler({
+      store,
+      runner: {
+        isSessionBusy: () => true,
+        start: () => {},
+      },
+    });
+    assert.deepEqual(schedDefer.tick(), []);
+    const deferred = store.readSchedules()[0];
+    assert.equal(deferred.lastRunStatus, "deferred_busy");
+    assert.ok(deferred.deferredUntil);
+
+    // Expire the 5-minute window and re-tick
+    store.writeSchedules([
+      {
+        ...deferred,
+        deferredUntil: new Date(Date.now() - 1000).toISOString(),
+      },
+    ]);
+    assert.deepEqual(schedDefer.tick(), []);
+    const timedOut = store.readSchedules()[0];
+    assert.equal(timedOut.lastRunStatus, "skipped_busy_timeout");
+    assert.ok(timedOut.lastRunError);
+    assert.ok(Date.parse(timedOut.nextRunAt) > Date.now());
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

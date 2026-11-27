@@ -22,6 +22,7 @@ export interface LocalBrowserExecutionOptions {
   settings?: Partial<BrowserAutomationSettings>;
   dataDir?: string;
   blockedLocalPorts?: number[];
+  allowedFileRoots?: string[];
   signal?: AbortSignal;
 }
 
@@ -137,7 +138,43 @@ function normalizeElementRef(raw: unknown): string {
   return s.toLowerCase();
 }
 
-function validateHttpUrl(rawUrl: unknown, blockedLocalPorts: number[] = [3230, 7300]): string {
+const SAFE_LOCAL_PREVIEW_EXTS = new Set([
+  ".html",
+  ".htm",
+  ".svg",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".pdf",
+  ".txt",
+  ".md",
+]);
+
+function isSensitivePreviewFilePath(resolved: string): boolean {
+  const lower = resolved.toLowerCase();
+  const base = path.basename(resolved).toLowerCase();
+  if (
+    base === ".env" ||
+    base.startsWith(".env.") ||
+    base === "vault.json" ||
+    base === "accounts.json" ||
+    base === "desktop-config.json" ||
+    base === "devices.json" ||
+    /.*auth.*\.json$/i.test(base)
+  ) {
+    return true;
+  }
+  const segs = lower.split(path.sep);
+  return segs.some((s) => s === ".ssh" || s === ".aws" || s === ".gnupg" || s === "keychains");
+}
+
+function validateHttpUrl(
+  rawUrl: unknown,
+  blockedLocalPorts: number[] = [3230, 7300],
+  allowedFileRoots: string[] = []
+): string {
   if (typeof rawUrl !== "string" || !rawUrl.trim()) {
     throw new Error("url must be a non-empty string");
   }
@@ -147,6 +184,44 @@ function validateHttpUrl(rawUrl: unknown, blockedLocalPorts: number[] = [3230, 7
     parsed = new URL(trimmed);
   } catch {
     throw new Error(`invalid url: ${trimmed}`);
+  }
+  if (parsed.protocol === "file:") {
+    if (!Array.isArray(allowedFileRoots) || allowedFileRoots.length === 0) {
+      throw new Error(`invalid url scheme: ${parsed.protocol} (file preview disabled without workspace root)`);
+    }
+    let filePath = decodeURIComponent(parsed.pathname || "");
+    if (process.platform === "win32" && /^\/[A-Za-z]:/.test(filePath)) {
+      filePath = filePath.slice(1);
+    }
+    const resolved = path.resolve(filePath);
+    if (isSensitivePreviewFilePath(resolved)) {
+      throw new Error(`blocked sensitive file preview path: ${resolved}`);
+    }
+    let realResolved = resolved;
+    try {
+      realResolved = fs.realpathSync(resolved);
+    } catch {
+      // allow if parent resolves or not created yet, verify prefix on resolved
+    }
+    if (isSensitivePreviewFilePath(realResolved)) {
+      throw new Error(`blocked sensitive file preview path: ${realResolved}`);
+    }
+    const insideAllowed = allowedFileRoots.some((root) => {
+      if (!root) return false;
+      let resolvedRoot = path.resolve(root);
+      try {
+        resolvedRoot = fs.realpathSync(resolvedRoot);
+      } catch {}
+      return realResolved === resolvedRoot || realResolved.startsWith(resolvedRoot + path.sep);
+    });
+    if (!insideAllowed) {
+      throw new Error(`blocked file:// preview outside Bot workspace: ${resolved}`);
+    }
+    const ext = path.extname(realResolved).toLowerCase();
+    if (!SAFE_LOCAL_PREVIEW_EXTS.has(ext)) {
+      throw new Error(`unsupported local file:// preview extension (${ext || "none"})`);
+    }
+    return parsed.toString();
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`invalid url scheme: ${parsed.protocol} (only http/https allowed)`);
@@ -916,19 +991,63 @@ export class LocalChromeManager {
     call: CdpCaller,
     sess: ManagedBrowserSession,
     maxElements = 80,
-    maxText = 3000
+    maxText = 3000,
+    waitMs = 0,
+    signal?: AbortSignal
   ): Promise<Record<string, any>> {
     const safeMaxEl = Math.max(1, Math.min(200, Math.round(Number(maxElements) || 80)));
     const safeMaxText = Math.max(100, Math.min(20000, Math.round(Number(maxText) || 3000)));
-    const snap = await evalCdpJson(
-      call,
-      `(function(){ ${JS_SNAPSHOT_HELPER} return collectTbSnapshot(${safeMaxEl}, ${safeMaxText}); })()`
-    );
-    return {
-      ...(snap && typeof snap === "object" ? snap : { ok: false, error: "empty snapshot" }),
-      target_id: sess.targetId,
-      browser_engine: sess.mode,
+    const safeWaitMs = Math.max(0, Math.min(5000, Math.round(Number(waitMs) || 0)));
+    if (safeWaitMs > 0) {
+      await sleep(safeWaitMs, signal);
+    }
+    const evalOnce = async () => {
+      let snapTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          evalCdpJson(
+            call,
+            `(function(){ ${JS_SNAPSHOT_HELPER} return collectTbSnapshot(${safeMaxEl}, ${safeMaxText}); })()`
+          ),
+          new Promise((_, reject) => {
+            snapTimer = setTimeout(() => reject(new Error("snapshot evaluation timeout")), CDP_CALL_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        if (snapTimer) clearTimeout(snapTimer);
+      }
     };
+
+    try {
+      let snap = await evalOnce();
+      if (
+        snap &&
+        typeof snap === "object" &&
+        Number(snap.element_count || 0) === 0 &&
+        String(snap.text_excerpt || "").trim().length < 20
+      ) {
+        await sleep(800, signal);
+        snap = await evalOnce();
+      }
+      return {
+        ...(snap && typeof snap === "object" ? snap : { ok: false, error: "empty snapshot" }),
+        target_id: sess.targetId,
+        browser_engine: sess.mode,
+      };
+    } catch (err: any) {
+      if (signal?.aborted) throw err;
+      return {
+        ok: true,
+        degraded: true,
+        timeout_truncated: true,
+        error: err?.message || "snapshot evaluation timed out",
+        element_count: 0,
+        elements: [],
+        text_excerpt: "",
+        target_id: sess.targetId,
+        browser_engine: sess.mode,
+      };
+    }
   }
 
   async executeTool(
@@ -939,6 +1058,7 @@ export class LocalChromeManager {
     const params = args || {};
     const callerKey = String(opts.sessionKey || "default");
     const blockedPorts = opts.blockedLocalPorts ?? [3230, 7300];
+    const allowedFileRoots = opts.allowedFileRoots ?? [];
     const sess = await this.ensureSession(opts);
     sess.lastUsedAt = Date.now();
 
@@ -961,7 +1081,9 @@ export class LocalChromeManager {
         };
       }
       if (action === "new") {
-        const targetUrl = params.url ? validateHttpUrl(params.url, blockedPorts) : "about:blank";
+        const targetUrl = params.url
+          ? validateHttpUrl(params.url, blockedPorts, allowedFileRoots)
+          : "about:blank";
         const created = await createPageTarget(sess.port, targetUrl, opts.signal);
         this.setSessionTargetId(sess, callerKey, created.id);
         return await withCdpSocket(
@@ -1034,7 +1156,9 @@ export class LocalChromeManager {
     }
 
     if (toolName === "browser_snapshot") {
-      const urlToOpen = params.url ? validateHttpUrl(params.url, blockedPorts) : null;
+      const urlToOpen = params.url
+        ? validateHttpUrl(params.url, blockedPorts, allowedFileRoots)
+        : null;
       return await withCdpSocket(
         wsUrl,
         async (call) => {
@@ -1048,7 +1172,9 @@ export class LocalChromeManager {
             call,
             sess,
             params.max_elements,
-            params.max_text
+            params.max_text,
+            params.wait_ms,
+            opts.signal
           );
         },
         opts.signal

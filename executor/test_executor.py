@@ -1890,6 +1890,66 @@ class TestAutomationUpgrades(unittest.TestCase):
             self.assertEqual(closed_browsers, [9222])
             self.assertIsNone(cdp_up["ws"])
 
+    def test_segmented_read_edit_and_browser_snapshot_workspace_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            sample = os.path.join(td, "doc.txt")
+            with open(sample, "w", encoding="utf-8") as f:
+                f.write("alpha\nbeta\ngamma\nbeta\ndelta")
+
+            actions = Actions(bot_workspace=td, cdp_eval=lambda _expr: {"ok": True, "element_count": 1, "elements": [{"ref": "e1"}], "text_excerpt": "Hello World Preview Page"}, spawn=lambda *a, **kw: None)
+
+            sliced = actions.read_file(sample, start_line=2, end_line=3)
+            self.assertEqual(sliced["startLine"], 2)
+            self.assertEqual(sliced["endLine"], 3)
+            self.assertEqual(sliced["totalLines"], 5)
+            self.assertTrue(sliced["hasMore"])
+            self.assertEqual(sliced["content"], "2: beta\n3: gamma")
+
+            with self.assertRaises(ValueError):
+                actions.edit_file(sample, target="beta", replacement="BETA")
+
+            rep_all = actions.edit_file(sample, target="beta", replacement="BETA", replace_all=True)
+            self.assertEqual(rep_all["replacements"], 2)
+            appended = actions.edit_file(sample, append=True, replacement="\nepsilon")
+            self.assertEqual(appended["mode"], "append")
+            with open(sample, "r", encoding="utf-8") as f:
+                self.assertEqual(f.read(), "alpha\nBETA\ngamma\nBETA\ndelta\nepsilon")
+
+            # Workspace file:// preview allowed for safe extensions, denied outside workspace
+            preview_html = os.path.join(td, "report.html")
+            with open(preview_html, "w", encoding="utf-8") as f:
+                f.write("<h1>ok</h1>")
+            snap = actions.browser_snapshot(url=f"file://{preview_html}", wait_ms=10)
+            self.assertTrue(snap["ok"])
+            self.assertEqual(snap["element_count"], 1)
+
+            with self.assertRaises(PermissionError):
+                actions.open_url("file:///etc/hosts")
+
+            # Degraded timeout snapshot returns gracefully instead of throwing
+            def timeout_eval(_expr):
+                raise TimeoutError("socket timed out")
+
+            timeout_actions = Actions(cdp_eval=timeout_eval, bot_workspace=td)
+            degraded = timeout_actions.browser_snapshot()
+            self.assertTrue(degraded["ok"])
+            self.assertTrue(degraded["degraded"])
+            self.assertTrue(degraded["timeout_truncated"])
+
+            # Empty initial DOM triggers one 0.8s retry
+            attempts = {"n": 0}
+
+            def flaky_eval(_expr):
+                attempts["n"] += 1
+                if attempts["n"] == 1:
+                    return {"ok": True, "element_count": 0, "elements": [], "text_excerpt": ""}
+                return {"ok": True, "element_count": 1, "elements": [{"ref": "e1"}], "text_excerpt": "Loaded SPA content ok"}
+
+            retry_actions = Actions(cdp_eval=flaky_eval, bot_workspace=td)
+            retried = retry_actions.browser_snapshot()
+            self.assertEqual(attempts["n"], 2)
+            self.assertEqual(retried["element_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

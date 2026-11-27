@@ -18,6 +18,9 @@ const SIGNAL_MEMORY_ZH_RE =
 const SIGNAL_MEMORY_EN_RE =
   /\b(prefer|preference|my name|call me|i am|i'm|i work|my team|my boss|my email|timezone|always|never|don't use|stop using|format|style|tone|language|default)\b/i;
 
+const IMPLICIT_CORRECTION_RE =
+  /(下次|以后|不要|别再|改成|换成|不对|错了|其实|偏好|风格|格式|instead|actually|next time|don't|prefer|always)/i;
+
 const TRIVIAL_UTTERANCE_RE =
   /^(你好|您好|嗨|哈喽|在吗|好的|好|行|ok|okay|yes|no|thanks|thank you|谢谢|收到|嗯|嗯嗯|明白了|继续|开始|可以|没问题)[！!。.?？\s]*$/i;
 
@@ -50,9 +53,9 @@ export function shouldRunMemoryExtraction(userText: unknown, assistantText: unkn
     return true;
   }
 
-  // Allow longer natural-language messages that may contain implicit preferences/corrections
+  // Only trigger background extraction for longer messages that carry implicit correction/preference cues
   const hasAssistantReply = String(assistantText || "").trim().length >= 8;
-  return text.length >= 24 && hasAssistantReply;
+  return text.length >= 60 && hasAssistantReply && IMPLICIT_CORRECTION_RE.test(text);
 }
 
 export function normalizeMemoryText(s: unknown): string {
@@ -358,8 +361,6 @@ export async function runPostTurnMemoryExtraction({
     const entry = {
       id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name: cand.name,
-      desc: cand.content,
-      instruction: cand.content,
       content: cand.content,
       enabled: true,
       source: "auto",
@@ -389,7 +390,7 @@ export async function runPostTurnMemoryExtraction({
   if (globalChanged) {
     store.writeSettings?.({
       globalMemories: nextGlobalList,
-      privateSkills: nextGlobalList,
+      privateSkills: [],
     });
     broadcastGlobal?.({ type: "skills_updated" });
   }

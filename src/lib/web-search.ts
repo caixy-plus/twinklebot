@@ -483,10 +483,40 @@ function parseEngineHtml(
   }
 }
 
+const STATIC_ENCYCLOPEDIA_HOST_RE =
+  /(?:^|\.)(?:baike\.baidu\.com|zh\.wikipedia\.org|en\.wikipedia\.org|wikipedia\.org|baike\.sogou\.com|baike\.so\.com)$/i;
+
+function demoteStaticEncyclopediaResults(
+  results: WebSearchResult[],
+  freshness?: SearchFreshness
+): WebSearchResult[] {
+  if (freshness !== "day" || !Array.isArray(results) || results.length <= 1) {
+    return results;
+  }
+  const fresh: WebSearchResult[] = [];
+  const encyclopedic: WebSearchResult[] = [];
+  for (const item of results) {
+    let host = "";
+    try {
+      host = new URL(item.url).hostname.toLowerCase();
+    } catch {
+      host = "";
+    }
+    if (host && STATIC_ENCYCLOPEDIA_HOST_RE.test(host)) {
+      encyclopedic.push(item);
+    } else {
+      fresh.push(item);
+    }
+  }
+  return fresh.length > 0 ? [...fresh, ...encyclopedic] : results;
+}
+
 export async function resolveSearchEngineOrder({
   engines,
   googleReachable,
   hasProxy,
+  query = "",
+  freshness,
   fetchImpl = fetch,
   probeTimeoutMs = 2500,
   signal,
@@ -495,6 +525,8 @@ export async function resolveSearchEngineOrder({
   engines?: SearchEngine[];
   googleReachable?: boolean;
   hasProxy?: boolean;
+  query?: string;
+  freshness?: SearchFreshness | string;
   fetchImpl?: typeof fetch;
   probeTimeoutMs?: number;
   signal?: AbortSignal;
@@ -527,10 +559,18 @@ export async function resolveSearchEngineOrder({
     });
   }
 
-  // Priority: Google (when reachable) -> Bing -> DuckDuckGo -> Baidu (Bing always preferred over Baidu)
-  return canReachGoogle
-    ? ["google", "bing", "duckduckgo", "baidu"]
-    : ["bing", "duckduckgo", "baidu"];
+  if (canReachGoogle) {
+    return ["google", "bing", "duckduckgo", "baidu"];
+  }
+  const hasChinese = /[\u4e00-\u9fff]/.test(String(query || ""));
+  const hasFreshness = Boolean(
+    normalizeFreshness(freshness) || isRealTimeQuery(String(query || ""))
+  );
+  if (hasChinese && hasFreshness) {
+    return ["baidu", "bing", "duckduckgo"];
+  }
+  // Default international-first order when proxy/network supports Bing/DDG without freshness bias
+  return ["bing", "duckduckgo", "baidu"];
 }
 
 export async function searchWeb(
@@ -577,6 +617,8 @@ export async function searchWeb(
     engines,
     googleReachable,
     hasProxy,
+    query: cleanQuery,
+    freshness: effectiveFreshness,
     fetchImpl,
     probeTimeoutMs,
     signal,
@@ -614,7 +656,12 @@ export async function searchWeb(
         continue;
       }
       const html = await res.text();
-      const results = parseEngineHtml(engine, html, limit);
+      const rawLimit = effectiveFreshness === "day" ? Math.min(limit + 4, 10) : limit;
+      const parsedResults = parseEngineHtml(engine, html, rawLimit);
+      const results = demoteStaticEncyclopediaResults(parsedResults, effectiveFreshness).slice(
+        0,
+        limit
+      );
       if (results.length > 0) {
         return {
           ok: true,

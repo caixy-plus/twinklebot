@@ -48,14 +48,18 @@ function isSafeId(id: unknown): id is string {
 function writeJsonAtomic(
   filePath: string,
   data: unknown,
-  { mode }: { mode?: number } = {}
+  { mode, compact = false }: { mode?: number; compact?: boolean } = {}
 ): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
-  const tmpFile = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  const unique =
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  const tmpFile = `${filePath}.${process.pid}.${Date.now()}.${unique}.tmp`;
   fs.writeFileSync(
     tmpFile,
-    JSON.stringify(data, null, 2),
+    compact ? JSON.stringify(data) : JSON.stringify(data, null, 2),
     mode !== undefined ? { encoding: "utf-8", mode } : "utf-8"
   );
   if (mode !== undefined) {
@@ -65,7 +69,16 @@ function writeJsonAtomic(
       // ignore on platforms without POSIX chmod
     }
   }
-  fs.renameSync(tmpFile, filePath);
+  try {
+    fs.renameSync(tmpFile, filePath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {
+      // ignore cleanup failures
+    }
+    throw err;
+  }
 }
 
 function getLastSeq(filePath: string): number {
@@ -122,6 +135,7 @@ export function createStore(dataDir: string) {
   const localCrypto = createLocalCrypto(rootDir);
 
   const seqMap = new Map<string, number>();
+  const eventsCache = new Map<string, Array<Record<string, any>>>();
   let lastTimestamp = 0;
 
   function getMonotonicIso(prevIso?: string): string {
@@ -260,6 +274,7 @@ export function createStore(dataDir: string) {
       // ignore
     }
     seqMap.delete(id);
+    eventsCache.delete(id);
     return true;
   }
 
@@ -285,6 +300,7 @@ export function createStore(dataDir: string) {
       // ignore
     }
     seqMap.delete(id);
+    eventsCache.delete(id);
     return updateSession(id, {
       status: "idle",
       lastMessagePreview: "",
@@ -352,6 +368,11 @@ export function createStore(dataDir: string) {
   }
 
   function ensureAdminBot(defaults: Record<string, any> = {}): SessionRecord {
+    const defaultRolePrompt =
+      typeof defaults.rolePrompt === "string" && defaults.rolePrompt.trim()
+        ? defaults.rolePrompt
+        : "你是用户的主控与全局协调 Bot（Admin Bot），负责日常全能协作、协调并调度其他专属 Bot、管理外部通道配对与定时任务，以及维护并诊断 TwinkleBot 运行环境与电脑沙箱；执行文件/命令操作时严守最小权限与凭据安全边界。";
+
     const existing = listSessions();
     const currentAdmin = existing.find((s) => s.isAdmin === true && s.type !== "group");
     if (currentAdmin) {
@@ -376,6 +397,7 @@ export function createStore(dataDir: string) {
         ...legacyCandidate,
         isAdmin: true,
         pinned: true,
+        ...(String(legacyCandidate.rolePrompt || "").trim() ? {} : { rolePrompt: defaultRolePrompt }),
       };
       writeJsonAtomic(path.join(sessionsDir, `${legacyCandidate.id}.json`), promoted);
       return promoted;
@@ -385,7 +407,7 @@ export function createStore(dataDir: string) {
       title: defaults.title || "Twinkle",
       type: "dm",
       avatar: defaults.avatar || { color: "black" },
-      rolePrompt: defaults.rolePrompt,
+      rolePrompt: defaultRolePrompt,
       isAdmin: true,
       pinned: true,
     });
@@ -404,11 +426,19 @@ export function createStore(dataDir: string) {
 
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.appendFileSync(ndjsonPath, JSON.stringify(storedEvent) + "\n", "utf-8");
+    const cached = eventsCache.get(id);
+    if (cached) {
+      cached.push(storedEvent);
+    }
     return storedEvent;
   }
 
   function readEvents(id: string): Array<Record<string, any>> {
     if (!isSafeId(id)) return [];
+    const cached = eventsCache.get(id);
+    if (cached) {
+      return cached.slice();
+    }
     const ndjsonPath = path.join(sessionsDir, `${id}.ndjson`);
     if (!fs.existsSync(ndjsonPath)) return [];
     try {
@@ -422,22 +452,37 @@ export function createStore(dataDir: string) {
           // skip truncated/corrupted NDJSON line without dropping the rest of history
         }
       }
-      return events;
+      eventsCache.set(id, events);
+      return events.slice();
     } catch {
       return [];
     }
   }
 
-  function isRealHistoryUserStep(step: any): boolean {
-    if (step?.type !== "user_input" || !Array.isArray(step.content)) return false;
-    const text = step.content
+  function readEventsTail(id: string, limit = 50): Array<Record<string, any>> {
+    const n = Math.max(0, Math.floor(Number(limit) || 0));
+    if (n === 0) return [];
+    const all = readEvents(id);
+    return all.length <= n ? all : all.slice(-n);
+  }
+
+  function extractUserStepText(step: any): string {
+    if (step?.type !== "user_input" || !Array.isArray(step.content)) return "";
+    return step.content
       .filter((p: any) => p?.type === "text" && typeof p.text === "string")
       .map((p: any) => p.text.trim())
       .join("\n")
       .trim();
+  }
+
+  function isRealHistoryUserStep(step: any): boolean {
+    if (step?.type !== "user_input" || !Array.isArray(step.content)) return false;
+    if (step?.skipUserEvent === true) return false;
+    const text = extractUserStepText(step);
     if (!text) return false;
     if (text === "Current screen:" || text === "Current desktop screen:") return false;
     if (
+      text.startsWith("[Inter-Bot Handoff") ||
       text.startsWith("[Auto Context Summary]") ||
       text.startsWith("[System Notice]") ||
       text.startsWith("[System Notice:") ||
@@ -472,21 +517,24 @@ export function createStore(dataDir: string) {
     if (targetIdx === -1) return null;
 
     const targetEvent = events[targetIdx];
-    const totalUserEvents = events.filter(
-      (e) => e.type === "user" || e.type === "user_message"
-    ).length;
-    const targetUserOrdinal = events
-      .slice(0, targetIdx)
-      .filter((e) => e.type === "user" || e.type === "user_message").length;
+    const isCountedUserEvent = (e: any) =>
+      (e.type === "user" || e.type === "user_message") && e.skipUserEvent !== true;
+    const totalUserEvents = events.filter(isCountedUserEvent).length;
+    const targetUserOrdinal = events.slice(0, targetIdx).filter(isCountedUserEvent).length;
     const turnsFromEnd = totalUserEvents - targetUserOrdinal;
 
     const keptEvents = events.slice(0, targetIdx);
     const ndjsonPath = path.join(sessionsDir, `${id}.ndjson`);
     fs.mkdirSync(sessionsDir, { recursive: true });
-    const tmpPath = `${ndjsonPath}.${process.pid}.${Date.now()}.tmp`;
+    const unique =
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+    const tmpPath = `${ndjsonPath}.${process.pid}.${Date.now()}.${unique}.tmp`;
     const body = keptEvents.map((e) => JSON.stringify(e)).join("\n");
     fs.writeFileSync(tmpPath, body ? `${body}\n` : "", "utf-8");
     fs.renameSync(tmpPath, ndjsonPath);
+    eventsCache.set(id, keptEvents.slice());
 
     let maxSeq = 0;
     for (const ev of keptEvents) {
@@ -504,7 +552,24 @@ export function createStore(dataDir: string) {
     }
 
     let nextHistory: any[];
-    if (turnsFromEnd > 0 && realUserIndices.length >= turnsFromEnd) {
+    const targetTextNorm = String(targetEvent?.text || "").trim();
+    let matchedCutIdx: number | null = null;
+    if (realUserIndices.length === totalUserEvents && targetUserOrdinal < realUserIndices.length) {
+      matchedCutIdx = realUserIndices[targetUserOrdinal];
+    } else if (targetTextNorm && realUserIndices.length > 0) {
+      const expectedOccurrenceFromStart = events
+        .slice(0, targetIdx)
+        .filter((e) => isCountedUserEvent(e) && String(e.text || "").trim() === targetTextNorm).length;
+      const matchingIndices = realUserIndices.filter(
+        (idx) => extractUserStepText(history[idx]) === targetTextNorm
+      );
+      if (expectedOccurrenceFromStart < matchingIndices.length) {
+        matchedCutIdx = matchingIndices[expectedOccurrenceFromStart];
+      }
+    }
+    if (matchedCutIdx !== null) {
+      nextHistory = history.slice(0, matchedCutIdx);
+    } else if (turnsFromEnd > 0 && realUserIndices.length >= turnsFromEnd) {
       const cutIdx = realUserIndices[realUserIndices.length - turnsFromEnd];
       nextHistory = history.slice(0, cutIdx);
     } else {
@@ -558,7 +623,7 @@ export function createStore(dataDir: string) {
   function saveHistory(id: string, input: unknown): void {
     if (!isSafeId(id)) throw new Error(`Invalid session id: ${id}`);
     const historyPath = path.join(sessionsDir, `${id}.history.json`);
-    writeJsonAtomic(historyPath, input);
+    writeJsonAtomic(historyPath, input, { compact: true });
   }
 
   function loadHistory(id: string): any[] {
@@ -938,6 +1003,7 @@ export function createStore(dataDir: string) {
     ensureAdminBot,
     appendEvent,
     readEvents,
+    readEventsTail,
     saveHistory,
     loadHistory,
     saveScreenshot,

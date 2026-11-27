@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createControl, runTask, truncateForDisplay } from "../src/agent/loop.js";
+import { BOT_COLLAB_TOOL_DECLARATIONS, filterToolDeclarationsForSkills } from "../src/agent/bot-tools.js";
 import { createStore } from "../src/store/index.js";
 import { ExecutorError } from "../src/agent/executor-client.js";
 
@@ -1653,6 +1654,196 @@ test("runTask recovers when model prints pseudo '[Tool call <name>(...)]' text i
     assert.equal(res.status, "done");
     assert.equal(res.text, "已截屏完成。");
     assert.equal(model.historyCalls.length, 3);
+  } finally {
+    cleanup();
+  }
+});
+
+test("P1-2 & P1-4: non-Admin filtering hides privileged tools, trivial chat trims heavy tools until route_escalate, and memory remove blocks post-turn re-extraction", async () => {
+  // 1. Direct declaration filter verification
+  const nonAdminFiltered = filterToolDeclarationsForSkills(BOT_COLLAB_TOOL_DECLARATIONS, [], {
+    isAdminBot: false,
+  });
+  assert.equal(nonAdminFiltered.some((t) => t.name === "computer_provision"), false);
+  assert.equal(nonAdminFiltered.some((t) => t.name === "account_manage"), false);
+  const restrictedSelfUpdate = nonAdminFiltered.find((t) => t.name === "self_update");
+  assert.deepEqual(restrictedSelfUpdate?.parameters?.properties?.action?.enum, ["check", "status"]);
+
+  const { store, cleanup } = createTestStore();
+  try {
+    const bot = store.createSession({
+      title: "HelperBot",
+      isAdmin: false,
+      memories: [
+        {
+          id: "mem-del-1",
+          name: "旧偏好",
+          content: "以后请用复古风格输出",
+          enabled: true,
+        },
+      ],
+    });
+    const capturedToolNamesPerCall: string[][] = [];
+    let memoryExtractCalls = 0;
+
+    const fakeModel: any = {
+      async nextTurn(opts: any) {
+        const names = (opts.tools || []).map((t: any) => String(t.name));
+        capturedToolNamesPerCall.push(names);
+        if (capturedToolNamesPerCall.length === 1) {
+          return {
+            thoughts: [],
+            text: "",
+            calls: [
+              { id: "c_rm", name: "memory_manage", args: { action: "remove", memory: "mem-del-1" } },
+              { id: "c_esc", name: "route_escalate", args: { need: "think", reason: "need full tools" } },
+            ],
+            outputSteps: [
+              { type: "function_call", id: "c_rm", name: "memory_manage", arguments: { action: "remove", memory: "mem-del-1" } },
+              { type: "function_call", id: "c_esc", name: "route_escalate", arguments: { need: "think", reason: "need full tools" } },
+            ],
+          };
+        }
+        return {
+          thoughts: [],
+          text: "已为你删掉这条偏好记忆。",
+          calls: [],
+          outputSteps: [{ type: "model_output", text: "已为你删掉这条偏好记忆。" }],
+        };
+      },
+      async planTurn() {
+        return { text: "{}" };
+      },
+      async summarizeTurn(opts: any) {
+        if (String(opts?.systemInstruction || "").includes("memory extractor")) {
+          memoryExtractCalls += 1;
+        }
+        return { text: '{"candidates":[]}' };
+      },
+    };
+
+    store.writeSettings({
+      routing: { mode: "balanced", smartRouter: true },
+    });
+
+    const res = await runTask({
+      sessionId: bot.id,
+      userText: "嗨", // trivial/chat L0 greeting -> trimmed toolset on step 1
+      deps: {
+        model: fakeModel,
+        executor: createFakeExecutor(),
+        store,
+        enableBotTools: true,
+        autoRoute: true,
+        smartRouter: true,
+        config: {
+          maxSteps: 4,
+          settleMs: 0,
+        },
+        emit: () => {},
+      },
+    });
+    assert.equal(res.status, "done");
+    // Step 1 trimmed out heavy desktop/shell tools while still exposing core memory_manage & route_escalate
+    assert.equal(capturedToolNamesPerCall[0].includes("click"), false);
+    assert.equal(capturedToolNamesPerCall[0].includes("host_run_shell"), false);
+    assert.equal(capturedToolNamesPerCall[0].includes("computer_provision"), false);
+    assert.equal(capturedToolNamesPerCall[0].includes("memory_manage"), true);
+    // Step 2 unlocked full non-admin toolset after route_escalate while still excluding Admin-only tools
+    assert.equal(capturedToolNamesPerCall[1].includes("read_file"), true);
+    assert.equal(capturedToolNamesPerCall[1].includes("computer_provision"), false);
+    assert.equal(capturedToolNamesPerCall[1].includes("account_manage"), false);
+    // Wait briefly to confirm post-turn background extractor did NOT run after memory_manage(remove)
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(memoryExtractCalls, 0);
+    assert.equal(store.getSession(bot.id)?.memories?.length, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("Phase 3 P2-2: pause suspends queued tool calls until resume and long-thinking short-reply triggers 1 self-check", async () => {
+  const { store, cleanup } = createTestStore();
+  try {
+    const bot = store.ensureAdminBot();
+    const ctrl = createControl();
+    assert.equal(ctrl.isPaused(), false);
+
+    let executedShellWhilePaused = false;
+    const execCalls: string[] = [];
+    const exec = createFakeExecutor({
+      routes: {
+        "/shell": () => {
+          execCalls.push("shell");
+          if (ctrl.isPaused()) executedShellWhilePaused = true;
+          return { ok: true, stdout: "ran", stderr: "", code: 0 };
+        },
+      },
+    });
+
+    let turnCount = 0;
+    const fakeModel = {
+      async nextTurn() {
+        turnCount += 1;
+        if (turnCount === 1) {
+          // Simulate user clicking Pause right as the model response arrives
+          ctrl.pause();
+          return {
+            thoughts: [],
+            text: "",
+            calls: [{ id: "c_pause_1", name: "run_shell", args: { command: "echo hi" } }],
+            outputSteps: [
+              { type: "function_call", id: "c_pause_1", name: "run_shell", arguments: { command: "echo hi" } },
+            ],
+          };
+        }
+        if (turnCount === 2) {
+          return {
+            thoughts: ["heavy reasoning..."],
+            usage: { input: 500, output: 10, thoughts: 950 },
+            text: "扫完",
+            calls: [],
+            outputSteps: [{ type: "model_output", text: "扫完" }],
+          };
+        }
+        return {
+          thoughts: [],
+          usage: { input: 600, output: 40 },
+          text: "已完成全部检查并确认命令执行成功。",
+          calls: [],
+          outputSteps: [{ type: "model_output", text: "已完成全部检查并确认命令执行成功。" }],
+        };
+      },
+    };
+
+    const statuses: string[] = [];
+    const runPromise = runTask({
+      sessionId: bot.id,
+      userText: "检查一下",
+      control: ctrl,
+      deps: {
+        model: fakeModel,
+        executor: exec,
+        store,
+        config: { maxSteps: 5, settleMs: 0 },
+        emit: (ev: any) => {
+          if (ev?.type === "status") statuses.push(ev.status);
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 35));
+    assert.equal(ctrl.isPaused(), true);
+    assert.equal(execCalls.length, 0, "tool must NOT execute while paused");
+    ctrl.resume();
+    assert.equal(ctrl.isPaused(), false);
+
+    const res = await runPromise;
+    assert.equal(res.status, "done");
+    assert.equal(executedShellWhilePaused, false);
+    assert.deepEqual(execCalls, ["shell"]);
+    assert.equal(turnCount, 3, "short reply '扫完' after >=800 thoughts triggers 1 self-check turn");
+    assert.equal(res.text, "已完成全部检查并确认命令执行成功。");
   } finally {
     cleanup();
   }

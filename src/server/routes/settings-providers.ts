@@ -474,10 +474,10 @@ export async function handleSettingsProvidersRoutes(
           }
           if (Array.isArray(body.globalMemories)) {
             patch.globalMemories = body.globalMemories;
-            patch.privateSkills = body.globalMemories;
+            patch.privateSkills = [];
           } else if (Array.isArray(body.privateSkills)) {
             patch.globalMemories = body.privateSkills;
-            patch.privateSkills = body.privateSkills;
+            patch.privateSkills = [];
           }
           if ("routing" in body) {
             const r = body.routing;

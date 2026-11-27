@@ -311,3 +311,59 @@ test("runner.stop immediately frees active session so a follow-up start succeeds
     ctx.cleanup();
   }
 });
+
+test("Phase 3 P2-4: approve/choose never fall back across active sessions on unmatched callId", async () => {
+  const ctx = setupRunnerTest();
+  try {
+    const s1 = ctx.store.createSession({ title: "SessA" });
+    const s2 = ctx.store.createSession({ title: "SessB" });
+    const approvedCalls: string[] = [];
+    let settledS1 = false;
+    let settledS2 = false;
+
+    async function mockRunTask({ sessionId, control }: any) {
+      if (sessionId === s1.id) {
+        const res = await control.requestApproval("call-s1");
+        settledS1 = true;
+        if (res) approvedCalls.push("call-s1");
+      } else {
+        const res = await control.requestChoice("call-s2");
+        settledS2 = true;
+        if (res) approvedCalls.push(`choice:${res}`);
+      }
+      return { status: "done", text: "ok" };
+    }
+
+    const runner = createRunner({
+      store: ctx.store,
+      config: ctx.config,
+      model: ctx.model,
+      executor: ctx.executor,
+      runTaskImpl: mockRunTask as any,
+    });
+
+    runner.start(s1.id, "task 1");
+    runner.start(s2.id, "task 2");
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Unmatched callId must NOT resolve either session
+    runner.approve("non-existent-call", true);
+    runner.choose("non-existent-choice", "wrong");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(settledS1, false);
+    assert.equal(settledS2, false);
+
+    // Exact callId resolves only its owning session
+    runner.approve("call-s1", true);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(settledS1, true);
+    assert.equal(settledS2, false);
+
+    runner.choose("call-s2", "picked-b");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(settledS2, true);
+    assert.deepEqual(approvedCalls, ["call-s1", "choice:picked-b"]);
+  } finally {
+    ctx.cleanup();
+  }
+});

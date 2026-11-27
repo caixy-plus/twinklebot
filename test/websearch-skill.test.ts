@@ -10,6 +10,7 @@ import {
   buildNeutralUserAgent,
   isSafePublicWebUrl,
   isRealTimeQuery,
+  resolveSearchEngineOrder,
   searchWeb,
   fetchWebPage,
   resetSearchReachabilityCacheForTests,
@@ -262,4 +263,48 @@ test("BOT_COLLAB_TOOL_DECLARATIONS, runBotCollabTool, and prompt expose web_sear
   const sys = buildSystemInstruction({ enableBotTools: true, installedSkills: [] });
   assert.match(sys, /web_search/);
   assert.match(sys, /web_fetch/);
+});
+
+test("Phase 3 P2-3: Chinese freshness search prefers baidu when Google unreachable and demotes static encyclopedias", async () => {
+  resetSearchReachabilityCacheForTests();
+  const zhOrder = await resolveSearchEngineOrder({
+    googleReachable: false,
+    query: "今日黄金价格走势",
+    freshness: "day",
+  });
+  assert.deepEqual(zhOrder, ["baidu", "bing", "duckduckgo"]);
+
+  const enOrder = await resolveSearchEngineOrder({
+    googleReachable: false,
+    query: "nodejs runtime",
+  });
+  assert.deepEqual(enOrder, ["bing", "duckduckgo", "baidu"]);
+
+  const baiduHtmlWithBaikeFirst = `
+    <div class="result c-container">
+      <h3><a href="https://baike.baidu.com/item/黄金">黄金_百度百科</a></h3>
+      <span class="content-right_8Zs40">静态词条介绍内容。</span>
+    </div>
+    <div class="result c-container">
+      <h3><a href="https://news.example.com/gold-2026">2026年11月27日现货黄金最新报价</a></h3>
+      <span class="c-color-gray2">2026年11月27日</span>
+      <span class="content-right_8Zs40">今日国际金价最新实时行情。</span>
+    </div>
+  `;
+  const hitUrls: string[] = [];
+  const res = await searchWeb("今日黄金价格", {
+    googleReachable: false,
+    freshness: "day",
+    fetchImpl: async (url) => {
+      const u = String(url);
+      hitUrls.push(u);
+      if (u.includes("baidu.com")) return new Response(baiduHtmlWithBaikeFirst, { status: 200 });
+      return new Response("unexpected", { status: 503 });
+    },
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.engine, "baidu");
+  assert.equal(hitUrls.length, 1);
+  assert.equal(res.results![0].url, "https://news.example.com/gold-2026");
+  assert.equal(res.results![1].url, "https://baike.baidu.com/item/黄金");
 });

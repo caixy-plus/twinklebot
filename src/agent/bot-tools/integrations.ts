@@ -675,7 +675,7 @@ export async function handleIntegrationBotTool(
           return {
             ok: false,
             error:
-              "权限不足：该配对码对应的机器人未绑定到当前 Bot，请在管理员 Bot（Nori）或绑定该机器人的 Bot 中审批，或前往技能商店操作。",
+              "权限不足：该配对码对应的机器人未绑定到当前 Bot，请在管理员 Bot（Twinkle）或绑定该机器人的 Bot 中审批，或前往技能商店操作。",
           };
         }
         const res =
@@ -1094,7 +1094,7 @@ export async function handleIntegrationBotTool(
       const sessions = store?.listSessions?.() || [];
       const resolveSessionLabel = (sid?: string | null) => {
         const clean = String(sid || "").trim();
-        if (!clean) return "主管理员 Bot（Nori）";
+        if (!clean) return "主管理员 Bot（Twinkle）";
         const found = sessions.find((s: any) => s && s.id === clean);
         return found?.title || clean;
       };
@@ -1205,10 +1205,17 @@ export async function handleIntegrationBotTool(
           existingAccounts.find((a) => String(a.label || "").toLowerCase() === lower) ||
           null;
         if (!targetAcct) {
-          return {
-            ok: false,
-            error: `未在 ${channelId} 中找到匹配的机器人实例「${accountSelector}」`,
-          };
+          const canCreateWithExplicitId =
+            action === "upsert" &&
+            (Boolean(args.create_new) ||
+              (channelId === "feishu-bot" && Boolean(args.app_id || args.app_secret)) ||
+              (channelId === "telegram-bot" && Boolean(args.bot_token)));
+          if (!canCreateWithExplicitId) {
+            return {
+              ok: false,
+              error: `未在 ${channelId} 中找到匹配的机器人实例「${accountSelector}」`,
+            };
+          }
         }
       } else if (!args.create_new) {
         if (args.app_id && channelId === "feishu-bot") {
@@ -1230,7 +1237,7 @@ export async function handleIntegrationBotTool(
       const checkManagePermission = (isCreate: boolean, reroutingOther: boolean) => {
         if (callerIsAdmin) return null;
         if (isCreate || !targetAcct || targetAcct.defaultSessionId !== selfBotId) {
-          return "权限不足：仅管理员 Bot（Nori）可新增、删除或跨 Bot 修改渠道配置；专职 Bot 仅可管理已绑定到自身的机器人实例。";
+          return "权限不足：仅管理员 Bot（Twinkle）可新增、删除或跨 Bot 修改渠道配置；专职 Bot 仅可管理已绑定到自身的机器人实例。";
         }
         if (reroutingOther) {
           return "权限不足：非管理员 Bot 不能把渠道消息改路由给其他 Bot。";
@@ -1486,6 +1493,7 @@ export async function handleIntegrationBotTool(
 
       const body: Record<string, any> = {};
       if (args.label !== undefined) body.label = String(args.label);
+      else if (!targetAcct && accountSelector) body.label = accountSelector;
       if (args.enabled !== undefined) body.enabled = Boolean(args.enabled);
       else if (!targetAcct) body.enabled = true;
       if (args.connection_mode !== undefined) body.connectionMode = args.connection_mode;
@@ -1523,7 +1531,10 @@ export async function handleIntegrationBotTool(
       const saved = channelConfigActions.upsertAccount?.(
         channelId,
         body,
-        { accountId: targetAcct?.id, createNew: Boolean(args.create_new) }
+        {
+          accountId: targetAcct?.id || (accountSelector || undefined),
+          createNew: Boolean(args.create_new || (!targetAcct && accountSelector)),
+        }
       );
 
       if (usedCard) {

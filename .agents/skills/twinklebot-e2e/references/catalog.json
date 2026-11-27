@@ -206,7 +206,7 @@
           "priority": "P0",
           "featureTier": "F1",
           "difficulty": "D1",
-          "title": "双电脑权限策略矩阵(PI-010/011)：宿主机 always/ask/off、只读放行、高危命令确认、沙盒 full vs restricted 与跨 Bot 工作区确认",
+          "title": "双电脑权限策略矩阵(PI-010/011)：宿主机 always/ask/off、只读放行、edit_file/host_edit_file、高危命令确认、沙盒 full vs restricted 与跨 Bot 工作区确认",
           "module": "Dual-Computer Policy Matrix"
         },
         {
@@ -1169,7 +1169,7 @@
           "priority": "P3",
           "featureTier": "F3",
           "difficulty": "D3",
-          "title": "Executor 全 21 端点 HTTP 契约与安全边界：Bearer 401、/displays 生命周期、/read|/write 禁区 403 与截断、/shell 隔离与超时 124、/open_url 与错误码",
+          "title": "Executor 端点 HTTP 契约与安全边界：Bearer 401、/displays 生命周期、/read|/write|/edit 禁区 403 与截断、/shell 隔离与超时 124、/open_url 与错误码",
           "module": "Executor Full HTTP & Security Matrix"
         }
       ]

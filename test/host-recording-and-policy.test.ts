@@ -49,8 +49,12 @@ test("policy splits Host Restricted Mode vs Sandbox Full-Privilege Mode and bloc
     "allow"
   );
   assert.equal(
-    assessToolCall("write_file", { path: "/opt/app/config.json", content: "{}" }, { sandboxMode: "full", writeRoots: ["/tmp"] }).decision,
+    assessToolCall("write_file", { path: "/tmp/app/config.json", content: "{}" }, { sandboxMode: "full", writeRoots: ["/tmp"] }).decision,
     "allow"
+  );
+  assert.equal(
+    assessToolCall("write_file", { path: "/opt/app/config.json", content: "{}" }, { sandboxMode: "full", writeRoots: ["/tmp"] }).decision,
+    "confirm"
   );
 
   // Client Host remains strictly restricted even when sandboxMode is full

@@ -26,6 +26,7 @@ export function extractMentionedBots(
 
   const matched: Array<{ bot: GroupMemberBot; pos: number }> = [];
   const seen = new Set<string>();
+  let maskedContent = content;
 
   // Sort longest title first so `@谷歌账号管家` matches before `@谷歌`
   const sorted = [...memberBots].sort(
@@ -35,10 +36,21 @@ export function extractMentionedBots(
   for (const bot of sorted) {
     const name = String(bot.title || "").trim();
     if (!name) continue;
-    const idx = content.toLowerCase().indexOf(`@${name.toLowerCase()}`);
-    if (idx !== -1 && !seen.has(bot.id)) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const mentionRe = new RegExp(
+      `(?:^|[^a-zA-Z0-9_.-])(@${escaped})(?=$|[\\s,，。、；;：:!?！？)）\\]】"'\\\`]|\\.(?![a-zA-Z0-9])|[^a-zA-Z0-9_.\\u4e00-\\u9fff-])`,
+      "i"
+    );
+    const m = mentionRe.exec(maskedContent);
+    if (m && !seen.has(bot.id)) {
+      const mentionToken = m[1];
+      const mentionPos = m.index + (m[0].length - mentionToken.length);
       seen.add(bot.id);
-      matched.push({ bot, pos: idx });
+      matched.push({ bot, pos: mentionPos });
+      maskedContent =
+        maskedContent.slice(0, mentionPos) +
+        " ".repeat(mentionToken.length) +
+        maskedContent.slice(mentionPos + mentionToken.length);
     }
   }
 
@@ -122,7 +134,10 @@ export function selectGroupSpeakers({
   const candidates = memberBots.filter((b) => b && b.id !== excludeBotId);
   if (candidates.length === 0) return [];
 
-  const mentioned = extractMentionedBots(text, candidates);
+  const allMentioned = extractMentionedBots(text, memberBots);
+  const mentioned = excludeBotId
+    ? allMentioned.filter((b) => b.id !== excludeBotId)
+    : allMentioned;
 
   // GrokBot Reply Routing: replying directly to a specific Bot's message in a group chat prioritizes that Bot first
   if (replyToBotId) {
@@ -137,7 +152,7 @@ export function selectGroupSpeakers({
     return mentioned.slice(0, maxSpeakers);
   }
 
-  // Score by role/title relevance; if nobody stands out, pick up to maxSpeakers (or first 2)
+  // Score by role/title relevance; if nobody stands out, pick Admin Bot (or 1 fallback) instead of spraying multiple bots
   const scored = candidates.map((bot, index) => ({
     bot,
     score: scoreBotRelevance(text, bot),
@@ -157,12 +172,45 @@ export function selectGroupSpeakers({
       .map((s) => s.bot);
   }
 
-  return scored.slice(0, Math.min(maxSpeakers, 2)).map((s) => s.bot);
+  const adminCandidate = scored.find((s) => s.bot.isAdmin);
+  return adminCandidate ? [adminCandidate.bot] : [scored[0].bot];
+}
+
+function summarizeGroupAttachments(attachments: any): string {
+  if (!Array.isArray(attachments) || attachments.length === 0) return "";
+  const names = attachments
+    .map((a) => String(a?.name || a?.title || a?.path || a?.url || "file").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  return names.length > 0 ? ` [Attachments: ${names.join(", ")}]` : "";
+}
+
+function formatGroupToolResultSummary(ev: any): string {
+  const res = ev?.result;
+  if (!res || typeof res !== "object") return "";
+  const toolName = String(ev.name || "").trim();
+  if (!toolName) return "";
+  const isDeliverable =
+    toolName === "send_file" ||
+    toolName === "generate_image" ||
+    toolName === "write_file" ||
+    toolName === "edit_file" ||
+    toolName === "host_edit_file";
+  const pathOrUrl = res.path || res.source_path || res.url || "";
+  const errText = res.error ? String(res.error).replace(/\s+/g, " ").slice(0, 100) : "";
+  if (!isDeliverable && !pathOrUrl && !errText) return "";
+  const speaker = ev.botName || "Bot";
+  const detail = errText
+    ? `error: ${errText}`
+    : pathOrUrl
+      ? `${res.title || res.name || pathOrUrl} (${pathOrUrl})`
+      : "ok";
+  return `[Tool ${speaker} · ${toolName}]: ${detail.slice(0, 160)}`;
 }
 
 /**
  * Builds a concise textual transcript from recent group events so each Bot
- * clearly sees what the user and other Bots just said.
+ * clearly sees what the user and other Bots just said, including deliverables and attachments.
  */
 export function buildGroupPromptContext(
   events: any[] = [],
@@ -170,24 +218,36 @@ export function buildGroupPromptContext(
   limit = 14
 ): string {
   const relevant = events
-    .filter((e) => e && (e.type === "user" || e.type === "answer"))
+    .filter(
+      (e) =>
+        e &&
+        (e.type === "user" ||
+          e.type === "answer" ||
+          (e.type === "result" && Boolean(formatGroupToolResultSummary(e))))
+    )
     .slice(-limit);
 
   if (relevant.length === 0) {
     return `[User]: ${currentUserText}`;
   }
 
-  const lines = relevant.map((ev) => {
+  const lines: string[] = [];
+  for (const ev of relevant) {
     if (ev.type === "user") {
       const sourceHeader = formatMessageSourceHeader(ev);
       const timeHeader = formatMessageTimeHeader(ev);
       const prefix = [sourceHeader, timeHeader].filter(Boolean).join(" ");
-      const body = ev.text || "";
-      return prefix ? `[User] ${prefix} ${body}` : `[User]: ${body}`;
+      const body = `${ev.text || ""}${summarizeGroupAttachments(ev.attachments)}`;
+      lines.push(prefix ? `[User] ${prefix} ${body}` : `[User]: ${body}`);
+    } else if (ev.type === "result") {
+      const summary = formatGroupToolResultSummary(ev);
+      if (summary) lines.push(summary);
+    } else {
+      const speaker = ev.botName || "Bot";
+      const body = `${ev.text || ""}${summarizeGroupAttachments(ev.attachments)}`;
+      lines.push(`[${speaker}]: ${body}`);
     }
-    const speaker = ev.botName || "Bot";
-    return `[${speaker}]: ${ev.text || ""}`;
-  });
+  }
 
   return `Recent group conversation:\n${lines.join("\n")}\n\nRespond now in character to the latest message.`;
 }
