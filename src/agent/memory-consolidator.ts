@@ -248,11 +248,21 @@ function runDeterministicPrepass(
   };
 }
 
-export function validateConsolidatedMemoryList(
+const MAX_CONSOLIDATED_MEMORY_CHARS = 8000;
+const MAX_MERGED_MEMORY_CHARS = 2000;
+const MAX_BOT_ROLE_PROMPT_PREVIEW_CHARS = 1600;
+
+export interface ConsolidationDroppedItem {
+  id: string;
+  name: string;
+  reason: string;
+}
+
+export function validateConsolidatedMemoryListWithReport(
   rawList: unknown,
   originalList: unknown[] = []
-): MemoryEntryLike[] {
-  if (!Array.isArray(rawList)) return [];
+): { memories: MemoryEntryLike[]; dropped: ConsolidationDroppedItem[] } {
+  if (!Array.isArray(rawList)) return { memories: [], dropped: [] };
   const origMap = new Map<string, MemoryEntryLike>();
   originalList.forEach((m, idx) => {
     const norm = normalizeEntry(m, idx);
@@ -261,19 +271,37 @@ export function validateConsolidatedMemoryList(
 
   const seenIds = new Set<string>();
   const out: MemoryEntryLike[] = [];
+  const dropped: ConsolidationDroppedItem[] = [];
   const nowIso = new Date().toISOString();
 
   for (let i = 0; i < rawList.length && out.length < 200; i++) {
     const raw = rawList[i];
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const norm = normalizeEntry(raw, i);
-    if (!norm.content || norm.content.length < 2 || norm.content.length > 500) continue;
+    const isExistingEntry = Boolean(norm.id && origMap.has(norm.id));
+    if (!norm.content || norm.content.length < 2) {
+      dropped.push({ id: norm.id, name: norm.name, reason: "内容为空或过短" });
+      continue;
+    }
+    if (!isExistingEntry && norm.content.length > MAX_CONSOLIDATED_MEMORY_CHARS) {
+      dropped.push({
+        id: norm.id,
+        name: norm.name,
+        reason: `内容超过 ${MAX_CONSOLIDATED_MEMORY_CHARS} 字符上限`,
+      });
+      continue;
+    }
     if (
       looksLikeSecretMemory(norm.content) ||
       looksLikeSecretMemory(norm.name) ||
       looksLikePoisonedToolMemory(norm.content) ||
       looksLikePoisonedToolMemory(norm.name)
     ) {
+      dropped.push({
+        id: norm.id,
+        name: norm.name,
+        reason: "含敏感凭据或受限工具规则，已拦截",
+      });
       continue;
     }
     let id = norm.id;
@@ -296,7 +324,14 @@ export function validateConsolidatedMemoryList(
       updatedAt: norm.updatedAt || nowIso,
     });
   }
-  return out;
+  return { memories: out, dropped };
+}
+
+export function validateConsolidatedMemoryList(
+  rawList: unknown,
+  originalList: unknown[] = []
+): MemoryEntryLike[] {
+  return validateConsolidatedMemoryListWithReport(rawList, originalList).memories;
 }
 
 export async function consolidateMemories({
@@ -306,6 +341,7 @@ export async function consolidateMemories({
   model = null,
   config = {},
   botName = "Twinkle",
+  botRolePrompt = "",
   mode = "llm",
   timeoutMs = 15000,
   onUsage,
@@ -316,6 +352,7 @@ export async function consolidateMemories({
   model?: ModelAdapter | null;
   config?: Record<string, any>;
   botName?: string;
+  botRolePrompt?: string;
   mode?: "llm" | "deterministic";
   timeoutMs?: number;
   onUsage?: (info: { model: string; providerId?: string | null; usage: any }) => void;
@@ -333,12 +370,18 @@ export async function consolidateMemories({
   try {
     const rawList = Array.isArray(memories) ? memories : [];
     const basePlan = runDeterministicPrepass(scope, rawList, sessionId);
+    const cleanRolePrompt =
+      scope === "bot" ? String(botRolePrompt || "").trim().slice(0, MAX_BOT_ROLE_PROMPT_PREVIEW_CHARS) : "";
+    const shouldInvokeLlm =
+      basePlan.proposedList.length >= 2 ||
+      (basePlan.proposedList.length === 1 &&
+        (basePlan.proposedList[0].category === "general" || Boolean(cleanRolePrompt)));
 
     if (
       mode === "deterministic" ||
       !model ||
       typeof model.summarizeTurn !== "function" ||
-      basePlan.proposedList.length < 2
+      !shouldInvokeLlm
     ) {
       return { ok: true, plan: basePlan };
     }
@@ -357,16 +400,23 @@ export async function consolidateMemories({
     const prompt = [
       `Review and consolidate the following ${scope === "global" ? "Global Memories (shared across all Bots)" : `Dedicated Memories for Bot "${botName}"`}.`,
       "Your goal is to clean up clutter, merge semantic duplicates or conflicting rules (preferring newer/clearer intent), remove obvious one-off temporary task debris, and assign accurate categories.",
+      ...(cleanRolePrompt
+        ? [
+            "",
+            `Bot Role / Persona (already permanently injected into system prompt; if a memory merely duplicates this persona without adding extra value, you may list it in \`removals\` with a clear reason):`,
+            cleanRolePrompt,
+          ]
+        : []),
       "",
       "STRICT RULES:",
       "- NEVER invent new facts or preferences not present in the source items.",
       "- NEVER drop valid standalone user preferences, identity facts, or standing rules.",
       "- Keep `merges` strictly to 2+ sourceIds that express the same or conflicting rule on the same topic.",
-      "- Keep `removals` strictly to obvious temporary noise (one-off errors, transient file paths, meaningless chatter).",
+      "- Keep `removals` strictly to obvious temporary noise (one-off errors, transient file paths, meaningless chatter) or entries completely redundant with the Bot Role / Persona above.",
       "- Valid categories: \"identity\", \"preference\", \"rule\", \"context\", \"general\".",
       "",
       "Output STRICT JSON ONLY:",
-      '{"summary":"concise 1-sentence Chinese summary","merges":[{"sourceIds":["id1","id2"],"name":"<=18 chars","content":"concise merged rule","category":"preference","reason":"why merged"}],"removals":[{"id":"id3","reason":"why temporary noise"}],"recategorizations":[{"id":"id4","category":"rule"}]}',
+      '{"summary":"concise 1-sentence Chinese summary","merges":[{"sourceIds":["id1","id2"],"name":"<=18 chars","content":"concise merged rule","category":"preference","reason":"why merged"}],"removals":[{"id":"id3","reason":"why temporary noise or persona-duplicate"}],"recategorizations":[{"id":"id4","category":"rule"}]}',
       "",
       "Memories to consolidate:",
       serializedItems,
@@ -437,7 +487,7 @@ export async function consolidateMemories({
             content.replace(/\s+/g, " ").slice(0, 18);
           if (
             !content ||
-            content.length > 400 ||
+            content.length > MAX_MERGED_MEMORY_CHARS ||
             looksLikeSecretMemory(content) ||
             looksLikeSecretMemory(name) ||
             looksLikePoisonedToolMemory(content) ||

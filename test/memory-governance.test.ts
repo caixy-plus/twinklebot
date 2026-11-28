@@ -468,5 +468,68 @@ test("Memory Governance M3: consolidator previews deterministic & LLM cleanups, 
   ).json();
   assert.equal(applyRes.ok, true);
   assert.equal(applyRes.count, 2, "secret entry must be stripped during apply");
+  assert.equal(applyRes.dropped?.length, 1);
+  assert.equal(applyRes.dropped[0].id, "bad-secret");
   assert.equal(store.getSession(bot.id)?.memories?.length, 2);
+
+  // Regression for Nori report: existing >500-char technical memories must NEVER be dropped on preview/apply,
+  // and botRolePrompt must be passed into LLM consolidation (even for 1-memory Bots)
+  const long1 = "KimiCU 技术规范要点：".padEnd(1193, "A");
+  const long2 = "Mac 权限与操作边界说明：".padEnd(848, "B");
+  const longBot = store.createSession({
+    title: "长记忆验证助手",
+    rolePrompt: "你负责自动巡检与推广平台核查。",
+    memories: [
+      { id: "long-1", name: "KimiCU 规范", content: long1, category: "context", enabled: true },
+      { id: "long-2", name: "Mac 边界", content: long2, category: "rule", enabled: true },
+    ],
+  });
+
+  let seenRolePrompt = false;
+  const roleAwareModel: any = {
+    summarizeTurn: async ({ input }: any) => {
+      const txt = JSON.stringify(input || "");
+      if (txt.includes("你负责自动巡检与推广平台核查")) {
+        seenRolePrompt = true;
+      }
+      return { text: JSON.stringify({ summary: "全部保留", merges: [], removals: [] }) };
+    },
+  };
+  const srvRole = createServer({
+    store,
+    model: roleAwareModel,
+    config: { port: 0, host: "127.0.0.1", dataDir: dir },
+  });
+  await new Promise<void>((resolve) => srvRole.listen(0, "127.0.0.1", () => resolve()));
+  t.after(() => new Promise<void>((resolve) => srvRole.close(() => resolve())));
+  const roleBase = `http://127.0.0.1:${(srvRole.address() as any).port}`;
+
+  const longPreview: any = await (
+    await fetch(`${roleBase}/api/memories/consolidate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "bot", sessionId: longBot.id }),
+    })
+  ).json();
+  assert.equal(longPreview.ok, true);
+  assert.equal(seenRolePrompt, true, "botRolePrompt must be supplied to LLM consolidator");
+  assert.equal(longPreview.plan.beforeCount, 2);
+  assert.equal(longPreview.plan.afterCount, 2);
+
+  const longApply: any = await (
+    await fetch(`${roleBase}/api/memories/consolidate/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope: "bot",
+        sessionId: longBot.id,
+        proposedList: longPreview.plan.proposedList,
+      }),
+    })
+  ).json();
+  assert.equal(longApply.ok, true);
+  assert.equal(longApply.count, 2, ">500-char existing memories must survive apply");
+  assert.deepEqual(longApply.dropped, []);
+  assert.equal(store.getSession(longBot.id)?.memories?.[0]?.content?.length, 1193);
+  assert.equal(store.getSession(longBot.id)?.memories?.[1]?.content?.length, 848);
 });

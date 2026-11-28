@@ -36,7 +36,7 @@ import {
 } from "../../lib/channel-integrations.js";
 import {
   consolidateMemories,
-  validateConsolidatedMemoryList,
+  validateConsolidatedMemoryListWithReport,
 } from "../../agent/memory-consolidator.js";
 
 export async function handleSkillsRoutes(
@@ -165,6 +165,7 @@ export async function handleSkillsRoutes(
 
           let memories: any[] = [];
           let botTitle = "Twinkle";
+          let botRolePrompt = "";
           if (scope === "bot") {
             const botSession = sessionId ? ctx.store?.getSession?.(sessionId) : null;
             if (!botSession) {
@@ -172,6 +173,7 @@ export async function handleSkillsRoutes(
             }
             memories = Array.isArray(botSession.memories) ? [...botSession.memories] : [];
             botTitle = botSession.title || "Twinkle";
+            botRolePrompt = typeof botSession.rolePrompt === "string" ? botSession.rolePrompt : "";
           } else {
             memories = Array.isArray(settings.globalMemories)
               ? [...settings.globalMemories]
@@ -190,6 +192,7 @@ export async function handleSkillsRoutes(
               routing: settings.routing || ctx.finalConfig?.routing,
             },
             botName: botTitle,
+            ...(botRolePrompt ? { botRolePrompt } : {}),
             mode,
           });
           if (!result.ok) {
@@ -217,7 +220,10 @@ export async function handleSkillsRoutes(
               return sendJson(res, 404, { error: "未找到指定的 Bot 会话" });
             }
             const origList = Array.isArray(botSession.memories) ? botSession.memories : [];
-            const sanitized = validateConsolidatedMemoryList(body.proposedList, origList);
+            const { memories: sanitized, dropped } = validateConsolidatedMemoryListWithReport(
+              body.proposedList,
+              origList
+            );
             const updatedSession = ctx.store?.updateSession?.(botSession.id, {
               memories: sanitized,
               touch: false,
@@ -233,6 +239,7 @@ export async function handleSkillsRoutes(
               sessionId: botSession.id,
               count: sanitized.length,
               memories: sanitized,
+              dropped,
             });
           }
 
@@ -240,7 +247,8 @@ export async function handleSkillsRoutes(
           const origGlobal = Array.isArray(settings.globalMemories)
             ? settings.globalMemories
             : [];
-          const sanitizedGlobal = validateConsolidatedMemoryList(body.proposedList, origGlobal);
+          const { memories: sanitizedGlobal, dropped: droppedGlobal } =
+            validateConsolidatedMemoryListWithReport(body.proposedList, origGlobal);
           ctx.store?.writeSettings?.({
             globalMemories: sanitizedGlobal,
             privateSkills: [],
@@ -251,6 +259,7 @@ export async function handleSkillsRoutes(
             scope: "global",
             count: sanitizedGlobal.length,
             memories: sanitizedGlobal,
+            dropped: droppedGlobal,
           });
         }
 
