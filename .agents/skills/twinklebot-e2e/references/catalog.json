@@ -387,6 +387,10 @@
       "compiledFile": "e2e/p1-collab-cards-and-messages.e2e.js",
       "sourceGlobs": [
         "src/agent/group-coordinator.ts",
+        "src/agent/hooks.ts",
+        "src/agent/subtask-runner.ts",
+        "src/agent/harness-evaluator.ts",
+        "src/agent/schedule-optimizer.ts",
         "src/agent/bot-tools.ts",
         "src/agent/bot-tools/index.ts",
         "src/agent/bot-tools/collab-tools.ts",
@@ -521,6 +525,7 @@
       "sourceGlobs": [
         "src/shared/skills-catalog.ts",
         "src/lib/custom-skills.ts",
+        "src/agent/experience-reflector.ts",
         "src/lib/mail-accounts.ts",
         "src/lib/mail-client.ts",
         "src/lib/mcp-client.ts",

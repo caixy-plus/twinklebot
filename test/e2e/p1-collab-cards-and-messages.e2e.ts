@@ -270,10 +270,11 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
               { id: "st-17", name: "self_update", args: { action: "status" } },
               { id: "st-18", name: "self_update", args: { action: "apply" } },
               { id: "st-19", name: "app_knowledge", args: { action: "search", query: "外网中继" } },
+              { id: "st-20", name: "run_subtask", args: { goal: "列出应用知识库主题清单", max_steps: 2 } },
             ],
           };
         }
-        return { text: "全部 11 项系统级 Bot 工具实测完成" };
+        return { text: "全部 12 项系统级 Bot 工具实测完成" };
       });
 
       await fetch(`${ws.baseUrl}/api/sessions/${workerBot.id}/messages`, {
@@ -1149,6 +1150,42 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       assert.equal(cronUiItem?.repeat, "cron");
       assert.equal(cronUiItem?.cron, "0 10 */3 * *");
       assert.equal((await fetch(`${ws.baseUrl}/api/schedules/${cronUiItem.id}`, { method: "DELETE" })).status, 200);
+
+      // Verify schedule-optimizer-v1 capability + /api/schedules/:id/optimize & apply-optimization (Phase H4-B)
+      const diagH4 = await (await fetch(`${ws.baseUrl}/api/system/diagnostics`)).json() as any;
+      assert.ok(
+        Array.isArray(diagH4?.apiCapabilities) &&
+          diagH4.apiCapabilities.includes("schedule-optimizer-v1"),
+        "Diagnostics must advertise schedule-optimizer-v1 capability"
+      );
+      const optTargetRes = await fetch(`${ws.baseUrl}/api/schedules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: inspBot.id,
+          title: "优化测试巡检",
+          prompt: "检查服务状态",
+          repeat: "daily",
+          time: "08:00",
+        }),
+      });
+      assert.equal(optTargetRes.status, 201);
+      const optTarget: any = await optTargetRes.json();
+      ws.mockLlm.setHandler(async () => ({ text: '{"decision":"KEEP_BASE","reason":"already concise"}' }));
+      const optRunRes = await fetch(`${ws.baseUrl}/api/schedules/${optTarget.id}/optimize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assert.equal(optRunRes.status, 200);
+      ws.mockLlm.setHandler(undefined);
+      const optApplyRes = await fetch(`${ws.baseUrl}/api/schedules/${optTarget.id}/apply-optimization`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ optimizedPrompt: "每日检查服务健康状态并输出结构化摘要" }),
+      });
+      assert.equal(optApplyRes.status, 200);
+      assert.equal((await fetch(`${ws.baseUrl}/api/schedules/${optTarget.id}`, { method: "DELETE" })).status, 200);
 
       // Create an already-due 'once' schedule -> scheduler ticks every 120ms and fires it automatically!
       const schedRes = await fetch(`${ws.baseUrl}/api/schedules`, {

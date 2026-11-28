@@ -346,6 +346,53 @@ test("P1 Suite 5: Skills Store, Custom SKILL.md, Multi-Account Mail (IMAP/POP3/S
       assert.ok(!firstSys.includes("SECRET_BODY_ONLY_ON_GET"), "Progressive disclosure must omit full body from system prompt");
       assert.match(loadedBody, /SECRET_BODY_ONLY_ON_GET/, "Agent must receive full body on action=get");
       assert.equal(fs.existsSync(path.join(ws.dataDir, "custom-skills", "bot-auto-skill.md")), false, "Agent delete must remove .md file");
+
+      // Verify directory skill scripts API + Experience Reflector proposals & capability (Phase H2/H3)
+      const diagRes = await (await fetch(`${ws.baseUrl}/api/system/diagnostics`)).json() as any;
+      assert.ok(
+        Array.isArray(diagRes?.apiCapabilities) &&
+          diagRes.apiCapabilities.includes("experience-reflector-v1"),
+        "Diagnostics must advertise experience-reflector-v1 capability"
+      );
+      const scriptPostRes = await fetch(`${ws.baseUrl}/api/custom-skills/release-checklist/scripts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "check.py", content: "print('ok')\n" }),
+      });
+      assert.equal(scriptPostRes.status, 200);
+      assert.equal(
+        (await fetch(`${ws.baseUrl}/api/custom-skills/release-checklist/scripts/check.py`)).status,
+        200
+      );
+      assert.equal(
+        (
+          await fetch(`${ws.baseUrl}/api/custom-skills/release-checklist/scripts/check.py`, {
+            method: "DELETE",
+          })
+        ).status,
+        200
+      );
+
+      const activeBot = ws.store.listSessions()[0];
+      const prop = ws.store.addExperienceProposal({
+        sessionId: activeBot?.id || "default",
+        botName: activeBot?.title || "Twinkle",
+        dimension: "invariant",
+        targetType: "bot_playbook",
+        title: "E2E 复盘建议",
+        cue: "执行发布检查时",
+        lesson: "每次发版先跑构建与静态审计脚本。",
+        evidence: "step 1 失败后在 step 2 恢复",
+      });
+      const propList = await (await fetch(`${ws.baseUrl}/api/experience-proposals?status=pending`)).json() as any;
+      assert.equal(propList.ok, true);
+      assert.ok(propList.proposals.some((p: any) => p.id === prop.id));
+      const propResolve = await fetch(`${ws.baseUrl}/api/experience-proposals/${prop.id}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "dismiss" }),
+      });
+      assert.equal(propResolve.status, 200);
     },
     { getChrome: () => chrome }
   );
