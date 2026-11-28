@@ -12,6 +12,10 @@ import {
   looksLikeSecretMemory,
   normalizeMemoryCategory,
 } from "../memory-extractor.js";
+import {
+  analyzeMergeFidelity,
+  validateConsolidatedMemoryListWithReport,
+} from "../memory-consolidator.js";
 import { normalizeMemorySettings } from "../../shared/entities.js";
 import { computeInitialNextRun } from "../scheduler.js";
 import { describeCronExpression, resolveScheduleCronConfig } from "../../shared/cron.js";
@@ -122,8 +126,34 @@ export async function handleSystemBotTool(
   switch (name) {
     case "memory_manage": {
       const action = String(args.action || "").trim();
-      const targetBotId = senderBot?.id || senderSessionId;
-      const botSession = targetBotId ? store.getSession?.(targetBotId) : null;
+      const selfBotId = senderBot?.id || senderSessionId;
+      const callerRecord = selfBotId ? store.getSession?.(selfBotId) : null;
+      const isAdminCaller = Boolean(senderBot?.isAdmin || callerRecord?.isAdmin);
+      const targetBotRef = typeof args.target_bot === "string" ? args.target_bot.trim() : "";
+      const allSessions = store?.listSessions?.() || [];
+
+      let targetBotId = selfBotId;
+      let botSession = callerRecord;
+      if (targetBotRef) {
+        if (!isAdminCaller) {
+          return {
+            ok: false,
+            error: "仅管理员 Bot 可跨 Bot 查看或整理其他 Bot 的记忆",
+          };
+        }
+        if (targetBotRef !== "*") {
+          const resolved = resolveBotByRef(allSessions, targetBotRef);
+          if (!resolved) {
+            return {
+              ok: false,
+              error: `未找到目标 Bot「${targetBotRef}」`,
+            };
+          }
+          botSession = resolved;
+          targetBotId = resolved.id;
+        }
+      }
+
       const settings = store.readSettings?.() || {};
       const globalList = Array.isArray(settings.globalMemories)
         ? [...settings.globalMemories]
@@ -138,7 +168,9 @@ export async function handleSystemBotTool(
         id: m.id,
         name: m.name || "",
         content: m.instruction || m.content || m.desc || "",
+        category: normalizeMemoryCategory(m?.category),
         enabled: m.enabled !== false,
+        ...(typeof m?.source === "string" && m.source ? { source: m.source } : {}),
         ...(scopeTag ? { scope: scopeTag } : {}),
       });
 
@@ -178,6 +210,27 @@ export async function handleSystemBotTool(
       };
 
       if (action === "list") {
+        if (targetBotRef === "*" || (args.scope === "all" && isAdminCaller && !targetBotRef)) {
+          const singleBots = allSessions
+            .filter((s: any) => s && s.type !== "group")
+            .map((b: any) => ({
+              id: b.id,
+              title: b.title || b.id,
+              isAdmin: Boolean(b.isAdmin),
+              rolePromptExcerpt: String(b.rolePrompt || "").slice(0, 800),
+              memories: (Array.isArray(b.memories) ? b.memories : []).map((m: any) =>
+                slimMemory(m, "bot")
+              ),
+            }));
+          return {
+            ok: true,
+            action: "list",
+            scope: "all",
+            globalMemories: globalList.map((m) => slimMemory(m, "global")),
+            bots: singleBots,
+          };
+        }
+
         const botMapped = botList.map((m) => slimMemory(m, "bot"));
         const globalMapped = globalList.map((m) => slimMemory(m, "global"));
         const combined =
@@ -189,10 +242,174 @@ export async function handleSystemBotTool(
         return {
           ok: true,
           action: "list",
-          botName: currentBot.title,
+          botId: botSession?.id || targetBotId,
+          botName: botSession?.title || currentBot.title,
           botMemories: botMapped,
           globalMemories: globalMapped,
           memories: combined,
+        };
+      }
+
+      if (action === "backup") {
+        const targetScope: "bot" | "global" =
+          args.scope === "global" ? "global" : botSession ? "bot" : "global";
+        const sourceList = targetScope === "bot" ? botList : globalList;
+        const backup = store.saveMemoryBackup?.({
+          scope: targetScope,
+          sessionId: targetScope === "bot" ? botSession?.id : "",
+          botName: targetScope === "bot" ? botSession?.title : "",
+          reason: typeof args.reason === "string" && args.reason.trim() ? args.reason.trim() : "manual",
+          memories: sourceList,
+        });
+        return {
+          ok: true,
+          action: "backup",
+          scope: targetScope,
+          backup,
+        };
+      }
+
+      if (action === "list_backups") {
+        const scopeFilter =
+          args.scope === "bot" ? "bot" : args.scope === "global" ? "global" : undefined;
+        const backups =
+          store.listMemoryBackups?.({
+            ...(scopeFilter ? { scope: scopeFilter } : {}),
+            ...(targetBotRef && targetBotRef !== "*" && botSession ? { sessionId: botSession.id } : {}),
+            limit: 15,
+          }) || [];
+        return {
+          ok: true,
+          action: "list_backups",
+          backups,
+        };
+      }
+
+      if (action === "restore") {
+        const backupId = typeof args.backup_id === "string" ? args.backup_id.trim() : "";
+        if (!backupId) {
+          return { ok: false, error: "请提供要恢复的 backup_id（可先调用 action: 'list_backups' 查看）" };
+        }
+        const snap = store.getMemoryBackup?.(backupId);
+        if (!snap) {
+          return { ok: false, error: `未找到记忆备份「${backupId}」` };
+        }
+        if (snap.scope === "bot") {
+          const targetSess = snap.sessionId ? store.getSession?.(snap.sessionId) : null;
+          if (!targetSess) {
+            return { ok: false, error: `备份对应的 Bot（${snap.sessionId}）已不存在` };
+          }
+          if (!isAdminCaller && targetSess.id !== selfBotId) {
+            return { ok: false, error: "仅管理员 Bot 可恢复其他 Bot 的记忆备份" };
+          }
+          const preRestoreBackup = store.saveMemoryBackup?.({
+            scope: "bot",
+            sessionId: targetSess.id,
+            botName: targetSess.title || "",
+            reason: `pre-restore:${snap.id}`,
+            memories: Array.isArray(targetSess.memories) ? targetSess.memories : [],
+          });
+          const restored = Array.isArray(snap.memories) ? snap.memories : [];
+          const updatedSession = store.updateSession?.(targetSess.id, {
+            memories: restored,
+            touch: false,
+          });
+          broadcastGlobal?.({
+            type: "session_updated",
+            sessionId: targetSess.id,
+            session: updatedSession || { ...targetSess, memories: restored },
+          });
+          return {
+            ok: true,
+            action: "restore",
+            scope: "bot",
+            sessionId: targetSess.id,
+            botName: targetSess.title || "",
+            restoredFrom: snap.id,
+            preRestoreBackupId: preRestoreBackup?.id,
+            count: restored.length,
+            memories: restored.map((m: any) => slimMemory(m, "bot")),
+          };
+        }
+        const preRestoreBackup = store.saveMemoryBackup?.({
+          scope: "global",
+          reason: `pre-restore:${snap.id}`,
+          memories: globalList,
+        });
+        const restoredGlobal = Array.isArray(snap.memories) ? snap.memories : [];
+        persistTargetList("global", restoredGlobal);
+        return {
+          ok: true,
+          action: "restore",
+          scope: "global",
+          restoredFrom: snap.id,
+          preRestoreBackupId: preRestoreBackup?.id,
+          count: restoredGlobal.length,
+          memories: restoredGlobal.map((m: any) => slimMemory(m, "global")),
+        };
+      }
+
+      if (action === "replace_all") {
+        if (!Array.isArray(args.memories)) {
+          return { ok: false, error: "replace_all 需要提供完整的 memories 数组" };
+        }
+        const targetScope: "bot" | "global" =
+          args.scope === "global" ? "global" : botSession ? "bot" : "global";
+        const prevList = targetScope === "bot" ? botList : globalList;
+        const backup = store.saveMemoryBackup?.({
+          scope: targetScope,
+          sessionId: targetScope === "bot" ? botSession?.id : "",
+          botName: targetScope === "bot" ? botSession?.title : "",
+          reason:
+            typeof args.reason === "string" && args.reason.trim()
+              ? args.reason.trim()
+              : "pre-replace_all",
+          memories: prevList,
+        });
+
+        const { memories: sanitized, dropped } = validateConsolidatedMemoryListWithReport(
+          args.memories,
+          prevList
+        );
+        const normalizedPrev = prevList.map((m: any, idx: number) => ({
+          id: String(m?.id || `prev-${idx}`),
+          name: String(m?.name || "").trim(),
+          content: String(m?.content || m?.instruction || m?.desc || "").trim(),
+          category: normalizeMemoryCategory(m?.category),
+          enabled: m?.enabled !== false,
+        }));
+        if (normalizedPrev.length > 0 && args.allow_entity_drop !== true) {
+          const combinedAfterText = sanitized.map((m) => `${m.name} ${m.content}`).join("\n");
+          const fidelity = analyzeMergeFidelity(normalizedPrev, combinedAfterText);
+          if (fidelity.isLossy) {
+            return {
+              ok: false,
+              action: "replace_all",
+              blockedByFidelityGuard: true,
+              scope: targetScope,
+              backupId: backup?.id,
+              missingTokens: fidelity.missingTokens,
+              beforeChars: fidelity.beforeChars,
+              afterChars: fidelity.afterChars,
+              shrinkPercent: fidelity.shrinkPercent,
+              error: `检测到整理结果遗漏了原有关键实体/账号/名单（${fidelity.missingTokens.slice(0, 6).join(", ")}），底层防丢护栏已拦截本次覆盖。请保留全部关键实体后重试；若主人明确确认要删除，可传 allow_entity_drop: true。`,
+            };
+          }
+        }
+
+        persistTargetList(targetScope, sanitized);
+        return {
+          ok: true,
+          action: "replace_all",
+          scope: targetScope,
+          ...(targetScope === "bot" && botSession
+            ? { sessionId: botSession.id, botName: botSession.title || "" }
+            : {}),
+          backupId: backup?.id,
+          beforeCount: prevList.length,
+          afterCount: sanitized.length,
+          dropped,
+          memories: sanitized.map((m) => slimMemory(m, targetScope)),
         };
       }
 
@@ -339,12 +556,20 @@ export async function handleSystemBotTool(
         }
 
         if (action === "remove") {
+          const backup = store.saveMemoryBackup?.({
+            scope: hitScope === "bot" ? "bot" : "global",
+            sessionId: hitScope === "bot" ? botSession?.id : "",
+            botName: hitScope === "bot" ? botSession?.title : "",
+            reason: "pre-remove",
+            memories: [...hitList],
+          });
           const [removed] = hitList.splice(idx, 1);
           persistTargetList(hitScope, hitList);
           return {
             ok: true,
             action: "remove",
             scope: hitScope,
+            ...(backup?.id ? { backupId: backup.id } : {}),
             removed: slimMemory(removed, hitScope),
             totalCount: hitList.length,
           };

@@ -2,7 +2,7 @@
 id: computers-and-memory
 title: 双电脑环境（Bot 的电脑 vs 你的电脑）、浏览器引擎与记忆日程
 summary: 沙盒 Ubuntu 与用户宿主机的权限与适用场景分工、3 种浏览器引擎模式切换、专属记忆/全局共享记忆、5 段 Cron 定时任务与资料库
-keywords: Bot的电脑, 你的电脑, 沙盒, Ubuntu, WSL, WSL2, OrbStack, 初始化, 排障, UAC, needsReboot, KimiCU, 浏览器引擎, Headless, Debug, CDP, noVNC, 取得控制权, 专属记忆, 全局共享记忆, 定时任务, 即将进行, Cron, 资料库
+keywords: Bot的电脑, 你的电脑, 沙盒, Ubuntu, WSL, WSL2, OrbStack, 初始化, 排障, UAC, needsReboot, KimiCU, 浏览器引擎, Headless, Debug, CDP, noVNC, 取得控制权, 专属记忆, 全局共享记忆, 整理记忆, 记忆治理, 备份, 回滚, 定时任务, 即将进行, Cron, 资料库
 platforms: [desktop, mobile, web]
 ---
 
@@ -53,3 +53,15 @@ TwinkleBot 明确区分两台电脑环境，各有独立权限与看屏交互方
    - 返回 `needsElevation: true`：请引导主人批准 Windows UAC 管理员提权弹窗（或以管理员身份执行 `wsl --install -d Ubuntu --no-launch`）后重试。
    - 返回 `needsReboot: true` 或 `needsVirtualization: true`：明确说明 Windows 首次启用了 WSL2 虚拟化组件，需要**重启电脑一次**（或在 BIOS 中开启 Intel VT-x / AMD-V），重启后再次运行 `computer_provision(action: "install")` 即可完成部署。
    - 若 WSL 内 `apt-get` 因镜像或网络失败：通过 `host_run_shell`（`wsl -d <distro> -u root -- bash -lc '...'`）修复 apt 源后，再调用 `computer_provision(action: "install")` 或 `system_diagnostics(action: "update_bot_computer")` 完成服务拉起与 Token 校验。
+
+## 记忆整理与安全治理 SOP（管理员 Bot 专用）
+
+当主人点击「整理记忆」或在对话中要求盘点、去重、对齐或清理全局记忆与各 Bot 专属记忆时，**管理员 Bot** 按以下 4 步执行（普通 Bot 应引导主人交由管理员 Bot 处理）：
+
+1. **按复杂度自选模型档位**：轻量去重或单 Bot 归类可用当前默认档位；若涉及多 Bot 跨全局冲突排查、长技术规范整理或与人设比对，先调用 `route_escalate(need: "think" | "plan")` 升档再决策，不要用弱模型硬吞复杂语义判断。
+2. **全景体检（含各 Bot 人设）**：调用 `memory_manage(action: "list", target_bot: "*")` 一次获取全局记忆与全部 Bot 记忆及 `rolePromptExcerpt`（禁止用 `host_run_shell` + `curl` 或直接改写 `data/*.json`）。重点排查：语义重复、全局与单 Bot 规则冲突、已被写入 `rolePrompt` 的重复条目、错误分类（`identity` / `preference` / `rule` / `context` / `general`）。
+3. **无损实体铁律 + 先给预览方案**：
+   - 所有具体账号（`@handle`）、平台名单、邮箱、URL、文件路径、端口号、精确数字，**严禁靠泛化总结抹掉**；
+   - 主题相关但内容互补的独立规则（如「平台名单」与「登录核实流程」）**不要强行合并**；
+   - 涉及合并或删除条目时，先向主人清晰列出「整理前后条目数、字数变化与变更摘要」，获确认后再写回。
+4. **安全写入与一键回滚**：通过 `memory_manage(action: "replace_all", scope, target_bot?, memories, reason)` 写回。工具底层会在覆盖前**自动保存 `membak-*` 快照到 `memory-backups.json`** 并执行实体防丢护栏校验（若误丢 `@账号`/路径等会被自动拦截）。若主人仍不满意，随时用 `memory_manage(action: "list_backups")` + `memory_manage(action: "restore", backup_id)` 一键回滚。

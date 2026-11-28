@@ -184,6 +184,7 @@ export function createStore(dataDir: string) {
   const accountsAuthFile = path.join(rootDir, "accounts-auth.json");
   const routeStatsFile = path.join(rootDir, "route-stats.ndjson");
   const experienceProposalsFile = path.join(rootDir, "experience-proposals.json");
+  const memoryBackupsFile = path.join(rootDir, "memory-backups.json");
 
   const customSkillsRepo = createCustomSkillsRepo(customSkillsDir, {
     getIsoNow: () => getMonotonicIso(),
@@ -1068,6 +1069,70 @@ export function createStore(dataDir: string) {
     return updated;
   }
 
+  function readAllMemoryBackups(): Array<Record<string, any>> {
+    if (!fs.existsSync(memoryBackupsFile)) return [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(memoryBackupsFile, "utf-8"));
+      return Array.isArray(parsed) ? parsed.filter((x) => x && typeof x === "object") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveMemoryBackup({
+    scope,
+    sessionId = "",
+    botName = "",
+    reason = "auto",
+    memories = [],
+  }: {
+    scope: "bot" | "global";
+    sessionId?: string;
+    botName?: string;
+    reason?: string;
+    memories: any[];
+  }): Record<string, any> {
+    const cleanMemories = Array.isArray(memories)
+      ? normalizeLegacyMemoryList(memories).list.map((m) =>
+          m && typeof m === "object" ? { ...m } : m
+        )
+      : [];
+    const record = {
+      id: `membak-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      scope: scope === "global" ? "global" : "bot",
+      sessionId: scope === "bot" ? String(sessionId || "").trim() : "",
+      botName: scope === "bot" ? String(botName || "").trim() : "",
+      reason: String(reason || "auto").trim().slice(0, 80) || "auto",
+      count: cleanMemories.length,
+      createdAt: getMonotonicIso(),
+      memories: cleanMemories,
+    };
+    const next = [record, ...readAllMemoryBackups()].slice(0, 30);
+    writeJsonAtomic(memoryBackupsFile, next);
+    const { memories: _m, ...meta } = record;
+    return meta;
+  }
+
+  function listMemoryBackups(
+    opts: { scope?: "bot" | "global"; sessionId?: string; limit?: number } = {}
+  ): Array<Record<string, any>> {
+    const limit = Math.max(1, Math.min(30, Number(opts.limit) || 10));
+    return readAllMemoryBackups()
+      .filter((b) => {
+        if (opts.scope && b.scope !== opts.scope) return false;
+        if (opts.sessionId && b.sessionId !== opts.sessionId) return false;
+        return true;
+      })
+      .slice(0, limit)
+      .map(({ memories: _m, ...meta }) => meta);
+  }
+
+  function getMemoryBackup(backupId: string): Record<string, any> | null {
+    const id = String(backupId || "").trim();
+    if (!id) return null;
+    return readAllMemoryBackups().find((b) => b && b.id === id) || null;
+  }
+
   function readVault(): any[] {
     if (!fs.existsSync(vaultFile)) {
       return [];
@@ -1224,6 +1289,9 @@ export function createStore(dataDir: string) {
     listExperienceProposals,
     addExperienceProposal,
     resolveExperienceProposal,
+    saveMemoryBackup,
+    listMemoryBackups,
+    getMemoryBackup,
     markInterrupted,
   };
 }

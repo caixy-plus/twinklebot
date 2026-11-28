@@ -220,6 +220,13 @@ export async function handleSkillsRoutes(
               return sendJson(res, 404, { error: "未找到指定的 Bot 会话" });
             }
             const origList = Array.isArray(botSession.memories) ? botSession.memories : [];
+            const backup = ctx.store?.saveMemoryBackup?.({
+              scope: "bot",
+              sessionId: botSession.id,
+              botName: botSession.title || "",
+              reason: "pre-consolidate-apply",
+              memories: origList,
+            });
             const { memories: sanitized, dropped } = validateConsolidatedMemoryListWithReport(
               body.proposedList,
               origList
@@ -237,6 +244,7 @@ export async function handleSkillsRoutes(
               ok: true,
               scope: "bot",
               sessionId: botSession.id,
+              ...(backup?.id ? { backupId: backup.id } : {}),
               count: sanitized.length,
               memories: sanitized,
               dropped,
@@ -247,6 +255,11 @@ export async function handleSkillsRoutes(
           const origGlobal = Array.isArray(settings.globalMemories)
             ? settings.globalMemories
             : [];
+          const backupGlobal = ctx.store?.saveMemoryBackup?.({
+            scope: "global",
+            reason: "pre-consolidate-apply",
+            memories: origGlobal,
+          });
           const { memories: sanitizedGlobal, dropped: droppedGlobal } =
             validateConsolidatedMemoryListWithReport(body.proposedList, origGlobal);
           ctx.store?.writeSettings?.({
@@ -257,6 +270,7 @@ export async function handleSkillsRoutes(
           return sendJson(res, 200, {
             ok: true,
             scope: "global",
+            ...(backupGlobal?.id ? { backupId: backupGlobal.id } : {}),
             count: sanitizedGlobal.length,
             memories: sanitizedGlobal,
             dropped: droppedGlobal,

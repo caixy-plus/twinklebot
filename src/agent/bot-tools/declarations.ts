@@ -546,20 +546,34 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "memory_manage",
     description:
-      "Manage your own dedicated Bot Memory (`scope: 'bot'`, 专属记忆 shown in the right sidebar) or the user's Global Memory (`scope: 'global'`, 全局记忆 shared across all Bots): list, save (add or update), remove (delete), or toggle entries. Set `trigger: 'explicit'` when the user explicitly asked to remember/save something; set `trigger: 'auto'` ONLY for genuinely durable cross-session preferences/rules (never routine tasks or secrets). When refining an existing memory, pass `memory` (ID or title) to update it in place instead of creating duplicates.",
+      "Manage dedicated Bot Memory (`scope: 'bot'`) or shared Global Memory (`scope: 'global'`): `list`, `save`, `remove`, `toggle`, `backup`, `list_backups`, `restore`, or `replace_all`. Admin Bot ONLY may also pass `target_bot` (Bot ID/name, or `'*'` with `action: 'list'` to inspect all Bots and personas at once). `replace_all` and `remove` automatically save a rollback backup and enforce a lossless entity guardrail (never drop `@handles`, rosters, URLs, or paths). Set `trigger: 'explicit'` when the user explicitly asked to remember; set `trigger: 'auto'` ONLY for genuinely durable cross-session preferences/rules. Never use shell/`curl` for memory governance.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "save", "remove", "toggle"],
+          enum: [
+            "list",
+            "save",
+            "remove",
+            "toggle",
+            "backup",
+            "list_backups",
+            "restore",
+            "replace_all",
+          ],
           description: "Operation to perform on memory.",
         },
         scope: {
           type: "string",
-          enum: ["bot", "global"],
+          enum: ["bot", "global", "all"],
           description:
-            "Memory target: 'bot' for this Bot's own dedicated memory (专属记忆, default), or 'global' for cross-Bot Global Memory (全局记忆).",
+            "Memory target: 'bot' for Bot dedicated memory (default), 'global' for cross-Bot Global Memory, or 'all' when listing both.",
+        },
+        target_bot: {
+          type: "string",
+          description:
+            "Admin Bot ONLY: target another Bot by ID or name (or '*' with action='list' to list global + all Bots' memories and role prompts).",
         },
         category: {
           type: "string",
@@ -591,6 +605,39 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
         enabled: {
           type: "boolean",
           description: "Optional enabled state when saving or toggling a memory (default: true).",
+        },
+        memories: {
+          type: "array",
+          description:
+            "For action='replace_all': the full organized memory array ({ id?, name, content, category?, enabled?, source? }). Automatically backs up before replacing.",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              name: { type: "string" },
+              content: { type: "string" },
+              category: {
+                type: "string",
+                enum: ["identity", "preference", "rule", "context", "general"],
+              },
+              enabled: { type: "boolean" },
+              source: { type: "string" },
+            },
+            required: ["name", "content"],
+          },
+        },
+        allow_entity_drop: {
+          type: "boolean",
+          description:
+            "For action='replace_all': ONLY set true after the user explicitly confirmed deleting concrete handles/rosters/paths flagged by the fidelity guardrail.",
+        },
+        backup_id: {
+          type: "string",
+          description: "For action='restore': snapshot ID returned by backup/replace_all/list_backups.",
+        },
+        reason: {
+          type: "string",
+          description: "Optional short audit note for backup or replace_all.",
         },
       },
       required: ["action"],

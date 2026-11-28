@@ -1454,14 +1454,8 @@ export const ZH_CN_MESSAGES = {
   "memory.cat.general": "通用",
   "memory.sourceAuto": "自动",
   "memory.consolidateBtn": "整理记忆",
-  "memory.consolidatingBtn": "整理中…",
-  "memory.consolidatePreviewTitle": "记忆整理预览",
-  "memory.consolidateCountDiff": "{before} 条 → {after} 条",
-  "memory.consolidateMergesTitle": "建议合并（{count} 组）",
-  "memory.consolidateRemovalsTitle": "建议清理（{count} 条）",
-  "memory.consolidateApplyBtn": "应用整理",
-  "memory.consolidateAppliedToast": "已整理并更新记忆（当前 {count} 条）",
-  "memory.consolidateFailedToast": "整理记忆失败：{error}",
+  "memory.consolidatePromptGlobal": "请帮我整理「全局记忆」（也可顺带核对各 Bot 记忆有无冲突）：请按记忆治理 SOP 执行，先评估是否需要升档模型，用原生 memory_manage 工具盘点重复、冲突与分类，严禁压缩丢失具体账号/名单/路径等精确事实，先给我看整理前后对比与方案，确认后再安全备份落盘。",
+  "memory.consolidatePromptBot": "请帮我整理 Bot「{name}」的专属记忆：请按记忆治理 SOP 执行，先评估是否需要升档模型，结合它的人设检查重复、冲突与分类，严禁压缩丢失具体账号/名单/路径等精确事实，先给我看整理前后对比与方案，确认后再安全备份落盘。",
 
   // Mobile sheets & LAN discovery
   "mobile.aboutNodeOutdated": "所连服务端 v{nodeVer}（GitHub 最新 v{latestVer}）",

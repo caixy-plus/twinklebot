@@ -1455,15 +1455,9 @@ export const EN_MESSAGES: Record<I18nKey, string> = {
   "memory.cat.context": "Context",
   "memory.cat.general": "General",
   "memory.sourceAuto": "Auto",
-  "memory.consolidateBtn": "Consolidate",
-  "memory.consolidatingBtn": "Consolidating…",
-  "memory.consolidatePreviewTitle": "Consolidation Preview",
-  "memory.consolidateCountDiff": "{before} → {after} items",
-  "memory.consolidateMergesTitle": "Proposed Merges ({count})",
-  "memory.consolidateRemovalsTitle": "Suggested Removals ({count})",
-  "memory.consolidateApplyBtn": "Apply Changes",
-  "memory.consolidateAppliedToast": "Memories consolidated ({count} active)",
-  "memory.consolidateFailedToast": "Failed to consolidate memories: {error}",
+  "memory.consolidateBtn": "Organize Memories",
+  "memory.consolidatePromptGlobal": "Please organize my Global Memories (and check cross-Bot conflicts if needed): follow the Memory Governance SOP, decide whether to escalate model tier, use native memory_manage tools to inspect duplicates/conflicts/categories without dropping concrete handles/lists/paths, show me a before-and-after comparison first, and apply safely with automatic backup.",
+  "memory.consolidatePromptBot": "Please organize dedicated memories for Bot \"{name}\": follow the Memory Governance SOP, decide whether to escalate model tier, compare against its persona for duplicates/conflicts/categories without dropping concrete handles/lists/paths, show me a before-and-after comparison first, and apply safely with automatic backup.",
 
   // Mobile sheets & LAN discovery
   "mobile.aboutNodeOutdated": "Connected node v{nodeVer} (Latest on GitHub v{latestVer})",

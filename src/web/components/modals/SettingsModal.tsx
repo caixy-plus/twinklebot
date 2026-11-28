@@ -47,6 +47,7 @@ import {
   refreshSystemDiagnostics,
   refreshUsageAndHealth,
   refreshVault,
+  requestAdminMemoryGovernance,
   resetBotComputerConnection,
   runRelayControl,
   saveRelayConfig,
@@ -91,7 +92,6 @@ import {
 import { StatusText, UiIcon } from "../common/Icon.js";
 import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
 import {
-  MemoryConsolidatePreviewCard,
   MemoryMetaBadges,
   TraceEventsList,
   getMemoryCategoryLabelKey,
@@ -1251,9 +1251,6 @@ export function SettingsModal() {
   const [memContent, setMemContent] = useState("");
   const [memCategory, setMemCategory] = useState("general");
   const [pendingDeleteMemId, setPendingDeleteMemId] = useState<string | null>(null);
-  const [globalConsolidating, setGlobalConsolidating] = useState(false);
-  const [applyingGlobalConsolidate, setApplyingGlobalConsolidate] = useState(false);
-  const [globalConsolidatePlan, setGlobalConsolidatePlan] = useState<any>(null);
   const memNameRef = useRef<HTMLInputElement | null>(null);
 
   const openMemoryEditor = (mem: any | null) => {
@@ -3037,35 +3034,14 @@ export function SettingsModal() {
                 {t("settings.globalMemGroup")}
               </div>
               <div className="memory-header-actions">
-                {supportsMemoryGovernance && globalMemories.length >= 2 && (
+                {supportsMemoryGovernance && globalMemories.length >= 1 && (
                   <button
                     id="consolidate-global-memory-btn"
                     type="button"
                     className="skill-pill-btn"
-                    disabled={globalConsolidating}
-                    onClick={async () => {
-                      if (globalConsolidating) return;
-                      setGlobalConsolidating(true);
-                      try {
-                        const res = await apiJson("/api/memories/consolidate", {
-                          method: "POST",
-                          body: JSON.stringify({ scope: "global" }),
-                        });
-                        setGlobalConsolidatePlan(res?.plan || null);
-                      } catch (err: any) {
-                        showToast(
-                          t("memory.consolidateFailedToast", {
-                            error: err?.message || t("actions.requestError"),
-                          })
-                        );
-                      } finally {
-                        setGlobalConsolidating(false);
-                      }
-                    }}
+                    onClick={() => void requestAdminMemoryGovernance({ scope: "global" })}
                   >
-                    {globalConsolidating
-                      ? t("memory.consolidatingBtn")
-                      : t("memory.consolidateBtn")}
+                    {t("memory.consolidateBtn")}
                   </button>
                 )}
                 <button
@@ -3105,41 +3081,6 @@ export function SettingsModal() {
                 </select>
               </div>
             )}
-
-            <MemoryConsolidatePreviewCard
-              plan={globalConsolidatePlan}
-              applying={applyingGlobalConsolidate}
-              idPrefix="global"
-              onCancel={() => setGlobalConsolidatePlan(null)}
-              onApply={async () => {
-                if (!globalConsolidatePlan || applyingGlobalConsolidate) return;
-                setApplyingGlobalConsolidate(true);
-                try {
-                  const res = await apiJson("/api/memories/consolidate/apply", {
-                    method: "POST",
-                    body: JSON.stringify({
-                      scope: "global",
-                      proposedList: globalConsolidatePlan.proposedList || [],
-                    }),
-                  });
-                  await refreshSettingsFromServer();
-                  setGlobalConsolidatePlan(null);
-                  showToast(
-                    t("memory.consolidateAppliedToast", {
-                      count: String(res?.count ?? res?.memories?.length ?? 0),
-                    })
-                  );
-                } catch (err: any) {
-                  showToast(
-                    t("memory.consolidateFailedToast", {
-                      error: err?.message || t("actions.requestError"),
-                    })
-                  );
-                } finally {
-                  setApplyingGlobalConsolidate(false);
-                }
-              }}
-            />
 
             {(!memFormOpen || !editingMemId) && renderMemoryEditor(false, memFormOpen && !editingMemId)}
 

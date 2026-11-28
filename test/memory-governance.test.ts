@@ -15,7 +15,9 @@ import {
   shouldRunMemoryExtraction,
 } from "../src/agent/memory-extractor.js";
 import {
+  analyzeMergeFidelity,
   consolidateMemories,
+  extractCriticalFactTokens,
   resetConsolidationLocksForTests,
 } from "../src/agent/memory-consolidator.js";
 
@@ -532,4 +534,253 @@ test("Memory Governance M3: consolidator previews deterministic & LLM cleanups, 
   assert.deepEqual(longApply.dropped, []);
   assert.equal(store.getSession(longBot.id)?.memories?.[0]?.content?.length, 1193);
   assert.equal(store.getSession(longBot.id)?.memories?.[1]?.content?.length, 848);
+});
+
+test("Memory Governance Lossless Guardrail: rejects merges that drop @handles/rosters and accepts lossless merges", async () => {
+  resetConsolidationLocksForTests();
+
+  const promo1 = {
+    id: "promo-1",
+    name: "运营范围7平台",
+    content:
+      "永久放弃 Reddit 和 Indie Hackers。核心运营 7 平台及账号：X @Jokesob、LinkedIn xy cai、DEV.to @klipapp、Hashnode xy cai、Pinterest caixytome、Quora Xy Cai、Product Hunt @twinklebot。",
+    category: "rule" as const,
+    enabled: true,
+    source: "explicit",
+  };
+  const promo2 = {
+    id: "promo-2",
+    name: "平台核实规范",
+    content: "平台掉线或登录态异常必须实际打开页面核实后再汇报。",
+    category: "rule" as const,
+    enabled: true,
+    source: "explicit",
+  };
+
+  // 1. Direct fidelity check catches dropped @handles & proper names
+  const toks = extractCriticalFactTokens(promo1.content);
+  assert.ok(toks.includes("@Jokesob"));
+  assert.ok(toks.includes("@klipapp"));
+  assert.ok(toks.includes("@twinklebot"));
+  assert.ok(toks.includes("Hashnode"));
+
+  const badFid = analyzeMergeFidelity(
+    [promo1, promo2],
+    "统一执行 7 个外宣平台规范，掉线情况必须以页面实测为准。"
+  );
+  assert.equal(badFid.hasCriticalEntityLoss, true);
+  assert.equal(badFid.isLossy, true);
+  assert.ok(badFid.missingTokens.includes("@Jokesob"));
+
+  // 2. LLM proposing that lossy merge gets auto-rejected with original entries intact
+  const lossyModel: any = {
+    summarizeTurn: async () => ({
+      text: JSON.stringify({
+        summary: "将两条平台规范合并",
+        merges: [
+          {
+            sourceIds: ["promo-1", "promo-2"],
+            name: "平台运营规范",
+            content: "统一执行 7 个外宣平台规范，掉线情况必须以页面实测为准。",
+            category: "rule",
+            reason: "均为平台规范",
+          },
+        ],
+        removals: [],
+        recategorizations: [],
+      }),
+    }),
+  };
+
+  const blockedRes = await consolidateMemories({
+    scope: "bot",
+    sessionId: "promo-bot",
+    memories: [promo1, promo2],
+    model: lossyModel,
+    botName: "TwinkleBot 推广官",
+  });
+  assert.equal(blockedRes.ok, true);
+  assert.equal(blockedRes.plan?.merges.length, 0, "lossy merge must be blocked");
+  assert.equal(blockedRes.plan?.rejectedMerges.length, 1);
+  assert.ok(blockedRes.plan?.rejectedMerges[0].missingTokens.includes("@Jokesob"));
+  assert.equal(blockedRes.plan?.proposedList.length, 2, "both source entries must stay untouched");
+
+  // 3. Lossless merge that preserves every @handle & platform passes cleanly
+  const losslessModel: any = {
+    summarizeTurn: async () => ({
+      text: JSON.stringify({
+        summary: "保留全部平台与账号进行合并",
+        merges: [
+          {
+            sourceIds: ["promo-1", "promo-2"],
+            name: "平台名单与核实规范",
+            content:
+              "永久放弃 Reddit 和 Indie Hackers。核心运营 7 平台及账号：X @Jokesob、LinkedIn xy cai、DEV.to @klipapp、Hashnode xy cai、Pinterest caixytome、Quora Xy Cai、Product Hunt @twinklebot；平台掉线必须打开页面实测核实后再汇报。",
+            category: "rule",
+            reason: "无损合并",
+          },
+        ],
+        removals: [],
+        recategorizations: [],
+      }),
+    }),
+  };
+  const losslessRes = await consolidateMemories({
+    scope: "bot",
+    sessionId: "promo-bot",
+    memories: [promo1, promo2],
+    model: losslessModel,
+    botName: "TwinkleBot 推广官",
+  });
+  assert.equal(losslessRes.ok, true);
+  assert.equal(losslessRes.plan?.merges.length, 1);
+  assert.equal(losslessRes.plan?.rejectedMerges.length, 0);
+  assert.deepEqual(losslessRes.plan?.merges[0].missingTokens, []);
+  assert.equal(typeof losslessRes.plan?.merges[0].beforeChars, "number");
+  assert.equal(typeof losslessRes.plan?.merges[0].afterChars, "number");
+});
+
+test("Admin Bot Memory Governance: cross-Bot list/backup/replace_all/restore, fidelity guard, and SOP", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-mem-admin-gov-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const store = createStore(dir);
+  const admin = store.ensureAdminBot();
+  const promoBot = store.createSession({
+    title: "推广官",
+    rolePrompt: "你负责 TwinkleBot 在 7 大平台的外宣与帖子发布。",
+    memories: [
+      {
+        id: "p-1",
+        name: "7平台账号",
+        content: "X @Jokesob、DEV.to @klipapp、Product Hunt @twinklebot",
+        category: "rule",
+        enabled: true,
+        source: "explicit",
+      },
+      {
+        id: "p-2",
+        name: "掉线实测",
+        content: "平台掉线必须实际打开页面核实后再汇报。",
+        category: "rule",
+        enabled: true,
+        source: "explicit",
+      },
+    ],
+  });
+  store.writeSettings({
+    globalMemories: [
+      { id: "g-1", name: "称呼", content: "称呼主人为 Boss", category: "identity", enabled: true },
+    ],
+  });
+
+  // 1. Non-admin Bot cannot target another Bot's memories
+  const nonAdminDenied = await runBotCollabTool(
+    "memory_manage",
+    { action: "list", target_bot: admin.title },
+    { store, senderSessionId: promoBot.id, senderBot: promoBot }
+  );
+  assert.equal(nonAdminDenied.ok, false);
+
+  // 2. Admin Bot lists global + all Bots' memories & rolePromptExcerpt at once
+  const allList = await runBotCollabTool(
+    "memory_manage",
+    { action: "list", target_bot: "*" },
+    { store, senderSessionId: admin.id, senderBot: admin }
+  );
+  assert.equal(allList.ok, true);
+  assert.equal(allList.scope, "all");
+  assert.equal(allList.globalMemories.length, 1);
+  const promoEntry = allList.bots.find((b: any) => b.id === promoBot.id);
+  assert.ok(promoEntry);
+  assert.match(promoEntry.rolePromptExcerpt, /7 大平台/);
+  assert.equal(promoEntry.memories.length, 2);
+
+  // 3. Admin Bot replace_all dropping @handles gets BLOCKED & still creates a backup snapshot
+  const lossyWrite = await runBotCollabTool(
+    "memory_manage",
+    {
+      action: "replace_all",
+      scope: "bot",
+      target_bot: "推广官",
+      reason: "test lossy",
+      memories: [
+        { name: "简化规则", content: "统一执行 3 个外宣平台并实测掉线状态。", category: "rule" },
+      ],
+    },
+    { store, senderSessionId: admin.id, senderBot: admin }
+  );
+  assert.equal(lossyWrite.ok, false);
+  assert.equal(lossyWrite.blockedByFidelityGuard, true);
+  assert.ok(lossyWrite.missingTokens.includes("@Jokesob"));
+  assert.ok(lossyWrite.backupId?.startsWith("membak-"));
+  assert.equal(store.getSession(promoBot.id)?.memories?.length, 2, "originals must remain untouched");
+
+  // 4. Lossless replace_all succeeds and preserves auto-backup snapshot
+  const losslessWrite = await runBotCollabTool(
+    "memory_manage",
+    {
+      action: "replace_all",
+      scope: "bot",
+      target_bot: promoBot.id,
+      reason: "无损合并7平台与核实规范",
+      memories: [
+        {
+          id: "p-1",
+          name: "7平台与实测铁律",
+          content: "X @Jokesob、DEV.to @klipapp、Product Hunt @twinklebot；平台掉线必须实际打开页面核实后再汇报。",
+          category: "rule",
+        },
+      ],
+    },
+    { store, senderSessionId: admin.id, senderBot: admin }
+  );
+  assert.equal(losslessWrite.ok, true);
+  assert.equal(losslessWrite.beforeCount, 2);
+  assert.equal(losslessWrite.afterCount, 1);
+  assert.ok(losslessWrite.backupId?.startsWith("membak-"));
+  assert.equal(store.getSession(promoBot.id)?.memories?.length, 1);
+
+  // 5. list_backups + restore brings back original 2 entries cleanly
+  const backups = await runBotCollabTool(
+    "memory_manage",
+    { action: "list_backups", scope: "bot", target_bot: "推广官" },
+    { store, senderSessionId: admin.id, senderBot: admin }
+  );
+  assert.equal(backups.ok, true);
+  assert.ok(backups.backups.length >= 1);
+
+  const restored = await runBotCollabTool(
+    "memory_manage",
+    { action: "restore", backup_id: losslessWrite.backupId },
+    { store, senderSessionId: admin.id, senderBot: admin }
+  );
+  assert.equal(restored.ok, true);
+  assert.equal(restored.count, 2);
+  assert.equal(store.getSession(promoBot.id)?.memories?.length, 2);
+
+  // 6. Explicit allow_entity_drop permits intentional deletion after user approval
+  const intentionalDrop = await runBotCollabTool(
+    "memory_manage",
+    {
+      action: "replace_all",
+      scope: "bot",
+      target_bot: promoBot.id,
+      allow_entity_drop: true,
+      memories: [{ name: "仅保留核实", content: "平台掉线必须打开页面实测后再汇报。", category: "rule" }],
+    },
+    { store, senderSessionId: admin.id, senderBot: admin }
+  );
+  assert.equal(intentionalDrop.ok, true);
+  assert.equal(store.getSession(promoBot.id)?.memories?.length, 1);
+
+  // 7. app_knowledge exposes Admin Bot Memory Governance SOP
+  const sop = await runBotCollabTool(
+    "app_knowledge",
+    { action: "read", topic: "computers-and-memory", section: "记忆整理与安全治理 SOP" },
+    { store, senderSessionId: admin.id, senderBot: admin }
+  );
+  assert.equal(sop.ok, true);
+  assert.match(String(sop.content || ""), /route_escalate/);
+  assert.match(String(sop.content || ""), /replace_all/);
 });

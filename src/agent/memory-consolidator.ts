@@ -25,6 +25,21 @@ export interface MemoryConsolidationMerge {
   sourceNames: string[];
   result: MemoryEntryLike;
   reason: string;
+  beforeChars: number;
+  afterChars: number;
+  shrinkPercent: number;
+  missingTokens: string[];
+  highShrinkWarning?: boolean;
+}
+
+export interface MemoryConsolidationRejectedMerge {
+  sourceIds: string[];
+  sourceNames: string[];
+  beforeChars: number;
+  afterChars: number;
+  shrinkPercent: number;
+  missingTokens: string[];
+  reason: string;
 }
 
 export interface MemoryConsolidationRemoval {
@@ -36,16 +51,105 @@ export interface MemoryConsolidationRemoval {
 
 export interface MemoryConsolidationPlan {
   scope: "bot" | "global";
+  mode: "llm" | "deterministic";
   sessionId?: string;
   usedModel: string | null;
   beforeCount: number;
   afterCount: number;
   changed: boolean;
   summary: string;
+  originalList: MemoryEntryLike[];
   merges: MemoryConsolidationMerge[];
+  rejectedMerges: MemoryConsolidationRejectedMerge[];
   removals: MemoryConsolidationRemoval[];
+  recategorizations: Array<{ id: string; category: MemoryCategory }>;
   recategorizedCount: number;
   proposedList: MemoryEntryLike[];
+}
+
+const GENERIC_PROPER_TOKENS = new Set([
+  "the", "and", "for", "with", "when", "always", "never", "only", "all", "not", "but",
+  "this", "that", "from", "into", "each", "also", "must", "should", "use", "using",
+  "json", "html", "http", "https", "url", "uri", "api", "bot", "llm", "strict",
+  "never", "markdown", "true", "false", "null", "none", "auto", "mode", "mac",
+  "macos", "windows", "linux", "rule", "rules", "context", "identity", "preference",
+  "general",
+]);
+
+export function extractCriticalFactTokens(text: unknown): string[] {
+  const src = String(text || "");
+  if (!src.trim()) return [];
+  const found = new Map<string, string>();
+  const add = (tok: string) => {
+    const clean = tok.replace(/[),.;:，。；：、]+$/g, "").trim();
+    if (!clean || clean.length < 2) return;
+    const key = clean.toLowerCase();
+    if (GENERIC_PROPER_TOKENS.has(key)) return;
+    if (!found.has(key)) found.set(key, clean);
+  };
+
+  for (const m of src.matchAll(/@[A-Za-z0-9_.-]{2,}/g)) add(m[0]);
+  for (const m of src.matchAll(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g)) add(m[0]);
+  for (const m of src.matchAll(/https?:\/\/[^\s，。、；)"'<>]+/gi)) add(m[0]);
+  for (const m of src.matchAll(/\b[a-zA-Z0-9-]+\.(?:com|io|dev|to|org|net|cn|ai|app|gg)\b/gi)) add(m[0]);
+  for (const m of src.matchAll(/(?:~\/|\/[A-Za-z0-9._-]+\/)[A-Za-z0-9._\/-]+/g)) add(m[0]);
+  for (const m of src.matchAll(/\b[A-Z][A-Za-z0-9.+-]{2,}\b/g)) add(m[0]);
+
+  return Array.from(found.values());
+}
+
+export function analyzeMergeFidelity(
+  members: MemoryEntryLike[],
+  mergedText: string
+): {
+  beforeChars: number;
+  afterChars: number;
+  shrinkPercent: number;
+  missingTokens: string[];
+  hasCriticalEntityLoss: boolean;
+  isLossy: boolean;
+} {
+  const beforeChars = members.reduce((sum, m) => sum + String(m.content || "").trim().length, 0);
+  const afterChars = String(mergedText || "").trim().length;
+  const shrinkPercent =
+    beforeChars > 0 ? Math.max(0, Math.round(((beforeChars - afterChars) / beforeChars) * 100)) : 0;
+
+  const sourceTokens = new Map<string, string>();
+  for (const m of members) {
+    for (const tok of extractCriticalFactTokens(`${m.name} ${m.content}`)) {
+      const k = tok.toLowerCase();
+      if (!sourceTokens.has(k)) sourceTokens.set(k, tok);
+    }
+  }
+
+  const mergedLower = String(mergedText || "").toLowerCase();
+  const missingTokens: string[] = [];
+  for (const [k, tok] of sourceTokens.entries()) {
+    if (!mergedLower.includes(k)) {
+      missingTokens.push(tok);
+    }
+  }
+
+  const hasCriticalEntityLoss = missingTokens.some(
+    (tok) =>
+      tok.startsWith("@") ||
+      tok.includes("://") ||
+      tok.includes("/") ||
+      /\.[a-z]{2,}$/i.test(tok)
+  );
+  const isLossy =
+    hasCriticalEntityLoss ||
+    missingTokens.length >= 2 ||
+    (beforeChars >= 120 && shrinkPercent >= 60 && missingTokens.length >= 1);
+
+  return {
+    beforeChars,
+    afterChars,
+    shrinkPercent,
+    missingTokens,
+    hasCriticalEntityLoss,
+    isLossy,
+  };
 }
 
 export interface ConsolidateMemoriesResult {
@@ -148,6 +252,7 @@ function runDeterministicPrepass(
   const normalized = rawMemories.map((m, idx) => normalizeEntry(m, idx));
   const removals: MemoryConsolidationRemoval[] = [];
   const merges: MemoryConsolidationMerge[] = [];
+  const recategorizations: Array<{ id: string; category: MemoryCategory }> = [];
   const kept: MemoryEntryLike[] = [];
   let recategorizedCount = 0;
 
@@ -187,6 +292,7 @@ function runDeterministicPrepass(
         : item;
     if (inferredCategory !== item.category) {
       recategorizedCount += 1;
+      recategorizations.push({ id: item.id, category: inferredCategory });
     }
 
     const dup = findDuplicateMemory(kept, enrichedItem.content) as MemoryEntryLike | null;
@@ -211,12 +317,25 @@ function runDeterministicPrepass(
         existingMerge.sourceIds.push(enrichedItem.id);
         existingMerge.sourceNames.push(enrichedItem.name);
         existingMerge.result = mergedItem;
+        const memberEntries = existingMerge.sourceIds
+          .map((sid) => normalized.find((x) => x.id === sid))
+          .filter(Boolean) as MemoryEntryLike[];
+        const fid = analyzeMergeFidelity(memberEntries, `${mergedItem.name} ${mergedItem.content}`);
+        existingMerge.beforeChars = fid.beforeChars;
+        existingMerge.afterChars = mergedItem.content.length;
+        existingMerge.shrinkPercent = fid.shrinkPercent;
+        existingMerge.missingTokens = fid.missingTokens;
       } else {
+        const fid = analyzeMergeFidelity([dup, enrichedItem], `${mergedItem.name} ${mergedItem.content}`);
         merges.push({
           sourceIds: [dup.id, enrichedItem.id],
           sourceNames: [dup.name, enrichedItem.name],
           result: mergedItem,
           reason: "内容高度重复，已合并为同一条",
+          beforeChars: fid.beforeChars,
+          afterChars: mergedItem.content.length,
+          shrinkPercent: fid.shrinkPercent,
+          missingTokens: fid.missingTokens,
         });
       }
       continue;
@@ -235,14 +354,18 @@ function runDeterministicPrepass(
 
   return {
     scope,
+    mode: "deterministic",
     ...(sessionId ? { sessionId } : {}),
     usedModel: null,
     beforeCount,
     afterCount,
     changed,
     summary,
+    originalList: normalized,
     merges,
+    rejectedMerges: [],
     removals,
+    recategorizations,
     recategorizedCount,
     proposedList: kept,
   };
@@ -411,7 +534,9 @@ export async function consolidateMemories({
       "STRICT RULES:",
       "- NEVER invent new facts or preferences not present in the source items.",
       "- NEVER drop valid standalone user preferences, identity facts, or standing rules.",
-      "- Keep `merges` strictly to 2+ sourceIds that express the same or conflicting rule on the same topic.",
+      "- DO NOT merge distinct complementary rules that merely share a broad topic (for example, do NOT merge a platform/account roster with a platform verification workflow).",
+      "- Keep `merges` strictly to 2+ sourceIds that say the exact same thing or are mutually contradictory versions of the same rule.",
+      "- LOSSLESS ENTITY PRESERVATION: When merging, preserve EVERY concrete account handle (`@xxx`), email, URL, file path, platform name, tool name, and exact number verbatim. If preserving all details makes the merge awkward, DO NOT MERGE — leave both entries separate and only recategorize them.",
       "- Keep `removals` strictly to obvious temporary noise (one-off errors, transient file paths, meaningless chatter) or entries completely redundant with the Bot Role / Persona above.",
       "- Valid categories: \"identity\", \"preference\", \"rule\", \"context\", \"general\".",
       "",
@@ -465,6 +590,7 @@ export async function consolidateMemories({
 
       const consumed = new Set<string>();
       const llmMerges: MemoryConsolidationMerge[] = [];
+      const rejectedMerges: MemoryConsolidationRejectedMerge[] = [];
       const llmRemovals: MemoryConsolidationRemoval[] = [];
       const recatMap = new Map<string, MemoryCategory>();
       const mergeInsertByFirstId = new Map<string, MemoryEntryLike>();
@@ -496,6 +622,19 @@ export async function consolidateMemories({
             continue;
           }
           const members = validIds.map((id) => byId.get(id)!);
+          const fidelity = analyzeMergeFidelity(members, `${name} ${content}`);
+          if (fidelity.isLossy) {
+            rejectedMerges.push({
+              sourceIds: validIds,
+              sourceNames: members.map((x) => x.name),
+              beforeChars: fidelity.beforeChars,
+              afterChars: content.length,
+              shrinkPercent: fidelity.shrinkPercent,
+              missingTokens: fidelity.missingTokens,
+              reason: `合并压缩遗漏关键实体（${fidelity.missingTokens.slice(0, 5).join(", ")}），已自动拦截保护原条目`,
+            });
+            continue;
+          }
           validIds.forEach((id) => consumed.add(id));
           const mergedResult: MemoryEntryLike = {
             id: validIds[0],
@@ -512,6 +651,11 @@ export async function consolidateMemories({
             sourceNames: members.map((x) => x.name),
             result: mergedResult,
             reason: String(m.reason || "语义重复或新旧偏好冲突合并").slice(0, 120),
+            beforeChars: fidelity.beforeChars,
+            afterChars: content.length,
+            shrinkPercent: fidelity.shrinkPercent,
+            missingTokens: fidelity.missingTokens,
+            ...(fidelity.shrinkPercent >= 45 ? { highShrinkWarning: true } : {}),
           });
         }
       }
@@ -558,6 +702,10 @@ export async function consolidateMemories({
 
       const merges = [...basePlan.merges, ...llmMerges];
       const removals = [...basePlan.removals, ...llmRemovals];
+      const recategorizations = [
+        ...basePlan.recategorizations.filter((r) => !recatMap.has(r.id)),
+        ...Array.from(recatMap.entries()).map(([id, category]) => ({ id, category })),
+      ];
       const recategorizedCount = basePlan.recategorizedCount + llmRecatCount;
       const beforeCount = basePlan.beforeCount;
       const afterCount = finalProposed.length;
@@ -577,14 +725,18 @@ export async function consolidateMemories({
         ok: true,
         plan: {
           scope,
+          mode: "llm",
           ...(sessionId ? { sessionId } : {}),
           usedModel: turn?.usedModel || targetModel,
           beforeCount,
           afterCount,
           changed,
           summary: summaryText,
+          originalList: basePlan.originalList,
           merges,
+          rejectedMerges,
           removals,
+          recategorizations,
           recategorizedCount,
           proposedList: finalProposed,
         },

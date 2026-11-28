@@ -529,6 +529,31 @@ export async function handleBotComputerCardActivate() {
   }
 }
 
+export async function requestAdminMemoryGovernance(opts: {
+  scope: "bot" | "global";
+  botTitle?: string;
+}) {
+  const s = getState();
+  const adminBot = s.sessions.find((item) => item.isAdmin) || getPrimarySessionFromState(s);
+  if (!adminBot) {
+    showToast(tr("actions.adminBotMissing"));
+    return;
+  }
+  if (s.settingsModal.open) {
+    closeSettingsModal();
+  }
+  if (s.activeSessionId !== adminBot.id) {
+    await selectSession(adminBot.id);
+  }
+  const prompt =
+    opts.scope === "global"
+      ? tr("memory.consolidatePromptGlobal")
+      : tr("memory.consolidatePromptBot", {
+          name: String(opts.botTitle || adminBot.title || "Bot").trim(),
+        });
+  await sendUserMessage(prompt);
+}
+
 /* ==================== SESSION MANAGEMENT & EVENT STREAM ==================== */
 export function upsertLocalSession(session: any) {
   if (!session?.id) return;

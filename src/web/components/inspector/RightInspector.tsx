@@ -18,6 +18,7 @@ import {
   handleBotComputerCardActivate,
   openBotUsageModal,
   refreshLibrary,
+  requestAdminMemoryGovernance,
   saveActiveAvatarPatch,
   showConfirmDialog,
   showToast,
@@ -47,7 +48,6 @@ import { MascotSvg, SessionAvatar } from "../common/AvatarView.js";
 import {
   BotMemoriesList,
   LibraryItemsPanel,
-  MemoryConsolidatePreviewCard,
   SchedulesList,
 } from "../common/SharedPanels.js";
 
@@ -90,13 +90,9 @@ export function RightInspector({
   const [sectionExpandedOverrides, setSectionExpandedOverrides] = useState<
     Partial<Record<CollapsibleSectionKey, boolean>>
   >({});
-  const [botConsolidating, setBotConsolidating] = useState(false);
-  const [applyingBotConsolidate, setApplyingBotConsolidate] = useState(false);
-  const [botConsolidatePlan, setBotConsolidatePlan] = useState<any>(null);
 
   useEffect(() => {
     setSectionExpandedOverrides({});
-    setBotConsolidatePlan(null);
   }, [activeSessionId]);
 
   const isSectionExpanded = (key: CollapsibleSectionKey, itemCount: number): boolean => {
@@ -168,59 +164,6 @@ export function RightInspector({
   const supportsMemoryGovernance = hasConnectedNodeCapability("memory-governance-v1", {
     diagnostics,
   });
-
-  const handleConsolidateBotMemories = async () => {
-    if (!activeSession?.id || botConsolidating) return;
-    setBotConsolidating(true);
-    setSectionExpandedOverrides((prev) => ({ ...prev, botMemory: true }));
-    try {
-      const res = await apiJson("/api/memories/consolidate", {
-        method: "POST",
-        body: JSON.stringify({ scope: "bot", sessionId: activeSession.id }),
-      });
-      setBotConsolidatePlan(res?.plan || null);
-    } catch (err: any) {
-      showToast(
-        t("memory.consolidateFailedToast", {
-          error: err?.message || t("actions.requestError"),
-        })
-      );
-    } finally {
-      setBotConsolidating(false);
-    }
-  };
-
-  const handleApplyBotConsolidate = async () => {
-    if (!activeSession?.id || !botConsolidatePlan || applyingBotConsolidate) return;
-    setApplyingBotConsolidate(true);
-    try {
-      const res = await apiJson("/api/memories/consolidate/apply", {
-        method: "POST",
-        body: JSON.stringify({
-          scope: "bot",
-          sessionId: activeSession.id,
-          proposedList: botConsolidatePlan.proposedList || [],
-        }),
-      });
-      if (Array.isArray(res?.memories)) {
-        upsertLocalSession({ ...activeSession, memories: res.memories });
-      }
-      setBotConsolidatePlan(null);
-      showToast(
-        t("memory.consolidateAppliedToast", {
-          count: String(res?.count ?? res?.memories?.length ?? 0),
-        })
-      );
-    } catch (err: any) {
-      showToast(
-        t("memory.consolidateFailedToast", {
-          error: err?.message || t("actions.requestError"),
-        })
-      );
-    } finally {
-      setApplyingBotConsolidate(false);
-    }
-  };
   const {
     compState,
     isCompOnline,
@@ -881,15 +824,19 @@ export function RightInspector({
               </svg>
             </button>
             <div className="memory-header-actions">
-              {supportsMemoryGovernance && memories.length >= 2 && (
+              {supportsMemoryGovernance && memories.length >= 1 && (
                 <button
                   id="consolidate-bot-memory-btn"
                   type="button"
                   className="section-action-link"
-                  disabled={botConsolidating}
-                  onClick={handleConsolidateBotMemories}
+                  onClick={() =>
+                    void requestAdminMemoryGovernance({
+                      scope: "bot",
+                      botTitle: displayName,
+                    })
+                  }
                 >
-                  {botConsolidating ? t("memory.consolidatingBtn") : t("memory.consolidateBtn")}
+                  {t("memory.consolidateBtn")}
                 </button>
               )}
               <button
@@ -921,13 +868,6 @@ export function RightInspector({
             </div>
           </div>
           <div id="bot-memory-body" className="inspector-section-body" hidden={!botMemoryExpanded}>
-            <MemoryConsolidatePreviewCard
-              plan={botConsolidatePlan}
-              applying={applyingBotConsolidate}
-              idPrefix="bot"
-              onApply={handleApplyBotConsolidate}
-              onCancel={() => setBotConsolidatePlan(null)}
-            />
             <BotMemoriesList session={activeSession} listId="bot-memories-list" />
           </div>
         </section>
