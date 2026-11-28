@@ -4,7 +4,8 @@ Multi-Bot AI desktop & mobile agent: orchestrates Gemini / Vertex AI / OpenAI / 
 
 ## Stack & Architecture
 
-- **Runtime**: Node.js 22.13+, ESM, TypeScript. Pure-JS runtime deps only (`@google/genai` >= 2.29.1 via **Interactions API only** — never `generateContent` or legacy `@google/generative-ai`; `@larksuiteoapi/node-sdk`; `grammy`), all bundled into `dist-server/core-runtime/server-bundle.mjs` for `ota-only`.
+- **Runtime**: Node.js 22.13+, ESM, TypeScript. Pure-JS runtime deps only (`@google/genai` >= 2.29.1 via **Interactions API only** —
+  never `generateContent` or legacy `@google/generative-ai`; `@larksuiteoapi/node-sdk`; `grammy`), bundled into `dist-server/core-runtime/server-bundle.mjs` for `ota-only`.
 - **Build pipeline** (`npm run build:ts`): `tsconfig.shared.json` -> `npm run build:web` (`build:css` + React 19 Vite SPA + SSR + `--public-meta`, checked via `tsconfig.web.json`) -> `tsconfig.json` -> `copy-prompts` -> `build-core-bundle` -> `tsconfig.landing.json`.
 - **Source map**:
   - `src/shared/` — Shared types, DTOs, browser-safe helpers (`accounts-store.ts`, `skills-catalog.ts`, `context-compression.ts`, `versioning.ts`).
@@ -21,16 +22,24 @@ Multi-Bot AI desktop & mobile agent: orchestrates Gemini / Vertex AI / OpenAI / 
 
 - **Permission Gate Lock (CRITICAL)**:
   - `test/policy-invariants.test.ts` encodes approved product decisions. Changing `policy.ts`, prompts, or tool `risk` schemas MUST keep `test/policy-invariants.test.ts` passing; **never** modify its expectations without explicit user approval.
-  - **Bot's Computer (`sandboxMode === "full"`)**: Every sandbox tool (including clicks, typing, browser clicks/inputs, file writes, shell) auto-allows inside the Ubuntu sandbox even on spurious `risk: "high"` or paths outside host `writeRoots` — only security redlines and explicit `askRules`/`denyRules` apply.
-  - **Your Computer (`hostExecutionMode === "always"`)**: Auto-allow routine commands, safe temp/own-workspace cleanup, non-sensitive writes, read-only host/MCP tools, and routine KimiCU actions while confirming destructive commands (`sudo`, non-scratch `rm`, force push, sensitive configs) and screen recording.
-  - **No over-prompting**: Keep `risk` as an optional 3-level enum (`["low", "medium", "high"]`), omit it on sandbox-internal/read-only MCP tools, never pre-seed hidden `askRules`, and never add coercive wording (`ALWAYS`, `"or submitting forms"`). Full details: `.agents/rules/permission-and-mcp.md`.
-- **KimiCU MCP Self-Discovery & Platform Gating**: Never hardcode tool counts or static schemas; rely on live `tools/list`, binary reload, `notifications/tools/list_changed`, and adaptive prompts (no OTA needed on KimiCU upgrades). Gate OS-specific skills on unsupported platforms while keeping the `添加` label and hover tooltip.
-- **Unified Client Account Model & Clean Defaults**: UI uses strictly `本地账号 / Local Account` and `云端账号 / Cloud Account` (never expose engineering jargon like `节点`). Keep fresh installs empty (no pre-seeded memories, schedules, or vault entries) and use Cron as the sole schedule format.
+  - **Bot's Computer (`sandboxMode === "full"`)**: Every sandbox tool (clicks, typing, browser clicks/inputs, file writes, shell)
+    auto-allows inside the Ubuntu sandbox even on spurious `risk: "high"` or paths outside host `writeRoots` — only security redlines and explicit `askRules`/`denyRules` apply.
+  - **Your Computer (`hostExecutionMode === "always"`)**: Auto-allow routine commands, safe temp/own-workspace cleanup,
+    non-sensitive writes, read-only host/MCP tools, and routine KimiCU actions while confirming destructive commands (`sudo`, non-scratch `rm`, force push, sensitive configs) and screen recording.
+  - **No over-prompting**: Keep `risk` as an optional 3-level enum (`["low", "medium", "high"]`), omit it on sandbox-internal/read-only MCP tools,
+    never pre-seed hidden `askRules`, and never add coercive wording (`ALWAYS`, `"or submitting forms"`). Details: `.agents/rules/permission-and-mcp.md`.
+- **KimiCU MCP Self-Discovery & Platform Gating**: Never hardcode tool counts or static schemas; rely on live `tools/list`,
+  binary reload, `notifications/tools/list_changed`, and adaptive prompts (no OTA needed on KimiCU upgrades). Gate OS-specific skills on unsupported platforms while keeping the `添加` label and hover tooltip.
+- **Unified Client Account Model & Clean Defaults**: UI uses strictly `本地账号 / Local Account` and `云端账号 / Cloud Account`
+  (never expose engineering jargon like `节点`). Keep fresh installs empty (no pre-seeded memories, schedules, or vault entries) and use Cron as the sole schedule format.
 - **Electron Worker `AbortSignal`**: Normalize polyfilled signals (e.g. `grammy`) to `globalThis.AbortSignal` under `ELECTRON_RUN_AS_NODE=1` (`wrapFetchWithNativeAbortSignal` in `src/lib/channel-integrations.ts`).
 
 ## Versioning, CI & Releases
 
-- **Default Hot-Update Rule (`ota-only`)**: When changes touch only hot-updatable layers (`src/server/**`, `src/agent/**`, `src/store/**`, `src/lib/**`, `src/shared/**`, `src/web/**`, `public/**`, `executor/executor.py`, bundled JS deps) without touching native shell layers (`src/electron/**`, `electron/*`, `android/**`, `ios/**`, `capacitor.config.*`, native deps), **do NOT run `npm run version:bump`** — release via `ota-*` / `mode=ota-only`, keeping shell `X.Y.Z` & native `buildCode` unchanged.
+- **Default Hot-Update Rule (`ota-only`)**: When changes touch only hot-updatable layers (`src/server/**`, `src/agent/**`, `src/store/**`,
+  `src/lib/**`, `src/shared/**`, `src/web/**`, `public/**`, `executor/executor.py`, bundled JS deps) without touching native shell layers
+  (`src/electron/**`, `electron/*`, `android/**`, `ios/**`, `capacitor.config.*`, native deps), **do NOT run `npm run version:bump`** —
+  release via `ota-*` / `mode=ota-only`, keeping shell `X.Y.Z` & native `buildCode` unchanged.
 - **Shell Version Rollover** (when native shells change or user requests full installers):
   - `PATCH` ranges **0–9** (`1.0.9 -> 1.1.0`); `MINOR` ranges **0–19** (`1.19.9 -> 2.0.0`); mobile `buildCode` increments `+1`.
   - Sync atomically via `npm run version:bump`; always check `version-policy.json` (`shells.*`, `minVersionFor*`, `apiCapabilities`). When raising shell capabilities, also raise `minVersionForOta` / `minVersionForCoreOta` / `minBuildCodeForOta`.

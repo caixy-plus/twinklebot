@@ -1,4 +1,5 @@
 ---
+trigger: model_decision
 description: Governs when to stay silent on small local edits, how to interactively gate GitHub Release builds with configurable E2E levels (default affected+p0), and how to keep the E2E catalog synchronized with new features.
 ---
 

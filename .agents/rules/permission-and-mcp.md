@@ -1,4 +1,5 @@
 ---
+trigger: model_decision
 description: Locked 3-zone permission invariants, prompt/schema anti-over-prompting rules, and KimiCU MCP self-discovery constraints.
 ---
 
