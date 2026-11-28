@@ -1108,3 +1108,182 @@ test("cross-repo same-owner trust validation and rewriteManifestRepoUrls support
   // Strict legacy v1.0.6 check (exact-repo match) also succeeds on mirrored manifest!
   assert.equal(validateGithubManifestUrls(mirrored, "caixy-plus/twinklebot-releases"), true);
 });
+
+test("refreshManifestShellAssets updates only shell binary hashes/urls and guards against version mismatch", async () => {
+  const { refreshManifestShellAssets } = await import(
+    pathToFileURL(path.join(ROOT, "scripts", "build-ota-packages.mjs")).href
+  );
+  const tmpRoot = makeTempDir("ota-refresh-shells-");
+  const metaDir = path.join(tmpRoot, "meta");
+  const baseManifestPath = path.join(tmpRoot, "live-manifest.json");
+  const outFile = path.join(tmpRoot, "out", "version-manifest.json");
+
+  try {
+    fs.mkdirSync(metaDir, { recursive: true });
+    const liveManifest: VersionManifest = {
+      schemaVersion: 1,
+      generatedAt: "2026-11-28T10:00:00.000Z",
+      releaseTag: "ota-20261128.1108",
+      releaseUrl: "https://github.com/caixy-plus/twinklebot/releases/tag/ota-20261128.1108",
+      webBuild: "20261128.110800-webabcdef",
+      coreBuild: "20261128.110800-coreabcdef",
+      shells: {
+        desktop: {
+          latestVersion: "1.0.7",
+          minVersionForOta: "1.0.7",
+          minVersionForCoreOta: "1.0.7",
+          fileName: "TwinkleBot-1.0.7-arm64.dmg",
+          downloadUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-1.0.7-arm64.dmg",
+          sha256: "a".repeat(64),
+          sizeBytes: 1000,
+          assets: {
+            "darwin-arm64": {
+              fileName: "TwinkleBot-1.0.7-arm64.dmg",
+              downloadUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-1.0.7-arm64.dmg",
+              sha256: "a".repeat(64),
+              sizeBytes: 1000,
+            },
+            "win32-x64": {
+              fileName: "TwinkleBot-Setup-1.0.7.exe",
+              downloadUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-Setup-1.0.7.exe",
+              sha256: "b".repeat(64),
+              sizeBytes: 2000,
+            },
+          },
+        },
+        android: {
+          latestVersion: "1.0.7",
+          latestBuildCode: 8,
+          minVersionForOta: "1.0.7",
+          minBuildCodeForOta: 8,
+          fileName: "TwinkleBot-mobile-release.apk",
+          downloadUrl: "https://github.com/caixy-plus/twinklebot/releases/download/v1.0.7/TwinkleBot-mobile-release.apk",
+          sha256: "c".repeat(64),
+          sizeBytes: 3000,
+        },
+        ios: {
+          latestVersion: "1.0.7",
+          latestBuildCode: 8,
+          minVersionForOta: "1.0.7",
+          minBuildCodeForOta: 8,
+        },
+      },
+      backend: {
+        latestVersion: "1.0.7",
+        minCompatibleVersion: "1.0.0",
+        apiCapabilities: [...CURRENT_API_CAPABILITIES],
+      },
+      bundles: {
+        desktop: {
+          target: "desktop",
+          webBuild: "20261128.110800-webabcdef",
+          bundleUrl: "https://github.com/caixy-plus/twinklebot/releases/download/ota-20261128.1108/twinklebot-web-desktop.tar.gz",
+          sha256: "d".repeat(64),
+          sizeBytes: 4000,
+        },
+        desktopCore: {
+          target: "desktop",
+          coreBuild: "20261128.110800-coreabcdef",
+          coreVersion: "1.0.7",
+          webBuild: "20261128.110800-webabcdef",
+          bundleUrl: "https://github.com/caixy-plus/twinklebot/releases/download/ota-20261128.1108/twinklebot-core-desktop.tar.gz",
+          sha256: "e".repeat(64),
+          sizeBytes: 5000,
+        },
+        mobile: {
+          target: "mobile",
+          webBuild: "20261128.110800-webabcdef",
+          bundleUrl: "https://github.com/caixy-plus/twinklebot/releases/download/ota-20261128.1108/twinklebot-web-mobile.tar.gz",
+          sha256: "f".repeat(64),
+          sizeBytes: 6000,
+        },
+      },
+    };
+    fs.writeFileSync(baseManifestPath, JSON.stringify(liveManifest, null, 2));
+
+    const newMacHash = "1".repeat(64);
+    const newWinHash = "2".repeat(64);
+    const newLinuxHash = "3".repeat(64);
+    const newApkHash = "4".repeat(64);
+    fs.writeFileSync(
+      path.join(metaDir, "_asset-meta-macos.json"),
+      JSON.stringify([{ fileName: "TwinkleBot-1.0.7-arm64.dmg", sha256: newMacHash, sizeBytes: 1111 }])
+    );
+    fs.writeFileSync(
+      path.join(metaDir, "_asset-meta-windows.json"),
+      JSON.stringify([{ fileName: "TwinkleBot Setup 1.0.7.exe", sha256: newWinHash, sizeBytes: 2222 }])
+    );
+    fs.writeFileSync(
+      path.join(metaDir, "_asset-meta-linux.json"),
+      JSON.stringify([{ fileName: "TwinkleBot-1.0.7.AppImage", sha256: newLinuxHash, sizeBytes: 3333 }])
+    );
+    fs.writeFileSync(
+      path.join(metaDir, "_asset-meta-android.json"),
+      JSON.stringify([{ fileName: "TwinkleBot-mobile-release.apk", sha256: newApkHash, sizeBytes: 4444 }])
+    );
+
+    const mismatch = await refreshManifestShellAssets({
+      baseManifestPath,
+      assetsMetaDir: metaDir,
+      shellTag: "v1.0.6",
+    });
+    assert.equal(mismatch.skipped, true);
+    assert.equal(mismatch.reason, "shell-version-mismatch");
+
+    const refreshed = await refreshManifestShellAssets({
+      baseManifestPath,
+      assetsMetaDir: metaDir,
+      shellTag: "v1.0.7",
+      githubRepo: "caixy-plus/twinklebot",
+      outFile,
+    });
+    assert.equal(refreshed.skipped, false);
+    const updated = refreshed.manifest as VersionManifest;
+
+    // OTA bundle fields & compatibility gates remain completely untouched
+    assert.equal(updated.releaseTag, "ota-20261128.1108");
+    assert.equal(updated.webBuild, "20261128.110800-webabcdef");
+    assert.equal(updated.coreBuild, "20261128.110800-coreabcdef");
+    assert.deepEqual(updated.bundles, liveManifest.bundles);
+    assert.deepEqual(updated.shells.ios, liveManifest.shells.ios);
+    assert.deepEqual(updated.backend, liveManifest.backend);
+    assert.equal(updated.shells.desktop?.minVersionForOta, "1.0.7");
+    assert.equal(updated.shells.desktop?.minVersionForCoreOta, "1.0.7");
+
+    // Refreshed hashes, sizes & normalized GitHub filenames/URLs applied
+    assert.equal(updated.shells.desktop?.sha256, newMacHash);
+    assert.equal(updated.shells.desktop?.sizeBytes, 1111);
+    assert.equal(updated.shells.desktop?.assets?.["win32-x64"]?.fileName, "TwinkleBot.Setup.1.0.7.exe");
+    assert.equal(updated.shells.desktop?.assets?.["win32-x64"]?.sha256, newWinHash);
+    assert.equal(updated.shells.desktop?.assets?.["linux-x64"]?.sha256, newLinuxHash);
+    assert.equal(updated.shells.android?.sha256, newApkHash);
+    assert.equal(updated.shells.android?.sizeBytes, 4444);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("GitHub release and async shell refresh workflows keep WEB_BUILD_ID parity, concurrency safety, and signing invariants", () => {
+  const releaseYml = fs.readFileSync(path.join(ROOT, ".github", "workflows", "release.yml"), "utf8");
+  const refreshYml = fs.readFileSync(path.join(ROOT, ".github", "workflows", "refresh-shell-installers.yml"), "utf8");
+
+  // release.yml: async refresh input/dispatch, WEB_BUILD_ID in full builders, and same-repo GITHUB_TOKEN guard
+  assert.match(releaseYml, /refresh_installers:/);
+  assert.match(releaseYml, /gh workflow run refresh-shell-installers\.yml/);
+  assert.match(releaseYml, /--ref "\$DEFAULT_BRANCH"/);
+  assert.match(releaseYml, /actions:\s*write/);
+  assert.match(
+    releaseYml,
+    /token:\s*\$\{\{\s*vars\.RELEASE_REPO\s*&&\s*\(secrets\.RELEASE_PAT\s*\|\|\s*secrets\.GITHUB_TOKEN\)\s*\|\|\s*secrets\.GITHUB_TOKEN\s*\}\}/
+  );
+  const webBuildOccurrences = releaseYml.match(/WEB_BUILD_ID:\s*"\$\{\{\s*needs\.prepare\.outputs\.web_build_id\s*\}\}"/g) || [];
+  assert.equal(webBuildOccurrences.length >= 4, true);
+
+  // refresh-shell-installers.yml: superseding builds cancel in progress, manifest publish serializes
+  assert.match(refreshYml, /group:\s*twinklebot-shell-refresh-desktop-\$\{\{\s*matrix\.platform\s*\}\}\s*\n\s*cancel-in-progress:\s*true/);
+  assert.match(refreshYml, /group:\s*twinklebot-shell-refresh-android\s*\n\s*cancel-in-progress:\s*true/);
+  assert.match(refreshYml, /group:\s*twinklebot-release-channel\s*\n\s*cancel-in-progress:\s*false/);
+  assert.match(refreshYml, /\$ZIPALIGN" -p -f 4/);
+  assert.match(refreshYml, /\$APKSIGNER" verify --verbose --print-certs/);
+  assert.equal(refreshYml.includes("TwinkleBot-mobile-release-unsigned.apk"), false);
+});

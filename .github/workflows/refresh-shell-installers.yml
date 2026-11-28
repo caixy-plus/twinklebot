@@ -1,0 +1,428 @@
+name: Refresh Same-Version Shell Installers (Async)
+
+on:
+  workflow_dispatch:
+    inputs:
+      shell_tag:
+        description: "Published shell release tag to refresh in-place (defaults to v<package.json.version>)"
+        required: false
+        default: ""
+        type: string
+      source_ref:
+        description: "Commit SHA or branch to package (defaults to triggering SHA)"
+        required: false
+        default: ""
+        type: string
+      web_build_id:
+        description: "WEB_BUILD_ID matching the active OTA release so fresh installs need no immediate OTA"
+        required: false
+        default: ""
+        type: string
+      ota_tag:
+        description: "Triggering OTA tag (for traceability in workflow logs)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare:
+    name: Validate Target Shell Release & Build ID
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      shell_tag: ${{ steps.check.outputs.shell_tag }}
+      source_ref: ${{ steps.check.outputs.source_ref }}
+      web_build_id: ${{ steps.check.outputs.web_build_id }}
+      ota_tag: ${{ steps.check.outputs.ota_tag }}
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+
+      - name: Verify published shell release and resolve WEB_BUILD_ID
+        id: check
+        env:
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          LEGACY_REPO: ${{ vars.LEGACY_RELEASE_REPO || '' }}
+        run: |
+          PKG_VER=$(node -p "require('./package.json').version")
+          SHELL_TAG="${{ inputs.shell_tag }}"
+          if [[ -z "$SHELL_TAG" ]]; then
+            SHELL_TAG="v${PKG_VER}"
+          fi
+          SOURCE_REF="${{ inputs.source_ref }}"
+          if [[ -z "$SOURCE_REF" ]]; then
+            SOURCE_REF="${GITHUB_SHA}"
+          fi
+          OTA_TAG="${{ inputs.ota_tag }}"
+
+          RELEASE_INFO=$(gh release view "$SHELL_TAG" --repo "$TARGET_REPO" --json isDraft,tagName 2>/dev/null || true)
+          if [[ -z "$RELEASE_INFO" ]]; then
+            echo "::notice::Target shell release ${SHELL_TAG} does not exist yet in ${TARGET_REPO}; skipping async installer refresh."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "shell_tag=$SHELL_TAG" >> "$GITHUB_OUTPUT"
+            echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+            echo "web_build_id=" >> "$GITHUB_OUTPUT"
+            echo "ota_tag=$OTA_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          IS_DRAFT=$(node -e 'const r = JSON.parse(process.argv[1]); process.stdout.write(String(Boolean(r.isDraft)));' "$RELEASE_INFO")
+          if [[ "$IS_DRAFT" == "true" ]]; then
+            echo "::notice::Target shell release ${SHELL_TAG} is still a draft in ${TARGET_REPO}; skipping async installer refresh."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "shell_tag=$SHELL_TAG" >> "$GITHUB_OUTPUT"
+            echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+            echo "web_build_id=" >> "$GITHUB_OUTPUT"
+            echo "ota_tag=$OTA_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          WEB_BUILD_ID="${{ inputs.web_build_id }}"
+          if [[ -z "$WEB_BUILD_ID" ]]; then
+            gh release download ota-channel --repo "$TARGET_REPO" -p "version-manifest.json" -O ota-manifest.json 2>/dev/null || \
+            { [ -n "$LEGACY_REPO" ] && gh release download ota-channel --repo "$LEGACY_REPO" -p "version-manifest.json" -O ota-manifest.json 2>/dev/null; } || true
+            if [[ -f ota-manifest.json ]]; then
+              WEB_BUILD_ID=$(node -e '
+                const fs = require("fs");
+                const m = JSON.parse(fs.readFileSync("ota-manifest.json", "utf8"));
+                const raw = String(m.coreBuild || m.webBuild || "").trim();
+                const idx = raw.lastIndexOf("-");
+                if (idx > 0) process.stdout.write(raw.slice(0, idx));
+              ' || true)
+            fi
+          fi
+          if [[ -z "$WEB_BUILD_ID" ]]; then
+            WEB_BUILD_ID=$(date -u +"%Y%m%d.%H%M%S")
+          fi
+
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+          echo "shell_tag=$SHELL_TAG" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "web_build_id=$WEB_BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "ota_tag=$OTA_TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved async refresh should_run=true shell_tag=$SHELL_TAG source_ref=$SOURCE_REF web_build_id=$WEB_BUILD_ID ota_tag=$OTA_TAG"
+
+  build-desktop:
+    name: Refresh Desktop (${{ matrix.platform }})
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' }}
+    concurrency:
+      group: twinklebot-shell-refresh-desktop-${{ matrix.platform }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            os: macos-latest
+            script: electron:dist:mac
+          - platform: windows
+            os: windows-latest
+            script: electron:dist:win
+          - platform: linux
+            os: ubuntu-latest
+            script: electron:dist:linux
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package Electron desktop application (${{ matrix.platform }})
+        env:
+          WEB_BUILD_ID: "${{ needs.prepare.outputs.web_build_id }}"
+        run: npm run ${{ matrix.script }}
+
+      - name: Stage installers & SHA-256 metadata
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: |
+          mkdir -p staged-upload staged-meta
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const crypto = require("crypto");
+            const exts = /\.(dmg|zip|exe|AppImage|tar\.gz)$/i;
+            const files = fs.readdirSync("dist")
+              .filter((f) => exts.test(f) && !f.endsWith(".blockmap"))
+              .sort();
+            if (files.length === 0) throw new Error("No packaged desktop files found in dist/");
+            const meta = files.map((fileName) => {
+              const src = path.join("dist", fileName);
+              const buf = fs.readFileSync(src);
+              fs.copyFileSync(src, path.join("staged-upload", fileName));
+              return {
+                fileName,
+                sha256: crypto.createHash("sha256").update(buf).digest("hex"),
+                sizeBytes: buf.length,
+              };
+            });
+            fs.writeFileSync(
+              `staged-meta/_asset-meta-${process.env.MATRIX_PLATFORM}.json`,
+              JSON.stringify(meta, null, 2)
+            );
+          '
+
+      - name: Upload temporary desktop installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-desktop-${{ matrix.platform }}
+          path: |
+            staged-upload/
+            staged-meta/
+          retention-days: 1
+
+  build-android:
+    name: Refresh Android APK
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' }}
+    concurrency:
+      group: twinklebot-shell-refresh-android
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "gradle"
+
+      - name: Prepare Android SDK (API 36)
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0" >/dev/null
+
+      - name: Install dependencies, sync Capacitor Android & assemble APKs
+        env:
+          WEB_BUILD_ID: "${{ needs.prepare.outputs.web_build_id }}"
+        run: |
+          npm ci
+          APP_TARGET=mobile npm run mobile:build:web
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug assembleRelease --no-daemon
+
+      - name: Sign & stage APKs + SHA-256 metadata
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          mkdir -p staged-upload staged-meta
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEY_ALIAS" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\n\r ' | base64 -d > /tmp/release.keystore
+            chmod 600 /tmp/release.keystore
+            ZIPALIGN="$(find "$ANDROID_SDK_ROOT/build-tools" -name zipalign | sort -V | tail -n 1)"
+            APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner | sort -V | tail -n 1)"
+            "$ZIPALIGN" -p -f 4 \
+              android/app/build/outputs/apk/release/app-release-unsigned.apk \
+              /tmp/app-release-aligned.apk
+            "$APKSIGNER" sign \
+              --ks /tmp/release.keystore \
+              --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
+              --ks-key-alias "${ANDROID_KEY_ALIAS}" \
+              --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
+              --out staged-upload/TwinkleBot-mobile-release.apk \
+              /tmp/app-release-aligned.apk
+            "$APKSIGNER" verify --verbose --print-certs staged-upload/TwinkleBot-mobile-release.apk
+            rm -f /tmp/release.keystore /tmp/app-release-aligned.apk
+          else
+            cp android/app/build/outputs/apk/debug/app-debug.apk staged-upload/TwinkleBot-mobile-debug.apk
+          fi
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const crypto = require("crypto");
+            const files = fs.readdirSync("staged-upload").filter((f) => /\.apk$/i.test(f)).sort();
+            if (files.length === 0) throw new Error("No APK files staged in staged-upload/");
+            const meta = files.map((fileName) => {
+              const buf = fs.readFileSync(path.join("staged-upload", fileName));
+              return {
+                fileName,
+                sha256: crypto.createHash("sha256").update(buf).digest("hex"),
+                sizeBytes: buf.length,
+              };
+            });
+            fs.writeFileSync("staged-meta/_asset-meta-android.json", JSON.stringify(meta, null, 2));
+          '
+
+      - name: Upload temporary Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-android
+          path: |
+            staged-upload/
+            staged-meta/
+          retention-days: 1
+
+  publish-refresh:
+    name: Overwrite Shell Installers & Refresh Manifest Hashes
+    needs: [prepare, build-desktop, build-android]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.should_run == 'true' && needs.build-desktop.result == 'success' && needs.build-android.result == 'success' }}
+    concurrency:
+      group: twinklebot-release-channel
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_ref }}
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Download built installer & metadata artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: refresh-*
+          path: collected-artifacts
+          merge-multiple: false
+
+      - name: Collect binaries & SHA-256 metadata
+        run: |
+          mkdir -p upload-binaries release-meta
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            for (const dirEnt of fs.readdirSync("collected-artifacts", { withFileTypes: true })) {
+              if (!dirEnt.isDirectory()) continue;
+              const base = path.join("collected-artifacts", dirEnt.name);
+              const uploadDir = path.join(base, "staged-upload");
+              if (fs.existsSync(uploadDir)) {
+                for (const f of fs.readdirSync(uploadDir)) {
+                  fs.copyFileSync(path.join(uploadDir, f), path.join("upload-binaries", f));
+                }
+              }
+              const metaDir = path.join(base, "staged-meta");
+              if (fs.existsSync(metaDir)) {
+                for (const f of fs.readdirSync(metaDir)) {
+                  fs.copyFileSync(path.join(metaDir, f), path.join("release-meta", f));
+                }
+              }
+            }
+            console.log("upload-binaries:", fs.readdirSync("upload-binaries"));
+            console.log("release-meta:", fs.readdirSync("release-meta"));
+          '
+
+      - name: Verify live manifest version, overwrite shell installers & refresh ota-channel hashes
+        env:
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
+          LEGACY_REPO: ${{ vars.LEGACY_RELEASE_REPO || '' }}
+          LEGACY_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          SHELL_TAG: "${{ needs.prepare.outputs.shell_tag }}"
+          TWINKLEBOT_GITHUB_REPO: "${{ vars.RELEASE_REPO || github.repository }}"
+        run: |
+          gh release download ota-channel --repo "$TARGET_REPO" -p "version-manifest.json" -O live-manifest.json || \
+          gh release download "$SHELL_TAG" --repo "$TARGET_REPO" -p "version-manifest.json" -O live-manifest.json
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import path from "node:path";
+            import { execFileSync } from "node:child_process";
+            import { refreshManifestShellAssets, rewriteManifestRepoUrls } from "./scripts/build-ota-packages.mjs";
+
+            const targetRepo = process.env.TARGET_REPO;
+            const legacyRepo = process.env.LEGACY_REPO || "";
+            const shellTag = process.env.SHELL_TAG;
+            const outFile = path.resolve("dist-ota/version-manifest.json");
+
+            const res = await refreshManifestShellAssets({
+              baseManifestPath: "live-manifest.json",
+              assetsMetaDir: "release-meta",
+              shellTag,
+              githubRepo: targetRepo,
+              outFile,
+            });
+
+            if (res.skipped) {
+              console.log(
+                `::warning::Skipped overwriting ${shellTag}: live ota-channel points to newer shell ${res.manifestVersion} (built ${res.targetVer}).`
+              );
+              process.exit(0);
+            }
+
+            const files = fs.readdirSync("upload-binaries").sort().map((f) => path.join("upload-binaries", f));
+            if (files.length === 0) {
+              throw new Error("No binary files found in upload-binaries/");
+            }
+
+            console.log("Overwriting installers on", targetRepo, shellTag, files);
+            execFileSync(
+              "gh",
+              ["release", "upload", shellTag, ...files, "--repo", targetRepo, "--clobber"],
+              { stdio: "inherit" }
+            );
+            execFileSync(
+              "gh",
+              ["release", "upload", "ota-channel", outFile, "--repo", targetRepo, "--clobber"],
+              { stdio: "inherit" }
+            );
+
+            if (legacyRepo && legacyRepo !== targetRepo) {
+              const legacyEnv = { ...process.env, GH_TOKEN: process.env.LEGACY_TOKEN || process.env.GH_TOKEN };
+              const legacyManifest = rewriteManifestRepoUrls(res.manifest, targetRepo, legacyRepo);
+              const legacyManifestPath = path.resolve("dist-ota-legacy/version-manifest.json");
+              fs.mkdirSync(path.dirname(legacyManifestPath), { recursive: true });
+              fs.writeFileSync(legacyManifestPath, JSON.stringify(legacyManifest, null, 2), "utf8");
+              execFileSync(
+                "gh",
+                ["release", "upload", shellTag, ...files, "--repo", legacyRepo, "--clobber"],
+                { stdio: "inherit", env: legacyEnv }
+              );
+              execFileSync(
+                "gh",
+                ["release", "upload", "ota-channel", legacyManifestPath, "--repo", legacyRepo, "--clobber"],
+                { stdio: "inherit", env: legacyEnv }
+              );
+            }
+          '
+
+      - name: Clean up temporary workflow artifacts
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IDS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" --jq '.artifacts[].id' 2>/dev/null || true)
+          for id in $IDS; do
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}" >/dev/null 2>&1 || true
+          done

@@ -113,8 +113,113 @@ function parseCliArgs(argv) {
     else if (arg.startsWith("--release-tag=")) opts.releaseTag = arg.slice("--release-tag=".length);
     else if (arg.startsWith("--release-notes=")) opts.releaseNotes = arg.slice("--release-notes=".length);
     else if (arg.startsWith("--out-dir=")) opts.outDir = arg.slice("--out-dir=".length);
+    else if (arg.startsWith("--shell-tag=")) opts.shellTag = arg.slice("--shell-tag=".length);
+    else if (arg.startsWith("--out-file=")) opts.outFile = arg.slice("--out-file=".length);
   }
   return opts;
+}
+
+export async function refreshManifestShellAssets({
+  baseManifestPath = process.env.BASE_MANIFEST_PATH || "",
+  assetsMetaDir = process.env.RELEASE_ASSETS_META_DIR || "",
+  shellTag = process.env.SHELL_TAG || "",
+  githubRepo = "",
+  outFile = "",
+} = {}) {
+  const resolvedBase = path.resolve(String(baseManifestPath || "").trim());
+  if (!baseManifestPath || !fs.existsSync(resolvedBase)) {
+    throw new Error(`Missing base manifest at ${resolvedBase || "<empty>"}`);
+  }
+  let baseManifest;
+  try {
+    baseManifest = JSON.parse(fs.readFileSync(resolvedBase, "utf8"));
+  } catch (err) {
+    throw new Error(`Invalid JSON in base manifest (${resolvedBase}): ${err?.message || err}`);
+  }
+  if (!baseManifest || typeof baseManifest !== "object") {
+    throw new Error(`Invalid base manifest payload in ${resolvedBase}`);
+  }
+
+  const shellsMeta = readProjectShellMetadata();
+  const repo = githubRepo || process.env.TWINKLEBOT_GITHUB_REPO || shellsMeta.githubRepo;
+  const effectiveShellTag = String(shellTag || "").trim() || `v${shellsMeta.desktopVersion}`;
+  const targetVer = effectiveShellTag.replace(/^v/i, "").trim();
+  const manifestVersion = String(baseManifest.shells?.desktop?.latestVersion || "").trim();
+
+  if (manifestVersion && manifestVersion !== targetVer) {
+    const unchangedPath = outFile ? path.resolve(outFile) : "";
+    if (unchangedPath) {
+      fs.mkdirSync(path.dirname(unchangedPath), { recursive: true });
+      fs.writeFileSync(unchangedPath, JSON.stringify(baseManifest, null, 2), "utf8");
+    }
+    return {
+      skipped: true,
+      reason: "shell-version-mismatch",
+      targetVer,
+      manifestVersion,
+      ...(unchangedPath ? { manifestPath: unchangedPath } : {}),
+      manifest: baseManifest,
+    };
+  }
+
+  const shellDownloadBase = `https://github.com/${repo}/releases/download/${effectiveShellTag}`;
+  const { desktopAssets, androidApkAsset } = scanReleaseAssetsMeta(assetsMetaDir, shellDownloadBase);
+  if (Object.keys(desktopAssets).length === 0 && !androidApkAsset) {
+    throw new Error(`No refreshed shell asset metadata found in ${assetsMetaDir || "<empty>"}`);
+  }
+
+  const updated = JSON.parse(JSON.stringify(baseManifest));
+  updated.generatedAt = new Date().toISOString();
+  updated.shells = updated.shells && typeof updated.shells === "object" ? updated.shells : {};
+
+  if (Object.keys(desktopAssets).length > 0) {
+    const primaryDesktop =
+      desktopAssets["darwin-arm64"] ||
+      desktopAssets["win32-x64"] ||
+      desktopAssets["linux-x64"] ||
+      desktopAssets["darwin-x64"];
+    const prevDesktop =
+      updated.shells.desktop && typeof updated.shells.desktop === "object"
+        ? updated.shells.desktop
+        : {};
+    updated.shells.desktop = {
+      ...prevDesktop,
+      ...(primaryDesktop?.fileName ? { fileName: primaryDesktop.fileName } : {}),
+      ...(primaryDesktop?.downloadUrl ? { downloadUrl: primaryDesktop.downloadUrl } : {}),
+      ...(primaryDesktop?.sha256 ? { sha256: primaryDesktop.sha256 } : {}),
+      ...(primaryDesktop?.sizeBytes ? { sizeBytes: primaryDesktop.sizeBytes } : {}),
+      assets: {
+        ...(prevDesktop.assets && typeof prevDesktop.assets === "object"
+          ? prevDesktop.assets
+          : {}),
+        ...desktopAssets,
+      },
+    };
+  }
+
+  if (androidApkAsset) {
+    const prevAndroid =
+      updated.shells.android && typeof updated.shells.android === "object"
+        ? updated.shells.android
+        : {};
+    updated.shells.android = {
+      ...prevAndroid,
+      fileName: androidApkAsset.fileName,
+      downloadUrl: androidApkAsset.downloadUrl,
+      ...(androidApkAsset.sha256 ? { sha256: androidApkAsset.sha256 } : {}),
+      ...(androidApkAsset.sizeBytes ? { sizeBytes: androidApkAsset.sizeBytes } : {}),
+    };
+  }
+
+  const resolvedOutFile = path.resolve(outFile || path.join(DEFAULT_OUT_DIR, "version-manifest.json"));
+  fs.mkdirSync(path.dirname(resolvedOutFile), { recursive: true });
+  fs.writeFileSync(resolvedOutFile, JSON.stringify(updated, null, 2), "utf8");
+
+  return {
+    skipped: false,
+    manifestPath: resolvedOutFile,
+    manifest: updated,
+  };
 }
 
 export function rewriteManifestRepoUrls(manifest, fromRepo, toRepo) {
@@ -391,8 +496,15 @@ if (
   import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
 ) {
   const cliOpts = parseCliArgs(process.argv.slice(2));
-  const res = await buildOtaPackages(cliOpts);
-  console.log(
-    `[build-ota] mode=${res.mode} manifest=${res.manifestPath} core=${res.desktopCorePkg.sizeBytes}B desktop=${res.desktopPkg.sizeBytes}B mobile=${res.mobilePkg.sizeBytes}B coreBuild=${res.manifest.coreBuild}`
-  );
+  if (String(cliOpts.mode || "").trim().toLowerCase() === "refresh-shells") {
+    const res = await refreshManifestShellAssets(cliOpts);
+    console.log(
+      `[refresh-shells] skipped=${Boolean(res.skipped)} shellTag=${cliOpts.shellTag || ""} manifest=${res.manifestPath || cliOpts.outFile || ""}`
+    );
+  } else {
+    const res = await buildOtaPackages(cliOpts);
+    console.log(
+      `[build-ota] mode=${res.mode} manifest=${res.manifestPath} core=${res.desktopCorePkg.sizeBytes}B desktop=${res.desktopPkg.sizeBytes}B mobile=${res.mobilePkg.sizeBytes}B coreBuild=${res.manifest.coreBuild}`
+    );
+  }
 }

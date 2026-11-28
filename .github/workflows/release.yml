@@ -37,9 +37,15 @@ on:
           - p0+p1
           - p0
           - affected
+      refresh_installers:
+        description: "After ota-only publishes, asynchronously rebuild & overwrite current shell installers in background"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: twinklebot-release-channel
@@ -55,6 +61,8 @@ jobs:
       release_notes: ${{ steps.meta.outputs.release_notes }}
       web_build_id: ${{ steps.meta.outputs.web_build_id }}
       e2e_level: ${{ steps.meta.outputs.e2e_level }}
+      shell_tag: ${{ steps.meta.outputs.shell_tag }}
+      refresh_installers: ${{ steps.meta.outputs.refresh_installers }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -79,11 +87,16 @@ jobs:
             TAG="$REF_TAG"
             NOTES=""
             E2E_LEVEL="skip"
+            REFRESH_INSTALLERS="true"
           else
             MODE="${{ inputs.mode }}"
             INPUT_TAG="${{ inputs.release_tag }}"
             NOTES="${{ inputs.release_notes }}"
             E2E_LEVEL="${{ inputs.e2e_level || 'skip' }}"
+            REFRESH_INSTALLERS="${{ inputs.refresh_installers }}"
+            if [[ -z "$REFRESH_INSTALLERS" ]]; then
+              REFRESH_INSTALLERS="true"
+            fi
             if [[ -n "$INPUT_TAG" ]]; then
               TAG="$INPUT_TAG"
             elif [[ "$MODE" == "full" ]]; then
@@ -111,12 +124,14 @@ jobs:
           echo "release_notes=$NOTES" >> "$GITHUB_OUTPUT"
           echo "web_build_id=$WEB_STAMP" >> "$GITHUB_OUTPUT"
           echo "e2e_level=$E2E_LEVEL" >> "$GITHUB_OUTPUT"
-          echo "Resolved mode=$MODE release_tag=$TAG web_build_id=$WEB_STAMP e2e_level=$E2E_LEVEL"
+          echo "shell_tag=v${PKG_VER}" >> "$GITHUB_OUTPUT"
+          echo "refresh_installers=$REFRESH_INSTALLERS" >> "$GITHUB_OUTPUT"
+          echo "Resolved mode=$MODE release_tag=$TAG web_build_id=$WEB_STAMP e2e_level=$E2E_LEVEL shell_tag=v${PKG_VER} refresh_installers=$REFRESH_INSTALLERS"
 
       - name: Prepare Draft Release in distribution repo (full mode)
         if: steps.meta.outputs.mode == 'full'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
           TARGET_REF: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
@@ -226,7 +241,7 @@ jobs:
 
       - name: Fetch previous authoritative version-manifest.json (inherit shell installer links)
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
           LEGACY_REPO: ${{ vars.LEGACY_RELEASE_REPO || '' }}
         run: |
@@ -251,7 +266,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           repository: ${{ vars.RELEASE_REPO || github.repository }}
-          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
           tag_name: ${{ needs.prepare.outputs.release_tag }}
           name: "TwinkleBot Core + Frontend OTA (${{ needs.prepare.outputs.release_tag }})"
           target_commitish: ${{ vars.RELEASE_REPO && 'main' || github.sha }}
@@ -313,6 +328,24 @@ jobs:
             --title "TwinkleBot Authoritative Update Channel" \
             --notes "Active version-manifest.json pointer (${RELEASE_TAG})."
 
+      - name: Trigger background same-version shell installer refresh
+        if: ${{ needs.prepare.outputs.refresh_installers == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          SHELL_TAG: ${{ needs.prepare.outputs.shell_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+          WEB_BUILD_ID: ${{ needs.prepare.outputs.web_build_id }}
+          OTA_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          gh workflow run refresh-shell-installers.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            -f shell_tag="$SHELL_TAG" \
+            -f source_ref="$SOURCE_SHA" \
+            -f web_build_id="$WEB_BUILD_ID" \
+            -f ota_tag="$OTA_TAG"
+
   build-desktop:
     name: Build Desktop (${{ matrix.platform }})
     needs: [prepare, release-e2e]
@@ -347,11 +380,13 @@ jobs:
         run: npm ci
 
       - name: Package Electron desktop application (${{ matrix.platform }})
+        env:
+          WEB_BUILD_ID: "${{ needs.prepare.outputs.web_build_id }}"
         run: npm run ${{ matrix.script }}
 
       - name: Upload desktop installers & SHA-256 metadata directly to Draft Release
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           MATRIX_PLATFORM: ${{ matrix.platform }}
@@ -418,6 +453,8 @@ jobs:
           "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0" >/dev/null
 
       - name: Install dependencies, sync Capacitor Android & assemble APKs
+        env:
+          WEB_BUILD_ID: "${{ needs.prepare.outputs.web_build_id }}"
         run: |
           npm ci
           APP_TARGET=mobile npm run mobile:build:web
@@ -428,7 +465,7 @@ jobs:
 
       - name: Sign, upload APKs & SHA-256 metadata to Draft Release
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -491,7 +528,7 @@ jobs:
 
       - name: Download SHA-256 metadata files directly from Draft Release (0 Actions artifact storage)
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ vars.RELEASE_REPO && (secrets.RELEASE_PAT || secrets.GITHUB_TOKEN) || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ vars.RELEASE_REPO || github.repository }}
           RELEASE_TAG: "${{ needs.prepare.outputs.release_tag }}"
         run: |

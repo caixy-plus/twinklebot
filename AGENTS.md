@@ -39,7 +39,8 @@ Multi-Bot AI desktop & mobile agent: orchestrates Gemini / Vertex AI / OpenAI / 
 - **Default Hot-Update Rule (`ota-only`)**: When changes touch only hot-updatable layers (`src/server/**`, `src/agent/**`, `src/store/**`,
   `src/lib/**`, `src/shared/**`, `src/web/**`, `public/**`, `executor/executor.py`, bundled JS deps) without touching native shell layers
   (`src/electron/**`, `electron/*`, `android/**`, `ios/**`, `capacitor.config.*`, native deps), **do NOT run `npm run version:bump`** —
-  release via `ota-*` / `mode=ota-only`, keeping shell `X.Y.Z` & native `buildCode` unchanged.
+  release via `ota-*` / `mode=ota-only`, keeping shell `X.Y.Z` & native `buildCode` unchanged (`ota-only` asynchronously dispatches
+  `refresh-shell-installers.yml` in the background to overwrite the current shell version's installers without blocking OTA reporting).
 - **Shell Version Rollover** (when native shells change or user requests full installers):
   - `PATCH` ranges **0–9** (`1.0.9 -> 1.1.0`); `MINOR` ranges **0–19** (`1.19.9 -> 2.0.0`); mobile `buildCode` increments `+1`.
   - Sync atomically via `npm run version:bump`; always check `version-policy.json` (`shells.*`, `minVersionFor*`, `apiCapabilities`). When raising shell capabilities, also raise `minVersionForOta` / `minVersionForCoreOta` / `minBuildCodeForOta`.
