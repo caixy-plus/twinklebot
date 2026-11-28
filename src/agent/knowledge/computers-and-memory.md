@@ -59,9 +59,9 @@ TwinkleBot 明确区分两台电脑环境，各有独立权限与看屏交互方
 当主人点击「整理记忆」或在对话中要求盘点、去重、对齐或清理全局记忆与各 Bot 专属记忆时，**管理员 Bot** 按以下 4 步执行（普通 Bot 应引导主人交由管理员 Bot 处理）：
 
 1. **按复杂度自选模型档位**：轻量去重或单 Bot 归类可用当前默认档位；若涉及多 Bot 跨全局冲突排查、长技术规范整理或与人设比对，先调用 `route_escalate(need: "think" | "plan")` 升档再决策，不要用弱模型硬吞复杂语义判断。
-2. **全景体检（含各 Bot 人设）**：调用 `memory_manage(action: "list", target_bot: "*")` 一次获取全局记忆与全部 Bot 记忆及 `rolePromptExcerpt`（禁止用 `host_run_shell` + `curl` 或直接改写 `data/*.json`）。重点排查：语义重复、全局与单 Bot 规则冲突、已被写入 `rolePrompt` 的重复条目、错误分类（`identity` / `preference` / `rule` / `context` / `general`）。
-3. **无损实体铁律 + 先给预览方案**：
-   - 所有具体账号（`@handle`）、平台名单、邮箱、URL、文件路径、端口号、精确数字，**严禁靠泛化总结抹掉**；
+2. **全景体检（含各 Bot 人设）**：调用 `memory_manage(action: "list", target_bot: "*")` 一次获取全局记忆与全部 Bot 记忆及 `rolePromptExcerpt`（禁止用 `host_run_shell` + `curl` 或直接改写 `data/*.json`）。根据语义需要判断是否有整理必要，不要为了凑合并而强行重写本就清晰的条目。重点排查：语义重复、全局与单 Bot 规则冲突、已被写入 `rolePrompt` 的重复条目、错误分类（`identity` / `preference` / `rule` / `context` / `general`）。
+3. **无损实体铁律 + 逐条 Diff 预览**：
+   - 所有具体账号（`@handle`）、平台名单、邮箱、URL、文件路径、端口号（如 `:3230`、`端口 7300`）、精确数字，**严禁靠泛化总结抹掉**；
    - 主题相关但内容互补的独立规则（如「平台名单」与「登录核实流程」）**不要强行合并**；
-   - 涉及合并或删除条目时，先向主人清晰列出「整理前后条目数、字数变化与变更摘要」，获确认后再写回。
-4. **安全写入与一键回滚**：通过 `memory_manage(action: "replace_all", scope, target_bot?, memories, reason)` 写回。工具底层会在覆盖前**自动保存 `membak-*` 快照到 `memory-backups.json`** 并执行实体防丢护栏校验（若误丢 `@账号`/路径等会被自动拦截）。若主人仍不满意，随时用 `memory_manage(action: "list_backups")` + `memory_manage(action: "restore", backup_id)` 一键回滚。
+   - 涉及合并或删除条目时，先向主人清晰列出「整理前后条目数、逐条操作 diff、字数变化与变更摘要」，获确认后再写回。
+4. **定点 Patch 写入与一键回滚**：优先通过 `memory_manage(action: "patch", scope, target_bot?, ops, reason)` 做定点操作（`merges` / `removals` / `recategorizations` / `updates`），未提及的记忆条目一个字节都不动；仅在需要整体重建顺序时才使用 `replace_all`。工具底层会在写回前**自动保存 `membak-*` 快照到 `memory-backups.json`** 并执行实体防丢护栏校验（若误丢 `@账号`/路径/端口等会被自动拦截）。若主人仍不满意，随时用 `memory_manage(action: "list_backups")` + `memory_manage(action: "restore", backup_id)` 一键回滚。

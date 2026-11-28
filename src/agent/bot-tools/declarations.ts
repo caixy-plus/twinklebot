@@ -546,7 +546,7 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "memory_manage",
     description:
-      "Manage dedicated Bot Memory (`scope: 'bot'`) or shared Global Memory (`scope: 'global'`): `list`, `save`, `remove`, `toggle`, `backup`, `list_backups`, `restore`, or `replace_all`. Admin Bot ONLY may also pass `target_bot` (Bot ID/name, or `'*'` with `action: 'list'` to inspect all Bots and personas at once). `replace_all` and `remove` automatically save a rollback backup and enforce a lossless entity guardrail (never drop `@handles`, rosters, URLs, or paths). Set `trigger: 'explicit'` when the user explicitly asked to remember; set `trigger: 'auto'` ONLY for genuinely durable cross-session preferences/rules. Never use shell/`curl` for memory governance.",
+      "Manage dedicated Bot Memory (`scope: 'bot'`) or shared Global Memory (`scope: 'global'`): `list`, `save`, `remove`, `toggle`, `backup`, `list_backups`, `restore`, `patch`, or `replace_all`. Admin Bot ONLY may also pass `target_bot` (Bot ID/name, or `'*'` with `action: 'list'` to inspect all Bots and personas at once). Prefer `action: 'patch'` with `ops` (`merges`/`removals`/`recategorizations`/`updates`) for surgical cleanup so unrelated memories stay byte-for-byte untouched; both `patch` and `replace_all` save a rollback backup and enforce a lossless entity guardrail (never drop `@handles`, rosters, URLs, paths, or ports). Set `trigger: 'explicit'` when the user explicitly asked to remember; set `trigger: 'auto'` ONLY for genuinely durable cross-session preferences/rules. Never use shell/`curl` for memory governance.",
     parameters: {
       type: "object",
       properties: {
@@ -560,6 +560,7 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
             "backup",
             "list_backups",
             "restore",
+            "patch",
             "replace_all",
           ],
           description: "Operation to perform on memory.",
@@ -606,6 +607,74 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
           type: "boolean",
           description: "Optional enabled state when saving or toggling a memory (default: true).",
         },
+        ops: {
+          type: "object",
+          description:
+            "For action='patch': targeted operations ({ merges?, removals?, recategorizations?, updates? }) leaving all unreferenced memories untouched.",
+          properties: {
+            merges: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  sourceIds: { type: "array", items: { type: "string" } },
+                  name: { type: "string" },
+                  content: { type: "string" },
+                  category: {
+                    type: "string",
+                    enum: ["identity", "preference", "rule", "context", "general"],
+                  },
+                  enabled: { type: "boolean" },
+                  reason: { type: "string" },
+                },
+                required: ["sourceIds", "name", "content"],
+              },
+            },
+            removals: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  reason: { type: "string" },
+                },
+                required: ["id"],
+              },
+            },
+            recategorizations: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  category: {
+                    type: "string",
+                    enum: ["identity", "preference", "rule", "context", "general"],
+                  },
+                },
+                required: ["id", "category"],
+              },
+            },
+            updates: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  name: { type: "string" },
+                  content: { type: "string" },
+                  category: {
+                    type: "string",
+                    enum: ["identity", "preference", "rule", "context", "general"],
+                  },
+                  enabled: { type: "boolean" },
+                  reason: { type: "string" },
+                },
+                required: ["id"],
+              },
+            },
+          },
+        },
         memories: {
           type: "array",
           description:
@@ -629,15 +698,15 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
         allow_entity_drop: {
           type: "boolean",
           description:
-            "For action='replace_all': ONLY set true after the user explicitly confirmed deleting concrete handles/rosters/paths flagged by the fidelity guardrail.",
+            "For action='patch' or 'replace_all': ONLY set true after the user explicitly confirmed deleting concrete handles/rosters/paths/ports flagged by the fidelity guardrail.",
         },
         backup_id: {
           type: "string",
-          description: "For action='restore': snapshot ID returned by backup/replace_all/list_backups.",
+          description: "For action='restore': snapshot ID returned by backup/patch/replace_all/list_backups.",
         },
         reason: {
           type: "string",
-          description: "Optional short audit note for backup or replace_all.",
+          description: "Optional short audit note for backup, patch, or replace_all.",
         },
       },
       required: ["action"],

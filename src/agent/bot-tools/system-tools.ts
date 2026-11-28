@@ -14,6 +14,7 @@ import {
 } from "../memory-extractor.js";
 import {
   analyzeMergeFidelity,
+  applyMemoryPatchOps,
   validateConsolidatedMemoryListWithReport,
 } from "../memory-consolidator.js";
 import { normalizeMemorySettings } from "../../shared/entities.js";
@@ -346,6 +347,81 @@ export async function handleSystemBotTool(
           preRestoreBackupId: preRestoreBackup?.id,
           count: restoredGlobal.length,
           memories: restoredGlobal.map((m: any) => slimMemory(m, "global")),
+        };
+      }
+
+      if (action === "patch") {
+        const rawOps =
+          args.ops && typeof args.ops === "object" && !Array.isArray(args.ops)
+            ? args.ops
+            : {
+                ...(Array.isArray(args.merges) ? { merges: args.merges } : {}),
+                ...(Array.isArray(args.removals) ? { removals: args.removals } : {}),
+                ...(Array.isArray(args.recategorizations)
+                  ? { recategorizations: args.recategorizations }
+                  : {}),
+                ...(Array.isArray(args.updates) ? { updates: args.updates } : {}),
+              };
+        const hasAnyOp =
+          Array.isArray(rawOps.merges) ||
+          Array.isArray(rawOps.removals) ||
+          Array.isArray(rawOps.recategorizations) ||
+          Array.isArray(rawOps.updates);
+        if (!hasAnyOp) {
+          return {
+            ok: false,
+            error: "patch 需要提供 ops（至少包含 merges / removals / recategorizations / updates 之一）",
+          };
+        }
+        const targetScope: "bot" | "global" =
+          args.scope === "global" ? "global" : botSession ? "bot" : "global";
+        const prevList = targetScope === "bot" ? botList : globalList;
+        const backup = store.saveMemoryBackup?.({
+          scope: targetScope,
+          sessionId: targetScope === "bot" ? botSession?.id : "",
+          botName: targetScope === "bot" ? botSession?.title : "",
+          reason:
+            typeof args.reason === "string" && args.reason.trim()
+              ? args.reason.trim()
+              : "pre-patch",
+          memories: prevList,
+        });
+
+        const patchRes = applyMemoryPatchOps(prevList, rawOps, {
+          allowEntityDrop: args.allow_entity_drop === true,
+        });
+        if (!patchRes.ok) {
+          return {
+            ok: false,
+            action: "patch",
+            blockedByFidelityGuard: true,
+            scope: targetScope,
+            backupId: backup?.id,
+            missingTokens: patchRes.missingTokens || [],
+            beforeChars: patchRes.beforeChars ?? 0,
+            afterChars: patchRes.afterChars ?? 0,
+            shrinkPercent: patchRes.shrinkPercent ?? 0,
+            error: patchRes.error,
+          };
+        }
+
+        const nextMemories = patchRes.memories || [];
+        persistTargetList(targetScope, nextMemories);
+        return {
+          ok: true,
+          action: "patch",
+          scope: targetScope,
+          ...(targetScope === "bot" && botSession
+            ? { sessionId: botSession.id, botName: botSession.title || "" }
+            : {}),
+          backupId: backup?.id,
+          beforeCount: prevList.length,
+          afterCount: nextMemories.length,
+          appliedOps: patchRes.appliedOps,
+          diffs: patchRes.diffs || [],
+          warnings: patchRes.warnings || [],
+          dropped: patchRes.dropped || [],
+          memories: nextMemories.map((m) => slimMemory(m, targetScope)),
         };
       }
 

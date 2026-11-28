@@ -35,6 +35,8 @@ import {
   normalizeTelegramChannelConfig,
 } from "../../lib/channel-integrations.js";
 import {
+  applyMemoryPatchOps,
+  checkProposedListFidelity,
   consolidateMemories,
   validateConsolidatedMemoryListWithReport,
 } from "../../agent/memory-consolidator.js";
@@ -210,9 +212,94 @@ export async function handleSkillsRoutes(
           }
           const scope: "bot" | "global" = body?.scope === "bot" ? "bot" : "global";
           const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
-          if (!Array.isArray(body?.proposedList)) {
-            return sendJson(res, 400, { error: "proposedList array is required" });
+          const hasOps =
+            body?.ops &&
+            typeof body.ops === "object" &&
+            !Array.isArray(body.ops) &&
+            (Array.isArray(body.ops.merges) ||
+              Array.isArray(body.ops.removals) ||
+              Array.isArray(body.ops.recategorizations) ||
+              Array.isArray(body.ops.updates));
+          const hasProposedList = Array.isArray(body?.proposedList);
+          if (!hasOps && !hasProposedList) {
+            return sendJson(res, 400, { error: "ops object or proposedList array is required" });
           }
+          const allowEntityDrop = body?.allowEntityDrop === true;
+
+          const applyConsolidateToScope = (origList: any[], persistFn: (nextList: any[]) => void, extraMeta: Record<string, any> = {}) => {
+            const backup = ctx.store?.saveMemoryBackup?.({
+              scope,
+              ...(scope === "bot" ? { sessionId } : {}),
+              ...(extraMeta.botName ? { botName: extraMeta.botName } : {}),
+              reason: "pre-consolidate-apply",
+              memories: origList,
+            });
+
+            if (hasOps) {
+              const patchRes = applyMemoryPatchOps(origList, body.ops, { allowEntityDrop });
+              if (!patchRes.ok) {
+                return sendJson(res, 422, {
+                  ok: false,
+                  blockedByFidelityGuard: true,
+                  scope,
+                  ...(sessionId ? { sessionId } : {}),
+                  ...(backup?.id ? { backupId: backup.id } : {}),
+                  missingTokens: patchRes.missingTokens || [],
+                  beforeChars: patchRes.beforeChars ?? 0,
+                  afterChars: patchRes.afterChars ?? 0,
+                  shrinkPercent: patchRes.shrinkPercent ?? 0,
+                  error: patchRes.error || "检测到记忆关键实体丢失，已被防丢护栏拦截",
+                });
+              }
+              const nextMemories = patchRes.memories || [];
+              persistFn(nextMemories);
+              return sendJson(res, 200, {
+                ok: true,
+                mode: "patch",
+                scope,
+                ...(sessionId ? { sessionId } : {}),
+                ...(backup?.id ? { backupId: backup.id } : {}),
+                count: nextMemories.length,
+                memories: nextMemories,
+                dropped: patchRes.dropped || [],
+                warnings: patchRes.warnings || [],
+                appliedOps: patchRes.appliedOps,
+                diffs: patchRes.diffs || [],
+              });
+            }
+
+            const { memories: sanitized, dropped } = validateConsolidatedMemoryListWithReport(
+              body.proposedList,
+              origList
+            );
+            if (!allowEntityDrop && origList.length > 0) {
+              const fidelity = checkProposedListFidelity(origList, sanitized);
+              if (fidelity.isLossy) {
+                return sendJson(res, 422, {
+                  ok: false,
+                  blockedByFidelityGuard: true,
+                  scope,
+                  ...(sessionId ? { sessionId } : {}),
+                  ...(backup?.id ? { backupId: backup.id } : {}),
+                  missingTokens: fidelity.missingTokens,
+                  beforeChars: fidelity.beforeChars,
+                  afterChars: fidelity.afterChars,
+                  shrinkPercent: fidelity.shrinkPercent,
+                  error: `检测到整理结果遗漏了原有关键实体/账号/路径（${fidelity.missingTokens.slice(0, 6).join(", ")}），底层防丢护栏已拦截本次应用。若主人明确确认要删除，可传 allowEntityDrop: true。`,
+                });
+              }
+            }
+            persistFn(sanitized);
+            return sendJson(res, 200, {
+              ok: true,
+              scope,
+              ...(sessionId ? { sessionId } : {}),
+              ...(backup?.id ? { backupId: backup.id } : {}),
+              count: sanitized.length,
+              memories: sanitized,
+              dropped,
+            });
+          };
 
           if (scope === "bot") {
             const botSession = sessionId ? ctx.store?.getSession?.(sessionId) : null;
@@ -220,60 +307,33 @@ export async function handleSkillsRoutes(
               return sendJson(res, 404, { error: "未找到指定的 Bot 会话" });
             }
             const origList = Array.isArray(botSession.memories) ? botSession.memories : [];
-            const backup = ctx.store?.saveMemoryBackup?.({
-              scope: "bot",
-              sessionId: botSession.id,
-              botName: botSession.title || "",
-              reason: "pre-consolidate-apply",
-              memories: origList,
-            });
-            const { memories: sanitized, dropped } = validateConsolidatedMemoryListWithReport(
-              body.proposedList,
-              origList
+            return applyConsolidateToScope(
+              origList,
+              (nextMemories) => {
+                const updatedSession = ctx.store?.updateSession?.(botSession.id, {
+                  memories: nextMemories,
+                  touch: false,
+                });
+                ctx.broadcastEvent?.({
+                  type: "session_updated",
+                  sessionId: botSession.id,
+                  session: updatedSession || { ...botSession, memories: nextMemories },
+                });
+              },
+              { botName: botSession.title || "" }
             );
-            const updatedSession = ctx.store?.updateSession?.(botSession.id, {
-              memories: sanitized,
-              touch: false,
-            });
-            ctx.broadcastEvent?.({
-              type: "session_updated",
-              sessionId: botSession.id,
-              session: updatedSession || { ...botSession, memories: sanitized },
-            });
-            return sendJson(res, 200, {
-              ok: true,
-              scope: "bot",
-              sessionId: botSession.id,
-              ...(backup?.id ? { backupId: backup.id } : {}),
-              count: sanitized.length,
-              memories: sanitized,
-              dropped,
-            });
           }
 
           const settings = ctx.store?.readSettings?.() || {};
           const origGlobal = Array.isArray(settings.globalMemories)
             ? settings.globalMemories
             : [];
-          const backupGlobal = ctx.store?.saveMemoryBackup?.({
-            scope: "global",
-            reason: "pre-consolidate-apply",
-            memories: origGlobal,
-          });
-          const { memories: sanitizedGlobal, dropped: droppedGlobal } =
-            validateConsolidatedMemoryListWithReport(body.proposedList, origGlobal);
-          ctx.store?.writeSettings?.({
-            globalMemories: sanitizedGlobal,
-            privateSkills: [],
-          });
-          ctx.broadcastSkillsUpdated();
-          return sendJson(res, 200, {
-            ok: true,
-            scope: "global",
-            ...(backupGlobal?.id ? { backupId: backupGlobal.id } : {}),
-            count: sanitizedGlobal.length,
-            memories: sanitizedGlobal,
-            dropped: droppedGlobal,
+          return applyConsolidateToScope(origGlobal, (nextMemories) => {
+            ctx.store?.writeSettings?.({
+              globalMemories: nextMemories,
+              privateSkills: [],
+            });
+            ctx.broadcastSkillsUpdated();
           });
         }
 

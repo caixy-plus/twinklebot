@@ -783,4 +783,355 @@ test("Admin Bot Memory Governance: cross-Bot list/backup/replace_all/restore, fi
   assert.equal(sop.ok, true);
   assert.match(String(sop.content || ""), /route_escalate/);
   assert.match(String(sop.content || ""), /replace_all/);
+  assert.match(String(sop.content || ""), /patch/);
+});
+
+test("Targeted ops patch (HTTP & memory_manage action='patch') preserves untouched entries byte-for-byte", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-mem-patch-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const store = createStore(dir);
+  const admin = store.ensureAdminBot();
+  const longTitle = "超长标题保留校验条目不被截断_超过二十八个字符边界测试_KEEP_EXACT";
+  const untouchedUpdatedAt = "2026-01-01T00:00:00.000Z";
+  const bot = store.createSession({
+    title: "定点Patch助手",
+    memories: [
+      {
+        id: "m-untouched",
+        name: longTitle,
+        content: "未提及的长期条目内容，一个字节都不应被重写或截断。",
+        category: "context",
+        enabled: true,
+        source: "explicit",
+        updatedAt: untouchedUpdatedAt,
+        customFlag: "preserve-me",
+      } as any,
+      { id: "m-dup-a", name: "格式A", content: "输出优先用表格。", category: "general", enabled: true },
+      { id: "m-dup-b", name: "格式B", content: "输出统一附核心结论。", category: "general", enabled: true },
+      { id: "m-recat", name: "禁止直推", content: "禁止未经确认执行 git push。", category: "general", enabled: true },
+      { id: "m-drop", name: "临时日志", content: "昨天临时测试记录可移除", category: "context", enabled: true },
+    ],
+  });
+
+  const srv = createServer({
+    store,
+    model: {} as any,
+    config: { port: 0, host: "127.0.0.1", dataDir: dir },
+  });
+  await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+  t.after(() => new Promise<void>((resolve) => srv.close(() => resolve())));
+  const base = `http://127.0.0.1:${(srv.address() as any).port}`;
+
+  // 1. Apply targeted ops via HTTP /api/memories/consolidate/apply
+  const patchRes = await fetch(`${base}/api/memories/consolidate/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scope: "bot",
+      sessionId: bot.id,
+      ops: {
+        merges: [
+          {
+            sourceIds: ["m-dup-a", "m-dup-b"],
+            name: "表格与结论规范",
+            content: "输出优先用表格，并统一附核心结论。",
+            category: "rule",
+            reason: "合并两条格式要求",
+          },
+        ],
+        removals: [{ id: "m-drop", reason: "临时日志" }],
+        recategorizations: [{ id: "m-recat", category: "rule" }],
+      },
+    }),
+  });
+  assert.equal(patchRes.status, 200);
+  const patchBody: any = await patchRes.json();
+  assert.equal(patchBody.ok, true);
+  assert.equal(patchBody.mode, "patch");
+  assert.equal(patchBody.appliedOps.untouchedCount, 1);
+  assert.equal(patchBody.appliedOps.mergedCount, 1);
+  assert.equal(patchBody.appliedOps.removedCount, 1);
+  assert.equal(patchBody.appliedOps.recategorizedCount, 1);
+
+  const afterHttp: any[] = store.getSession(bot.id)?.memories || [];
+  assert.equal(afterHttp.length, 3);
+  assert.deepEqual(afterHttp[0], {
+    id: "m-untouched",
+    name: longTitle,
+    content: "未提及的长期条目内容，一个字节都不应被重写或截断。",
+    category: "context",
+    enabled: true,
+    source: "explicit",
+    updatedAt: untouchedUpdatedAt,
+    customFlag: "preserve-me",
+  });
+  assert.equal(afterHttp[2].id, "m-recat");
+  assert.equal(afterHttp[2].name, "禁止直推");
+  assert.equal(afterHttp[2].content, "禁止未经确认执行 git push。");
+  assert.equal(afterHttp[2].category, "rule");
+
+  // 2. Targeted patch via Admin Bot memory_manage(action: "patch")
+  const toolPatch = await runBotCollabTool(
+    "memory_manage",
+    {
+      action: "patch",
+      scope: "bot",
+      target_bot: bot.id,
+      reason: "微调归类",
+      ops: {
+        recategorizations: [{ id: "m-recat", category: "preference" }],
+      },
+    },
+    { store, senderSessionId: admin.id, senderBot: admin }
+  );
+  assert.equal(toolPatch.ok, true);
+  assert.equal(toolPatch.action, "patch");
+  assert.ok(toolPatch.backupId?.startsWith("membak-"));
+  const afterTool: any[] = store.getSession(bot.id)?.memories || [];
+  assert.equal(afterTool[0].updatedAt, untouchedUpdatedAt);
+  assert.equal(afterTool[0].name, longTitle);
+  assert.equal(afterTool[2].category, "preference");
+});
+
+test("Apply entity guardrail blocks lossy merges & port drops (422) while permitting normalized ports and explicit override", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-mem-guard-apply-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // 1. Port token detection + timestamp non-false-positive + normalization check
+  const portTokens = extractCriticalFactTokens(
+    "本地网关跑在 localhost:3230，沙箱端口 7300；每日 19:30 汇报"
+  );
+  assert.ok(portTokens.includes("port:3230"));
+  assert.ok(portTokens.includes("port:7300"));
+  assert.equal(portTokens.includes("port:30"), false, "HH:MM timestamps must not be parsed as ports");
+
+  const normPortFid = analyzeMergeFidelity(
+    [
+      { id: "p1", name: "端口1", content: "本地服务端口 3230", category: "context", enabled: true },
+      { id: "p2", name: "端口2", content: "沙箱执行器端口 7300", category: "context", enabled: true },
+    ],
+    "本地服务 :3230，沙箱执行器 127.0.0.1:7300"
+  );
+  assert.equal(normPortFid.hasCriticalEntityLoss, false);
+  assert.equal(normPortFid.isLossy, false);
+
+  const dropPortFid = analyzeMergeFidelity(
+    [
+      { id: "p1", name: "端口1", content: "本地服务端口 3230", category: "context", enabled: true },
+      { id: "p2", name: "端口2", content: "沙箱执行器端口 7300", category: "context", enabled: true },
+    ],
+    "本地服务和沙箱执行器统一按默认配置运行"
+  );
+  assert.equal(dropPortFid.hasCriticalEntityLoss, true);
+  assert.equal(dropPortFid.isLossy, true);
+  assert.ok(dropPortFid.missingTokens.includes("port:3230"));
+
+  // 2. HTTP /api/memories/consolidate/apply blocks both lossy ops and lossy proposedList with 422
+  const store = createStore(dir);
+  const bot = store.createSession({
+    title: "推广官护栏验证",
+    memories: [
+      {
+        id: "pm-1",
+        name: "7平台账号",
+        content:
+          "核心 7 平台：X @Jokesob、DEV.to @klipapp、Product Hunt @twinklebot、https://dev.to/klipapp。",
+        category: "rule",
+        enabled: true,
+      },
+      {
+        id: "pm-2",
+        name: "服务端口",
+        content: "本地控制台 :3230，沙箱端口 7300",
+        category: "context",
+        enabled: true,
+      },
+    ],
+  });
+
+  const srv = createServer({
+    store,
+    model: {} as any,
+    config: { port: 0, host: "127.0.0.1", dataDir: dir },
+  });
+  await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+  t.after(() => new Promise<void>((resolve) => srv.close(() => resolve())));
+  const base = `http://127.0.0.1:${(srv.address() as any).port}`;
+
+  // Lossy ops.merges dropping @handles & ports -> 422
+  const badOpsRes = await fetch(`${base}/api/memories/consolidate/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scope: "bot",
+      sessionId: bot.id,
+      ops: {
+        merges: [
+          {
+            sourceIds: ["pm-1", "pm-2"],
+            name: "压缩规则",
+            content: "统一执行外宣平台与本地端口规范。",
+            category: "rule",
+          },
+        ],
+      },
+    }),
+  });
+  assert.equal(badOpsRes.status, 422);
+  const badOpsBody: any = await badOpsRes.json();
+  assert.equal(badOpsBody.ok, false);
+  assert.equal(badOpsBody.blockedByFidelityGuard, true);
+  assert.ok(badOpsBody.missingTokens.includes("@Jokesob"));
+  assert.ok(badOpsBody.missingTokens.includes("port:3230"));
+  assert.equal(store.getSession(bot.id)?.memories?.length, 2);
+
+  // Lossy proposedList dropping @handles -> 422
+  const badListRes = await fetch(`${base}/api/memories/consolidate/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scope: "bot",
+      sessionId: bot.id,
+      proposedList: [
+        { id: "pm-merged", name: "平台汇总", content: "统一整理了所有平台和端口规范", category: "rule", enabled: true },
+      ],
+    }),
+  });
+  assert.equal(badListRes.status, 422);
+  const badListBody: any = await badListRes.json();
+  assert.equal(badListBody.blockedByFidelityGuard, true);
+  assert.ok(badListBody.missingTokens.includes("@Jokesob"));
+  assert.equal(store.getSession(bot.id)?.memories?.length, 2);
+
+  // Explicit allowEntityDrop: true succeeds cleanly
+  const allowRes = await fetch(`${base}/api/memories/consolidate/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scope: "bot",
+      sessionId: bot.id,
+      allowEntityDrop: true,
+      ops: {
+        merges: [
+          {
+            sourceIds: ["pm-1", "pm-2"],
+            name: "平台端口汇总",
+            content: "统一执行精简后外宣平台与端口规范。",
+            category: "rule",
+          },
+        ],
+      },
+    }),
+  });
+  assert.equal(allowRes.status, 200);
+  assert.equal(store.getSession(bot.id)?.memories?.length, 1);
+});
+
+test("Consolidate preview emits per-item diffs & ops for both deterministic and LLM modes and applies cleanly via patch", async (t) => {
+  resetConsolidationLocksForTests();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tb-mem-auto-diff-"));
+  t.after(() => {
+    resetConsolidationLocksForTests();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const store = createStore(dir);
+  const smallBot = store.createSession({
+    title: "规则模式验证",
+    memories: [
+      { id: "s-1", name: "称呼", content: "称呼我为 Boss", category: "general", enabled: true },
+      { id: "s-2", name: "称呼重复", content: "称呼我为 Boss", category: "identity", enabled: true },
+      { id: "s-3", name: "语气偏好", content: "平时偏好简短中文回答", category: "general", enabled: true },
+    ],
+  });
+  const semanticBot = store.createSession({
+    title: "语义整理验证",
+    memories: [
+      { id: "l-1", name: "规则1", content: "第一条独立规则内容", category: "rule", enabled: true },
+      { id: "l-2", name: "规则2", content: "第二条独立规则内容", category: "rule", enabled: true },
+      { id: "l-3", name: "规则3", content: "第三条独立规则内容", category: "rule", enabled: true },
+      { id: "l-4", name: "规则4", content: "第四条需要归类的建议", category: "general", enabled: true },
+    ],
+  });
+
+  let llmCalls = 0;
+  const spyModel: any = {
+    summarizeTurn: async () => {
+      llmCalls += 1;
+      return {
+        text: JSON.stringify({
+          summary: "合并前两条规则并归类第四条",
+          merges: [
+            {
+              sourceIds: ["l-1", "l-2"],
+              name: "规则1与2",
+              content: "第一条独立规则内容；第二条独立规则内容",
+              category: "rule",
+              reason: "相近规则合并",
+            },
+          ],
+          removals: [],
+          recategorizations: [{ id: "l-4", category: "preference" }],
+        }),
+      };
+    },
+  };
+
+  const srv = createServer({
+    store,
+    model: spyModel,
+    config: { port: 0, host: "127.0.0.1", dataDir: dir },
+  });
+  await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+  t.after(() => new Promise<void>((resolve) => srv.close(() => resolve())));
+  const base = `http://127.0.0.1:${(srv.address() as any).port}`;
+
+  // 1. Explicit deterministic mode -> 0 LLM calls + diffs/ops populated
+  const detPreview: any = await (
+    await fetch(`${base}/api/memories/consolidate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "bot", sessionId: smallBot.id, mode: "deterministic" }),
+    })
+  ).json();
+  assert.equal(detPreview.ok, true);
+  assert.equal(llmCalls, 0);
+  assert.equal(detPreview.plan.mode, "deterministic");
+  assert.equal(typeof detPreview.plan.totalBeforeChars, "number");
+  assert.equal(typeof detPreview.plan.totalAfterChars, "number");
+  assert.equal(typeof detPreview.plan.deltaChars, "number");
+  assert.ok(Array.isArray(detPreview.plan.diffs));
+  assert.ok(detPreview.plan.diffs.some((d: any) => d.type === "merge"));
+  assert.ok(detPreview.plan.ops?.merges?.length >= 1);
+
+  // 2. Default LLM mode (even <5 entries when needed) -> invokes LLM & emits diffs + directly-applicable ops
+  const llmPreview: any = await (
+    await fetch(`${base}/api/memories/consolidate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "bot", sessionId: semanticBot.id }),
+    })
+  ).json();
+  assert.equal(llmPreview.ok, true);
+  assert.equal(llmCalls, 1);
+  assert.equal(llmPreview.plan.mode, "llm");
+  assert.equal(llmPreview.plan.diffs.length >= 2, true);
+  assert.equal(llmPreview.plan.ops.merges.length, 1);
+
+  const applyFromPlan: any = await (
+    await fetch(`${base}/api/memories/consolidate/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope: "bot",
+        sessionId: semanticBot.id,
+        ops: llmPreview.plan.ops,
+      }),
+    })
+  ).json();
+  assert.equal(applyFromPlan.ok, true);
+  assert.equal(applyFromPlan.mode, "patch");
+  assert.equal(applyFromPlan.count, 3);
+  assert.equal(applyFromPlan.appliedOps.untouchedCount, 1);
 });
