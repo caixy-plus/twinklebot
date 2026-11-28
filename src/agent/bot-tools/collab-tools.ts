@@ -119,6 +119,11 @@ export async function handleCollabBotTool(
     });
   }
 
+  if (name === "run_subtask") {
+    const { runSubtask } = await import("../subtask-runner.js");
+    return await runSubtask(args, ctx);
+  }
+
   if (name === "send_file") {
     const rawPath = String(args.path || "").trim();
     if (!rawPath) {

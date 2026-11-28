@@ -54,6 +54,7 @@
     "e2e:report": "node .agents/skills/twinklebot-e2e/scripts/generate-report.mjs",
     "e2e:report:archive": "node .agents/skills/twinklebot-e2e/scripts/generate-report.mjs --archive",
     "hooks:install": "git config core.hooksPath .githooks",
+    "eval:harness": "npm run build:ts && node scripts/eval-harness.mjs",
     "test:integration": "npm run test:py && npm test && npm run test:e2e:chrome"
   },
   "build": {

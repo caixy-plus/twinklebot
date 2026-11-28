@@ -2,7 +2,7 @@
 id: computers-and-memory
 title: 双电脑环境（Bot 的电脑 vs 你的电脑）、浏览器引擎与记忆日程
 summary: 沙盒 Ubuntu 与用户宿主机的权限与适用场景分工、3 种浏览器引擎模式切换、专属记忆/全局共享记忆、5 段 Cron 定时任务与资料库
-keywords: Bot的电脑, 你的电脑, 沙盒, Ubuntu, WSL, OrbStack, KimiCU, 浏览器引擎, Headless, Debug, CDP, noVNC, 取得控制权, 专属记忆, 全局共享记忆, 定时任务, 即将进行, Cron, 资料库
+keywords: Bot的电脑, 你的电脑, 沙盒, Ubuntu, WSL, WSL2, OrbStack, 初始化, 排障, UAC, needsReboot, KimiCU, 浏览器引擎, Headless, Debug, CDP, noVNC, 取得控制权, 专属记忆, 全局共享记忆, 定时任务, 即将进行, Cron, 资料库
 platforms: [desktop, mobile, web]
 ---
 
@@ -38,3 +38,18 @@ TwinkleBot 明确区分两台电脑环境，各有独立权限与看屏交互方
   - **静默直存与自动提炼**：当主人明确要求「记住…」时直存落库，对话结束后快模型也会异步静默提炼有价值的长期事实与去重（**不会弹出打扰性的记忆推荐确认卡**）。
 - **定时例行任务（右栏 `即将进行` & `schedule_manage`）**：所有定时任务统一由 **5 段标准 Cron 表达式** 驱动（UI 预设弹窗会实时校验并预览执行频率），到期后自动唤醒对应 Bot 静默执行并将结果留存于会话记录与未读提示中。
 - **资料库（右栏 `资料库` & `library_manage`）**：汇总展示当前 Bot 工作区内全部图片、生成媒体、投递文件与保存的 Markdown 报告笔记；每个 Bot 的工作区目录彼此隔离。
+
+## 环境初始化与排障手册（WSL2 / OrbStack）
+
+仅 **Admin Bot** 在本地模式下有权初始化、修复或升级「Bot 的电脑」沙盒环境（普通 Bot 应引导用户切换至 Admin Bot 操作）：
+
+1. **标准一键初始化与升级**：
+   - 先调用 `computer_provision(action: "probe")` 检测状态，再调用 `computer_provision(action: "install")` 自动完成全栈安装与修复；仅升级执行器或脚本时可调用 `system_diagnostics(action: "update_bot_computer")`。
+   - Windows 宿主机下 `computer_provision(action: "install")` 会自动检测既有 `Ubuntu*` 发行版（如 `Ubuntu-24.04`、`Ubuntu-22.04`）或拉起全新 Ubuntu（`--web-download --no-launch` + `--root` 免交互安装），部署 `/opt/twinklebot/executor.py`、注入内存中的 `TWINKLEBOT_EXECUTOR_TOKEN` 到 `/etc/twinklebot/executor.env`，安装 `xvfb` + `xfce4` + `x11vnc` + `novnc`（`:6080`）+ `xdotool`/`wmctrl`/`xclip`/`imagemagick` + `google-chrome-stable`（CDP `:9222`），配置 systemd 或后台守护进程并校验 `:7300/health`。
+   - macOS 宿主机下自动配置 OrbStack + Ubuntu 桌面栈。
+2. **零凭据探查红线**：
+   - **禁止**读取 `desktop-config.json`、`accounts.json`、`vault.json`（已被策略拦截）、解包 `app.asar`，或把 `~/.hermes` / `~/.cc-gateway` 等无关工具误认为 TwinkleBot 执行器。`computer_provision` 与 `system_diagnostics(update_bot_computer)` 会自动完成精确的 Token 同步。
+3. **全新 Windows PC 异常恢复指引**：
+   - 返回 `needsElevation: true`：请引导主人批准 Windows UAC 管理员提权弹窗（或以管理员身份执行 `wsl --install -d Ubuntu --no-launch`）后重试。
+   - 返回 `needsReboot: true` 或 `needsVirtualization: true`：明确说明 Windows 首次启用了 WSL2 虚拟化组件，需要**重启电脑一次**（或在 BIOS 中开启 Intel VT-x / AMD-V），重启后再次运行 `computer_provision(action: "install")` 即可完成部署。
+   - 若 WSL 内 `apt-get` 因镜像或网络失败：通过 `host_run_shell`（`wsl -d <distro> -u root -- bash -lc '...'`）修复 apt 源后，再调用 `computer_provision(action: "install")` 或 `system_diagnostics(action: "update_bot_computer")` 完成服务拉起与 Token 校验。

@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildSystemInstruction } from "../src/agent/prompt.js";
+import {
+  buildSystemInstruction,
+  PROMPT_BUDGET_SOFT_LIMIT_CHARS,
+} from "../src/agent/prompt.js";
+import { readKnowledgeTopic } from "../src/agent/knowledge-loader.js";
 
 test("system instruction carries the rules", () => {
   const s = buildSystemInstruction({
@@ -40,4 +44,25 @@ test("system instruction provides defaults when config is omitted", () => {
   assert.ok(s.includes("900"));
   assert.ok(s.includes("run_shell"));
   assert.ok(s.includes('risk: "high"'));
+});
+
+test("always-on admin system instruction stays within PROMPT_BUDGET_SOFT_LIMIT_CHARS and offloads provisioning playbook", () => {
+  const adminSys = buildSystemInstruction({
+    enableBotTools: true,
+    isAdminBot: true,
+    deployEnv: "local",
+    hostExecutionMode: "always",
+  });
+  assert.ok(
+    adminSys.length <= PROMPT_BUDGET_SOFT_LIMIT_CHARS,
+    `Admin prompt length ${adminSys.length} exceeded soft budget ${PROMPT_BUDGET_SOFT_LIMIT_CHARS}`
+  );
+  assert.match(adminSys, /app_knowledge\(action: "read", topic: "computers-and-memory"/);
+
+  const section = readKnowledgeTopic("computers-and-memory", {
+    section: "环境初始化与排障",
+  });
+  assert.equal(section.ok, true);
+  assert.match(section.content, /needsElevation/);
+  assert.match(section.content, /needsReboot/);
 });

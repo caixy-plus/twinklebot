@@ -145,6 +145,136 @@ export async function handleSkillsRoutes(
           });
         }
 
+        // Harness² Experience Proposals (Phase H3)
+        if (method === "GET" && pathname === "/api/experience-proposals") {
+          const sessionId = String(url.searchParams.get("sessionId") || "").trim();
+          const status = String(url.searchParams.get("status") || "pending").trim();
+          const proposals =
+            ctx.store?.listExperienceProposals?.({
+              ...(sessionId ? { sessionId } : {}),
+              ...(status ? { status } : {}),
+            }) || [];
+          return sendJson(res, 200, { ok: true, proposals });
+        }
+
+        const expResolveMatch = pathname.match(/^\/api\/experience-proposals\/([^/]+)\/resolve$/);
+        if (method === "POST" && expResolveMatch) {
+          const proposalId = decodeURIComponent(expResolveMatch[1]);
+          let body: any;
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            return sendJson(res, 400, { error: "invalid json" });
+          }
+          const decision = body?.action === "accept" ? "accept" : "dismiss";
+          const allProposals = ctx.store?.listExperienceProposals?.({ status: "all" }) || [];
+          const proposal = allProposals.find((p: any) => p && p.id === proposalId);
+          if (!proposal) {
+            return sendJson(res, 404, { error: "未找到该经验建议" });
+          }
+
+          let applied: any = null;
+          if (decision === "accept" && proposal.status === "pending") {
+            if (
+              (proposal.targetType === "custom_skill" || proposal.targetType === "skill_script") &&
+              proposal.draftSkill
+            ) {
+              try {
+                const ds = proposal.draftSkill;
+                const savedSkill = ctx.store?.saveCustomSkill?.({
+                  ...(ds.id ? { id: ds.id } : {}),
+                  mode: "create",
+                  name: ds.name || proposal.title,
+                  description: ds.description || proposal.cue,
+                  instructions: ds.instructions || proposal.lesson,
+                  ...(Array.isArray(ds.triggers) ? { triggers: ds.triggers } : {}),
+                  scope:
+                    proposal.dimension === "domain" && proposal.sessionId
+                      ? proposal.sessionId
+                      : "global",
+                  createdBy: "bot",
+                  createdByBotId: proposal.sessionId || "",
+                  createdByBotName: proposal.botName || "",
+                });
+                if (savedSkill && ds.scriptName && ds.scriptContent) {
+                  ctx.store?.saveCustomSkillScript?.(
+                    savedSkill.id,
+                    ds.scriptName,
+                    ds.scriptContent
+                  );
+                }
+                ctx.broadcastSkillsUpdated();
+                applied = { kind: "custom_skill", skillId: savedSkill?.id };
+              } catch (err: any) {
+                return sendJson(res, 400, { error: err?.message || "采纳生成技能失败" });
+              }
+            } else {
+              const botSession = proposal.sessionId
+                ? ctx.store?.getSession?.(proposal.sessionId)
+                : null;
+              const memEntry = {
+                id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                name: String(proposal.title || "经验规则").slice(0, 24),
+                content: proposal.lesson,
+                enabled: true,
+                source: "reflection",
+                updatedAt: new Date().toISOString(),
+              };
+              if (botSession) {
+                const prev = Array.isArray(botSession.memories) ? [...botSession.memories] : [];
+                const dup = prev.some(
+                  (m: any) =>
+                    String(m?.content || m?.instruction || m?.desc || "").trim().toLowerCase() ===
+                    String(proposal.lesson || "").trim().toLowerCase()
+                );
+                if (!dup) {
+                  prev.unshift(memEntry);
+                  const updatedSession = ctx.store?.updateSession?.(botSession.id, {
+                    memories: prev,
+                    touch: false,
+                  });
+                  ctx.broadcastEvent?.({
+                    type: "session_updated",
+                    sessionId: botSession.id,
+                    session: updatedSession || { ...botSession, memories: prev },
+                  });
+                }
+                applied = { kind: "bot_playbook", sessionId: botSession.id };
+              } else {
+                const settings = ctx.store?.readSettings?.() || {};
+                const prevGlobal = Array.isArray(settings.globalMemories)
+                  ? [...settings.globalMemories]
+                  : [];
+                const dup = prevGlobal.some(
+                  (m: any) =>
+                    String(m?.content || m?.instruction || m?.desc || "").trim().toLowerCase() ===
+                    String(proposal.lesson || "").trim().toLowerCase()
+                );
+                if (!dup) {
+                  prevGlobal.unshift(memEntry);
+                  ctx.store?.writeSettings?.({ globalMemories: prevGlobal, privateSkills: [] });
+                  ctx.broadcastSkillsUpdated();
+                }
+                applied = { kind: "global_playbook" };
+              }
+            }
+          }
+
+          const nextStatus = decision === "accept" ? "accepted" : "dismissed";
+          const resolved = ctx.store?.resolveExperienceProposal?.(proposalId, nextStatus);
+          ctx.broadcastEvent?.({
+            type: "experience_proposal_resolved",
+            proposalId,
+            status: nextStatus,
+            sessionId: proposal.sessionId,
+          });
+          return sendJson(res, 200, {
+            ok: true,
+            proposal: resolved || { ...proposal, status: nextStatus },
+            ...(applied ? { applied } : {}),
+          });
+        }
+
         // Custom Skills CRUD (shared across all Bots, kept separate from Skills Store)
         if (method === "GET" && pathname === "/api/custom-skills") {
           return sendJson(res, 200, {
@@ -240,6 +370,70 @@ export async function handleSkillsRoutes(
               deleted,
               customSkills: ctx.store?.listCustomSkills?.() || [],
             });
+          }
+        }
+
+        const skillScriptsCollectionMatch = pathname.match(/^\/api\/custom-skills\/([^/]+)\/scripts$/);
+        if (skillScriptsCollectionMatch && method === "POST") {
+          const targetId = decodeURIComponent(skillScriptsCollectionMatch[1]);
+          let body: any;
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            return sendJson(res, 400, { error: "invalid json" });
+          }
+          try {
+            const resData = ctx.store?.saveCustomSkillScript?.(
+              targetId,
+              body?.name || body?.script_name,
+              body?.content ?? body?.script_content
+            );
+            ctx.broadcastSkillsUpdated();
+            return sendJson(res, 200, { ok: true, ...resData });
+          } catch (err: any) {
+            return sendJson(res, 400, { error: err?.message || "保存技能脚本失败" });
+          }
+        }
+
+        const skillScriptItemMatch = pathname.match(/^\/api\/custom-skills\/([^/]+)\/scripts\/([^/]+)$/);
+        if (skillScriptItemMatch) {
+          const targetId = decodeURIComponent(skillScriptItemMatch[1]);
+          const scriptName = decodeURIComponent(skillScriptItemMatch[2]);
+          if (method === "GET") {
+            try {
+              const script = ctx.store?.readCustomSkillScript?.(targetId, scriptName);
+              return sendJson(res, 200, { ok: true, script });
+            } catch (err: any) {
+              return sendJson(res, 404, { error: err?.message || "未找到脚本" });
+            }
+          }
+          if (method === "PUT") {
+            let body: any;
+            try {
+              body = await parseJsonBody(req);
+            } catch {
+              return sendJson(res, 400, { error: "invalid json" });
+            }
+            try {
+              const resData = ctx.store?.saveCustomSkillScript?.(
+                targetId,
+                scriptName,
+                body?.content ?? body?.script_content
+              );
+              ctx.broadcastSkillsUpdated();
+              return sendJson(res, 200, { ok: true, ...resData });
+            } catch (err: any) {
+              return sendJson(res, 400, { error: err?.message || "保存技能脚本失败" });
+            }
+          }
+          if (method === "DELETE") {
+            try {
+              const resData = ctx.store?.deleteCustomSkillScript?.(targetId, scriptName);
+              ctx.broadcastSkillsUpdated();
+              return sendJson(res, 200, { ok: true, ...resData });
+            } catch (err: any) {
+              return sendJson(res, 400, { error: err?.message || "删除技能脚本失败" });
+            }
           }
         }
 

@@ -3,6 +3,7 @@ import type { McpDiscoveredToolSummary, McpRuntimeProfile } from "../lib/mcp-cli
 import { renderPromptTemplate } from "./prompt-loader.js";
 
 export const MAX_PROMPT_MEMORY_SECTION_CHARS = 2500;
+export const PROMPT_BUDGET_SOFT_LIMIT_CHARS = 21500;
 
 export function buildKimiCuPromptSection(
   profile?: McpRuntimeProfile | null,
@@ -250,10 +251,9 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
         : "User's Local Computer";
 
     const adminProvisioningLine = config.isAdminBot
-      ? `- Admin Bot Privilege & Provisioning Playbook: You are the **Admin Bot**. In local mode, ONLY you have permission to initialize, repair, or update Bot's Computer ("Bot 的电脑"):\n` +
-        `  1. **One-Shot Built-in Provisioning**: Always run \`computer_provision(action: "probe")\` → \`computer_provision(action: "install")\` first! On Windows, \`computer_provision(action: "install")\` natively handles the ENTIRE WSL2 + Ubuntu stack automatically: detects any existing \`Ubuntu*\` distro (e.g. \`Ubuntu\`, \`Ubuntu-24.04\`, \`Ubuntu-22.04\`) or installs Ubuntu on a brand-new PC (\`--web-download --no-launch\` + non-interactive \`install --root\`), copies TwinkleBot's bundled \`executor.py\` to \`/opt/twinklebot/executor.py\`, injects the App's exact in-memory \`TWINKLEBOT_EXECUTOR_TOKEN\` into \`/etc/twinklebot/executor.env\`, installs \`xvfb\` + \`xfce4\` + \`x11vnc\` + \`novnc\` (\`:6080\`) + \`xdotool\`/\`wmctrl\`/\`xclip\`/\`imagemagick\` + official Google Chrome (\`google-chrome-stable\`, wrapped at \`/usr/local/bin/google-chrome\` on CDP \`:9222\`), configures systemd (or daemon fallback), and verifies \`:7300/health\`. On macOS, it provisions OrbStack + Ubuntu.\n` +
-        `  2. **Zero Secret Hunting**: NEVER try to read \`desktop-config.json\` / \`accounts.json\` / \`vault.json\` (blocked by security policy), unpack \`app.asar\`, or confuse unrelated user tools (\`~/.hermes\`, \`~/.cc-gateway\`) with TwinkleBot's executor (\`/opt/twinklebot/executor.py\`). Both \`computer_provision(action: "install")\` and \`system_diagnostics(action: "update_bot_computer")\` automatically write the exact matching \`TWINKLEBOT_EXECUTOR_TOKEN\` for you!\n` +
-        `  3. **Brand-New PC Recovery**: If \`computer_provision(action: "install")\` returns \`needsElevation: true\`, guide the user to approve the Windows UAC administrator prompt (or run \`wsl --install -d Ubuntu --no-launch\` as Administrator) and retry. If it returns \`needsReboot: true\` or \`needsVirtualization: true\`, clearly explain that Windows just enabled WSL2 virtualization components for the first time and requires **one PC restart** (or BIOS Intel VT-x / AMD-V enabled), after which re-running \`computer_provision(action: "install")\` will finish deploying the Ubuntu desktop. If WSL \`apt-get\` failed due to network/mirrors, fix apt sources inside WSL via \`host_run_shell\` (\`wsl -d <distro> -u root -- bash -lc '...'\`) and then call \`computer_provision(action: "install")\` or \`system_diagnostics(action: "update_bot_computer")\` to finalize token & service startup.`
+      ? `- Admin Bot Provisioning (Local Mode): ONLY you can install, repair, or update Bot's Computer ("Bot 的电脑"):\n` +
+        `  1. Always run \`computer_provision(action: "probe")\` → \`computer_provision(action: "install")\` (or \`system_diagnostics(action: "update_bot_computer")\`); both inject the exact \`TWINKLEBOT_EXECUTOR_TOKEN\` automatically.\n` +
+        `  2. Never inspect \`desktop-config.json\` / \`accounts.json\` / \`vault.json\` / \`app.asar\`. If install returns \`needsElevation\` / \`needsReboot\` / \`needsVirtualization\` or WSL apt errors, call \`app_knowledge(action: "read", topic: "computers-and-memory", section: "环境初始化与排障")\` for the exact recovery playbook.`
       : `- Environment Provisioning Restriction: Only the Admin Bot has permission to initialize or install the Bot's Computer ("Bot 的电脑") sandbox environment; if the user asks to create or reinstall it, politely instruct them to do so via the Admin Bot.`;
 
     let hostComputerLine = "";
@@ -347,13 +347,29 @@ export function buildSystemInstruction(config: Record<string, any> = {}): string
   }
 
   const rawCustomSkills = Array.isArray(config.customSkills) ? config.customSkills : [];
-  const enabledCustomSkills = rawCustomSkills.filter((s: any) => s && s.enabled !== false && s.id && s.name);
+  const currentBotId = typeof botIdentity?.id === "string" ? botIdentity.id.trim() : "";
+  const enabledCustomSkills = rawCustomSkills.filter((s: any) => {
+    if (!s || s.enabled === false || !s.id || !s.name) return false;
+    const scope = typeof s.scope === "string" ? s.scope.trim() : "global";
+    if (!scope || scope === "global") return true;
+    return Boolean(currentBotId && scope === currentBotId);
+  });
   if (enabledCustomSkills.length > 0) {
     const skillIndexLines = enabledCustomSkills
-      .map((s: any) => `- \`${s.id}\` (**${s.name}**): ${s.description || ""}`)
+      .map((s: any) => {
+        const triggerTag =
+          Array.isArray(s.triggers) && s.triggers.length > 0
+            ? ` (triggers: ${s.triggers.slice(0, 4).join(", ")})`
+            : "";
+        const scriptTag =
+          Array.isArray(s.scripts) && s.scripts.length > 0
+            ? ` [${s.scripts.length} script(s)]`
+            : "";
+        return `- \`${s.id}\` (**${s.name}**)${scriptTag}: ${s.description || ""}${triggerTag}`;
+      })
       .join("\n");
     sections.push(
-      `Shared Custom Workflow Skills (Progressive Disclosure Index):\n${skillIndexLines}\n- IMPORTANT: Only lightweight summaries are shown above. Whenever a user request matches or invokes one of these skills, ALWAYS call \`custom_skill_manage(action: "get", skill: "<id>")\` FIRST to load its full \`SKILL.md\` workflow instructions before executing.`
+      `Shared Custom Workflow Skills (Progressive Disclosure Index):\n${skillIndexLines}\n- IMPORTANT: Only lightweight summaries are shown above. Whenever a user request matches or invokes one of these skills, ALWAYS call \`custom_skill_manage(action: "get", skill: "<id>")\` FIRST to load its full \`SKILL.md\` workflow instructions and bundled script paths before executing.`
     );
   }
 

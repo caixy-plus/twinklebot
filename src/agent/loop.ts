@@ -102,6 +102,11 @@ import {
   summarizeThinkingProgress,
 } from "./thinking-summarizer.js";
 import { runPostTurnMemoryExtraction } from "./memory-extractor.js";
+import {
+  runPostTurnExperienceReflection,
+  type TurnTraceEntry,
+} from "./experience-reflector.js";
+import { createTurnHookState, runPreToolHooks, runPostToolHooks } from "./hooks.js";
 import { USD_TO_CNY } from "./pricing.js";
 
 const MAX_SESSION_TOKEN_SCALES = 256;
@@ -1338,6 +1343,8 @@ async function runTaskInner({
 
     persistSessionHistory(history);
 
+    let hadUserSteer = false;
+    const steerTexts: string[] = [];
     const appendSteeredMessages = (messages: any[]): boolean => {
       if (!Array.isArray(messages) || messages.length === 0) return false;
       let hasVisualSteer = false;
@@ -1358,6 +1365,10 @@ async function runTaskInner({
         if (formatted) formattedTexts.push(formatted);
       }
       if (formattedTexts.length === 0) return false;
+      hadUserSteer = true;
+      for (const rt of rawTexts) {
+        if (steerTexts.length < 8) steerTexts.push(rt);
+      }
       const steeredImages = loadVisualAttachmentImages(
         steeredAttachments,
         rawConfiguredWriteRoots,
@@ -1534,6 +1545,67 @@ async function runTaskInner({
     const approvedDraftsInTurn: Array<{ title: string; recipient: string; kind: string }> = [];
     let lastStepCachedTokens = 0;
     let lastStepThinkingLevel = "";
+    let turnToolErrors = 0;
+    const turnTraceEntries: TurnTraceEntry[] = [];
+    const turnHookState = createTurnHookState();
+    const attachPostHookDiagnostics = (
+      currentStepNo: number,
+      toolName: string,
+      toolArgs: Record<string, any> | undefined,
+      rawResult: any
+    ) => {
+      const rawErr =
+        rawResult && typeof rawResult === "object"
+          ? rawResult.error
+            ? String(rawResult.error)
+            : rawResult.ok === false
+              ? String(rawResult.message || rawResult.reason || rawResult.stderr || "failed")
+              : typeof rawResult.exit_code === "number" && rawResult.exit_code !== 0
+                ? String(rawResult.stderr || `exit_code=${rawResult.exit_code}`)
+                : ""
+          : "";
+      const isOk = !rawErr;
+      if (!isOk) turnToolErrors += 1;
+      if (turnTraceEntries.length < 32) {
+        turnTraceEntries.push({
+          stepNo: currentStepNo,
+          toolName,
+          argKeys:
+            toolArgs && typeof toolArgs === "object"
+              ? Object.keys(toolArgs).slice(0, 8)
+              : [],
+          ok: isOk,
+          ...(rawErr ? { error: rawErr.slice(0, 160) } : {}),
+        });
+      }
+      const postHook = runPostToolHooks(
+        turnHookState,
+        {
+          sessionId,
+          toolName,
+          args: toolArgs || {},
+          stepNo: currentStepNo,
+          botWorkspaceRoot,
+          isExternalChannel: Boolean(userMeta?.channelMeta),
+        },
+        rawResult
+      );
+      if (
+        (postHook.hint || postHook.verifyWarning) &&
+        rawResult &&
+        typeof rawResult === "object" &&
+        !Array.isArray(rawResult)
+      ) {
+        return {
+          ...rawResult,
+          ...(postHook.hint ? { _hook_hint: redactSensitiveTokensInText(postHook.hint) } : {}),
+          ...(postHook.verifyWarning
+            ? { _hook_warning: redactSensitiveTokensInText(postHook.verifyWarning) }
+            : {}),
+        };
+      }
+      return rawResult;
+    };
 
     for (let stepNo = 1; stepNo <= maxSteps; stepNo++) {
       if (ctrl.stopped) {
@@ -1803,6 +1875,7 @@ async function runTaskInner({
         })),
         botIdentity: sessionObj
           ? {
+              id: sessionObj.id,
               name: sessionObj.title || "Twinkle",
               rolePrompt: sessionObj.rolePrompt || "",
               memories: Array.isArray(sessionObj.memories) ? sessionObj.memories : [],
@@ -2321,6 +2394,41 @@ async function runTaskInner({
             broadcastGlobal,
           }).catch(() => {});
         }
+        if (
+          enableBotTools &&
+          !speakerBot &&
+          !ctrl.stopped &&
+          config?.autoExperienceReflect !== false &&
+          typeof model?.summarizeTurn === "function"
+        ) {
+          const reflSettings = store?.readSettings?.() || {};
+          const reflRouting = normalizeRoutingSettings(reflSettings?.routing);
+          void runPostTurnExperienceReflection({
+            store,
+            model,
+            sessionId,
+            botSession: sessionObj,
+            traceEntries: turnTraceEntries,
+            userText: latestUserText,
+            steerTexts,
+            assistantText: redactedAnswer,
+            status: "done",
+            isScheduledRun: Boolean(
+              userMeta?.scheduledTaskId || String(userText || "").startsWith("[例行任务")
+            ),
+            executedToolCount,
+            toolErrors: turnToolErrors,
+            hadUserSteer,
+            config: { ...config, routing: reflRouting },
+            emit: emitTagged,
+            onUsage: (info) => {
+              if (smart?.budget && info?.usage && info?.model) {
+                smart.budget.add(info.model, info.usage);
+              }
+            },
+            broadcastGlobal,
+          }).catch(() => {});
+        }
         return { status: "done", text: redactedAnswer };
       }
 
@@ -2458,6 +2566,33 @@ async function runTaskInner({
 
         // Handle Built-in Bot Collaboration, Interactive Choice & Image Generation Tools
         if (enableBotTools && isBotCollabTool(call.name)) {
+          const preCollabHook = runPreToolHooks(turnHookState, {
+            sessionId,
+            toolName: call.name,
+            args: call.args || {},
+            stepNo,
+            botWorkspaceRoot,
+            isExternalChannel: Boolean(userMeta?.channelMeta),
+          });
+          if (preCollabHook.action === "block") {
+            const blockedRes = {
+              ok: false,
+              error: preCollabHook.reason,
+              blocked_by_hook: true,
+            };
+            consecutiveErrors += 1;
+            if (smart) {
+              recordToolOutcome(smart.runtime, { name: call.name, args: call.args, result: blockedRes });
+            }
+            emitTagged({
+              type: "result",
+              callId: call.id,
+              name: call.name,
+              result: truncateForDisplay(blockedRes),
+            });
+            history.push(...toolResultSteps(call, blockedRes, null));
+            continue;
+          }
           executedToolCount += 1;
           recentExecutedTools.push(call.name);
           if (
@@ -2490,6 +2625,24 @@ async function runTaskInner({
             control: ctrl,
             callId: call.id,
             emit: emitTagged,
+            onUsage: (info: { model: string; providerId?: string | null; usage: any }) => {
+              if (info?.usage) {
+                if (smart?.budget && info?.model) {
+                  smart.budget.add(info.model, info.usage);
+                }
+                emitTagged({
+                  type: "usage",
+                  model: info.model,
+                  ...(info.providerId ? { providerId: info.providerId } : {}),
+                  routeTier: "subtask",
+                  routeLabel: "子任务收敛",
+                  input: info.usage.input ?? 0,
+                  output: info.usage.output ?? 0,
+                  ...(info.usage.cached ? { cached: info.usage.cached } : {}),
+                  ...(info.usage.thoughts ? { thoughts: info.usage.thoughts } : {}),
+                });
+              }
+            },
             broadcastGlobal,
             onDispatchBotTurn,
             onDispatchGroupTurn,
@@ -2545,14 +2698,20 @@ async function runTaskInner({
             }
           }
 
-          const displayCollab = truncateForDisplay(collabResult);
+          const modelCollabResult = attachPostHookDiagnostics(
+            stepNo,
+            call.name,
+            call.args,
+            collabResult
+          );
+          const displayCollab = truncateForDisplay(modelCollabResult);
           emitTagged({
             type: "result",
             callId: call.id,
             name: call.name,
             result: displayCollab,
           });
-          history.push(...toolResultSteps(call, collabResult, null));
+          history.push(...toolResultSteps(call, modelCollabResult, null));
           continue;
         }
 
@@ -2812,9 +2971,26 @@ async function runTaskInner({
           toolResult = runRes.result;
           screenshotBuf = runRes.screenshot;
         } else {
-          const runRes = await executeApprovedCall(false);
-          toolResult = runRes.result;
-          screenshotBuf = runRes.screenshot;
+          const preToolHook = runPreToolHooks(turnHookState, {
+            sessionId,
+            toolName: call.name,
+            args: call.args || {},
+            stepNo,
+            botWorkspaceRoot,
+            isExternalChannel: Boolean(userMeta?.channelMeta),
+          });
+          if (preToolHook.action === "block") {
+            toolResult = {
+              ok: false,
+              error: preToolHook.reason,
+              blocked_by_hook: true,
+            };
+            screenshotBuf = null;
+          } else {
+            const runRes = await executeApprovedCall(false);
+            toolResult = runRes.result;
+            screenshotBuf = runRes.screenshot;
+          }
         }
 
         if (ctrl.stopped) {
@@ -2881,6 +3057,7 @@ async function runTaskInner({
           }
         }
 
+        toolResult = attachPostHookDiagnostics(stepNo, call.name, call.args, toolResult);
         const displayResult = truncateForDisplay(toolResult);
         emitTagged({
           type: "result",

@@ -289,6 +289,8 @@ test("evaluateUpdateCompatibility decouples Desktop/Android/iOS shells, selects 
     "channel-multi-bot-pairing-v1",
     "schedule-cron-v1",
     "remote-relay-v1",
+    "experience-reflector-v1",
+    "schedule-optimizer-v1",
     "swarm-v2",
   ]);
   // v1.2.0 baseline features stay 100% enabled on LAN 1.2.0 while 1.3.0-only feature gracefully gates!

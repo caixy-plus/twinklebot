@@ -754,6 +754,9 @@ export async function handleIntegrationBotTool(
         icon: s.icon || "⚡",
         description: s.description,
         enabled: s.enabled !== false,
+        scope: s.scope || "global",
+        ...(Array.isArray(s.triggers) && s.triggers.length > 0 ? { triggers: s.triggers } : {}),
+        ...(Array.isArray(s.scripts) && s.scripts.length > 0 ? { scripts: s.scripts } : {}),
         createdBy: s.createdBy || "user",
         ...(s.createdByBotId ? { createdByBotId: s.createdByBotId } : {}),
         ...(s.createdByBotName ? { createdByBotName: s.createdByBotName } : {}),
@@ -768,12 +771,19 @@ export async function handleIntegrationBotTool(
         const list = store.listCustomSkills?.({
           query: String(args.query || "").trim(),
           enabledOnly: false,
+          ...(typeof args.scope === "string" && args.scope.trim() && args.scope.trim() !== "all"
+            ? { botId: args.scope.trim() === "global" ? "__global_only__" : args.scope.trim() }
+            : {}),
         }) || [];
+        const filteredList =
+          String(args.scope || "").trim() === "global"
+            ? list.filter((s: any) => !s.scope || s.scope === "global")
+            : list;
         return {
           ok: true,
-          count: list.length,
-          enabledCount: list.filter((s: any) => s.enabled !== false).length,
-          skills: list.map(slimSkillSummary),
+          count: filteredList.length,
+          enabledCount: filteredList.filter((s: any) => s.enabled !== false).length,
+          skills: filteredList.map(slimSkillSummary),
         };
       }
 
@@ -813,6 +823,8 @@ export async function handleIntegrationBotTool(
             icon: args.icon ? String(args.icon).trim() : undefined,
             description,
             instructions,
+            ...(args.scope !== undefined ? { scope: String(args.scope).trim() } : {}),
+            ...(args.triggers !== undefined ? { triggers: args.triggers } : {}),
             enabled: typeof args.enabled === "boolean" ? args.enabled : true,
             createdBy: botSession ? "bot" : "user",
             createdByBotId: botSession?.id || targetBotId || "",
@@ -850,6 +862,8 @@ export async function handleIntegrationBotTool(
             icon: args.icon !== undefined ? String(args.icon).trim() : undefined,
             description: args.description !== undefined ? String(args.description).trim() : undefined,
             instructions: args.instructions !== undefined ? String(args.instructions).trim() : undefined,
+            ...(args.scope !== undefined ? { scope: String(args.scope).trim() } : {}),
+            ...(args.triggers !== undefined ? { triggers: args.triggers } : {}),
             enabled: typeof args.enabled === "boolean" ? args.enabled : undefined,
           });
           notifySkillsUpdated();
@@ -864,6 +878,58 @@ export async function handleIntegrationBotTool(
           };
         } catch (err: any) {
           return { ok: false, error: err?.message || "更新自定义技能失败" };
+        }
+      }
+
+      if (action === "save_script") {
+        if (!selector) {
+          return { ok: false, error: "save_script 操作需要提供 skill 或 id" };
+        }
+        const scriptName = String(args.script_name || "").trim();
+        const scriptContent = args.script_content;
+        if (!scriptName || typeof scriptContent !== "string") {
+          return { ok: false, error: "save_script 需要提供 script_name 与 script_content" };
+        }
+        try {
+          const res = store.saveCustomSkillScript?.(selector, scriptName, scriptContent);
+          notifySkillsUpdated();
+          return {
+            ok: true,
+            savedScript: true,
+            script: res?.script,
+            skill: slimSkillSummary(res?.skill),
+          };
+        } catch (err: any) {
+          return { ok: false, error: err?.message || "保存技能脚本失败" };
+        }
+      }
+
+      if (action === "read_script") {
+        if (!selector || !args.script_name) {
+          return { ok: false, error: "read_script 需要提供 skill 与 script_name" };
+        }
+        try {
+          const res = store.readCustomSkillScript?.(selector, String(args.script_name).trim());
+          return { ok: true, ...res };
+        } catch (err: any) {
+          return { ok: false, error: err?.message || "读取技能脚本失败" };
+        }
+      }
+
+      if (action === "delete_script") {
+        if (!selector || !args.script_name) {
+          return { ok: false, error: "delete_script 需要提供 skill 与 script_name" };
+        }
+        try {
+          const res = store.deleteCustomSkillScript?.(selector, String(args.script_name).trim());
+          notifySkillsUpdated();
+          return {
+            ok: true,
+            deleted: Boolean(res?.deleted),
+            skill: slimSkillSummary(res?.skill),
+          };
+        } catch (err: any) {
+          return { ok: false, error: err?.message || "删除技能脚本失败" };
         }
       }
 

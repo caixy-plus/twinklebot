@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { isMobileViewport } from "../../mobile-ui.js";
 import { describeCronExpression } from "/shared/cron.js";
 import {
@@ -5,11 +6,13 @@ import {
   openImageLightbox,
   openLocalFile,
   refreshSchedules,
+  refreshSettingsFromServer,
   showConfirmDialog,
   showToast,
   upsertLocalSession,
 } from "../../services/actions.js";
 import { apiJson, apiUrl } from "../../services/api-client.js";
+import { hasConnectedNodeCapability } from "../../services/ota-updater.js";
 import { useI18n } from "../../services/i18n.js";
 import { formatClockTime } from "../../state/helpers.js";
 import { setState, useStore, type TraceItem } from "../../state/store.js";
@@ -142,6 +145,12 @@ export function SchedulesList({ listId }: { listId: string }) {
   const { locale, t } = useI18n();
   const schedules = useStore((s) => s.schedules);
   const activeSessionId = useStore((s) => s.activeSessionId);
+  const diagnostics = useStore((s) => s.diagnostics);
+  const supportsOptimizer = hasConnectedNodeCapability("schedule-optimizer-v1", { diagnostics });
+  const [optimizingId, setOptimizingId] = useState<string | null>(null);
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+  const [optResultById, setOptResultById] = useState<Record<string, any>>({});
+  const [saveSkillById, setSaveSkillById] = useState<Record<string, boolean>>({});
 
   const items = schedules.filter(
     (s: any) => !activeSessionId || s.sessionId === activeSessionId
@@ -176,6 +185,63 @@ export function SchedulesList({ listId }: { listId: string }) {
     showToast(t("schedule.deletedToast", { label }));
   };
 
+  const handleOptimize = async (item: any) => {
+    if (!item?.id || optimizingId) return;
+    setOptimizingId(item.id);
+    try {
+      const res = await apiJson(`/api/schedules/${encodeURIComponent(item.id)}/optimize`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setOptResultById((prev) => ({ ...prev, [item.id]: res }));
+      if (res?.draftSkill) {
+        setSaveSkillById((prev) => ({ ...prev, [item.id]: false }));
+      }
+    } catch (err: any) {
+      showToast(t("schedule.optimizeFailedToast", { error: err?.message || "" }));
+    } finally {
+      setOptimizingId(null);
+    }
+  };
+
+  const handleApplyOptimization = async (item: any, optRes: any) => {
+    if (!item?.id || !optRes?.optimizedPrompt || applyingId) return;
+    setApplyingId(item.id);
+    try {
+      const saveAsSkill = Boolean(saveSkillById[item.id] && optRes.draftSkill);
+      await apiJson(`/api/schedules/${encodeURIComponent(item.id)}/apply-optimization`, {
+        method: "POST",
+        body: JSON.stringify({
+          optimizedPrompt: optRes.optimizedPrompt,
+          saveAsSkill,
+          ...(saveAsSkill ? { draftSkill: optRes.draftSkill } : {}),
+        }),
+      });
+      setOptResultById((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+      refreshSchedules();
+      if (saveAsSkill) {
+        await refreshSettingsFromServer();
+      }
+      showToast(t("schedule.optimizeAppliedToast"));
+    } catch (err: any) {
+      showToast(t("schedule.optimizeFailedToast", { error: err?.message || "" }));
+    } finally {
+      setApplyingId(null);
+    }
+  };
+
+  const dismissOptimization = (id: string) => {
+    setOptResultById((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
   return (
     <div id={listId} className="schedules-stack">
       {items.length === 0 ? (
@@ -193,61 +259,163 @@ export function SchedulesList({ listId }: { listId: string }) {
               (document.getElementById("sched-title-input") as HTMLInputElement | null)?.focus();
             });
           };
+          const optRes = optResultById[item.id] || null;
+          const isOptimizingThis = optimizingId === item.id;
           return (
-            <div key={item.id} className="upcoming-card">
-              <div
-                className="upcoming-copy is-editable"
-                role="button"
-                tabIndex={0}
-                title={t("schedule.clickEditTitle")}
-                onClick={openEditSchedule}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    openEditSchedule();
-                  }
-                }}
-              >
-                <div className="upcoming-title">{item.title}</div>
-                <div className="upcoming-sub">
-                  <span>
-                    {item.cron
-                      ? describeCronExpression(item.cron, locale)
-                      : item.scheduleLabel || t("schedule.cronFallback")}
-                  </span>
-                  {item.cron && (
-                    <code className="upcoming-cron-badge" title={`Cron: ${item.cron}`}>
-                      {item.cron}
-                    </code>
+            <div key={item.id} className="upcoming-card-wrap">
+              <div className="upcoming-card">
+                <div
+                  className="upcoming-copy is-editable"
+                  role="button"
+                  tabIndex={0}
+                  title={t("schedule.clickEditTitle")}
+                  onClick={openEditSchedule}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openEditSchedule();
+                    }
+                  }}
+                >
+                  <div className="upcoming-title">{item.title}</div>
+                  <div className="upcoming-sub">
+                    <span>
+                      {item.cron
+                        ? describeCronExpression(item.cron, locale)
+                        : item.scheduleLabel || t("schedule.cronFallback")}
+                    </span>
+                    {item.cron && (
+                      <code className="upcoming-cron-badge" title={`Cron: ${item.cron}`}>
+                        {item.cron}
+                      </code>
+                    )}
+                  </div>
+                </div>
+                <label className="ios-switch">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => handleToggle(item, e.target.checked)}
+                  />
+                  <span className="ios-switch-track" />
+                </label>
+                {supportsOptimizer && (
+                  <button
+                    type="button"
+                    className={`section-action-link schedule-optimize-btn${isOptimizingThis ? " is-busy" : ""}`}
+                    aria-label={t("schedule.optimizeAria", {
+                      title: item.title || t("schedule.defaultName"),
+                    })}
+                    title={isOptimizingThis ? t("schedule.optimizeRunning") : t("schedule.optimizeTitle")}
+                    disabled={Boolean(optimizingId)}
+                    onClick={() => void handleOptimize(item)}
+                  >
+                    <UiIcon name="sparkle" size={14} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="section-action-link"
+                  aria-label={t("schedule.editAria", { title: item.title || t("schedule.defaultName") })}
+                  title={t("common.edit")}
+                  onClick={openEditSchedule}
+                >
+                  <UiIcon name="pencil" size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="section-action-link danger-text"
+                  aria-label={t("schedule.deleteAria")}
+                  title={t("common.delete")}
+                  onClick={() => handleDelete(item)}
+                >
+                  <UiIcon name="x" size={13} />
+                </button>
+              </div>
+              {isOptimizingThis && (
+                <div className="schedule-opt-panel is-loading">{t("schedule.optimizeRunning")}</div>
+              )}
+              {optRes && !isOptimizingThis && (
+                <div className="schedule-opt-panel" data-schedule-opt-id={item.id}>
+                  <div className="schedule-opt-header">
+                    <span>
+                      {optRes.decision === "IMPROVED"
+                        ? t("schedule.optimizeImprovedTitle")
+                        : t("schedule.optimizeKeepBaseTitle")}
+                    </span>
+                  </div>
+                  {optRes.sideEffectNotice && (
+                    <div className="schedule-opt-notice">{optRes.sideEffectNotice}</div>
+                  )}
+                  {optRes.metrics?.candidate && (
+                    <div className="schedule-opt-metrics">
+                      {t("schedule.optimizeMetrics", {
+                        baseSteps: optRes.metrics.base?.steps ?? 0,
+                        baseErrors: optRes.metrics.base?.toolErrors ?? 0,
+                        candSteps: optRes.metrics.candidate?.steps ?? 0,
+                        candErrors: optRes.metrics.candidate?.toolErrors ?? 0,
+                      })}
+                    </div>
+                  )}
+                  {optRes.comparison?.reason && (
+                    <div className="schedule-opt-reason">{optRes.comparison.reason}</div>
+                  )}
+                  {optRes.decision === "IMPROVED" && optRes.optimizedPrompt ? (
+                    <>
+                      <div className="schedule-opt-prompt">
+                        <strong>{t("schedule.optimizePromptLabel")}</strong>{" "}
+                        {optRes.optimizedPrompt}
+                      </div>
+                      {optRes.draftSkill?.name && (
+                        <label className="schedule-opt-skill-check">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(saveSkillById[item.id])}
+                            onChange={(e) =>
+                              setSaveSkillById((prev) => ({
+                                ...prev,
+                                [item.id]: e.target.checked,
+                              }))
+                            }
+                          />
+                          <span>
+                            {t("schedule.optimizeSaveSkillLabel", {
+                              name: optRes.draftSkill.name,
+                            })}
+                          </span>
+                        </label>
+                      )}
+                      <div className="schedule-opt-actions">
+                        <button
+                          type="button"
+                          className="section-action-link"
+                          onClick={() => dismissOptimization(item.id)}
+                        >
+                          {t("schedule.optimizeKeepBtn")}
+                        </button>
+                        <button
+                          type="button"
+                          className="section-action-link schedule-opt-apply-btn"
+                          disabled={applyingId === item.id}
+                          onClick={() => void handleApplyOptimization(item, optRes)}
+                        >
+                          {t("schedule.optimizeApplyBtn")}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="schedule-opt-actions">
+                      <button
+                        type="button"
+                        className="section-action-link"
+                        onClick={() => dismissOptimization(item.id)}
+                      >
+                        {t("schedule.optimizeCloseBtn")}
+                      </button>
+                    </div>
                   )}
                 </div>
-              </div>
-              <label className="ios-switch">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={(e) => handleToggle(item, e.target.checked)}
-                />
-                <span className="ios-switch-track" />
-              </label>
-              <button
-                type="button"
-                className="section-action-link"
-                aria-label={t("schedule.editAria", { title: item.title || t("schedule.defaultName") })}
-                title={t("common.edit")}
-                onClick={openEditSchedule}
-              >
-                <UiIcon name="pencil" size={14} />
-              </button>
-              <button
-                type="button"
-                className="section-action-link danger-text"
-                aria-label={t("schedule.deleteAria")}
-                title={t("common.delete")}
-                onClick={() => handleDelete(item)}
-              >
-                <UiIcon name="x" size={13} />
-              </button>
+              )}
             </div>
           );
         })

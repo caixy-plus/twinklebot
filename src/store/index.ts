@@ -183,6 +183,7 @@ export function createStore(dataDir: string) {
   const relayAuthFile = path.join(rootDir, "relay-auth.json");
   const accountsAuthFile = path.join(rootDir, "accounts-auth.json");
   const routeStatsFile = path.join(rootDir, "route-stats.ndjson");
+  const experienceProposalsFile = path.join(rootDir, "experience-proposals.json");
 
   const customSkillsRepo = createCustomSkillsRepo(customSkillsDir, {
     getIsoNow: () => getMonotonicIso(),
@@ -979,6 +980,94 @@ export function createStore(dataDir: string) {
     return list;
   }
 
+  const MAX_PENDING_PROPOSALS_PER_SESSION = 10;
+  const PROPOSAL_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+  function readAllExperienceProposals(): any[] {
+    if (!fs.existsSync(experienceProposalsFile)) return [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(experienceProposalsFile, "utf-8"));
+      if (!Array.isArray(parsed)) return [];
+      const cutoff = Date.now() - PROPOSAL_TTL_MS;
+      const pruned = parsed.filter((p) => {
+        if (!p || typeof p !== "object") return false;
+        if (p.status !== "pending") return true;
+        const createdMs = Date.parse(String(p.createdAt || "")) || Date.now();
+        return createdMs >= cutoff;
+      });
+      if (pruned.length !== parsed.length) {
+        writeJsonAtomic(experienceProposalsFile, pruned);
+      }
+      return pruned;
+    } catch {
+      return [];
+    }
+  }
+
+  function listExperienceProposals({
+    sessionId = "",
+    status = "",
+  }: { sessionId?: string; status?: string } = {}): any[] {
+    const all = readAllExperienceProposals();
+    return all
+      .filter((p) => {
+        if (sessionId && p.sessionId !== sessionId) return false;
+        if (status && status !== "all" && p.status !== status) return false;
+        return true;
+      })
+      .sort(
+        (a, b) =>
+          (Date.parse(String(b.createdAt || "0")) || 0) -
+          (Date.parse(String(a.createdAt || "0")) || 0)
+      );
+  }
+
+  function addExperienceProposal(proposal: Record<string, any>): Record<string, any> {
+    const all = readAllExperienceProposals();
+    const sid = String(proposal?.sessionId || "").trim();
+    const record = {
+      ...proposal,
+      id: String(proposal?.id || `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`),
+      status: proposal?.status === "accepted" || proposal?.status === "dismissed" ? proposal.status : "pending",
+      createdAt: String(proposal?.createdAt || getMonotonicIso()),
+    };
+    const next = [record, ...all];
+    if (sid) {
+      let pendingForSession = 0;
+      const trimmed: any[] = [];
+      for (const item of next) {
+        if (item.sessionId === sid && item.status === "pending") {
+          pendingForSession += 1;
+          if (pendingForSession > MAX_PENDING_PROPOSALS_PER_SESSION) continue;
+        }
+        trimmed.push(item);
+      }
+      writeJsonAtomic(experienceProposalsFile, trimmed);
+      return record;
+    }
+    writeJsonAtomic(experienceProposalsFile, next);
+    return record;
+  }
+
+  function resolveExperienceProposal(
+    id: string,
+    status: "accepted" | "dismissed",
+    meta: Record<string, any> = {}
+  ): Record<string, any> | null {
+    const all = readAllExperienceProposals();
+    const idx = all.findIndex((p) => p && p.id === id);
+    if (idx === -1) return null;
+    const updated = {
+      ...all[idx],
+      status,
+      resolvedAt: getMonotonicIso(),
+      ...meta,
+    };
+    all[idx] = updated;
+    writeJsonAtomic(experienceProposalsFile, all);
+    return updated;
+  }
+
   function readVault(): any[] {
     if (!fs.existsSync(vaultFile)) {
       return [];
@@ -1129,6 +1218,12 @@ export function createStore(dataDir: string) {
     saveCustomSkill: customSkillsRepo.saveCustomSkill,
     toggleCustomSkill: customSkillsRepo.toggleCustomSkill,
     deleteCustomSkill: customSkillsRepo.deleteCustomSkill,
+    saveCustomSkillScript: customSkillsRepo.saveCustomSkillScript,
+    readCustomSkillScript: customSkillsRepo.readCustomSkillScript,
+    deleteCustomSkillScript: customSkillsRepo.deleteCustomSkillScript,
+    listExperienceProposals,
+    addExperienceProposal,
+    resolveExperienceProposal,
     markInterrupted,
   };
 }

@@ -39,7 +39,9 @@
       "channel-integrations-v1",
       "channel-multi-bot-pairing-v1",
       "schedule-cron-v1",
-      "remote-relay-v1"
+      "remote-relay-v1",
+      "experience-reflector-v1",
+      "schedule-optimizer-v1"
     ]
   }
 }

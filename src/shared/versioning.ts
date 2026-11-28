@@ -17,6 +17,8 @@ export const CURRENT_API_CAPABILITIES = [
   "channel-multi-bot-pairing-v1",
   "schedule-cron-v1",
   "remote-relay-v1",
+  "experience-reflector-v1",
+  "schedule-optimizer-v1",
 ] as const;
 
 export const DEFAULT_GITHUB_OWNER = "caixy-plus";

@@ -21,6 +21,7 @@ import {
   sendJson,
 } from "../http-utils.js";
 import { computeInitialNextRun } from "../../agent/scheduler.js";
+import { optimizeScheduleContrastive } from "../../agent/schedule-optimizer.js";
 import { describeCronExpression, resolveScheduleCronConfig } from "../../shared/cron.js";
 
 export async function handleSchedulesVaultRoutes(
@@ -221,6 +222,105 @@ export async function handleSchedulesVaultRoutes(
             });
             return sendJson(res, 200, { ok: true });
           }
+        }
+
+        // POST /api/schedules/:id/optimize · POST /api/schedules/:id/apply-optimization (Phase H4-B)
+        const scheduleOptimizeMatch = pathname.match(/^\/api\/schedules\/([^/]+)\/optimize$/);
+        if (method === "POST" && scheduleOptimizeMatch) {
+          const sid = decodeURIComponent(scheduleOptimizeMatch[1]);
+          const list = ctx.store?.readSchedules?.() || [];
+          const schedule = list.find((x: any) => x && x.id === sid);
+          if (!schedule) {
+            return sendJson(res, 404, { error: "schedule not found" });
+          }
+          let body: any = {};
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            // allow empty POST body
+          }
+          const settings = ctx.store?.readSettings?.() || {};
+          const botSession = schedule.sessionId
+            ? ctx.store?.getSession?.(schedule.sessionId)
+            : null;
+          const optRes = await optimizeScheduleContrastive({
+            schedule,
+            botSession,
+            store: ctx.store,
+            model: ctx.model,
+            executor: ctx.executor,
+            config: {
+              ...(ctx.finalConfig || {}),
+              routing: settings.routing || ctx.finalConfig?.routing,
+            },
+            mode: body?.mode === "deterministic" ? "deterministic" : "llm",
+          });
+          if (!optRes.ok) {
+            return sendJson(res, optRes.statusCode || 400, { error: optRes.error });
+          }
+          return sendJson(res, 200, optRes);
+        }
+
+        const scheduleApplyOptMatch = pathname.match(
+          /^\/api\/schedules\/([^/]+)\/apply-optimization$/
+        );
+        if (method === "POST" && scheduleApplyOptMatch) {
+          const sid = decodeURIComponent(scheduleApplyOptMatch[1]);
+          const list = ctx.store?.readSchedules?.() || [];
+          const idx = list.findIndex((x: any) => x && x.id === sid);
+          if (idx === -1) {
+            return sendJson(res, 404, { error: "schedule not found" });
+          }
+          let body: any;
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            return sendJson(res, 400, { error: "invalid json" });
+          }
+          const nextPrompt = String(body?.optimizedPrompt || "").trim();
+          if (!nextPrompt) {
+            return sendJson(res, 400, { error: "optimizedPrompt is required" });
+          }
+          const updated = {
+            ...list[idx],
+            prompt: nextPrompt,
+            lastOptimizedAt: new Date().toISOString(),
+          };
+          list[idx] = updated;
+          ctx.store?.writeSchedules?.(list);
+          ctx.runner?.broadcastGlobal?.({
+            type: "schedules_updated",
+            sessionId: updated.sessionId,
+          });
+
+          let savedSkill: any = null;
+          if (body?.saveAsSkill && body?.draftSkill && ctx.store?.saveCustomSkill) {
+            const ds = body.draftSkill;
+            const botSession = updated.sessionId
+              ? ctx.store?.getSession?.(updated.sessionId)
+              : null;
+            savedSkill = ctx.store.saveCustomSkill({
+              ...(ds.id ? { id: ds.id } : {}),
+              mode: "create",
+              name: ds.name || updated.title,
+              description: ds.description || updated.title,
+              instructions: ds.instructions || nextPrompt,
+              scope: updated.sessionId || "global",
+              createdBy: "bot",
+              createdByBotId: updated.sessionId || "",
+              createdByBotName: botSession?.title || "",
+            });
+            if (savedSkill && ds.scriptName && ds.scriptContent && ctx.store?.saveCustomSkillScript) {
+              ctx.store.saveCustomSkillScript(savedSkill.id, ds.scriptName, ds.scriptContent);
+            }
+            ctx.broadcastSkillsUpdated();
+          }
+
+          return sendJson(res, 200, {
+            ok: true,
+            schedule: updated,
+            ...(savedSkill ? { skill: savedSkill } : {}),
+          });
         }
 
         // GET / POST / DELETE /api/vault

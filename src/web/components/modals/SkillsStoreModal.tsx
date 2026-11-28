@@ -887,6 +887,52 @@ export function SkillsStoreModal() {
   });
 
   // Custom Skills calculations
+  const supportsExperienceReflector = hasConnectedNodeCapability("experience-reflector-v1", {
+    diagnostics,
+  });
+  const [pendingProposals, setPendingProposals] = useState<any[]>([]);
+  const [resolvingProposalId, setResolvingProposalId] = useState<string | null>(null);
+
+  const loadPendingProposals = async () => {
+    if (!supportsExperienceReflector) {
+      setPendingProposals([]);
+      return;
+    }
+    try {
+      const res = await apiJson("/api/experience-proposals?status=pending", { method: "GET" });
+      setPendingProposals(Array.isArray(res?.proposals) ? res.proposals : []);
+    } catch {
+      // ignore transient errors when modal refreshes
+    }
+  };
+
+  useEffect(() => {
+    if (!appsModalOpen || skillsView !== "manage" || !supportsExperienceReflector) return;
+    void loadPendingProposals();
+  }, [appsModalOpen, skillsView, supportsExperienceReflector]);
+
+  const handleResolveProposal = async (proposal: any, action: "accept" | "dismiss") => {
+    if (!proposal?.id || resolvingProposalId) return;
+    setResolvingProposalId(proposal.id);
+    try {
+      await apiJson(`/api/experience-proposals/${encodeURIComponent(proposal.id)}/resolve`, {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      });
+      setPendingProposals((prev) => prev.filter((p) => p.id !== proposal.id));
+      if (action === "accept") {
+        await refreshSettingsFromServer();
+        showToast(t("skills.expProposalsAcceptedToast", { title: proposal.title || "" }));
+      } else {
+        showToast(t("skills.expProposalsDismissedToast", { title: proposal.title || "" }));
+      }
+    } catch (err: any) {
+      showToast(err?.message || t("skills.customSaveFailedFallback"));
+    } finally {
+      setResolvingProposalId(null);
+    }
+  };
+
   const enabledCustomCount = customSkills.filter((s: any) => s.enabled !== false).length;
   const csQuery = customSkillSearch.trim().toLowerCase();
   const filteredCustomSkills = csQuery
@@ -2381,6 +2427,53 @@ export function SkillsStoreModal() {
                   />
                 </label>
               </div>
+
+              {supportsExperienceReflector && pendingProposals.length > 0 && (
+                <div id="experience-proposals-panel" className="exp-proposals-panel">
+                  <div className="exp-proposals-heading">{t("skills.expProposalsHeading")}</div>
+                  {pendingProposals.map((p: any) => (
+                    <div key={p.id} className="exp-proposal-card" data-proposal-id={p.id}>
+                      <div className="exp-proposal-header">
+                        <span className="exp-proposal-title">{p.title}</span>
+                        <span className="exp-proposal-dim-pill">
+                          {p.dimension === "invariant"
+                            ? t("skills.expProposalsDimInvariant")
+                            : t("skills.expProposalsDimDomain")}
+                        </span>
+                      </div>
+                      <div className="exp-proposal-meta">
+                        <div>
+                          <strong>{t("skills.expProposalsCueLabel")}:</strong> {p.cue}
+                        </div>
+                        <div>
+                          <strong>{t("skills.expProposalsLessonLabel")}:</strong> {p.lesson}
+                        </div>
+                        <div>
+                          <strong>{t("skills.expProposalsEvidenceLabel")}:</strong> {p.evidence}
+                        </div>
+                      </div>
+                      <div className="exp-proposal-actions">
+                        <button
+                          type="button"
+                          className="skill-pill-btn"
+                          disabled={resolvingProposalId === p.id}
+                          onClick={() => void handleResolveProposal(p, "dismiss")}
+                        >
+                          {t("skills.expProposalsDismissBtn")}
+                        </button>
+                        <button
+                          type="button"
+                          className="skill-pill-btn is-primary"
+                          disabled={resolvingProposalId === p.id}
+                          onClick={() => void handleResolveProposal(p, "accept")}
+                        >
+                          {t("skills.expProposalsAcceptBtn")}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {(!customSkillEditorOpen || !editingCustomSkillId) &&
                 renderCustomSkillEditorForm(

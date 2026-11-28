@@ -594,24 +594,34 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "custom_skill_manage",
     description:
-      "Manage TwinkleBot's cross-Bot shared Custom Workflow Skills (`SKILL.md` playbooks stored in `custom-skills/`): list, get (load full SKILL.md instructions on demand), create, update, toggle (enable/disable), or delete. Use this tool for reusable multi-step workflows, SOPs, templates, or scripts shared across all Bots — NEVER use it for simple facts/contacts/preferences (use `memory_manage` for those). When asked to create/edit/delete a skill, execute directly and summarize in chat.",
+      "Manage TwinkleBot's Custom Workflow Skills (`SKILL.md` playbooks & optional bundled `scripts/` stored in `custom-skills/`): list, get (load full SKILL.md instructions & scripts on demand), create, update, toggle (enable/disable), delete, or save/read/delete helper scripts (`save_script` | `read_script` | `delete_script`). Use this tool for reusable multi-step workflows, SOPs, templates, or deterministic scripts — NEVER use it for simple facts/contacts/preferences (use `memory_manage` for those). When asked to create/edit/delete a skill, execute directly and summarize in chat.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "get", "create", "update", "toggle", "delete"],
-          description: "Operation to perform on shared custom skills.",
+          enum: [
+            "list",
+            "get",
+            "create",
+            "update",
+            "toggle",
+            "delete",
+            "save_script",
+            "read_script",
+            "delete_script",
+          ],
+          description: "Operation to perform on custom skills and their bundled scripts.",
         },
         skill: {
           type: "string",
           description:
-            "Selector for an existing skill (slug id, exact name, or keyword) when action is 'get', 'update', 'toggle', or 'delete'.",
+            "Selector for an existing skill (slug id, exact name, or keyword) when action is 'get', 'update', 'toggle', 'delete', or '*_script'.",
         },
         id: {
           type: "string",
           description:
-            "Optional kebab-case slug identifier (e.g. 'weekly-report-sender'). Used when creating with a specific slug, or as selector for 'get'/'update'/'toggle'/'delete'.",
+            "Optional kebab-case slug identifier (e.g. 'weekly-report-sender'). Used when creating with a specific slug, or as selector for 'get'/'update'/'toggle'/'delete'/'*_script'.",
         },
         newId: {
           type: "string",
@@ -628,12 +638,31 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
         description: {
           type: "string",
           description:
-            "Concise 1-2 sentence summary + trigger scenario shown in the lightweight prompt index across all Bots.",
+            "Concise 1-2 sentence summary + trigger scenario shown in the lightweight prompt index.",
         },
         instructions: {
           type: "string",
           description:
             "Full Markdown body (`SKILL.md` instructions) with clear step-by-step execution guidance, parameters, or scripts.",
+        },
+        scope: {
+          type: "string",
+          description:
+            "Optional visibility scope: 'global' (default, shared across all Bots) or a specific Bot ID.",
+        },
+        triggers: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional trigger keywords/phrases for progressive disclosure matching.",
+        },
+        script_name: {
+          type: "string",
+          description:
+            "Script filename (e.g. 'parse_report.py' or 'sync.mjs') for action 'save_script' | 'read_script' | 'delete_script'.",
+        },
+        script_content: {
+          type: "string",
+          description: "Full script source code when action is 'save_script'.",
         },
         enabled: {
           type: "boolean",
@@ -1192,6 +1221,34 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
         },
       },
       required: ["action"],
+    },
+  },
+  {
+    type: "function",
+    name: "run_subtask",
+    description:
+      "Delegate a bounded, read-only 'large-input, small-output' investigation to a stateless subagent (e.g. reading many files/logs or fetching multiple web pages and returning one distilled summary/table) so raw volume does not bloat the main conversation context. Read-only only; never use for simple 1-step lookups or mutating actions.",
+    parameters: {
+      type: "object",
+      properties: {
+        goal: {
+          type: "string",
+          description: "Clear research/aggregation goal and exact questions to answer.",
+        },
+        context_hints: {
+          type: "string",
+          description: "Optional file paths, URLs, or search keywords to start from.",
+        },
+        expected_format: {
+          type: "string",
+          description: "Optional concise output structure (e.g. Markdown table or bullet summary).",
+        },
+        max_steps: {
+          type: "integer",
+          description: "Optional step cap between 1 and 8 (default 6).",
+        },
+      },
+      required: ["goal"],
     },
   },
 ];

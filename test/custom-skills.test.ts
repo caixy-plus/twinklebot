@@ -289,3 +289,109 @@ test("UI HTML & JS enforce Store vs Custom Skills separation and include CRUD ed
 
   assert.match(appJs, /\/api\/custom-skills/);
 });
+
+test("directory skill packages support scripts, bot scope filtering, rename, and HTTP script endpoints", async (t) => {
+  const { tmpDir, store, call } = await bootServer(t);
+  const botA = store.createSession({ title: "Bot A", avatar: "bot" });
+  const botB = store.createSession({ title: "Bot B", avatar: "bot" });
+
+  // Bot A creates a scoped skill with triggers
+  const created = await runBotCollabTool(
+    "custom_skill_manage",
+    {
+      action: "create",
+      id: "csv-cleaner",
+      name: "CSV 清洗脚本",
+      description: "自动清洗并汇总销售 CSV",
+      instructions: "运行 scripts/clean.py",
+      scope: botA.id,
+      triggers: ["清洗CSV", "销售报表"],
+    },
+    { store, senderSessionId: botA.id, senderBot: botA }
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.skill.scope, botA.id);
+  assert.deepEqual(created.skill.triggers, ["清洗CSV", "销售报表"]);
+  assert.ok(fs.existsSync(path.join(tmpDir, "custom-skills", "csv-cleaner.md")));
+
+  // Saving a script promotes single .md file to directory package <id>/SKILL.md + scripts/<name>
+  const savedScript = await runBotCollabTool(
+    "custom_skill_manage",
+    {
+      action: "save_script",
+      skill: "csv-cleaner",
+      script_name: "clean.py",
+      script_content: "import sys\nprint('ok')\n",
+    },
+    { store, senderSessionId: botA.id, senderBot: botA }
+  );
+  assert.equal(savedScript.ok, true);
+  assert.equal(savedScript.savedScript, true);
+  assert.equal(fs.existsSync(path.join(tmpDir, "custom-skills", "csv-cleaner.md")), false);
+  assert.ok(fs.existsSync(path.join(tmpDir, "custom-skills", "csv-cleaner", "SKILL.md")));
+  assert.ok(fs.existsSync(path.join(tmpDir, "custom-skills", "csv-cleaner", "scripts", "clean.py")));
+
+  // Path traversal or invalid extension rejected
+  const badScript = await runBotCollabTool(
+    "custom_skill_manage",
+    {
+      action: "save_script",
+      skill: "csv-cleaner",
+      script_name: "../evil.py",
+      script_content: "print(1)",
+    },
+    { store, senderSessionId: botA.id, senderBot: botA }
+  );
+  assert.equal(badScript.ok, false);
+
+  // Read script via tool and HTTP
+  const readScript = await runBotCollabTool(
+    "custom_skill_manage",
+    { action: "read_script", skill: "csv-cleaner", script_name: "clean.py" },
+    { store, senderSessionId: botA.id, senderBot: botA }
+  );
+  assert.equal(readScript.ok, true);
+  assert.match(readScript.content, /print\('ok'\)/);
+
+  const httpPut = await call("PUT", "/api/custom-skills/csv-cleaner/scripts/agg.mjs", {
+    content: "console.log('agg');\n",
+  });
+  assert.equal(httpPut.status, 200);
+  const httpGet = await call("GET", "/api/custom-skills/csv-cleaner/scripts/agg.mjs");
+  assert.equal(httpGet.status, 200);
+  assert.match(httpGet.json.script.content, /console\.log\('agg'\)/);
+
+  // Prompt filtering: Bot A sees it, Bot B does not
+  const skills = store.listCustomSkills({ enabledOnly: true });
+  const promptA = buildSystemInstruction({
+    enableBotTools: true,
+    botIdentity: { id: botA.id, name: botA.title },
+    customSkills: skills,
+  });
+  const promptB = buildSystemInstruction({
+    enableBotTools: true,
+    botIdentity: { id: botB.id, name: botB.title },
+    customSkills: skills,
+  });
+  assert.match(promptA, /csv-cleaner/);
+  assert.match(promptA, /2 script\(s\)/);
+  assert.equal(promptB.includes("csv-cleaner"), false);
+
+  // Rename package moves directory cleanly
+  const renamed = store.saveCustomSkill({
+    id: "csv-cleaner",
+    mode: "update",
+    newId: "csv-etl",
+  });
+  assert.equal(renamed.id, "csv-etl");
+  assert.equal(fs.existsSync(path.join(tmpDir, "custom-skills", "csv-cleaner")), false);
+  assert.ok(fs.existsSync(path.join(tmpDir, "custom-skills", "csv-etl", "scripts", "clean.py")));
+
+  // Delete script via HTTP and delete whole package
+  const httpDel = await call("DELETE", "/api/custom-skills/csv-etl/scripts/agg.mjs");
+  assert.equal(httpDel.status, 200);
+  assert.equal(httpDel.json.deleted, true);
+  const deletedPkg = store.deleteCustomSkill("csv-etl");
+  assert.equal(deletedPkg?.id, "csv-etl");
+  assert.equal(fs.existsSync(path.join(tmpDir, "custom-skills", "csv-etl")), false);
+});

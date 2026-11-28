@@ -135,10 +135,37 @@ export interface CustomSkillItem {
   description: string;
   content: string;
   enabled: boolean;
+  scope?: string;
+  triggers?: string[];
+  scripts?: Array<{ name: string; path: string; sizeBytes: number }>;
   createdByBotId?: string;
   createdByBotName?: string;
   updatedAt?: string;
   [key: string]: unknown;
+}
+
+export interface ExperienceProposalItem {
+  id: string;
+  sessionId: string;
+  botName: string;
+  dimension: "domain" | "invariant";
+  targetType: "custom_skill" | "skill_script" | "bot_playbook";
+  title: string;
+  cue: string;
+  lesson: string;
+  evidence: string;
+  draftSkill?: {
+    id?: string;
+    name: string;
+    description: string;
+    instructions: string;
+    triggers?: string[];
+    scriptName?: string;
+    scriptContent?: string;
+  };
+  status: "pending" | "accepted" | "dismissed";
+  createdAt: string;
+  resolvedAt?: string;
 }
 
 export interface ScheduleItem {
@@ -151,7 +178,49 @@ export interface ScheduleItem {
   sessionId?: string;
   nextRunAt?: string;
   lastRunAt?: string;
+  lastOptimizedAt?: string;
   [key: string]: unknown;
+}
+
+export interface ScheduleOptimizationResult {
+  scheduleId: string;
+  decision: "IMPROVED" | "KEEP_BASE";
+  sideEffectNotice?: string;
+  optimizedPrompt?: string;
+  draftSkill?: {
+    id?: string;
+    name: string;
+    description: string;
+    instructions: string;
+    scriptName?: string;
+    scriptContent?: string;
+  };
+  comparison: {
+    winner: "base" | "candidate" | "tie";
+    reason: string;
+    metricDelta: {
+      stepsDelta: number;
+      errorsDelta: number;
+      usdDelta: number;
+      promptCharsDelta: number;
+    };
+    regressions: string[];
+  };
+  metrics: {
+    base: {
+      steps: number;
+      toolErrors: number;
+      output: string;
+      estimatedUsd: number;
+    };
+    candidate?: {
+      steps: number;
+      toolErrors: number;
+      output: string;
+      estimatedUsd: number;
+    };
+    spentUsd: number;
+  };
 }
 
 export interface VaultSecretMeta {
