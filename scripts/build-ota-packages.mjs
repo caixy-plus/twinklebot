@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildWebBundle, readProjectShellMetadata } from "./build-web.mjs";
-import { buildCoreBundle } from "./build-core-bundle.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT_DIR = path.join(PROJECT_ROOT, "dist-ota");
@@ -310,6 +309,7 @@ export async function buildOtaPackages({
     const mobileStage = path.join(stageRoot, "mobile");
     const desktopCoreStage = path.join(stageRoot, "desktop-core");
 
+    const { buildCoreBundle } = await import("./build-core-bundle.mjs");
     const desktopBuild = await buildWebBundle({ target: "desktop", outDir: desktopStage });
     const mobileBuild = await buildWebBundle({ target: "mobile", outDir: mobileStage });
     const coreBuild = await buildCoreBundle({

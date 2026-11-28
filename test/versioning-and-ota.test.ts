@@ -1286,4 +1286,11 @@ test("GitHub release and async shell refresh workflows keep WEB_BUILD_ID parity,
   assert.match(refreshYml, /\$ZIPALIGN" -p -f 4/);
   assert.match(refreshYml, /\$APKSIGNER" verify --verbose --print-certs/);
   assert.equal(refreshYml.includes("TwinkleBot-mobile-release-unsigned.apk"), false);
+
+  const otaScript = fs.readFileSync(path.join(ROOT, "scripts", "build-ota-packages.mjs"), "utf8");
+  assert.equal(
+    /^\s*import\s+.*build-core-bundle\.mjs/m.test(otaScript),
+    false,
+    "build-ota-packages.mjs must lazy-import build-core-bundle.mjs so refreshManifestShellAssets runs with zero node_modules"
+  );
 });
