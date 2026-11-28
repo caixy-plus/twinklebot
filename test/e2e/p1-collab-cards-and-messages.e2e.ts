@@ -1187,6 +1187,57 @@ test("P1 Suite 4: Group Coordinator, Cross-Bot Collab, Built-in Tools, Modular P
       assert.equal(optApplyRes.status, 200);
       assert.equal((await fetch(`${ws.baseUrl}/api/schedules/${optTarget.id}`, { method: "DELETE" })).status, 200);
 
+      // Verify memory-governance-v1 capability, memorySettings PATCH, and preview-first memory consolidation + apply
+      assert.ok(
+        diagH4.apiCapabilities.includes("memory-governance-v1"),
+        "Diagnostics must advertise memory-governance-v1 capability"
+      );
+      const memModePatch: any = await (
+        await fetch(`${ws.baseUrl}/api/settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ memorySettings: { autoMode: "explicit_only" } }),
+        })
+      ).json();
+      assert.equal(memModePatch?.memorySettings?.autoMode, "explicit_only");
+      const memModeRestore: any = await (
+        await fetch(`${ws.baseUrl}/api/settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ memorySettings: { autoMode: "strict" } }),
+        })
+      ).json();
+      assert.equal(memModeRestore?.memorySettings?.autoMode, "strict");
+
+      ws.store.updateSession(inspBot.id, {
+        memories: [
+          { id: "m-dup-1", name: "语言习惯", content: "回答统一使用中文", enabled: true, source: "auto" },
+          { id: "m-dup-2", name: "回复语言", content: "回答统一使用中文", enabled: true, source: "explicit" },
+        ],
+        touch: false,
+      });
+      const consPreviewRes = await fetch(`${ws.baseUrl}/api/memories/consolidate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "bot", sessionId: inspBot.id, mode: "deterministic" }),
+      });
+      assert.equal(consPreviewRes.status, 200);
+      const consPreview: any = await consPreviewRes.json();
+      assert.equal(consPreview?.ok, true);
+      assert.equal(consPreview?.plan?.beforeCount, 2);
+      assert.equal(consPreview?.plan?.afterCount, 1);
+      const consApplyRes = await fetch(`${ws.baseUrl}/api/memories/consolidate/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: "bot",
+          sessionId: inspBot.id,
+          proposedList: consPreview.plan.proposedList,
+        }),
+      });
+      assert.equal(consApplyRes.status, 200);
+      assert.equal(ws.store.getSession(inspBot.id)?.memories?.length, 1);
+
       // Create an already-due 'once' schedule -> scheduler ticks every 120ms and fires it automatically!
       const schedRes = await fetch(`${ws.baseUrl}/api/schedules`, {
         method: "POST",

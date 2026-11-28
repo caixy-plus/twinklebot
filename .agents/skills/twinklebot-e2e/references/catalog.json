@@ -391,6 +391,7 @@
         "src/agent/subtask-runner.ts",
         "src/agent/harness-evaluator.ts",
         "src/agent/schedule-optimizer.ts",
+        "src/agent/memory-consolidator.ts",
         "src/agent/bot-tools.ts",
         "src/agent/bot-tools/index.ts",
         "src/agent/bot-tools/collab-tools.ts",
