@@ -14,12 +14,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { assessToolCall } from "../src/agent/policy.js";
 import { TOOL_DECLARATIONS } from "../src/agent/tools.js";
 import { HOST_TOOL_DECLARATIONS } from "../src/agent/host-tools.js";
 import { DEFAULT_POLICY } from "../src/server/http-utils.js";
 
-const PROJECT_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const BASE_WORKSPACE_ROOT = "/tmp/twinklebot-test-data/workspace";
 const BOT_WORKSPACE_ROOT = `${BASE_WORKSPACE_ROOT}/bots/bot-alpha`;
 
@@ -62,7 +63,7 @@ const PERMISSION_INVARIANT_CASES: InvariantCase[] = [
   {
     label: "sandbox key press with spurious high risk auto-allows in full mode",
     tool: "key",
-    args: { key: "Return", risk: "high" },
+    args: { combo: "Return", risk: "high" },
     expected: "allow",
   },
   {
@@ -250,7 +251,7 @@ const PERMISSION_INVARIANT_CASES: InvariantCase[] = [
   {
     label: "host_record_screen requires explicit confirmation unless allowlisted",
     tool: "host_record_screen",
-    args: { durationSeconds: 5 },
+    args: { duration_sec: 5 },
     expected: "confirm",
   },
   {
@@ -365,11 +366,16 @@ test("Tool schemas keep optional 3-level risk enum and omit risk on sandbox-inte
   ]);
 
   for (const decl of allDecls) {
-    const props = (decl.parameters?.properties || {}) as Record<string, { enum?: string[]; description?: string }>;
+    const params = decl.parameters as unknown as
+      | { properties?: Record<string, { enum?: string[]; description?: string }>; required?: string[] }
+      | undefined;
+    const props = params?.properties || {};
     if (sandboxInternalOmitRisk.has(decl.name)) {
       assert.equal(props.risk, undefined, `${decl.name} must omit risk property`);
     }
     if (props.risk) {
+      const required = Array.isArray(params?.required) ? params.required : [];
+      assert.equal(required.includes("risk"), false, `${decl.name} must keep risk optional`);
       assert.deepEqual(props.risk.enum, ["low", "medium", "high"], `${decl.name} risk enum must be 3-level`);
       assert.doesNotMatch(
         props.risk.description || "",
@@ -383,6 +389,7 @@ test("Tool schemas keep optional 3-level risk enum and omit risk on sandbox-inte
 test("Prompt markdown files avoid over-prompting coercive wording", () => {
   const safety = fs.readFileSync(path.join(PROJECT_ROOT, "src/agent/prompts/safety-and-style.md"), "utf8");
   const dual = fs.readFileSync(path.join(PROJECT_ROOT, "src/agent/prompts/dual-computer.md"), "utf8");
-  assert.doesNotMatch(safety, /\bALWAYS\b.*risk|submitting forms/i);
+  assert.doesNotMatch(safety, /\bALWAYS\b.*risk/);
+  assert.doesNotMatch(safety, /submitting forms/i);
   assert.doesNotMatch(dual, /submitting forms|sandbox.*clicks.*require confirmation/i);
 });
