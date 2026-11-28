@@ -29,6 +29,10 @@ import { sanitizeClientTimeZone } from "../../lib/channel-integrations.js";
 import { isLoopbackAddress } from "../../lib/device-auth.js";
 import { isRelayIngressRequest } from "./relay.js";
 import {
+  classifyUnsafeShellAllowRule,
+  type UnsafeShellAllowReason,
+} from "../../shared/policy-utils.js";
+import {
   VALID_BOT_BROWSER_MODES,
   normalizeBotBrowserMode,
 } from "../../shared/browser-automation.js";
@@ -665,6 +669,25 @@ export async function handleSessionRoutes(
               );
               ctx.store?.writeSettings?.({ policy: { ...policy, askRules } });
             } else {
+              const verdict = classifyUnsafeShellAllowRule(ruleEntry);
+              if (verdict.unsafe) {
+                const msg =
+                  verdict.reason === "wildcard"
+                    ? "Shell 工具（run_shell / host_run_shell）不允许保存空匹配或通配符 * 的自动允许规则，请指定具体命令"
+                    : verdict.reason === "catastrophic"
+                      ? "该命令涉及系统根目录、主目录或磁盘破坏操作，不允许设为自动允许规则"
+                      : "删除、提权等危险命令不允许按泛化命令名（如 rm、sudo）自动放行；如需放行请填写包含具体路径的完整命令，或每次手动确认";
+                if (body.customRule && typeof body.customRule === "object") {
+                  return sendJson(res, 400, { error: msg });
+                }
+                // Legacy alwaysRule from un-refreshed clients: approve this call once without persisting an unsafe rule.
+                ctx.runner?.approve?.(callId, body.allow);
+                return sendJson(res, 200, {
+                  ok: true,
+                  ruleSkipped: true,
+                  ruleSkippedReason: verdict.reason as UnsafeShellAllowReason,
+                });
+              }
               const allowRules = dedupeRules(
                 Array.isArray(policy.allowRules)
                   ? [...policy.allowRules, ruleEntry]

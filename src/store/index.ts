@@ -4,6 +4,7 @@ import path from "node:path";
 import { redactSensitiveTokensInText } from "../lib/channel-integrations.js";
 import { createCustomSkillsRepo } from "../lib/custom-skills.js";
 import { createLocalCrypto } from "../lib/local-crypto.js";
+import { sanitizePolicyAllowRules } from "../shared/policy-utils.js";
 
 function redactPersistedValue(val: unknown): any {
   if (typeof val === "string") {
@@ -897,15 +898,45 @@ export function createStore(dataDir: string) {
     }
   }
 
-  function migrateSettingsLegacyMemories(
+  function migrateSettingsOnDisk(
     data: Record<string, any>,
     fileToUpdate?: string
   ): Record<string, any> {
-    if (!data || !Array.isArray(data.globalMemories)) return data;
-    const normalized = normalizeLegacyMemoryList(data.globalMemories);
-    if (!normalized.changed) return data;
-    const next = { ...data, globalMemories: normalized.list };
-    if (fileToUpdate) {
+    if (!data || typeof data !== "object") return data;
+    let next = data;
+    let changed = false;
+
+    if (Array.isArray(next.globalMemories)) {
+      const normalized = normalizeLegacyMemoryList(next.globalMemories);
+      if (normalized.changed) {
+        next = { ...next, globalMemories: normalized.list };
+        changed = true;
+      }
+    }
+
+    if (
+      next.policy &&
+      typeof next.policy === "object" &&
+      Array.isArray(next.policy.allowRules)
+    ) {
+      const cleaned = sanitizePolicyAllowRules(next.policy.allowRules);
+      if (cleaned.changed) {
+        next = {
+          ...next,
+          policy: { ...next.policy, allowRules: cleaned.list },
+        };
+        changed = true;
+        if (fileToUpdate) {
+          console.warn(
+            `[store] Auto-removed ${cleaned.removed.length} legacy overly-broad shell allow rule(s): ${cleaned.removed
+              .map((x) => `${x.rule?.tool || "*"}:${x.rule?.pattern || "*"}`)
+              .join(", ")}`
+          );
+        }
+      }
+    }
+
+    if (changed && fileToUpdate) {
       try {
         writeJsonAtomic(fileToUpdate, next);
       } catch {
@@ -917,9 +948,9 @@ export function createStore(dataDir: string) {
 
   function readSettings(): Record<string, any> {
     const primary = tryParseSettingsFile(settingsFile);
-    if (primary.ok) return migrateSettingsLegacyMemories(primary.data, settingsFile);
+    if (primary.ok) return migrateSettingsOnDisk(primary.data, settingsFile);
     const backup = tryParseSettingsFile(settingsBackupFile);
-    if (backup.ok) return migrateSettingsLegacyMemories(backup.data);
+    if (backup.ok) return migrateSettingsOnDisk(backup.data);
     return {};
   }
 
@@ -953,7 +984,7 @@ export function createStore(dataDir: string) {
     if (Array.isArray(cleanPatch.globalMemories)) {
       cleanPatch.globalMemories = normalizeLegacyMemoryList(cleanPatch.globalMemories).list;
     }
-    const updated = migrateSettingsLegacyMemories({ ...existing, ...cleanPatch });
+    const updated = migrateSettingsOnDisk({ ...existing, ...cleanPatch });
     if (primary.ok) {
       try {
         writeJsonAtomic(settingsBackupFile, existing);

@@ -3,7 +3,13 @@ import path from "node:path";
 import { isHostTool } from "./host-tools.js";
 import { isMcpToolName } from "../lib/mcp-client.js";
 import { isOtherBotPrivateWorkspacePath } from "../lib/bot-workspace.js";
-import { extractSuggestedCommandPattern } from "../shared/policy-utils.js";
+import {
+  extractSuggestedCommandPattern,
+  isDestructiveShellCommandForRule,
+  isCatastrophicShellCommand,
+  classifyCatastrophicShellCommand,
+  matchesShellAllowPattern,
+} from "../shared/policy-utils.js";
 
 export { extractSuggestedCommandPattern };
 
@@ -777,17 +783,41 @@ function isSelfControlMcpAttempt(name: string, safeArgs: Record<string, any>): b
   return false;
 }
 
+function normalizeShellForRule(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
 function matchesCustomRule(
   rule: { tool?: string; pattern?: string; label?: string } | null | undefined,
   name: string,
-  safeArgs: Record<string, any>
+  safeArgs: Record<string, any>,
+  mode: "ask" | "allow" = "ask"
 ): boolean {
   if (!rule || typeof rule !== "object") return false;
   const ruleTool = String(rule.tool || "").trim();
   if (ruleTool && ruleTool !== "*" && ruleTool !== name) {
     return false;
   }
-  const pattern = String(rule.pattern || "").trim().toLowerCase();
+  const rawPattern = String(rule.pattern || "").trim();
+  const pattern = rawPattern.toLowerCase();
+  // Allow rules on destructive/privileged shell commands (rm, mv, sudo, chmod, kill,
+  // git push --force, ...) only match the exact full command. A saved `rm` / `rm -rf /a`
+  // pattern must never substring-match `rm -rf ~` or `rm -rf /a && rm -rf ~`.
+  // These checks must run BEFORE the empty-pattern shortcut below.
+  if (mode === "allow" && (name === "run_shell" || name === "host_run_shell")) {
+    const command = typeof safeArgs.command === "string" ? safeArgs.command : "";
+    // Hard wall #1: disk/home/system-root destruction can never be auto-approved by a rule.
+    if (command && isCatastrophicShellCommand(command)) return false;
+    // Hard wall #2: an empty or wildcard allow rule must never blanket-allow shell execution.
+    if (!rawPattern || rawPattern === "*") return false;
+    if (
+      command &&
+      (isDangerousShellCommand(command) || isDestructiveShellCommandForRule(command))
+    ) {
+      return normalizeShellForRule(command) === normalizeShellForRule(rawPattern);
+    }
+    return matchesShellAllowPattern(command, rawPattern);
+  }
   if (!pattern) {
     return Boolean(ruleTool);
   }
@@ -924,6 +954,25 @@ export function assessToolCall(
         reason: "禁止通过命令行导出 macOS 钥匙串明文密码",
       };
     }
+    const catastrophicLevel = classifyCatastrophicShellCommand(cmd);
+    if (catastrophicLevel === "hard-deny") {
+      if (name === "host_run_shell") {
+        return {
+          decision: "deny",
+          reason: "禁止通过 AI 在宿主机执行全盘、系统根目录或整个主目录的破坏性命令；如确需操作请自行在终端执行",
+        };
+      }
+      return {
+        decision: "confirm",
+        reason: "该命令可能破坏整个 Bot 电脑沙盒系统，需用户明确确认后方可继续",
+      };
+    }
+    if (catastrophicLevel === "force-confirm" && name === "host_run_shell") {
+      return {
+        decision: "confirm",
+        reason: "该命令将批量清空宿主机顶级用户目录（不可被自动允许规则绕过），需用户明确确认",
+      };
+    }
     const shellTokens = extractCandidatePathsFromShellCommand(cmd);
     for (const tok of shellTokens) {
       if (isPathDenied(tok, config?.dataDir)) {
@@ -991,7 +1040,15 @@ export function assessToolCall(
       ) {
         continue;
       }
-      if (matchesCustomRule(rule, name, safeArgs)) {
+      // Hard wall: catastrophic shell destruction (rm -rf /, rm -rf ~, mkfs, dd of=/dev/diskN)
+      // is never bypassable by any allow rule, wildcard or not.
+      if (
+        (name === "run_shell" || name === "host_run_shell") &&
+        isCatastrophicShellCommand(safeArgs.command)
+      ) {
+        continue;
+      }
+      if (matchesCustomRule(rule, name, safeArgs, "allow")) {
         return {
           decision: "allow",
           reason: rule.label || "Allowed by user permission rule",

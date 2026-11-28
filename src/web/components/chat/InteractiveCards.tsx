@@ -1,5 +1,10 @@
 import { useRef, useState } from "react";
-import { extractSuggestedCommandPattern } from "/shared/policy-utils.js";
+import {
+  extractSuggestedCommandPattern,
+  isDestructiveShellCommandForRule,
+  isCatastrophicShellCommand,
+  classifyUnsafeShellAllowRule,
+} from "/shared/policy-utils.js";
 import {
   refreshSettingsFromServer,
   refreshVault,
@@ -312,8 +317,17 @@ export function ApprovalCard({
     item.args?.app ||
     item.args?.target ||
     "";
+  const shellCommand = typeof item.args?.command === "string" ? item.args.command : "";
+  // Irreversible shell commands (rm/mv/sudo/chmod, git push --force, terraform destroy, and
+  // disk/home annihilation) must never offer a one-click "始终允许". The user approves once,
+  // or deliberately narrows a rule by hand.
+  const irreversibleShellCommand =
+    Boolean(shellCommand) &&
+    (isDestructiveShellCommandForRule(shellCommand) || isCatastrophicShellCommand(shellCommand));
   const [ruleOpen, setRuleOpen] = useState(false);
-  const [ruleMode, setRuleMode] = useState<"allow" | "ask">("allow");
+  const [ruleMode, setRuleMode] = useState<"allow" | "ask">(
+    irreversibleShellCommand ? "ask" : "allow"
+  );
   const [pattern, setPattern] = useState(defaultPattern);
   const [submitting, setSubmitting] = useState(false);
   const patternInputRef = useRef<HTMLInputElement | null>(null);
@@ -408,11 +422,25 @@ export function ApprovalCard({
             disabled={submitting}
             onClick={() => {
               const pat = pattern.trim();
+              const toolName = item.name || "*";
+              if (ruleMode === "allow") {
+                const verdict = classifyUnsafeShellAllowRule({ tool: toolName, pattern: pat });
+                if (verdict.unsafe) {
+                  const msgKey =
+                    verdict.reason === "wildcard"
+                      ? "settings.permUnsafeShellWildcard"
+                      : verdict.reason === "catastrophic"
+                        ? "settings.permUnsafeShellCatastrophic"
+                        : "settings.permUnsafeShellBareDestructive";
+                  showToast(t(msgKey));
+                  return;
+                }
+              }
               decide(true, false, {
                 mode: ruleMode,
-                tool: item.name || "*",
+                tool: toolName,
                 pattern: pat,
-                label: `${item.name || "*"} ${pat}`.trim(),
+                label: `${toolName} ${pat}`.trim(),
               });
             }}
           >
@@ -438,14 +466,16 @@ export function ApprovalCard({
         >
           {t("card.approvalDeny")}
         </button>
-        <button
-          type="button"
-          className="btn-always-allow"
-          disabled={submitting}
-          onClick={() => decide(true, true)}
-        >
-          {t("card.approvalAlwaysAllow")}
-        </button>
+        {!irreversibleShellCommand && (
+          <button
+            type="button"
+            className="btn-always-allow"
+            disabled={submitting}
+            onClick={() => decide(true, true)}
+          >
+            {t("card.approvalAlwaysAllow")}
+          </button>
+        )}
         <button
           type="button"
           className="btn-edit-rule"

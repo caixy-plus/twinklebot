@@ -27,6 +27,7 @@ import {
   normalizeMemorySettings,
 } from "/shared/entities.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
+import { classifyUnsafeShellAllowRule } from "/shared/policy-utils.js";
 import { isMobileAppTarget } from "../../mobile-bridge.js";
 import { isMobileViewport } from "../../mobile-ui.js";
 import {
@@ -2437,6 +2438,19 @@ export function SettingsModal() {
           className="skill-pill-btn is-primary"
           onClick={async () => {
             const pat = editRulePattern.trim();
+            if (kind === "allow") {
+              const verdict = classifyUnsafeShellAllowRule({ tool: editRuleTool, pattern: pat });
+              if (verdict.unsafe) {
+                const msgKey =
+                  verdict.reason === "wildcard"
+                    ? "settings.permUnsafeShellWildcard"
+                    : verdict.reason === "catastrophic"
+                      ? "settings.permUnsafeShellCatastrophic"
+                      : "settings.permUnsafeShellBareDestructive";
+                showToast(t(msgKey));
+                return;
+              }
+            }
             const listKey = kind === "ask" ? "askRules" : "allowRules";
             const srcList = kind === "ask" ? askRules : allowRules;
             const nextList = srcList.map((x: any) =>
@@ -4926,6 +4940,17 @@ export function SettingsModal() {
                     id="save-allow-rule-btn"
                     onClick={async () => {
                       const pat = allowPattern.trim();
+                      const verdict = classifyUnsafeShellAllowRule({ tool: allowTool, pattern: pat });
+                      if (verdict.unsafe) {
+                        const msgKey =
+                          verdict.reason === "wildcard"
+                            ? "settings.permUnsafeShellWildcard"
+                            : verdict.reason === "catastrophic"
+                              ? "settings.permUnsafeShellCatastrophic"
+                              : "settings.permUnsafeShellBareDestructive";
+                        showToast(t(msgKey));
+                        return;
+                      }
                       const nextAllowRules = [
                         ...allowRules,
                         {

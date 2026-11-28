@@ -37,6 +37,7 @@ import {
   VALID_BROWSER_AUTOMATION_MODES,
   normalizeBrowserAutomationSettings,
 } from "../../shared/browser-automation.js";
+import { classifyUnsafeShellAllowRule } from "../../shared/policy-utils.js";
 import {
   isExplicitLanguagePreference,
   normalizeLanguagePreference,
@@ -465,6 +466,20 @@ export async function handleSettingsProvidersRoutes(
             patch.mcpServers = ctx.sanitizeMcpServersMap(incoming);
           }
           if (body.policy && typeof body.policy === "object" && !Array.isArray(body.policy)) {
+            if (Array.isArray(body.policy.allowRules)) {
+              for (const rule of body.policy.allowRules) {
+                const verdict = classifyUnsafeShellAllowRule(rule);
+                if (verdict.unsafe) {
+                  const error =
+                    verdict.reason === "wildcard"
+                      ? "Shell 工具（run_shell / host_run_shell）不允许保存空匹配或通配符 * 的自动允许规则，请指定具体命令"
+                      : verdict.reason === "catastrophic"
+                        ? "该命令涉及系统根目录、主目录或磁盘破坏操作，不允许设为自动允许规则"
+                        : "删除、提权等危险命令不允许按泛化命令名（如 rm、sudo）自动放行；如需放行请填写包含具体路径的完整命令，或每次手动确认";
+                  return sendJson(res, 400, { error });
+                }
+              }
+            }
             const curPolicy = ctx.getMergedSettings().policy || DEFAULT_POLICY;
             patch.policy = {
               ...curPolicy,

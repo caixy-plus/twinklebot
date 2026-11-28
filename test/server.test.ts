@@ -595,4 +595,129 @@ test("POST /api/sessions/:id/errors/dismiss persists error_dismissed, broadcasts
   }
 });
 
+test("store.readSettings auto-heals legacy overly-broad shell allowRules without user intervention", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "store-heal-test-"));
+  try {
+    const settingsPath = path.join(tmpDir, "settings.json");
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify(
+        {
+          policy: {
+            autoAudit: true,
+            askRules: [{ id: "ask-1", tool: "host_run_shell", pattern: "rm" }],
+            allowRules: [
+              { id: "bad-rm", tool: "host_run_shell", pattern: "rm" },
+              { id: "bad-sudo", tool: "run_shell", pattern: "sudo" },
+              { id: "bad-star", tool: "host_run_shell", pattern: "*" },
+              { id: "bad-root", tool: "host_run_shell", pattern: "rm -rf /" },
+              { id: "bad-any-rm", tool: "*", pattern: "rm" },
+              { id: "good-git", tool: "host_run_shell", pattern: "git commit" },
+              { id: "good-rm", tool: "host_run_shell", pattern: "rm -rf /Users/foo/project/build" },
+              { id: "good-open", tool: "host_open", pattern: "Notes" },
+              { id: "good-wild", tool: "*", pattern: "" },
+            ],
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const store = createStore(tmpDir);
+    const loaded = store.readSettings();
+    assert.deepEqual(
+      loaded.policy.allowRules.map((r: any) => r.id),
+      ["good-git", "good-rm", "good-open", "good-wild"]
+    );
+    assert.deepEqual(
+      loaded.policy.askRules.map((r: any) => r.id),
+      ["ask-1"]
+    );
+
+    // Persisted cleanly back to disk
+    const onDisk = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    assert.deepEqual(
+      onDisk.policy.allowRules.map((r: any) => r.id),
+      ["good-git", "good-rm", "good-open", "good-wild"]
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/settings and POST /api/approvals reject or skip unsafe shell allowRules", async () => {
+  const ctx = await setupTestServer();
+  try {
+    // Seed a valid rule first
+    const resSeed = await fetch(`${ctx.baseUrl}/api/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        policy: {
+          autoAudit: true,
+          askRules: [],
+          allowRules: [{ id: "valid-1", tool: "host_run_shell", pattern: "git status" }],
+        },
+      }),
+    });
+    assert.equal(resSeed.status, 200);
+
+    // POST /api/settings rejects unsafe shell allowRules with 400 and preserves existing rules
+    for (const badPattern of ["rm", "*", "rm -rf /"]) {
+      const resBad = await fetch(`${ctx.baseUrl}/api/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          policy: {
+            allowRules: [{ id: "bad", tool: "host_run_shell", pattern: badPattern }],
+          },
+        }),
+      });
+      assert.equal(resBad.status, 400, `expected 400 for pattern "${badPattern}"`);
+      const errJson: any = await resBad.json();
+      assert.ok(typeof errJson.error === "string" && errJson.error.length > 0);
+    }
+    assert.deepEqual(
+      ctx.store.readSettings().policy.allowRules.map((r: any) => r.pattern),
+      ["git status"]
+    );
+
+    // Legacy alwaysRule with bare `rm`: approves call once (200, ruleSkipped: true) without adding to allowRules or askRules
+    const resLegacyAlways = await fetch(`${ctx.baseUrl}/api/approvals/call-legacy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        allow: true,
+        alwaysRule: { tool: "host_run_shell", pattern: "rm", label: "host_run_shell rm" },
+      }),
+    });
+    assert.equal(resLegacyAlways.status, 200);
+    const legacyJson: any = await resLegacyAlways.json();
+    assert.equal(legacyJson.ok, true);
+    assert.equal(legacyJson.ruleSkipped, true);
+    assert.equal(legacyJson.ruleSkippedReason, "bare-destructive");
+    assert.deepEqual(
+      ctx.store.readSettings().policy.allowRules.map((r: any) => r.pattern),
+      ["git status"]
+    );
+    assert.deepEqual(ctx.store.readSettings().policy.askRules, []);
+
+    // Explicit customRule with mode="allow" and pattern="rm" returns 400 and does NOT approve
+    const approvedBefore = ctx.approvedCalls.length;
+    const resCustomBad = await fetch(`${ctx.baseUrl}/api/approvals/call-custom-bad`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        allow: true,
+        customRule: { mode: "allow", tool: "host_run_shell", pattern: "rm", label: "rm" },
+      }),
+    });
+    assert.equal(resCustomBad.status, 400);
+    assert.equal(ctx.approvedCalls.length, approvedBefore);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
 
