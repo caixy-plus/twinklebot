@@ -78,18 +78,33 @@ export function buildKimiCuPromptSection(
   return lines.join("\n");
 }
 
+const MEMORY_CATEGORY_LABELS: Record<string, string> = {
+  identity: "身份",
+  preference: "偏好",
+  rule: "规则",
+  context: "背景",
+};
+
 export function formatBoundedMemoryLines(
   memories: any[] = [],
   maxChars = MAX_PROMPT_MEMORY_SECTION_CHARS
 ): string {
+  const ordered = [...memories].sort((a, b) => {
+    const aAuto = a?.source === "auto" ? 1 : 0;
+    const bAuto = b?.source === "auto" ? 1 : 0;
+    return aAuto - bAuto;
+  });
   const lines: string[] = [];
   let used = 0;
   let omitted = 0;
-  for (const m of memories) {
+  for (const m of ordered) {
     if (!m || m.enabled === false) continue;
     const body = String(m.instruction || m.content || m.desc || "").trim();
     if (!body) continue;
-    const line = `- ${m.name}: ${body}`;
+    const catLabel =
+      typeof m.category === "string" ? MEMORY_CATEGORY_LABELS[m.category] || "" : "";
+    const prefix = catLabel ? `[${catLabel}] ` : "";
+    const line = `- ${prefix}${m.name}: ${body}`;
     if (lines.length > 0 && used + line.length + 1 > maxChars) {
       omitted += 1;
       continue;

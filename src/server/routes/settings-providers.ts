@@ -42,6 +42,10 @@ import {
   normalizeLanguagePreference,
 } from "../../shared/i18n.js";
 import { normalizeContextCompressionSettings } from "../../shared/context-compression.js";
+import {
+  VALID_MEMORY_AUTO_MODES,
+  normalizeMemorySettings,
+} from "../../shared/entities.js";
 import { normalizeScreenPoolSettings } from "../../shared/screen-pool.js";
 
 export async function handleSettingsProvidersRoutes(
@@ -373,6 +377,7 @@ export async function handleSettingsProvidersRoutes(
             "policy",
             "globalMemories",
             "privateSkills",
+            "memorySettings",
             "connectedApps",
             "routing",
             "contextCompression",
@@ -537,6 +542,23 @@ export async function handleSettingsProvidersRoutes(
             patch.browserAutomation = normalizeBrowserAutomationSettings({
               ...curBa,
               ...ba,
+            });
+          }
+          if ("memorySettings" in body) {
+            const ms = body.memorySettings;
+            if (!ms || typeof ms !== "object" || Array.isArray(ms)) {
+              return sendJson(res, 400, { error: "invalid memorySettings payload" });
+            }
+            if (
+              ms.autoMode !== undefined &&
+              !(VALID_MEMORY_AUTO_MODES as readonly string[]).includes(ms.autoMode)
+            ) {
+              return sendJson(res, 400, { error: "invalid memorySettings.autoMode" });
+            }
+            const curMs = ctx.getMergedSettings().memorySettings;
+            patch.memorySettings = normalizeMemorySettings({
+              ...curMs,
+              ...ms,
             });
           }
 

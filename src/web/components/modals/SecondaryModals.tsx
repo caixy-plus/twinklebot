@@ -6,6 +6,10 @@ import {
   parseCronExpression,
   resolvePresetCronExpression,
 } from "/shared/cron.js";
+import {
+  VALID_MEMORY_CATEGORIES,
+  normalizeMemoryCategory,
+} from "/shared/entities.js";
 import { isNativeQrScannerAvailable, scanQrCodeNative } from "../../mobile-bridge.js";
 import { buildPreviewSrcdoc } from "../../preview-utils.js";
 import {
@@ -28,6 +32,7 @@ import {
 } from "../../state/helpers.js";
 import { getState, setState, useStore } from "../../state/store.js";
 import { SessionAvatar } from "../common/AvatarView.js";
+import { getMemoryCategoryLabelKey } from "../common/SharedPanels.js";
 
 function handleDialogOutsideFallback(
   event: ReactMouseEvent<HTMLDialogElement>,
@@ -305,6 +310,7 @@ export function SecondaryModals() {
       ? targetSession.memories
       : [];
     const nowIso = new Date().toISOString();
+    const category = normalizeMemoryCategory(botMemoryModal.category);
     const nextMemories = botMemoryModal.memoryId
       ? prevMemories.map((m: any) =>
           (m.id || m.name) === botMemoryModal.memoryId
@@ -314,6 +320,7 @@ export function SecondaryModals() {
                 desc: content,
                 instruction: content,
                 content,
+                category,
                 updatedAt: nowIso,
               }
             : m
@@ -325,6 +332,7 @@ export function SecondaryModals() {
             desc: content,
             instruction: content,
             content,
+            category,
             enabled: true,
             updatedAt: nowIso,
           },
@@ -343,6 +351,7 @@ export function SecondaryModals() {
           memoryId: null,
           name: "",
           content: "",
+          category: "general",
         },
       }));
       showToast(
@@ -549,6 +558,23 @@ export function SecondaryModals() {
               }))
             }
           />
+          <select
+            id="bot-memory-modal-category-select"
+            className="inline-text-input"
+            aria-label={t("memory.categoryLabel")}
+            value={normalizeMemoryCategory(botMemoryModal.category)}
+            onChange={(e) =>
+              setState((prev) => ({
+                botMemoryModal: { ...prev.botMemoryModal, category: e.target.value },
+              }))
+            }
+          >
+            {VALID_MEMORY_CATEGORIES.map((cat) => (
+              <option key={cat} value={cat}>
+                {t("memory.categoryLabel")}: {t(getMemoryCategoryLabelKey(cat))}
+              </option>
+            ))}
+          </select>
           <textarea
             id="bot-memory-modal-content-input"
             className="inline-textarea"

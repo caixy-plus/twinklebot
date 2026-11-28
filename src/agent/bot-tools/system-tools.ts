@@ -5,7 +5,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferImageMimeType } from "../model.js";
 import { registerEphemeralSecret } from "../tools.js";
-import { findDuplicateMemory, hasExplicitMemoryIntent } from "../memory-extractor.js";
+import {
+  findDuplicateMemory,
+  hasExplicitMemoryIntent,
+  looksLikePoisonedToolMemory,
+  looksLikeSecretMemory,
+  normalizeMemoryCategory,
+} from "../memory-extractor.js";
+import { normalizeMemorySettings } from "../../shared/entities.js";
 import { computeInitialNextRun } from "../scheduler.js";
 import { describeCronExpression, resolveScheduleCronConfig } from "../../shared/cron.js";
 import { buildSessionCostSummary } from "../pricing.js";
@@ -236,12 +243,36 @@ export async function handleSystemBotTool(
         }
 
         // Direct silent persistence for both explicit ("记住…") and auto-triggered durable memories.
-        // Never pops suggestion cards in chat; deduplication above protects against duplicates.
+        // Guard against explicit_only mode, secrets, and poisoned tool overrides.
         const turnUserText = typeof ctx.userText === "string" ? ctx.userText.trim() : "";
         const effectiveTrigger =
           args.trigger === "auto" || (turnUserText.length > 0 && !hasExplicitMemoryIntent(turnUserText))
             ? "auto"
             : "explicit";
+        const memorySettings = normalizeMemorySettings(settings.memorySettings);
+        if (effectiveTrigger === "auto" && memorySettings.autoMode === "explicit_only") {
+          return {
+            ok: false,
+            skipped: true,
+            reason: "auto_memory_disabled",
+            error: "当前已设为仅在明确要求时记住，已跳过自动保存。",
+          };
+        }
+        if (
+          looksLikeSecretMemory(rawContent) ||
+          looksLikeSecretMemory(rawName) ||
+          looksLikePoisonedToolMemory(rawContent) ||
+          looksLikePoisonedToolMemory(rawName)
+        ) {
+          return {
+            ok: false,
+            blocked: true,
+            error: "禁止将密钥、凭据或破坏内置工具的规则写入记忆。",
+          };
+        }
+
+        const nextCategory =
+          args.category !== undefined ? normalizeMemoryCategory(args.category) : undefined;
 
         let savedItem: any;
         let created = false;
@@ -252,6 +283,7 @@ export async function handleSystemBotTool(
             ...restPrev,
             name: rawName || prev.name,
             content: rawContent,
+            category: nextCategory || normalizeMemoryCategory(prev?.category),
             enabled: args.enabled !== undefined ? Boolean(args.enabled) : prev.enabled !== false,
             updatedAt: new Date().toISOString(),
           };
@@ -262,6 +294,7 @@ export async function handleSystemBotTool(
             id: `mem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             name: rawName,
             content: rawContent,
+            category: nextCategory || "general",
             enabled: args.enabled !== false,
             source: effectiveTrigger,
             updatedAt: new Date().toISOString(),

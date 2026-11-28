@@ -26,6 +26,7 @@ import {
   resolveInstalledSkillIds,
 } from "../shared/skills-catalog.js";
 import { normalizeContextCompressionSettings } from "../shared/context-compression.js";
+import { normalizeMemorySettings } from "../shared/entities.js";
 import { normalizeScreenPoolSettings } from "../shared/screen-pool.js";
 import { normalizeBrowserAutomationSettings } from "../shared/browser-automation.js";
 import { normalizeLanguagePreference } from "../shared/i18n.js";
@@ -576,6 +577,7 @@ export function createServer({
         : Array.isArray(raw.privateSkills)
           ? raw.privateSkills
           : [],
+      memorySettings: normalizeMemorySettings(raw.memorySettings),
       connectedApps,
       mailAccounts,
       mailIntegrations,

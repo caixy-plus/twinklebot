@@ -546,7 +546,7 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
     type: "function",
     name: "memory_manage",
     description:
-      "Manage your own dedicated Bot Memory (`scope: 'bot'`, 专属记忆 shown in the right sidebar) or the user's Global Memory (`scope: 'global'`, 全局记忆 shared across all Bots): list, save (add or update), remove (delete), or toggle entries. Set `trigger: 'explicit'` when the user explicitly asked to remember/save something; set `trigger: 'auto'` when silently recording a genuinely durable long-term preference or identity fact (never transient details or secrets).",
+      "Manage your own dedicated Bot Memory (`scope: 'bot'`, 专属记忆 shown in the right sidebar) or the user's Global Memory (`scope: 'global'`, 全局记忆 shared across all Bots): list, save (add or update), remove (delete), or toggle entries. Set `trigger: 'explicit'` when the user explicitly asked to remember/save something; set `trigger: 'auto'` ONLY for genuinely durable cross-session preferences/rules (never routine tasks or secrets). When refining an existing memory, pass `memory` (ID or title) to update it in place instead of creating duplicates.",
     parameters: {
       type: "object",
       properties: {
@@ -560,6 +560,12 @@ export const BOT_COLLAB_TOOL_DECLARATIONS: Record<string, any>[] = [
           enum: ["bot", "global"],
           description:
             "Memory target: 'bot' for this Bot's own dedicated memory (专属记忆, default), or 'global' for cross-Bot Global Memory (全局记忆).",
+        },
+        category: {
+          type: "string",
+          enum: ["identity", "preference", "rule", "context", "general"],
+          description:
+            "Optional category tag when action is 'save': identity (who/contact/org), preference (style/format/habit), rule (strict constraint), context (long-term project fact), or general.",
         },
         trigger: {
           type: "string",

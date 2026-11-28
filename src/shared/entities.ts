@@ -62,6 +62,48 @@ export interface VoiceSettings {
 
 export type HostExecutionMode = "always" | "ask" | "off";
 
+export const VALID_MEMORY_CATEGORIES = [
+  "identity",
+  "preference",
+  "rule",
+  "context",
+  "general",
+] as const;
+
+export type MemoryCategory = (typeof VALID_MEMORY_CATEGORIES)[number];
+
+export const VALID_MEMORY_AUTO_MODES = ["strict", "explicit_only"] as const;
+
+export type MemoryAutoMode = (typeof VALID_MEMORY_AUTO_MODES)[number];
+
+export interface MemorySettings {
+  autoMode: MemoryAutoMode;
+}
+
+export interface MemoryItem {
+  id: string;
+  name: string;
+  content: string;
+  enabled?: boolean;
+  category?: MemoryCategory;
+  source?: string;
+  updatedAt?: string;
+}
+
+export function normalizeMemoryCategory(raw: unknown): MemoryCategory {
+  const val = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return (VALID_MEMORY_CATEGORIES as readonly string[]).includes(val)
+    ? (val as MemoryCategory)
+    : "general";
+}
+
+export function normalizeMemorySettings(raw: unknown): MemorySettings {
+  const rec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    autoMode: rec.autoMode === "explicit_only" ? "explicit_only" : "strict",
+  };
+}
+
 export interface ContextCompressionSettings {
   enabled: boolean;
   /** Percentage of the active model's context window (30–95) that triggers auto-compression */
@@ -119,6 +161,7 @@ export interface AppSettings {
   mcpServers: Record<string, unknown>;
   policy: PolicySettings;
   privateSkills: unknown[];
+  memorySettings?: MemorySettings;
   connectedApps: unknown[];
   mailAccounts: unknown[];
   providers?: ProviderEntry[];

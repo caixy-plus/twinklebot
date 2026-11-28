@@ -2384,7 +2384,11 @@ async function runTaskInner({
             botSession: sessionObj,
             userText: latestUserText,
             assistantText: redactedAnswer,
-            config: { ...config, routing: postRouting },
+            config: {
+              ...config,
+              routing: postRouting,
+              memorySettings: postSettings?.memorySettings,
+            },
             emit: emitTagged,
             onUsage: (info) => {
               if (smart?.budget && info?.usage && info?.model) {

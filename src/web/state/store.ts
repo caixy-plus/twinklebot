@@ -413,6 +413,7 @@ export interface AppState {
     memoryId: string | null;
     name: string;
     content: string;
+    category?: string;
   };
   shortcutsDialogOpen: boolean;
   botExchangeSheet: { open: boolean; participants: any[]; messages: any[] };
@@ -709,6 +710,7 @@ export function createInitialState(): AppState {
       memoryId: null,
       name: "",
       content: "",
+      category: "general",
     },
     shortcutsDialogOpen: false,
     botExchangeSheet: { open: false, participants: [], messages: [] },

@@ -34,6 +34,10 @@ import {
   normalizeFeishuChannelConfig,
   normalizeTelegramChannelConfig,
 } from "../../lib/channel-integrations.js";
+import {
+  consolidateMemories,
+  validateConsolidatedMemoryList,
+} from "../../agent/memory-consolidator.js";
 
 export async function handleSkillsRoutes(
   req: http.IncomingMessage,
@@ -142,6 +146,111 @@ export async function handleSkillsRoutes(
             suggestionId,
             status: resolvedEvent.status,
             ...(savedMemory ? { memory: savedMemory } : {}),
+          });
+        }
+
+        // One-Click Memory Consolidation (Preview + Apply)
+        if (method === "POST" && pathname === "/api/memories/consolidate") {
+          let body: any = {};
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            // allow defaults
+          }
+          const scope: "bot" | "global" = body?.scope === "bot" ? "bot" : "global";
+          const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+          const mode: "llm" | "deterministic" =
+            body?.mode === "deterministic" ? "deterministic" : "llm";
+          const settings = ctx.store?.readSettings?.() || {};
+
+          let memories: any[] = [];
+          let botTitle = "Twinkle";
+          if (scope === "bot") {
+            const botSession = sessionId ? ctx.store?.getSession?.(sessionId) : null;
+            if (!botSession) {
+              return sendJson(res, 404, { error: "未找到指定的 Bot 会话" });
+            }
+            memories = Array.isArray(botSession.memories) ? [...botSession.memories] : [];
+            botTitle = botSession.title || "Twinkle";
+          } else {
+            memories = Array.isArray(settings.globalMemories)
+              ? [...settings.globalMemories]
+              : Array.isArray(settings.privateSkills)
+                ? [...settings.privateSkills]
+                : [];
+          }
+
+          const result = await consolidateMemories({
+            scope,
+            ...(sessionId ? { sessionId } : {}),
+            memories,
+            model: ctx.model,
+            config: {
+              ...(ctx.finalConfig || {}),
+              routing: settings.routing || ctx.finalConfig?.routing,
+            },
+            botName: botTitle,
+            mode,
+          });
+          if (!result.ok) {
+            return sendJson(res, result.statusCode || 400, { error: result.error });
+          }
+          return sendJson(res, 200, { ok: true, plan: result.plan });
+        }
+
+        if (method === "POST" && pathname === "/api/memories/consolidate/apply") {
+          let body: any;
+          try {
+            body = await parseJsonBody(req);
+          } catch {
+            return sendJson(res, 400, { error: "invalid json" });
+          }
+          const scope: "bot" | "global" = body?.scope === "bot" ? "bot" : "global";
+          const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+          if (!Array.isArray(body?.proposedList)) {
+            return sendJson(res, 400, { error: "proposedList array is required" });
+          }
+
+          if (scope === "bot") {
+            const botSession = sessionId ? ctx.store?.getSession?.(sessionId) : null;
+            if (!botSession) {
+              return sendJson(res, 404, { error: "未找到指定的 Bot 会话" });
+            }
+            const origList = Array.isArray(botSession.memories) ? botSession.memories : [];
+            const sanitized = validateConsolidatedMemoryList(body.proposedList, origList);
+            const updatedSession = ctx.store?.updateSession?.(botSession.id, {
+              memories: sanitized,
+              touch: false,
+            });
+            ctx.broadcastEvent?.({
+              type: "session_updated",
+              sessionId: botSession.id,
+              session: updatedSession || { ...botSession, memories: sanitized },
+            });
+            return sendJson(res, 200, {
+              ok: true,
+              scope: "bot",
+              sessionId: botSession.id,
+              count: sanitized.length,
+              memories: sanitized,
+            });
+          }
+
+          const settings = ctx.store?.readSettings?.() || {};
+          const origGlobal = Array.isArray(settings.globalMemories)
+            ? settings.globalMemories
+            : [];
+          const sanitizedGlobal = validateConsolidatedMemoryList(body.proposedList, origGlobal);
+          ctx.store?.writeSettings?.({
+            globalMemories: sanitizedGlobal,
+            privateSkills: [],
+          });
+          ctx.broadcastSkillsUpdated();
+          return sendJson(res, 200, {
+            ok: true,
+            scope: "global",
+            count: sanitizedGlobal.length,
+            memories: sanitizedGlobal,
           });
         }
 

@@ -47,6 +47,7 @@ import { MascotSvg, SessionAvatar } from "../common/AvatarView.js";
 import {
   BotMemoriesList,
   LibraryItemsPanel,
+  MemoryConsolidatePreviewCard,
   SchedulesList,
 } from "../common/SharedPanels.js";
 
@@ -89,9 +90,13 @@ export function RightInspector({
   const [sectionExpandedOverrides, setSectionExpandedOverrides] = useState<
     Partial<Record<CollapsibleSectionKey, boolean>>
   >({});
+  const [botConsolidating, setBotConsolidating] = useState(false);
+  const [applyingBotConsolidate, setApplyingBotConsolidate] = useState(false);
+  const [botConsolidatePlan, setBotConsolidatePlan] = useState<any>(null);
 
   useEffect(() => {
     setSectionExpandedOverrides({});
+    setBotConsolidatePlan(null);
   }, [activeSessionId]);
 
   const isSectionExpanded = (key: CollapsibleSectionKey, itemCount: number): boolean => {
@@ -160,6 +165,62 @@ export function RightInspector({
     isSessionCurrentlyBusy(sessionStatus) ||
     Object.values(activeMap || {}).some((st) => isSessionCurrentlyBusy(st));
   const multiDisplayEnabled = hasConnectedNodeCapability("multi-display-v1", { diagnostics });
+  const supportsMemoryGovernance = hasConnectedNodeCapability("memory-governance-v1", {
+    diagnostics,
+  });
+
+  const handleConsolidateBotMemories = async () => {
+    if (!activeSession?.id || botConsolidating) return;
+    setBotConsolidating(true);
+    setSectionExpandedOverrides((prev) => ({ ...prev, botMemory: true }));
+    try {
+      const res = await apiJson("/api/memories/consolidate", {
+        method: "POST",
+        body: JSON.stringify({ scope: "bot", sessionId: activeSession.id }),
+      });
+      setBotConsolidatePlan(res?.plan || null);
+    } catch (err: any) {
+      showToast(
+        t("memory.consolidateFailedToast", {
+          error: err?.message || t("actions.requestError"),
+        })
+      );
+    } finally {
+      setBotConsolidating(false);
+    }
+  };
+
+  const handleApplyBotConsolidate = async () => {
+    if (!activeSession?.id || !botConsolidatePlan || applyingBotConsolidate) return;
+    setApplyingBotConsolidate(true);
+    try {
+      const res = await apiJson("/api/memories/consolidate/apply", {
+        method: "POST",
+        body: JSON.stringify({
+          scope: "bot",
+          sessionId: activeSession.id,
+          proposedList: botConsolidatePlan.proposedList || [],
+        }),
+      });
+      if (Array.isArray(res?.memories)) {
+        upsertLocalSession({ ...activeSession, memories: res.memories });
+      }
+      setBotConsolidatePlan(null);
+      showToast(
+        t("memory.consolidateAppliedToast", {
+          count: String(res?.count ?? res?.memories?.length ?? 0),
+        })
+      );
+    } catch (err: any) {
+      showToast(
+        t("memory.consolidateFailedToast", {
+          error: err?.message || t("actions.requestError"),
+        })
+      );
+    } finally {
+      setApplyingBotConsolidate(false);
+    }
+  };
   const {
     compState,
     isCompOnline,
@@ -819,33 +880,54 @@ export function RightInspector({
                 />
               </svg>
             </button>
-            <button
-              id="new-bot-memory-btn"
-              type="button"
-              className="section-action-link"
-              onClick={() => {
-                setState({
-                  botMemoryModal: {
-                    open: true,
-                    sessionId: activeSession?.id || null,
-                    memoryId: null,
-                    name: "",
-                    content: "",
-                  },
-                });
-                requestAnimationFrame(() => {
-                  (
-                    document.getElementById(
-                      "bot-memory-modal-name-input"
-                    ) as HTMLInputElement | null
-                  )?.focus();
-                });
-              }}
-            >
-              {t("inspector.memoryAdd")}
-            </button>
+            <div className="memory-header-actions">
+              {supportsMemoryGovernance && memories.length >= 2 && (
+                <button
+                  id="consolidate-bot-memory-btn"
+                  type="button"
+                  className="section-action-link"
+                  disabled={botConsolidating}
+                  onClick={handleConsolidateBotMemories}
+                >
+                  {botConsolidating ? t("memory.consolidatingBtn") : t("memory.consolidateBtn")}
+                </button>
+              )}
+              <button
+                id="new-bot-memory-btn"
+                type="button"
+                className="section-action-link"
+                onClick={() => {
+                  setState({
+                    botMemoryModal: {
+                      open: true,
+                      sessionId: activeSession?.id || null,
+                      memoryId: null,
+                      name: "",
+                      content: "",
+                      category: "general",
+                    },
+                  });
+                  requestAnimationFrame(() => {
+                    (
+                      document.getElementById(
+                        "bot-memory-modal-name-input"
+                      ) as HTMLInputElement | null
+                    )?.focus();
+                  });
+                }}
+              >
+                {t("inspector.memoryAdd")}
+              </button>
+            </div>
           </div>
           <div id="bot-memory-body" className="inspector-section-body" hidden={!botMemoryExpanded}>
+            <MemoryConsolidatePreviewCard
+              plan={botConsolidatePlan}
+              applying={applyingBotConsolidate}
+              idPrefix="bot"
+              onApply={handleApplyBotConsolidate}
+              onCancel={() => setBotConsolidatePlan(null)}
+            />
             <BotMemoriesList session={activeSession} listId="bot-memories-list" />
           </div>
         </section>

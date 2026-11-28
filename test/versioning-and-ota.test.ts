@@ -291,6 +291,7 @@ test("evaluateUpdateCompatibility decouples Desktop/Android/iOS shells, selects 
     "remote-relay-v1",
     "experience-reflector-v1",
     "schedule-optimizer-v1",
+    "memory-governance-v1",
     "swarm-v2",
   ]);
   // v1.2.0 baseline features stay 100% enabled on LAN 1.2.0 while 1.3.0-only feature gracefully gates!

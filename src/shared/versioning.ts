@@ -19,6 +19,7 @@ export const CURRENT_API_CAPABILITIES = [
   "remote-relay-v1",
   "experience-reflector-v1",
   "schedule-optimizer-v1",
+  "memory-governance-v1",
 ] as const;
 
 export const DEFAULT_GITHUB_OWNER = "caixy-plus";

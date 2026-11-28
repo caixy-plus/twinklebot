@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { isMobileViewport } from "../../mobile-ui.js";
 import { describeCronExpression } from "/shared/cron.js";
+import { normalizeMemoryCategory } from "/shared/entities.js";
 import {
   openBotScreenOverlay,
   openImageLightbox,
@@ -17,6 +18,116 @@ import { useI18n } from "../../services/i18n.js";
 import { formatClockTime } from "../../state/helpers.js";
 import { setState, useStore, type TraceItem } from "../../state/store.js";
 import { StatusText, UiIcon } from "./Icon.js";
+
+export function getMemoryCategoryLabelKey(category: unknown) {
+  switch (normalizeMemoryCategory(category)) {
+    case "identity":
+      return "memory.cat.identity" as const;
+    case "preference":
+      return "memory.cat.preference" as const;
+    case "rule":
+      return "memory.cat.rule" as const;
+    case "context":
+      return "memory.cat.context" as const;
+    default:
+      return "memory.cat.general" as const;
+  }
+}
+
+export function MemoryMetaBadges({
+  category,
+  source,
+}: {
+  category?: unknown;
+  source?: unknown;
+}) {
+  const { t } = useI18n();
+  const cat = normalizeMemoryCategory(category);
+  const showCat = cat !== "general";
+  const isAuto = source === "auto";
+  if (!showCat && !isAuto) return null;
+  return (
+    <span className="memory-meta-badges">
+      {showCat && <span className="memory-cat-badge">{t(getMemoryCategoryLabelKey(cat))}</span>}
+      {isAuto && <span className="memory-source-badge">{t("memory.sourceAuto")}</span>}
+    </span>
+  );
+}
+
+export function MemoryConsolidatePreviewCard({
+  plan,
+  applying,
+  idPrefix,
+  onApply,
+  onCancel,
+}: {
+  plan: any;
+  applying: boolean;
+  idPrefix: string;
+  onApply: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  if (!plan) return null;
+  const merges: any[] = Array.isArray(plan.merges) ? plan.merges : [];
+  const removals: any[] = Array.isArray(plan.removals) ? plan.removals : [];
+  return (
+    <div id={`${idPrefix}-memory-consolidate-preview`} className="memory-consolidate-preview">
+      <div className="memory-consolidate-head">
+        <span>{t("memory.consolidatePreviewTitle")}</span>
+        <span className="memory-consolidate-diff-pill">
+          {t("memory.consolidateCountDiff", {
+            before: String(plan.beforeCount ?? 0),
+            after: String(plan.afterCount ?? 0),
+          })}
+        </span>
+      </div>
+      {plan.summary && <div>{plan.summary}</div>}
+      {merges.length > 0 && (
+        <div className="memory-consolidate-section">
+          <strong>{t("memory.consolidateMergesTitle", { count: String(merges.length) })}</strong>
+          {merges.slice(0, 4).map((m: any, idx: number) => (
+            <div key={idx} className="memory-consolidate-item">
+              {(Array.isArray(m.sourceNames) ? m.sourceNames.join(" + ") : "")} →{" "}
+              <strong>{m.result?.name || ""}</strong>：{m.result?.content || ""}
+            </div>
+          ))}
+        </div>
+      )}
+      {removals.length > 0 && (
+        <div className="memory-consolidate-section">
+          <strong>{t("memory.consolidateRemovalsTitle", { count: String(removals.length) })}</strong>
+          {removals.slice(0, 4).map((r: any, idx: number) => (
+            <div key={idx} className="memory-consolidate-item">
+              {r.name}（{r.reason}）
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="memory-consolidate-actions">
+        <button
+          type="button"
+          className="skill-pill-btn"
+          disabled={applying}
+          onClick={onCancel}
+        >
+          {t("common.cancel")}
+        </button>
+        {plan.changed && (
+          <button
+            id={`apply-${idPrefix}-memory-consolidate-btn`}
+            type="button"
+            className="skill-pill-btn is-primary"
+            disabled={applying}
+            onClick={onApply}
+          >
+            {applying ? t("memory.consolidatingBtn") : t("memory.consolidateApplyBtn")}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function BotMemoriesList({
   session,
@@ -76,6 +187,7 @@ export function BotMemoriesList({
                 memoryId: mem.id || mem.name,
                 name: mem.name || "",
                 content: mem.instruction || mem.content || mem.desc || "",
+                category: normalizeMemoryCategory(mem.category),
               },
             });
             requestAnimationFrame(() => {
@@ -103,7 +215,10 @@ export function BotMemoriesList({
                   }
                 }}
               >
-                <div className="skill-row-name">{memTitle}</div>
+                <div className="skill-row-name">
+                  {memTitle}
+                  <MemoryMetaBadges category={mem.category} source={mem.source} />
+                </div>
                 <div className="skill-row-desc">
                   {mem.instruction || mem.content || mem.desc || ""}
                 </div>

@@ -1214,3 +1214,41 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+.memory-auto-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-hairline);
+  flex-wrap: wrap;
+}
+
+.memory-auto-mode-info {
+  flex: 1;
+  min-width: 190px;
+}
+
+.memory-auto-mode-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.memory-auto-mode-hint {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.memory-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}

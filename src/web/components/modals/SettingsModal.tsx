@@ -21,6 +21,11 @@ import {
   normalizeBrowserAutomationSettings,
   normalizeBrowserDebugPort,
 } from "/shared/browser-automation.js";
+import {
+  VALID_MEMORY_CATEGORIES,
+  normalizeMemoryCategory,
+  normalizeMemorySettings,
+} from "/shared/entities.js";
 import { resolveBotComputerStatusDisplay } from "/shared/computer-status.js";
 import { isMobileAppTarget } from "../../mobile-bridge.js";
 import { isMobileViewport } from "../../mobile-ui.js";
@@ -85,7 +90,12 @@ import {
 } from "../../services/i18n.js";
 import { StatusText, UiIcon } from "../common/Icon.js";
 import { NetworkStatusBanner } from "../common/NetworkStatusBanner.js";
-import { TraceEventsList } from "../common/SharedPanels.js";
+import {
+  MemoryConsolidatePreviewCard,
+  MemoryMetaBadges,
+  TraceEventsList,
+  getMemoryCategoryLabelKey,
+} from "../common/SharedPanels.js";
 
 const SETTINGS_PROVIDER_KEYS = [
   "gemini",
@@ -1041,6 +1051,10 @@ export function SettingsModal() {
   const localBrowserSupported = hasConnectedNodeCapability("local-browser-automation-v1", {
     diagnostics,
   });
+  const supportsMemoryGovernance = hasConnectedNodeCapability("memory-governance-v1", {
+    diagnostics,
+  });
+  const memorySettingsCfg = normalizeMemorySettings(settings?.memorySettings);
   const browserAutomationCfg = normalizeBrowserAutomationSettings(settings?.browserAutomation);
   const [browserPortDraft, setBrowserPortDraft] = useState<string>(
     String(browserAutomationCfg.debugPort)
@@ -1235,7 +1249,11 @@ export function SettingsModal() {
   const [editingMemId, setEditingMemId] = useState<string | null>(null);
   const [memName, setMemName] = useState("");
   const [memContent, setMemContent] = useState("");
+  const [memCategory, setMemCategory] = useState("general");
   const [pendingDeleteMemId, setPendingDeleteMemId] = useState<string | null>(null);
+  const [globalConsolidating, setGlobalConsolidating] = useState(false);
+  const [applyingGlobalConsolidate, setApplyingGlobalConsolidate] = useState(false);
+  const [globalConsolidatePlan, setGlobalConsolidatePlan] = useState<any>(null);
   const memNameRef = useRef<HTMLInputElement | null>(null);
 
   const openMemoryEditor = (mem: any | null) => {
@@ -1249,10 +1267,12 @@ export function SettingsModal() {
       setEditingMemId(targetId);
       setMemName(String(mem.name || ""));
       setMemContent(String(mem.instruction || mem.content || mem.desc || ""));
+      setMemCategory(normalizeMemoryCategory(mem.category));
     } else {
       setEditingMemId(null);
       setMemName("");
       setMemContent("");
+      setMemCategory("general");
     }
     setPendingDeleteMemId(null);
     setMemFormOpen(true);
@@ -1812,6 +1832,21 @@ export function SettingsModal() {
           />
         </label>
         <label className="field-group">
+          <span>{t("memory.categoryLabel")}</span>
+          <select
+            id="memory-category-input"
+            aria-label={t("memory.categoryLabel")}
+            value={normalizeMemoryCategory(memCategory)}
+            onChange={(e) => setMemCategory(e.target.value)}
+          >
+            {VALID_MEMORY_CATEGORIES.map((cat) => (
+              <option key={cat} value={cat}>
+                {t(getMemoryCategoryLabelKey(cat))}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field-group">
           <span>{t("settings.memEditorContentLabel")}</span>
           <textarea
             id="memory-content-input"
@@ -1847,6 +1882,7 @@ export function SettingsModal() {
               return;
             }
             const title = memName.trim() || content.replace(/\s+/g, " ").slice(0, 18);
+            const category = normalizeMemoryCategory(memCategory);
             const nowIso = new Date().toISOString();
             const next = editingMemId
               ? globalMemories.map((x: any) =>
@@ -1857,6 +1893,7 @@ export function SettingsModal() {
                         desc: content,
                         instruction: content,
                         content,
+                        category,
                         updatedAt: nowIso,
                       }
                     : x
@@ -1868,6 +1905,7 @@ export function SettingsModal() {
                     desc: content,
                     instruction: content,
                     content,
+                    category,
                     enabled: true,
                     updatedAt: nowIso,
                   },
@@ -1877,6 +1915,7 @@ export function SettingsModal() {
               await commitSettingsPatch({ globalMemories: next, privateSkills: next });
               setMemName("");
               setMemContent("");
+              setMemCategory("general");
               setEditingMemId(null);
               setMemFormOpen(false);
               showToast(editingMemId ? t("settings.memUpdatedToast") : t("settings.memSavedToast"));
@@ -2997,15 +3036,110 @@ export function SettingsModal() {
               <div className="settings-group-label" style={{ margin: 0 }}>
                 {t("settings.globalMemGroup")}
               </div>
-              <button
-                id="new-memory-btn"
-                type="button"
-                className="settings-blue-pill"
-                onClick={() => openMemoryEditor(null)}
-              >
-                {t("settings.newMemoryBtn")}
-              </button>
+              <div className="memory-header-actions">
+                {supportsMemoryGovernance && globalMemories.length >= 2 && (
+                  <button
+                    id="consolidate-global-memory-btn"
+                    type="button"
+                    className="skill-pill-btn"
+                    disabled={globalConsolidating}
+                    onClick={async () => {
+                      if (globalConsolidating) return;
+                      setGlobalConsolidating(true);
+                      try {
+                        const res = await apiJson("/api/memories/consolidate", {
+                          method: "POST",
+                          body: JSON.stringify({ scope: "global" }),
+                        });
+                        setGlobalConsolidatePlan(res?.plan || null);
+                      } catch (err: any) {
+                        showToast(
+                          t("memory.consolidateFailedToast", {
+                            error: err?.message || t("actions.requestError"),
+                          })
+                        );
+                      } finally {
+                        setGlobalConsolidating(false);
+                      }
+                    }}
+                  >
+                    {globalConsolidating
+                      ? t("memory.consolidatingBtn")
+                      : t("memory.consolidateBtn")}
+                  </button>
+                )}
+                <button
+                  id="new-memory-btn"
+                  type="button"
+                  className="settings-blue-pill"
+                  onClick={() => openMemoryEditor(null)}
+                >
+                  {t("settings.newMemoryBtn")}
+                </button>
+              </div>
             </div>
+
+            {supportsMemoryGovernance && (
+              <div className="memory-auto-mode-row">
+                <div className="memory-auto-mode-info">
+                  <div className="memory-auto-mode-title">{t("settings.memoryAutoModeLabel")}</div>
+                  <div className="memory-auto-mode-hint">{t("settings.memoryAutoModeHint")}</div>
+                </div>
+                <select
+                  id="memory-auto-mode-select"
+                  className="settings-select"
+                  aria-label={t("settings.memoryAutoModeLabel")}
+                  value={memorySettingsCfg.autoMode}
+                  onChange={async (e) => {
+                    const autoMode =
+                      e.target.value === "explicit_only" ? "explicit_only" : "strict";
+                    try {
+                      await commitSettingsPatch({ memorySettings: { autoMode } });
+                    } catch (err: any) {
+                      showToast(err?.message || t("actions.requestError"));
+                    }
+                  }}
+                >
+                  <option value="strict">{t("settings.memoryAutoModeStrict")}</option>
+                  <option value="explicit_only">{t("settings.memoryAutoModeExplicit")}</option>
+                </select>
+              </div>
+            )}
+
+            <MemoryConsolidatePreviewCard
+              plan={globalConsolidatePlan}
+              applying={applyingGlobalConsolidate}
+              idPrefix="global"
+              onCancel={() => setGlobalConsolidatePlan(null)}
+              onApply={async () => {
+                if (!globalConsolidatePlan || applyingGlobalConsolidate) return;
+                setApplyingGlobalConsolidate(true);
+                try {
+                  const res = await apiJson("/api/memories/consolidate/apply", {
+                    method: "POST",
+                    body: JSON.stringify({
+                      scope: "global",
+                      proposedList: globalConsolidatePlan.proposedList || [],
+                    }),
+                  });
+                  await refreshSettingsFromServer();
+                  setGlobalConsolidatePlan(null);
+                  showToast(
+                    t("memory.consolidateAppliedToast", {
+                      count: String(res?.count ?? res?.memories?.length ?? 0),
+                    })
+                  );
+                } catch (err: any) {
+                  showToast(
+                    t("memory.consolidateFailedToast", {
+                      error: err?.message || t("actions.requestError"),
+                    })
+                  );
+                } finally {
+                  setApplyingGlobalConsolidate(false);
+                }
+              }}
+            />
 
             {(!memFormOpen || !editingMemId) && renderMemoryEditor(false, memFormOpen && !editingMemId)}
 
@@ -3046,7 +3180,10 @@ export function SettingsModal() {
                             <UiIcon name="brain" size={19} />
                           </div>
                           <div className="skill-row-info">
-                            <div className="skill-row-name">{memDisplayName}</div>
+                            <div className="skill-row-name">
+                              {memDisplayName}
+                              <MemoryMetaBadges category={mem.category} source={mem.source} />
+                            </div>
                             <div className="skill-row-desc">
                               {locMem.desc}
                             </div>
