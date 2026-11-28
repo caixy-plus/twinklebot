@@ -39,8 +39,10 @@ Multi-Bot AI desktop & mobile agent: orchestrates Gemini / Vertex AI / OpenAI / 
 - **Default Hot-Update Rule (`ota-only`)**: When changes touch only hot-updatable layers (`src/server/**`, `src/agent/**`, `src/store/**`,
   `src/lib/**`, `src/shared/**`, `src/web/**`, `public/**`, `executor/executor.py`, bundled JS deps) without touching native shell layers
   (`src/electron/**`, `electron/*`, `android/**`, `ios/**`, `capacitor.config.*`, native deps), **do NOT run `npm run version:bump`** —
-  release via `ota-*` / `mode=ota-only`, keeping shell `X.Y.Z` & native `buildCode` unchanged (`ota-only` asynchronously dispatches
-  `refresh-shell-installers.yml` in the background to overwrite the current shell version's installers without blocking OTA reporting).
+  release via `ota-*` / `mode=ota-only`, keeping shell `X.Y.Z` & native `buildCode` unchanged. Each `ota-only` release dispatches
+  `refresh-shell-installers.yml` asynchronously to rebuild & overwrite all current-version platform installers (`macos`/`windows`/`linux`/`android`)
+  using the same `WEB_BUILD_ID` (so fresh downloads need no second OTA), `cancel-in-progress: true` on build jobs, and serialized partial manifest hash updates
+  on `ota-channel` without blocking OTA reporting (enforced by `test/versioning-and-ota.test.ts`).
 - **Shell Version Rollover** (when native shells change or user requests full installers):
   - `PATCH` ranges **0–9** (`1.0.9 -> 1.1.0`); `MINOR` ranges **0–19** (`1.19.9 -> 2.0.0`); mobile `buildCode` increments `+1`.
   - Sync atomically via `npm run version:bump`; always check `version-policy.json` (`shells.*`, `minVersionFor*`, `apiCapabilities`). When raising shell capabilities, also raise `minVersionForOta` / `minVersionForCoreOta` / `minBuildCodeForOta`.
@@ -49,7 +51,11 @@ Multi-Bot AI desktop & mobile agent: orchestrates Gemini / Vertex AI / OpenAI / 
   - Before `vX.Y.Z` tags, ensure `package.json` matches `version-policy.json`. Never bump or tag autonomously; keep release notes bilingual (`中文 / English`).
   - Android full releases sign `TwinkleBot-mobile-release.apk` (`PortraitCaptureActivity`, 4KB `zipalign -p -f 4` + `apksigner verify`; never ship `-unsigned.apk`).
   - `ci.yml` on `main` is build/package-only (no tests, no auto-publish, ignores `README*.md`, `AGENTS.md`, `CLAUDE.md`, `LICENSE`, `docs/**`, `.agents/**`). Bilingual docs: `README.md` (EN) + `README.zh-CN.md` (ZH).
-  - **Monitor CI & Release runs to green**: After pushing or triggering `ci.yml`/`release.yml`, run `gh run watch <id> --exit-status` until every required job passes, and verify the published release (`isDraft: false`, expected assets, updated `ota-channel`).
+  - **Monitor CI & Release runs to green**: After pushing or triggering `ci.yml`/`release.yml`, run `gh run watch <id> --exit-status`
+    until every required job passes, and verify the published release (`isDraft: false`, expected assets, updated `ota-channel`).
+    For `ota-only`, report as soon as `release.yml` + `ota-channel` turn green — do not block waiting on background `refresh-shell-installers.yml`.
+  - Keep `scripts/build-ota-packages.mjs` free of top-level third-party imports (lazy-import core bundling)
+    so zero-`node_modules` shell-refresh jobs can patch manifest hashes directly (enforced by `test/versioning-and-ota.test.ts`).
 
 ## Testing, E2E Gate & Backlog
 
